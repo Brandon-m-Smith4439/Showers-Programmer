@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 234674
+Job/SO: 88329890.2 DAVIDSON 12
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order SAUSSY BURBANK_88329890.2 DAVIDSON 12.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\8\Sketches\234674.pdf
+
+Items:
+- P1: 234674.1 | DENVER 1 | 28 x 79.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side left; hinges down
+  dxf: 88329890.2 DAVIDSON 12_1__P1.dxf -> 23467401.dxf (90 deg)
+  indicator: bottom_left
+- P2: 234674.2 | DENVER 2 | 29.5 x 80
+  reasons: no cutouts/fabrication detected, process list machine: DENVER 2
+  dxf: 88329890.2 DAVIDSON 12_2__P2.dxf -> 23467402.dxf (90 deg)
+  indicator: bottom_left
+  WARNING: Label placed in best available open area inside glass.

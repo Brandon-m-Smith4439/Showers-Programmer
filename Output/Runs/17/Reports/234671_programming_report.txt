@@ -1,0 +1,17 @@
+Shower Programmer APPLY
+A&W order: 234671
+Job/SO: 87366298 MORGAN HILL 301
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TRUE HOMES_87366298 MORGAN HILL 301.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\17\Sketches\234671.pdf
+
+Items:
+- P1: 234671.1 | DENVER 2 | 29.375 x 80
+  reasons: no cutouts/fabrication detected, process list machine: DENVER 2, Denver panel uses square right side down
+  dxf: 87366298 MORGAN HILL 301_1__P1.dxf -> 23467101.dxf (-90 deg)
+  indicator: top_right
+- P2: 234671.2 | DENVER 1 | 28.125 x 79.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges down
+  dxf: 87366298 MORGAN HILL 301_2__P2.dxf -> 23467102.dxf (-89.9099 deg)
+  indicator: top_right
+  angle correction: 0.0900876 deg (auto DXF hinge/bottom side 0.125 over 79.5)
+  WARNING: Label placed in best available open area inside glass.

@@ -1,0 +1,106 @@
+Shower batch APPLY report
+Created: 2026-06-08 10:09:33
+Total orders: 17
+Status counts: OK=17
+
+OK: 234717 | 86915721 ENDHAVEN 41 | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order HOPPER_86915721 ENDHAVEN 41.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234717.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234717_programming_report.txt
+
+OK: 234718 | 87366126 EDGEWATER 162 | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TRUE HOMES_87366126 EDGEWATER 162.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234718.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234718_programming_report.txt
+
+OK: 234719 | 87446045 SHAY CROSSING 134A | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TRUE HOMES_87446045 SHAY CROSSING 134A.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234719.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234719_programming_report.txt
+
+OK: 234720 | 87793812 ENCORE 99 | P1
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order DAVID WEEKLEY_87793812 ENCORE 99.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234720.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234720_programming_report.txt
+
+OK: 234721 | 87896301 RIVERWALK 572 | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order AVENCIA_87896301 RIVERWALK 572.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234721.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234721_programming_report.txt
+
+OK: 234722 | 87896301.2 RIVERWALK 572 | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order AVENCIA_87896301.2 RIVERWALK 572.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234722.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234722_programming_report.txt
+
+OK: 234723 | 88336170 6836 FAIRWAY | P1
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order KRISTIN HEIDKAMP_88336170 6836 FAIRWAY.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234723.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234723_programming_report.txt
+
+OK: 234724 | 88354206 295 TRADITION | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order T4_88354206 295 TRADITION.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234724.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234724_programming_report.txt
+
+OK: 234725 | 88354206.2 295 TRADITION | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order T4_88354206.2 295 TRADITION.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234725.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234725_programming_report.txt
+
+OK: 234726 | 88354292 5577 FIVE KNOLL | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order COPPER_88354292 5577 FIVE KNOLL.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234726.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234726_programming_report.txt
+
+OK: 234727 | 88354312 17330 DUE WEST | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order KNOTTS_88354312 17330 DUE WEST.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234727.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234727_programming_report.txt
+
+OK: 234728 | 88355814 4311 COLLINGWOOD | P1, P2, P3
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order LINNANE_88355814 4311 COLLINGWOOD.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234728.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234728_programming_report.txt
+
+OK: 234729 | 88355814.2 4311 COLLINGWOOD | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order LINNANE_88355814.2 4311 COLLINGWOOD.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234729.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234729_programming_report.txt
+
+OK: 234730 | 88355982 3508 COLONY | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order DAVID SIMONINI_88355982 3508 COLONY.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234730.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234730_programming_report.txt
+
+OK: 234731 | 88356088 208 HEMPSTEAD | P1, P2, P3
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order STEWART_88356088 208 HEMPSTEAD.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234731.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234731_programming_report.txt
+
+OK: 234732 | 88340724 1592 CALIFORNIA | P1, P2, P3
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TERRAIN_88340724 1592 CALIFORNIA.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234732.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234732_programming_report.txt
+
+OK: 234733 | 88340724.2 1592 CALIFORNIA | P1, P2
+  delivery date: 6/12/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TERRAIN_88340724.2 1592 CALIFORNIA.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Sketches\234733.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\5\Reports\234733_programming_report.txt

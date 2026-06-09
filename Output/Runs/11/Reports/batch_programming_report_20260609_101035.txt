@@ -1,0 +1,55 @@
+Shower batch APPLY report
+Created: 2026-06-09 10:10:35
+Total orders: 8
+Status counts: OK=7, ISSUES=1
+
+OK: 234667 | 87067092 DAVIDSON 13 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order SAUSSY_87067092 DAVIDSON 13.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234667.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234667_programming_report.txt
+
+OK: 234668 | 87067092.2 DAVIDSON 13 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order SAUSSY_87067092.2 DAVIDSON 13.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234668.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234668_programming_report.txt
+
+ISSUES: 234669 | 87125245 EMERSON GLEN 70 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order MI HOMES_87125245 EMERSON GLEN 70.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234669.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234669_programming_report.txt
+  issue: Process list item(s) missing from PDF: P2
+  issue: PDF item(s) missing from process list: P3
+  issue: P3: No matching process-list item row found.
+
+OK: 234670 | 87125245.2 EMERSON GLEN 70 | P1
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order MI HOMES_87125245.2 EMERSON GLEN 70.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234670.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234670_programming_report.txt
+
+OK: 234671 | 87366298 MORGAN HILL 301 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TRUE HOMES_87366298 MORGAN HILL 301.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234671.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234671_programming_report.txt
+
+OK: 234672 | 87601833 FALLS 10 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order DAN RYAN_87601833 FALLS 10.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234672.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234672_programming_report.txt
+
+OK: 234673 | 88329890 DAVIDSON 12 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order SAUSSY BURBANK_88329890 DAVIDSON 12.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234673.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234673_programming_report.txt
+
+OK: 234674 | 88329890.2 DAVIDSON 12 | P1, P2
+  delivery date: 6/11/2026
+  input pdf: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order SAUSSY BURBANK_88329890.2 DAVIDSON 12.pdf
+  output pdf: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Sketches\234674.pdf
+  order report: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\11\Reports\234674_programming_report.txt

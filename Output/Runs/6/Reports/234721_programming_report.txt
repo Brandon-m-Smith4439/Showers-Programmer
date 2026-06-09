@@ -1,0 +1,21 @@
+Shower Programmer APPLY
+A&W order: 234721
+Job/SO: 87896301 RIVERWALK 572
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order AVENCIA_87896301 RIVERWALK 572.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\6\Sketches\234721.pdf
+
+Items:
+- P1: 234721.1 | DENVER 2 | 17.0625 x 80
+  reasons: panel fabrication keyword in PDF text, process list machine: DENVER 2, Denver panel uses square right side down
+  dxf: 87896301 RIVERWALK 572_1__P1.dxf -> 23472101.dxf (-90 deg)
+  indicator: top_right
+  WARNING: FP-S cut-in/cut-out detected; manual DXF review required.
+- P2: 234721.2 | DENVER 1 | 28.4375 x 79.5625
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges down
+  dxf: 87896301 RIVERWALK 572_2__P2.dxf -> 23472102.dxf (-89.6849 deg)
+  indicator: top_right
+  angle correction: 0.315056 deg (auto DXF hinge/bottom side 0.4375 over 79.5625)
+  WARNING: Label placed in best available open area inside glass.
+
+Batch issues:
+- P1: FP-S cut-in/cut-out detected; manual DXF review required.

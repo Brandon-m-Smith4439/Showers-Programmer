@@ -1,0 +1,17 @@
+Shower Programmer APPLY
+A&W order: 234672
+Job/SO: 87601833 FALLS 10
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order DAN RYAN_87601833 FALLS 10.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\17\Sketches\234672.pdf
+
+Items:
+- P1: 234672.1 | WJ | 29.4375 x 80.0625
+  reasons: water-jet keyword in PDF text, process list machine: WJ, WJ rotation follows top_left marker
+  dxf: 87601833 FALLS 10_1__P1.dxf -> 23467201.dxf (90 deg)
+  indicator: top_left
+  WARNING: Label placed in best available open area inside glass.
+- P2: 234672.2 | DENVER 1 | 28 x 79.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges down
+  dxf: 87601833 FALLS 10_2__P2.dxf -> 23467202.dxf (-90 deg)
+  indicator: top_right
+  WARNING: Label placed in best available open area inside glass.

@@ -1,0 +1,12 @@
+Shower Programmer APPLY
+A&W order: 234670
+Job/SO: 87125245.2 EMERSON GLEN 70
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order MI HOMES_87125245.2 EMERSON GLEN 70.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\17\Sketches\234670.pdf
+
+Items:
+- P1: 234670.1 | DENVER 2 | 60 x 81.5
+  reasons: panel fabrication keyword in PDF text, process list says WJ, but no WJ-only fabrication found, process-list fabrication suggests DENVER 2, Denver panel uses square bottom_left grabber corner
+  dxf: 87125245.2 EMERSON GLEN 70_1__P1.dxf -> 23467001.dxf (90 deg)
+  indicator: bottom_left
+  WARNING: Label placed in best available open area inside glass.

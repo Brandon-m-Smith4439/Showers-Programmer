@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 234733
+Job/SO: 88340724.2 1592 CALIFORNIA
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order TERRAIN_88340724.2 1592 CALIFORNIA.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\6\Sketches\234733.pdf
+
+Items:
+- P1: 234733.1 | DENVER 2 | 29.375 x 84
+  reasons: no cutouts/fabrication detected, process list machine: DENVER 2, Denver panel uses square top_right grabber corner
+  dxf: 88340724.2 1592 CALIFORNIA_1__P1.dxf -> 23473301.dxf (-90 deg)
+  indicator: top_right
+- P2: 234733.2 | DENVER 1 | 28 x 83.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges down
+  dxf: 88340724.2 1592 CALIFORNIA_2__P2.dxf -> 23473302.dxf (-90 deg)
+  indicator: top_right
+  WARNING: Label placed in best available open area inside glass.

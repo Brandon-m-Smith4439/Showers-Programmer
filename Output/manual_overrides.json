@@ -1,0 +1,83 @@
+{
+  "item_overrides": {
+    "234667": {
+      "1": {
+        "indicator_corner": "bottom_left",
+        "indicator_x": 241.944,
+        "indicator_y": 154.79,
+        "label_text": "234667.1\nDENVER",
+        "label_x": 303.955,
+        "label_y": 494.515,
+        "manual_indicator_corner": true,
+        "rotation_degrees": 90.0
+      },
+      "_order_checked": true
+    },
+    "234668": {
+      "1": {
+        "hinge_side": "left",
+        "hinges_up": false,
+        "indicator_corner": "bottom_left",
+        "indicator_x": 226.078,
+        "indicator_y": 158.235,
+        "label_x": 312.904,
+        "label_y": 501.927,
+        "manual_indicator_corner": true,
+        "rotation_degrees": 90.0
+      },
+      "_order_checked": true
+    },
+    "234669": {
+      "1": {
+        "indicator_corner": "top_left",
+        "indicator_x": 124.216,
+        "indicator_y": 611.076,
+        "label_x": 305.88,
+        "label_y": 476.163,
+        "rotation_degrees": 90.0
+      },
+      "3": {
+        "indicator_corner": "top_left",
+        "indicator_x": 126.467,
+        "indicator_y": 615.121,
+        "label_x": 289.539,
+        "label_y": 473.195,
+        "rotation_degrees": 90.0
+      },
+      "_order_checked": true
+    },
+    "234670": {
+      "_order_checked": true
+    },
+    "234671": {
+      "2": {
+        "hinge_side": "right",
+        "hinges_up": true,
+        "indicator_corner": "top_right",
+        "indicator_x": 411.395,
+        "indicator_y": 594.646,
+        "label_x": 296.445,
+        "label_y": 481.819,
+        "manual_indicator_corner": true,
+        "rotation_degrees": 90.0
+      },
+      "_order_checked": true
+    },
+    "234672": {
+      "1": {
+        "indicator_corner": "top_left",
+        "indicator_x": 174.468,
+        "indicator_y": 622.915,
+        "label_x": 295.538,
+        "label_y": 440.159,
+        "remake_x": 299.734,
+        "remake_y": 634.27,
+        "rotation_degrees": 90.0
+      },
+      "_order_checked": true
+    },
+    "234673": {
+      "_order_checked": true
+    }
+  }
+}

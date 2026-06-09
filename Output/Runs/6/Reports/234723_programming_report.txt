@@ -1,0 +1,13 @@
+Shower Programmer APPLY
+A&W order: 234723
+Job/SO: 88336170 6836 FAIRWAY
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order KRISTIN HEIDKAMP_88336170 6836 FAIRWAY.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\6\Sketches\234723.pdf
+
+Items:
+- P1: 234723.1 | DENVER 1 | 28 x 79.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges down
+  dxf: 88336170 6836 FAIRWAY_1__P1.dxf -> 23472301.dxf (-90.0901 deg)
+  indicator: top_right
+  angle correction: -0.0900876 deg (auto DXF hinge/bottom side 0.125 over 79.5)
+  WARNING: Label placed in best available open area inside glass.

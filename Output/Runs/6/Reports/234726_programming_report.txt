@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 234726
+Job/SO: 88354292 5577 FIVE KNOLL
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order COPPER_88354292 5577 FIVE KNOLL.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\6\Sketches\234726.pdf
+
+Items:
+- P1: 234726.1 | DENVER 2 | 31.9375 x 96.875
+  reasons: no cutouts/fabrication detected, process list says WJ, but no WJ-only fabrication found, process-list fabrication suggests DENVER 2, Denver panel uses square bottom_left grabber corner
+  dxf: 88354292 5577 FIVE KNOLL_1__P1.dxf -> 23472601.dxf (90 deg)
+  indicator: bottom_left
+- P2: 234726.2 | DENVER 1 | 30.1875 x 96
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges up
+  dxf: 88354292 5577 FIVE KNOLL_2__P2.dxf -> 23472602.dxf (90 deg)
+  indicator: top_right
+  WARNING: Label placed in best available open area inside glass.

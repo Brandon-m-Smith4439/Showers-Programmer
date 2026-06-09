@@ -1,0 +1,24 @@
+Shower Programmer APPLY
+A&W order: 234731
+Job/SO: 88356088 208 HEMPSTEAD
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers\Input\Orders\Glass Order STEWART_88356088 208 HEMPSTEAD.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers\Output\Runs\6\Sketches\234731.pdf
+
+Items:
+- P1: 234731.1 | DENVER 1 | 25.25 x 79.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, process list Diamon Fusion, hinge side left; hinges down
+  diamon fusion: yes
+  dxf: 88356088 208 HEMPSTEAD_1__P1.dxf -> 23473101.dxf (90 deg)
+  indicator: bottom_left
+- P2: 234731.2 | DENVER 2 | 42.9375 x 38.5
+  reasons: no cutouts/fabrication detected, process list says WJ, but no WJ-only fabrication found, process-list fabrication suggests DENVER 2, process list Diamon Fusion, Denver panel uses square top side down
+  diamon fusion: yes
+  dxf: 88356088 208 HEMPSTEAD_2__P2.dxf -> 23473102.dxf (180 deg)
+  indicator: top_right
+  WARNING: Label placed in best available open area inside glass.
+- P3: 234731.3 | DENVER 2 | 41.25 x 38.4375
+  reasons: no cutouts/fabrication detected, process list says WJ, but no WJ-only fabrication found, process-list fabrication suggests DENVER 2, process list Diamon Fusion, Denver panel uses square bottom_left grabber corner
+  diamon fusion: yes
+  dxf: 88356088 208 HEMPSTEAD_3__P3.dxf -> 23473103.dxf (0 deg)
+  indicator: bottom_left
+  WARNING: Label placed in best available open area inside glass.

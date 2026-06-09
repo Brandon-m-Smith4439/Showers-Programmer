@@ -1,0 +1,120 @@
+{
+  "_notes": {
+    "pdf": "Visual placement controls. Positive Y moves up on the PDF page. Existing values here are safe to tweak for sketch appearance.",
+    "rules": "Shop decision rules for machine choice and orientation. Keywords are case-insensitive.",
+    "item_overrides": "Use only for one-off corrections. Do not add example-order rules here unless that exact order needs a manual fix."
+  },
+  "pdf": {
+    "_notes": {
+      "label_color_rgb": "Blue used for order labels, machine labels, WJ marker, REMAKE, X-out, and DIAMON FUSION.",
+      "diamon_fusion_above_remake_gap": "When REMAKE and DIAMON FUSION are both present, this is the vertical gap above REMAKE.",
+      "diamon_fusion_edge_gap": "Gap between the detected top glass edge and the bottom of DIAMON FUSION when there is no REMAKE text.",
+      "hinge_side_band_ratio": "How wide the left/right side zones are when detecting hinge cutouts on Denver 1 doors.",
+      "hinge_side_min_delta": "How much stronger one side must be before the program trusts it as the hinge side."
+    },
+    "label_x_ratio": 0.5,
+    "label_y_ratio": 0.74,
+    "label_font_size": 21,
+    "label_color_rgb": [0, 120, 212],
+    "label_position": {
+      "_notes": {
+        "center_first": "true means try the piece center first, then use the ratio/nudge values when center overlaps sketch text or lines.",
+        "ratios": "0.5 is middle of the piece. Higher Y ratios move labels upward inside the piece.",
+        "nudges": "Final point adjustments after automatic placement. Positive x moves right, positive y moves up."
+      },
+      "center_first": false,
+      "x_ratio": 0.65,
+      "default_y_ratio": 0.74,
+      "denver_y_ratio": 0.74,
+      "waterjet_y_ratio": 0.82,
+      "manual_nudge_x": 10,
+      "manual_nudge_y": 55,
+      "denver_nudge_x": 10,
+      "denver_nudge_y": 55,
+      "waterjet_nudge_x": 10,
+      "waterjet_nudge_y": 55
+    },
+    "diamon_fusion_font_size": 55,
+    "diamon_fusion_min_font_size": 28,
+    "diamon_fusion_edge_gap": 4,
+    "diamon_fusion_y_ratio": 28.71,
+    "diamon_fusion_above_remake_gap": 8,
+    "remake": {
+      "_notes": {
+        "midpoint_nudge_y": "Adjusts REMAKE after automatic midpoint placement between piece top and top measurement. Positive moves up.",
+        "above_piece_y": "Fallback distance above the piece when the top measurement line cannot be detected.",
+        "x_line_width": "Stroke width for X-out pages."
+      },
+      "font_size": 55,
+      "midpoint_nudge_y": 5,
+      "above_piece_y": 28,
+      "x_line_width": 10,
+      "x_margin": 48
+    },
+    "indicator_size": 18,
+    "waterjet_indicator_size": 30,
+    "waterjet_indicator_line_width": 8,
+    "waterjet_indicator_length_ratio": 2.5,
+    "indicator_offset": 64,
+    "hinge_side_band_ratio": 0.28,
+    "hinge_side_min_delta": 8,
+    "indicator_nudge": {
+      "_notes": {
+        "denver": "Moves Denver dots after automatic corner selection.",
+        "waterjet": "Moves WJ corner marker after automatic corner selection."
+      },
+      "x": 0,
+      "y": 0,
+      "denver_x": 0,
+      "denver_y": 0,
+      "waterjet_outline_x": 0,
+      "waterjet_outline_y": 25,
+      "waterjet_x": 95,
+      "waterjet_y": 0
+    }
+  },
+  "rules": {
+    "_notes": {
+      "denver_fabrication_keywords": "Fabrication words that are allowed on Denver panels, including K cuts.",
+      "door_cut_in_keywords": "If a Denver 1 door has these words, hinge side is oriented upward instead of downward. Plain V1E037 is treated as a hinge label; AV1E037 remains a cut-in/up clue.",
+      "auto_dxf_angle_correction": "When true, Denver 1 doors can learn the small out-of-square hinge correction from the matched source DXF edge after the hinge side is known.",
+      "auto_dxf_angle_min_degrees": "Smallest DXF hinge-side correction to apply automatically. Values below this are treated as CAD noise.",
+      "auto_dxf_angle_max_degrees": "Largest DXF hinge-side correction to apply automatically. Larger values are left for manual review.",
+      "auto_dxf_hinge_side_detection": "When true, clear cut-in/kink evidence in the matched Denver 1 DXF can correct the detected hinge side.",
+      "auto_dxf_cut_in_min_degrees": "Smallest kicked hinge-side angle that can make a split Denver 1 hinge side orient hinges up.",
+      "auto_dxf_cut_in_min_offset": "Smallest hinge-side offset, in inches, that can make a split Denver 1 hinge side orient hinges up. This also catches K-cut/jut-out hinge sides with parallel offset vertical runs.",
+      "waterjet_tall_rotation_by_indicator": "For tall WJ pieces, maps the chosen WJ marker corner to the DXF rotation that keeps the program aligned with the sketch marker.",
+      "hinge_label_keywords": "Text labels next to hinge cutouts. These help decide which side of a door the hinges are on.",
+      "weak_waterjet_keywords": "These words alone are not enough to force WJ because they also appear on Denver pieces.",
+      "waterjet_fp_min_count": "If the sketch shows this many plain FP side labels, treat it as WJ shape evidence. FP-S is excluded because it can run Denver or WJ.",
+      "waterjet_keywords": "These force WJ unless the item also matches a Denver-allowed fabrication keyword.",
+      "label_only_allow_keywords": "These may appear on plain label-only panels without forcing DXF output."
+    },
+    "denver_min_inches": 6.125,
+    "waterjet_fit_limit_inches": 75,
+    "waterjet_fp_min_count": 6,
+    "auto_angle_correction": true,
+    "auto_angle_direction": 1,
+    "auto_dxf_angle_correction": true,
+    "auto_dxf_angle_min_degrees": 0.02,
+    "auto_dxf_angle_max_degrees": 1,
+    "auto_dxf_hinge_side_detection": true,
+    "waterjet_tall_rotation_by_indicator": {
+      "top_left": 90,
+      "bottom_left": 90,
+      "top_right": -90,
+      "bottom_right": -90
+    },
+    "mirror_keywords": ["MIRROR"],
+    "mirror_fabrication_keywords": ["FAB", "GEN", "HOLE", "NOTCH", "CUTOUT", "CUT-OUT", "RADIUS", "POLISHED HOLE"],
+    "door_keywords": ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"],
+    "hinge_label_keywords": ["GEN037", "V1E037", "AV1E037"],
+    "door_cut_in_keywords": ["CUT IN", "CUT-IN", "CUTIN", "DOOR CUT IN", "K CUT", "K-CUT", "K CUTS", "K-CUTS", "JUT OUT", "JUT-OUT", "AV1E037"],
+    "denver_fabrication_keywords": ["K CUT", "K-CUT", "K CUTS", "K-CUTS", "SCU", "SCU4", "SLOT", "SLOTTED", "MACRO", "HOLE"],
+    "weak_waterjet_keywords": ["IRREGULAR SHAPE"],
+    "waterjet_keywords": ["CORNER NOTCH", "EDGE NOTCH", "NOTCH", "NOTCHED", "IRREGULAR SHAPE", "1/2 RADIUS", "RADIUS"],
+    "fabrication_keywords": ["PPH", "GEN", "HINGE", "HOLE", "CUTOUT", "CUT-OUT", "CORNER NOTCH", "EDGE NOTCH", "NOTCH", "RADIUS", "IRREGULAR SHAPE"],
+    "label_only_allow_keywords": ["RAKED EDGE"]
+  },
+  "item_overrides": {}
+}
