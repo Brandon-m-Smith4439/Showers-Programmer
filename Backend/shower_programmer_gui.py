@@ -38,7 +38,7 @@ class ShowerProgrammerApp:
         self.root.title("Shower Programmer")
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
-
+        self.root.after(0, lambda: self.maximize_window(self.root))
         self.folder_var = tk.StringVar(value=str(programmer.default_orders_dir()))
         self.process_list_var = tk.StringVar(value=str(programmer.default_process_list_path()))
         self.output_dir_var = tk.StringVar(value=str(programmer.default_output_dir()))
@@ -59,6 +59,25 @@ class ShowerProgrammerApp:
         self.build_ui()
         self.root.after(150, self.drain_worker_queue)
         self.root.after(350, self.scan_orders)
+
+    @staticmethod
+    def maximize_window(window: Any) -> None:
+        try:
+            window.state("zoomed")
+            return
+        except tk.TclError:
+            pass
+
+        try:
+            window.attributes("-zoomed", True)
+            return
+        except tk.TclError:
+            pass
+
+        try:
+            window.attributes("-fullscreen", True)
+        except tk.TclError:
+            pass
 
     def build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
@@ -884,8 +903,9 @@ a {{ color: #1f4e79; }}
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Review Order - {process_order.aw_order}")
         dialog.geometry("1180x820")
+        dialog.after(0, lambda: self.maximize_window(dialog))
         dialog.transient(self.root)
-
+        
         toolbar = ttk.Frame(dialog, padding=(8, 8, 8, 4))
         toolbar.pack(fill=tk.X)
         ttk.Label(toolbar, text="Piece").pack(side=tk.LEFT)
@@ -906,7 +926,11 @@ a {{ color: #1f4e79; }}
         ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Delete Mark", command=lambda: delete_selected_mark()).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Edit Text", command=lambda: edit_selected_text()).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark()).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark()).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Make WJ", command=lambda: set_current_indicator_machine("WJ")).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Make Denver", command=lambda: set_current_indicator_machine("DENVER")).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Size -", command=lambda: resize_selected_mark(-1)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Size +", command=lambda: resize_selected_mark(1)).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
@@ -1211,6 +1235,33 @@ a {{ color: #1f4e79; }}
             state.get("pending_items", set()).add(panel.item)
             state["needs_output_save"] = True
             status.set(f"Restored indicator on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
+            redraw()
+
+        def set_current_indicator_machine(machine_kind: str) -> None:
+            panel = selected_panel()
+            self.set_indicator_machine_override(job.aw_order, panel.item, machine_kind, panel, config)
+            refresh_prepared_job()
+            state.get("pending_items", set()).add(panel.item)
+            state["needs_output_save"] = True
+            status.set(f"Changed indicator/machine for {job.aw_order}.{panel.item} to {machine_kind}. Click Save Edits to overwrite the sketch.")
+            redraw()
+
+        def resize_selected_mark(direction: int) -> None:
+            key = state.get("selected_key")
+            if not key or key not in state.get("objects", {}):
+                messagebox.showinfo("No mark selected", "Click a blue mark first, then use Size - or Size +.", parent=dialog)
+                return
+            obj = state["objects"][key]
+            item_number = int(obj.get("item", selected_panel().item))
+            mark_key = str(obj.get("key", "")).strip()
+            if not mark_key:
+                return
+            panel = next(panel for panel in job.panels if panel.item == item_number)
+            new_size = self.set_mark_size_override(job.aw_order, item_number, mark_key, direction, obj, panel, config)
+            refresh_prepared_job()
+            state.get("pending_items", set()).add(item_number)
+            state["needs_output_save"] = True
+            status.set(f"Changed {obj.get('name', mark_key)} size on {job.aw_order}.{item_number} to {new_size:g}. Click Save Edits to overwrite the sketch.")
             redraw()
 
         def edit_selected_text() -> None:
@@ -1654,6 +1705,113 @@ a {{ color: #1f4e79; }}
         else:
             item_override.pop(field, None)
         self.save_manual_overrides(data)
+
+    def set_indicator_machine_override(
+        self,
+        aw_order: str,
+        item_number: int,
+        machine_kind: str,
+        panel: programmer.Panel,
+        config: dict[str, object],
+    ) -> None:
+        data = self.load_manual_overrides()
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        item_override = order_overrides.setdefault(str(item_number), {})
+        if not isinstance(item_override, dict):
+            item_override = {}
+            order_overrides[str(item_number)] = item_override
+
+        kind = machine_kind.strip().upper()
+        if kind == "WJ":
+            item_override["machine"] = "WJ"
+            item_override["indicator_corner"] = "top_left"
+            item_override["rotation_degrees"] = -90 if panel.height and panel.width and panel.height > panel.width else 0
+        else:
+            machine = "DENVER 1" if programmer.has_door_programming_evidence(panel, config) else "DENVER 2"
+            rotation = 90 if panel.height and panel.width and panel.height > panel.width else 0
+            item_override["machine"] = machine
+            item_override["indicator_corner"] = programmer.denver_grabber_corner_for_rotation(rotation)
+            item_override["rotation_degrees"] = rotation
+
+        item_override["skip_dxf"] = False
+        item_override.pop("hide_indicator", None)
+        item_override.pop("indicator_x", None)
+        item_override.pop("indicator_y", None)
+        item_override.pop("manual_indicator_corner", None)
+        item_override.pop("hinge_side", None)
+        item_override.pop("hinges_up", None)
+        self.save_manual_overrides(data)
+
+    def set_mark_size_override(
+        self,
+        aw_order: str,
+        item_number: int,
+        mark_key: str,
+        direction: int,
+        obj: dict[str, Any],
+        panel: programmer.Panel,
+        config: dict[str, object],
+    ) -> float:
+        pdf_cfg = config.get("pdf", {})
+        if not isinstance(pdf_cfg, dict):
+            pdf_cfg = {}
+
+        if mark_key == "label":
+            field = "label_font_size"
+            current = panel.label_font_size or float(obj.get("font_size") or pdf_cfg.get("label_font_size", 21))
+            step = 2.0
+            minimum = 6.0
+        elif mark_key == "diamon_fusion":
+            field = "diamon_fusion_font_size"
+            current = panel.diamon_fusion_font_size or float(obj.get("font_size") or pdf_cfg.get("diamon_fusion_font_size", 36))
+            step = 4.0
+            minimum = 10.0
+        elif mark_key == "remake":
+            field = "remake_font_size"
+            remake_cfg = pdf_cfg.get("remake", {}) if isinstance(pdf_cfg.get("remake", {}), dict) else {}
+            current = panel.remake_font_size or float(obj.get("font_size") or remake_cfg.get("font_size", 40))
+            step = 4.0
+            minimum = 10.0
+        elif mark_key == "indicator":
+            if str(obj.get("machine") or panel.machine).upper() == "WJ":
+                field = "waterjet_indicator_size"
+                current = panel.waterjet_indicator_size or float(obj.get("size") or pdf_cfg.get("waterjet_indicator_size", 30))
+                step = 4.0
+                minimum = 8.0
+            else:
+                field = "indicator_size"
+                current = panel.indicator_size or float(obj.get("size") or pdf_cfg.get("indicator_size", 18))
+                step = 2.0
+                minimum = 6.0
+        else:
+            raise ValueError(f"Unsupported mark size key: {mark_key}")
+
+        new_size = max(minimum, float(current) + step * (1 if direction > 0 else -1))
+
+        data = self.load_manual_overrides()
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        item_override = order_overrides.setdefault(str(item_number), {})
+        if not isinstance(item_override, dict):
+            item_override = {}
+            order_overrides[str(item_number)] = item_override
+
+        item_override[field] = round(new_size, 3)
+        self.save_manual_overrides(data)
+        return new_size
 
     def clear_sketch_memory(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()
@@ -2432,7 +2590,7 @@ a {{ color: #1f4e79; }}
         label_lines = programmer.override_text_lines(panel.label_text) or [f"{job.aw_order}.{panel.item}"]
         if panel.machine and not panel.label_text:
             label_lines.append(panel.machine)
-        font_size = float(pdf_cfg.get("label_font_size", 21))
+        font_size = panel.label_font_size or float(pdf_cfg.get("label_font_size", 21))
         label_x, label_y = programmer.choose_label_position(
             width,
             height,
@@ -2508,13 +2666,13 @@ a {{ color: #1f4e79; }}
 
         blue = "#0078d4"
         if obj["kind"] == "text":
-            font_size = max(8, int(float(obj["font_size"]) * scale))
+            font_size = max(1, int(round(float(obj["font_size"]) * scale)))
             leading = float(obj["font_size"]) * 1.18
             first_y = float(obj["y"]) + leading * (len(obj["lines"]) - 1) / 2
             baseline_center_offset = float(obj["font_size"]) * 0.35
             for index, line in enumerate(obj["lines"]):
                 cx, cy = to_canvas(float(obj["x"]), first_y - index * leading + baseline_center_offset)
-                bind_item(canvas.create_text(cx, cy, text=line, fill=blue, font=("Arial", font_size, "bold"), anchor=tk.CENTER))
+                bind_item(canvas.create_text(cx, cy, text=line, fill=blue, font=("Arial", -font_size, "bold"), anchor=tk.CENTER))
             rect = obj["rect"]
             x1, y1 = to_canvas(rect[0], rect[3])
             x2, y2 = to_canvas(rect[2], rect[1])
@@ -2523,14 +2681,14 @@ a {{ color: #1f4e79; }}
             for start, end in obj["lines"]:
                 x1, y1 = to_canvas(*start)
                 x2, y2 = to_canvas(*end)
-                bind_item(canvas.create_line(x1, y1, x2, y2, fill=blue, width=max(3, int(float(obj["line_width"]) * scale))))
+                bind_item(canvas.create_line(x1, y1, x2, y2, fill=blue, width=max(1, int(round(float(obj["line_width"]) * scale)))))
             rect = obj["rect"]
             x1, y1 = to_canvas(rect[0], rect[3])
             x2, y2 = to_canvas(rect[2], rect[1])
             bind_item(canvas.create_rectangle(x1, y1, x2, y2, outline=blue, dash=(4, 3), width=1))
         else:
             cx, cy = to_canvas(*obj["center"])
-            radius = max(5, float(obj["radius"]) * scale)
+            radius = max(1.0, float(obj["radius"]) * scale)
             bind_item(canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius, fill=blue, outline=blue))
             rect = obj["rect"]
             x1, y1 = to_canvas(rect[0], rect[3])

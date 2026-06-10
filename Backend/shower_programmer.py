@@ -184,6 +184,10 @@ class Panel:
     diamon_fusion_nudge_x: float = 0.0
     diamon_fusion_nudge_y: float = 0.0
     diamon_fusion_font_size: float | None = None
+    label_font_size: float | None = None
+    remake_font_size: float | None = None
+    indicator_size: float | None = None
+    waterjet_indicator_size: float | None = None
     hide_label: bool = False
     hide_indicator: bool = False
     hide_diamon_fusion: bool = False
@@ -335,6 +339,24 @@ def extract_item_number(text: str) -> int | None:
 def looks_like_template_page(text: str) -> bool:
     upper = text.upper()
     return any(marker in upper for marker in TEMPLATE_PAGE_MARKERS)
+
+
+def extract_transom_label(text: str) -> str | None:
+    upper = re.sub(r"\s+", " ", text.upper())
+    patterns = (
+        r"\bTRN\s*[-#.]?\s*\d+[A-Z]?\b",
+        r"\bTRANSOM\s*[-#.]?\s*\d*[A-Z]?\b",
+        r"\bTRANS\s*[-#.]?\s*\d+[A-Z]?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, upper)
+        if not match:
+            continue
+        label = re.sub(r"\s+", "", match.group(0).strip())
+        if label in {"TRANSOM", "TRANS"}:
+            return label
+        return label
+    return None
 
 
 def extract_job_from_pdf(pdf_path: Path) -> str:
@@ -615,6 +637,14 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.diamon_fusion_nudge_y = parse_float(override["diamon_fusion_nudge_y"], 0)
     if "diamon_fusion_font_size" in override:
         panel.diamon_fusion_font_size = parse_float(override["diamon_fusion_font_size"], 0) or None
+    if "label_font_size" in override:
+        panel.label_font_size = parse_float(override["label_font_size"], 0) or None
+    if "remake_font_size" in override:
+        panel.remake_font_size = parse_float(override["remake_font_size"], 0) or None
+    if "indicator_size" in override:
+        panel.indicator_size = parse_float(override["indicator_size"], 0) or None
+    if "waterjet_indicator_size" in override:
+        panel.waterjet_indicator_size = parse_float(override["waterjet_indicator_size"], 0) or None
     if "label_x" in override:
         panel.label_x = parse_float(override["label_x"], 0)
     if "label_y" in override:
@@ -777,8 +807,6 @@ def has_door_cut_in(panel: Panel, config: dict[str, Any]) -> bool:
         keywords = {"CUT IN", "CUT-IN", "CUTIN", "DOOR CUT IN"}
     keywords.update({"K CUT", "K-CUT", "K CUTS", "K-CUTS"})
     upper = panel_combined_text(panel).upper()
-    if re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper):
-        return True
     return any(keyword in upper for keyword in keywords)
 
 
@@ -2050,7 +2078,7 @@ def make_overlay_page(
     c = canvas.Canvas(packet, pagesize=(width, height))
     color_values = pdf_cfg.get("label_color_rgb", [0, 120, 212])
     label_color = Color(color_values[0] / 255, color_values[1] / 255, color_values[2] / 255)
-    font_size = float(pdf_cfg.get("label_font_size", 21))
+    font_size = panel.label_font_size or float(pdf_cfg.get("label_font_size", 21))
     label_bbox = marker_bbox or bbox
     active_marker_bbox = marker_bbox or (indicator_bbox if panel.machine == "WJ" and indicator_bbox is not None else bbox)
     marker_avoid_rect = (
@@ -2172,7 +2200,7 @@ def choose_remake_banner_position(
     text: str = "REMAKE",
 ) -> tuple[float, float, float, tuple[float, float, float, float]]:
     remake_cfg = pdf_cfg.get("remake", {})
-    font_size = parse_float(remake_cfg.get("font_size", 40), 40)
+    font_size = panel.remake_font_size if panel is not None and panel.remake_font_size else parse_float(remake_cfg.get("font_size", 40), 40)
     x, y, rect = banner_text_position(width, height, pdf_cfg, piece_bbox, top_measurement_bbox, text, font_size)
     if panel is not None and panel.remake_x is not None and panel.remake_y is not None:
         x, y = panel.remake_x, panel.remake_y
@@ -2740,7 +2768,7 @@ def indicator_marker_geometry(
 ) -> dict[str, Any] | None:
     if not machine or not corner:
         return None
-    size = float(pdf_cfg.get("indicator_size", 18))
+    size = (panel.indicator_size if panel is not None and panel.indicator_size else float(pdf_cfg.get("indicator_size", 18)))
     if bbox is None:
         bbox = (page_width * 0.22, page_height * 0.14, page_width * 0.78, page_height * 0.72)
     left, bottom, right, top = bbox
@@ -2763,7 +2791,11 @@ def indicator_marker_geometry(
         else None
     )
     if machine == "WJ":
-        size = parse_float(pdf_cfg.get("waterjet_indicator_size", size), size)
+        size = (
+            panel.waterjet_indicator_size
+            if panel is not None and panel.waterjet_indicator_size
+            else parse_float(pdf_cfg.get("waterjet_indicator_size", size), size)
+        )
         x, y = corner_anchors.get(corner, corner_anchors["bottom_left"])
         if manual_point is not None:
             x, y = manual_point
@@ -2784,6 +2816,7 @@ def indicator_marker_geometry(
         return {
             "kind": "wj",
             "point": (x, y),
+            "size": size,
             "lines": lines,
             "line_width": parse_float(pdf_cfg.get("waterjet_indicator_line_width", 6), 6),
             "rect": points_rect(points, 8),
@@ -2798,6 +2831,7 @@ def indicator_marker_geometry(
     return {
         "kind": "dot",
         "center": (x, y),
+        "size": size,
         "point": (x, y),
         "radius": radius,
         "rect": (x - radius - 6, y - radius - 6, x + radius + 6, y + radius + 6),

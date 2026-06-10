@@ -341,6 +341,58 @@ def visible_orders(orders: Iterable[ProcessOrder], config: dict[str, object]) ->
     return visible
 
 
+def attach_transom_panels(
+    reader: PdfReader,
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    config: dict[str, object],
+) -> None:
+    existing_items = {panel.item for panel in panels}
+    missing_items = [item for item in process_order.item_numbers if item not in existing_items]
+    if not missing_items:
+        return
+
+    used_pages = {panel.page_index for panel in panels}
+    candidates: list[tuple[int, str, str]] = []
+    for page_index, page in enumerate(reader.pages):
+        if page_index == 0 or page_index in used_pages:
+            continue
+        text = page.extract_text() or ""
+        if not text.strip() or programmer.looks_like_template_page(text):
+            continue
+        if programmer.extract_item_number(text) is not None:
+            continue
+        transom_label = programmer.extract_transom_label(text)
+        if transom_label is None:
+            continue
+        candidates.append((page_index, text, transom_label))
+
+    if not candidates:
+        return
+
+    candidates.sort(key=lambda entry: entry[0])
+    missing_items = sorted(missing_items)
+    pair_count = min(len(missing_items), len(candidates))
+    for item_number, (page_index, text, transom_label) in zip(missing_items[-pair_count:], candidates[-pair_count:]):
+        width, height = programmer.extract_dimensions(text)
+        panel = programmer.classify_panel(
+            programmer.Panel(
+                item=item_number,
+                page_index=page_index,
+                text=text,
+                width=width,
+                height=height,
+                machine="",
+            ),
+            config,
+            process_order.aw_order,
+        )
+        panel.reasons.append(f"transom sketch label {transom_label} mapped to P{item_number}")
+        panels.append(panel)
+
+    panels.sort(key=lambda panel: panel.item)
+
+
 def apply_process_hints(
     panels: list[programmer.Panel],
     process_order: ProcessOrder,
@@ -473,11 +525,17 @@ def prepare_job(
     pdf_path = programmer.find_pdf(folder, process_order.job_name).resolve()
     reader = PdfReader(str(pdf_path))
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
+    attach_transom_panels(reader, panels, process_order, config)
     apply_process_hints(panels, process_order, config)
     programmer.refine_panel_orientations(reader, panels, config)
     for panel in panels:
         programmer.apply_override(panel, config, process_order.aw_order)
-    selected_remake_items = programmer.apply_remake_selection(panels, remake_items)
+    effective_remake_items = (
+        set(process_order.item_numbers)
+        if remake_items is not None and not remake_items
+        else remake_items
+    )
+    selected_remake_items = programmer.apply_remake_selection(panels, effective_remake_items)
 
     job = programmer.Job(
         pdf_path=pdf_path,
@@ -500,7 +558,7 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
     extra = sorted(actual - expected)
     if missing:
         issues.append("Process list item(s) missing from PDF: " + ", ".join(f"P{i}" for i in missing))
-    if extra:
+    if extra and job.remake_items is None:
         issues.append("PDF item(s) missing from process list: " + ", ".join(f"P{i}" for i in extra))
 
     for panel in job.panels:
