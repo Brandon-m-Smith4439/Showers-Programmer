@@ -195,6 +195,7 @@ class Panel:
     label_text: str | None = None
     diamon_fusion_text: str | None = None
     remake_text: str | None = None
+    manual_x: bool = False
     label_x: float | None = None
     label_y: float | None = None
     indicator_x: float | None = None
@@ -271,7 +272,8 @@ def upper_set(config: dict[str, Any], section: str, key: str) -> set[str]:
 
 
 def parse_measurement(value: str) -> float | None:
-    value = value.strip().replace('"', "")
+    value = re.sub(r"['\"]+", " ", value.strip())
+    value = re.sub(r"\s+", " ", value).strip()
     if not value:
         return None
     total = 0.0
@@ -395,7 +397,7 @@ def clean_job_name(value: str) -> str:
 
 
 def find_pdf(folder: Path, job: str | None) -> Path:
-    pdfs = sorted(folder.glob("*.pdf"))
+    pdfs = sorted(p for p in folder.rglob("*.pdf") if p.is_file())
     if not pdfs:
         raise FileNotFoundError(f"No PDF files found in {folder}")
     if job:
@@ -499,12 +501,12 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
         panel.skip_dxf = True
 
     if panel.machine == "WJ":
-        panel.indicator_corner = "top_left"
+        panel.indicator_corner = default_waterjet_indicator_corner(panel)
         panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
     elif panel.machine.startswith("DENVER"):
         panel.indicator_corner = "bottom_left"
         panel.rotation_degrees = 90 if panel.height and panel.width and panel.height > panel.width else 0
-        panel.indicator_corner = denver_grabber_corner_for_rotation(panel.rotation_degrees)
+        panel.indicator_corner = denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
 
     apply_auto_angle_correction(panel, config)
     apply_override(panel, config, aw_order)
@@ -575,6 +577,8 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.hide_diamon_fusion = bool(override["hide_diamon_fusion"])
     if "hide_remake" in override:
         panel.hide_remake = bool(override["hide_remake"])
+    if "manual_x" in override:
+        panel.manual_x = bool(override["manual_x"])
     if "label_text" in override:
         panel.label_text = clean_override_text(override["label_text"])
     if "diamon_fusion_text" in override:
@@ -807,6 +811,10 @@ def has_door_cut_in(panel: Panel, config: dict[str, Any]) -> bool:
         keywords = {"CUT IN", "CUT-IN", "CUTIN", "DOOR CUT IN"}
     keywords.update({"K CUT", "K-CUT", "K CUTS", "K-CUTS"})
     upper = panel_combined_text(panel).upper()
+    if re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper):
+        return True
+    if re.search(r"\bAV1E037\b", upper):
+        return True
     return any(keyword in upper for keyword in keywords)
 
 
@@ -861,6 +869,8 @@ def door_rotation_for_hinge_side(hinge_side: str, hinges_up: bool) -> float:
 
 
 def door_indicator_corner_for_hinge_side(hinge_side: str, hinges_up: bool) -> str:
+    if hinges_up:
+        return door_indicator_corner_off_hinge_side(hinge_side, hinges_up)
     return "bottom_left" if hinge_side == "left" else "top_right"
 
 
@@ -881,9 +891,9 @@ def denver_allowed_indicator_corner(corner: str | None) -> str | None:
 def door_orientation_for_indicator_corner(corner: str) -> tuple[str, bool, float] | None:
     return {
         "bottom_left": ("left", False, 90.0),
-        "bottom_right": ("right", False, -90.0),
+        "bottom_right": ("right", True, 90.0),
         "top_left": ("left", True, -90.0),
-        "top_right": ("right", True, 90.0),
+        "top_right": ("right", False, -90.0),
     }.get(corner)
 
 
@@ -924,6 +934,21 @@ def denver_grabber_corner_for_rotation(rotation_degrees: float | None) -> str:
     if abs(abs(normalized) - 180) <= 1:
         return "top_right"
     return "bottom_left"
+
+
+def denver_grabber_corner_for_panel(panel: Panel, rotation_degrees: float | None) -> str:
+    corner = denver_grabber_corner_for_rotation(rotation_degrees)
+    if panel.width is not None and panel.height is not None and panel.height < panel.width:
+        normalized = ((float(rotation_degrees or 0) + 180) % 360) - 180
+        if abs(normalized) <= 1:
+            return "top_right"
+    return corner
+
+
+def default_waterjet_indicator_corner(panel: Panel) -> str:
+    if panel.width is not None and panel.height is not None and panel.height < panel.width:
+        return "bottom_right"
+    return "top_left"
 
 
 def denver_grabber_rotation_for_corner(corner: str) -> float | None:
@@ -1098,7 +1123,9 @@ def estimate_hinge_side(
 def find_source_dxf(folder: Path, job_name: str, panel: Panel) -> Path | None:
     norm_job = normalize_lookup(job_name)
     candidates: list[tuple[tuple[int, int, int, int], Path]] = []
-    for path in folder.glob("*.dxf"):
+    for path in folder.rglob("*.dxf"):
+        if not path.is_file():
+            continue
         score = dxf_match_score(path, norm_job, panel.item)
         if score is not None:
             candidates.append((score, path))
@@ -1133,6 +1160,9 @@ def dxf_match_score(path: Path, norm_job: str, item_number: int) -> tuple[int, i
 
 def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: dict[str, Any]) -> None:
     for panel in job.panels:
+        if panel.skip_dxf:
+            continue
+        validate_panel_constraints(panel, config)
         if panel.skip_dxf:
             continue
         panel.source_dxf = find_source_dxf(dxf_folder, job.job_name, panel)
@@ -2097,7 +2127,7 @@ def make_overlay_page(
     )
 
     remake_rect: tuple[float, float, float, float] | None = None
-    if panel.remake_excluded:
+    if panel.remake_excluded or panel.manual_x:
         draw_remake_x(c, width, height, pdf_cfg, label_color)
         c.save()
         return packet.getvalue()

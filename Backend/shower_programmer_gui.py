@@ -79,6 +79,18 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    @staticmethod
+    def toggle_window_maximize(window: Any) -> None:
+        try:
+            window.state("normal" if window.state() == "zoomed" else "zoomed")
+            return
+        except tk.TclError:
+            pass
+        try:
+            window.attributes("-fullscreen", not bool(window.attributes("-fullscreen")))
+        except tk.TclError:
+            pass
+
     def build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -101,16 +113,18 @@ class ShowerProgrammerApp:
         ttk.Checkbutton(actions, text="Overwrite existing outputs", variable=self.force_var).pack(side=tk.LEFT, padx=(18, 0))
         ttk.Checkbutton(actions, text="Skip DXF output", variable=self.skip_dxf_var).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Checkbutton(actions, text="REMAKE", variable=self.remake_var).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Label(actions, text="P#s").pack(side=tk.LEFT, padx=(8, 3))
-        ttk.Entry(actions, textvariable=self.remake_items_var, width=10).pack(side=tk.LEFT)
         ttk.Button(actions, text="Open Last Report", command=self.open_last_report).pack(side=tk.RIGHT)
         ttk.Button(actions, text="Open Output Folder", command=self.open_output_folder).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(actions, text="Open Config", command=self.open_config).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(actions, text="Minimize", command=self.root.iconify).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(actions, text="Maximize", command=lambda: self.toggle_window_maximize(self.root)).pack(side=tk.RIGHT, padx=(0, 8))
 
         maintenance = ttk.Frame(outer)
         maintenance.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(maintenance, text="Maintenance").pack(side=tk.LEFT)
         ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(maintenance, text="AutoCAD Save-As DXFs", command=self.autocad_save_as_programs).pack(side=tk.LEFT, padx=(8, 0))
 
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -166,6 +180,11 @@ class ShowerProgrammerApp:
         self.progress = ttk.Progressbar(bottom, mode="determinate")
         self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W).pack(side=tk.LEFT, padx=(10, 0))
+        send_buttons = ttk.Frame(bottom)
+        send_buttons.pack(side=tk.RIGHT, padx=(10, 0))
+        ttk.Button(send_buttons, text="Send Sketches", command=self.send_sketches_to_shop).pack(side=tk.LEFT)
+        ttk.Button(send_buttons, text="Send Programs", command=self.send_programs_to_shop).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(send_buttons, text="Send All", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
 
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
         ttk.Label(parent, text=label, width=12).grid(row=row, column=0, sticky=tk.W, pady=2)
@@ -415,12 +434,8 @@ class ShowerProgrammerApp:
             return
         remake_items_by_order = None
         if self.remake_var.get():
-            try:
-                remake_items = programmer.parse_item_list(self.remake_items_var.get())
-            except ValueError as exc:
-                messagebox.showerror("Invalid remake pieces", str(exc))
-                return
-            remake_items_by_order = {order.aw_order: set(remake_items) for order in orders}
+            self.remake_items_var.set("")
+            remake_items_by_order = {order.aw_order: set() for order in orders}
         self.run_orders(
             orders,
             apply=True,
@@ -445,6 +460,7 @@ class ShowerProgrammerApp:
         try:
             folder = Path(self.folder_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
+            process_list_path = Path(self.process_list_var.get()).resolve()
             force = self.force_var.get() if force_override is None else force_override
             skip_dxf = self.skip_dxf_var.get() if skip_dxf_override is None else skip_dxf_override
         except Exception as exc:
@@ -471,7 +487,7 @@ class ShowerProgrammerApp:
 
         worker = threading.Thread(
             target=self.worker_run_batch,
-            args=(orders, apply, folder, output_dir, force, skip_dxf, remake_items_by_order),
+            args=(orders, apply, folder, output_dir, process_list_path, force, skip_dxf, remake_items_by_order),
             daemon=True,
         )
         worker.start()
@@ -504,12 +520,13 @@ class ShowerProgrammerApp:
         apply: bool,
         folder: Path,
         output_dir: Path,
+        process_list_path: Path,
         force: bool,
         skip_dxf: bool,
         remake_items_by_order: dict[str, set[int]] | None,
     ) -> None:
         try:
-            run_folder = self.next_indexed_run_folder(output_dir) if apply else output_dir / "Reviews" / "DryRun"
+            run_folder = self.next_batch_run_folder(output_dir, process_list_path) if apply else output_dir / "Reviews" / "DryRun"
             sketch_dir, programs_dir, report_dir = self.output_dirs_for_run(run_folder)
             if apply and force:
                 self.clear_existing_outputs_for_orders(orders, output_dir, skip_dxf)
@@ -532,7 +549,7 @@ class ShowerProgrammerApp:
                 processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.write_run_manifest(run, run_folder, sketch_dir, programs_dir, report_dir, processed_at, remake_items_by_order)
                 self.update_processing_history(run, output_dir, processed_at, run_folder, remake_items_by_order)
-            self.worker_queue.put(("done", run))
+            self.worker_queue.put(("done", (run, run_folder)))
         except Exception as exc:
             self.worker_queue.put(("error", str(exc)))
 
@@ -605,6 +622,32 @@ class ShowerProgrammerApp:
         ]
         return runs_dir / str((max(indexes) if indexes else 0) + 1)
 
+    def next_batch_run_folder(self, output_dir: Path, process_list_path: Path) -> Path:
+        runs_dir = output_dir / "Runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        label = self.process_list_run_label(process_list_path)
+        if not label:
+            return self.next_indexed_run_folder(output_dir)
+        folder = runs_dir / label
+        if not folder.exists():
+            return folder
+        index = 2
+        while (runs_dir / f"{label}_{index}").exists():
+            index += 1
+        return runs_dir / f"{label}_{index}"
+
+    @staticmethod
+    def process_list_run_label(process_list_path: Path) -> str:
+        try:
+            files = shower_batch.process_list_files(process_list_path)
+        except Exception:
+            files = [process_list_path] if process_list_path.is_file() else []
+        stems = [path.stem for path in files if path.name and not path.name.startswith("~$")]
+        if not stems:
+            return ""
+        raw = stems[0] if len(stems) == 1 else f"{stems[0]}_plus{len(stems) - 1}"
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")[:80]
+
     def update_processing_history(
         self,
         run: shower_batch.BatchRunResult,
@@ -641,11 +684,8 @@ class ShowerProgrammerApp:
         runs_dir = output_dir / "Runs"
         if not runs_dir.exists():
             return None
-        numeric_runs = [path for path in runs_dir.iterdir() if path.is_dir() and path.name.isdigit()]
-        if numeric_runs:
-            return max(numeric_runs, key=lambda path: int(path.name))
         runs = [path for path in runs_dir.iterdir() if path.is_dir()]
-        return max(runs, key=lambda path: path.name) if runs else None
+        return max(runs, key=lambda path: path.stat().st_mtime) if runs else None
 
     def drain_worker_queue(self) -> None:
         try:
@@ -658,10 +698,10 @@ class ShowerProgrammerApp:
                     self.progress.step(1)
                     self.status_var.set(f"{result.status}: {result.aw_order} {result.job_name}")
                 elif kind == "done":
-                    run = payload
+                    run, run_folder = payload
                     assert isinstance(run, shower_batch.BatchRunResult)
                     self.last_reports = run
-                    self.last_run_folder = self.latest_run_folder(Path(self.output_dir_var.get()).resolve())
+                    self.last_run_folder = run_folder if isinstance(run_folder, Path) else self.latest_run_folder(Path(self.output_dir_var.get()).resolve())
                     self.is_busy = False
                     self.set_controls_enabled(True)
                     for result in run.results:
@@ -918,23 +958,22 @@ a {{ color: #1f4e79; }}
             width=8,
         )
         item_box.pack(side=tk.LEFT, padx=(6, 12))
+        page_count_var = tk.StringVar(value=f"1/{len(job.panels)}")
+        ttk.Label(toolbar, textvariable=page_count_var).pack(side=tk.LEFT, padx=(0, 12))
         rotation_var = tk.IntVar(value=0)
         status = tk.StringVar(value="Double-check the sketch and matching DXF together.")
         ttk.Button(toolbar, text="Prev P", command=lambda: change_piece(-1)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Next P", command=lambda: change_piece(1)).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Save Edits", command=lambda: save_review_edits()).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order()).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Delete Mark", command=lambda: delete_selected_mark()).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Edit Text", command=lambda: edit_selected_text()).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark()).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Make WJ", command=lambda: set_current_indicator_machine("WJ")).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Make Denver", command=lambda: set_current_indicator_machine("DENVER")).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Size -", command=lambda: resize_selected_mark(-1)).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Size +", command=lambda: resize_selected_mark(1)).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Open DXF", command=lambda: open_current_dxf()).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Minimize", command=dialog.iconify).pack(side=tk.RIGHT)
+        ttk.Button(toolbar, text="Maximize", command=lambda: self.toggle_window_maximize(dialog)).pack(side=tk.RIGHT, padx=(0, 6))
         ttk.Label(toolbar, textvariable=status).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
@@ -1065,6 +1104,9 @@ a {{ color: #1f4e79; }}
                 status.set("Set sketch view back to 0 deg before dragging marks.")
                 return
             state["selected_key"] = key
+            if state.get("objects", {}).get(key, {}).get("kind") == "x":
+                status.set("X marks can be deleted from the popup, but they are not draggable.")
+                return
             state["drag_key"] = key
             state["last_x"] = float(sketch_canvas.canvasx(event.x))
             state["last_y"] = float(sketch_canvas.canvasy(event.y))
@@ -1220,6 +1262,15 @@ a {{ color: #1f4e79; }}
             mark_key = str(obj.get("key", "")).strip()
             if not mark_key:
                 return
+            if mark_key == "manual_x":
+                self.set_manual_x_override(job.aw_order, item_number, False)
+                refresh_prepared_job()
+                state["selected_key"] = None
+                state.get("pending_items", set()).add(item_number)
+                state["needs_output_save"] = True
+                status.set(f"Deleted manual X on {job.aw_order}.{item_number}. Click Save Edits to overwrite the sketch.")
+                redraw()
+                return
             self.set_mark_hidden(job.aw_order, item_number, mark_key, hidden=True)
             refresh_prepared_job()
             state["selected_key"] = None
@@ -1235,6 +1286,15 @@ a {{ color: #1f4e79; }}
             state.get("pending_items", set()).add(panel.item)
             state["needs_output_save"] = True
             status.set(f"Restored indicator on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
+            redraw()
+
+        def add_x_mark() -> None:
+            panel = selected_panel()
+            self.set_manual_x_override(job.aw_order, panel.item, True)
+            refresh_prepared_job()
+            state.get("pending_items", set()).add(panel.item)
+            state["needs_output_save"] = True
+            status.set(f"Added X-out mark on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
             redraw()
 
         def set_current_indicator_machine(machine_kind: str) -> None:
@@ -1291,8 +1351,34 @@ a {{ color: #1f4e79; }}
             status.set(f"Edited {obj.get('name', mark_key)} on {job.aw_order}.{item_number}. Click Save Edits to overwrite the sketch.")
             redraw()
 
+        def show_mark_menu(event: tk.Event, key: str) -> str:
+            if key not in state.get("objects", {}):
+                return "break"
+            state["selected_key"] = key
+            obj = state["objects"][key]
+            menu = tk.Menu(dialog, tearoff=False)
+            if obj.get("kind") != "x":
+                menu.add_command(label="Increase Size", command=lambda key=key: (state.__setitem__("selected_key", key), resize_selected_mark(1)))
+                menu.add_command(label="Decrease Size", command=lambda key=key: (state.__setitem__("selected_key", key), resize_selected_mark(-1)))
+            if obj.get("kind") == "text":
+                menu.add_command(label="Edit Text", command=lambda key=key: (state.__setitem__("selected_key", key), edit_selected_text()))
+            if obj.get("key") == "indicator":
+                menu.add_separator()
+                menu.add_command(label="Make WJ", command=lambda: set_current_indicator_machine("WJ"))
+                menu.add_command(label="Make Denver", command=lambda: set_current_indicator_machine("DENVER"))
+            menu.add_separator()
+            menu.add_command(label="Delete", command=lambda key=key: (state.__setitem__("selected_key", key), delete_selected_mark()))
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+            return "break"
+
         def redraw() -> None:
             panel = selected_panel()
+            ordered_items = [current.item for current in sorted(job.panels, key=lambda current: current.item)]
+            if panel.item in ordered_items:
+                page_count_var.set(f"{ordered_items.index(panel.item) + 1}/{len(ordered_items)}")
             self.draw_order_review_sketch(
                 sketch_canvas,
                 source_reader,
@@ -1336,6 +1422,7 @@ a {{ color: #1f4e79; }}
         dialog.bind("<Control-MouseWheel>", piece_wheel)
         dialog.bind("<MouseWheel>", lambda event: self.scroll_editor_canvas(sketch_canvas, event))
         state["start_drag"] = start_drag
+        state["show_mark_menu"] = show_mark_menu
         dialog.protocol("WM_DELETE_WINDOW", request_close)
         dialog.bind("<Destroy>", cleanup_render_temp, add="+")
         dialog.after(100, redraw)
@@ -1378,13 +1465,22 @@ a {{ color: #1f4e79; }}
         x = 16.0
         y = 16.0
         canvas.create_image(x, y, image=image, anchor=tk.NW)
-        if rotation_degrees % 360 == 0:
-            objects = self.editor_overlay_objects(reader, job, panel, config)
-            for obj in objects:
-                obj["item"] = panel.item
-                obj["scale"] = scale
-                self.draw_editor_object(canvas, obj, scale, x, page_height, state, top_offset=y - x)
-        else:
+        objects = self.editor_overlay_objects(reader, job, panel, config)
+        for obj in objects:
+            obj["item"] = panel.item
+            obj["scale"] = scale
+            self.draw_editor_object(
+                canvas,
+                obj,
+                scale,
+                x,
+                page_height,
+                state,
+                top_offset=y - x,
+                page_width=page_width,
+                rotation_degrees=rotation_degrees,
+            )
+        if rotation_degrees % 360 != 0:
             canvas.create_text(
                 x + 8,
                 y + 8,
@@ -1426,14 +1522,15 @@ a {{ color: #1f4e79; }}
         width = max(max_x - min_x, 0.001)
         height = max(max_y - min_y, 0.001)
         margin = 34.0
+        header_height = 96.0
         scale = min(
             max(20, canvas.winfo_width() - margin * 2) / width,
-            max(20, canvas.winfo_height() - margin * 2 - 24) / height,
+            max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
         )
 
         def map_point(point: tuple[float, float]) -> tuple[float, float]:
             x, y = point
-            return margin + (x - min_x) * scale, margin + 48 + (max_y - y) * scale
+            return margin + (x - min_x) * scale, header_height + (max_y - y) * scale
 
         long_side = max(width, height)
         highlight_segments = self.out_of_square_preview_segments(segments, long_side)
@@ -1456,14 +1553,14 @@ a {{ color: #1f4e79; }}
                     mx,
                     my - 12,
                     anchor=tk.CENTER,
-                    text=self.out_of_square_segment_label(start, end),
+                text=self.out_of_square_segment_label(start, end),
                     fill="#9a5b00",
                     font=("Arial", 9, "bold"),
                 )
         if highlight_segments:
             canvas.create_text(
                 16,
-                64,
+                66,
                 anchor=tk.NW,
                 text="Orange = angled/out-of-square side",
                 fill="#9a5b00",
@@ -1497,7 +1594,7 @@ a {{ color: #1f4e79; }}
             vertical_deviation = abs(programmer.normalize_axis_deviation(angle - 90))
             if horizontal_deviation <= vertical_deviation:
                 horizontal.append((start, end))
-        return set(horizontal or angled)
+        return set(angled)
 
     @classmethod
     def out_of_square_segment_label(cls, start: tuple[float, float], end: tuple[float, float]) -> str:
@@ -1546,7 +1643,7 @@ a {{ color: #1f4e79; }}
         deviation = abs(programmer.normalize_axis_deviation(angle))
         deviation = min(deviation, abs(programmer.normalize_axis_deviation(angle - 90)))
         amount = ShowerProgrammerApp.out_of_square_segment_amount(start, end)
-        return deviation >= 0.02 or amount >= 0.04
+        return deviation >= 0.015 or amount >= 0.03125
 
     @staticmethod
     def format_degrees(value: float) -> str:
@@ -1677,6 +1774,26 @@ a {{ color: #1f4e79; }}
                     item_override.pop(key, None)
         self.save_manual_overrides(data)
 
+    def set_manual_x_override(self, aw_order: str, item_number: int, enabled: bool) -> None:
+        data = self.load_manual_overrides()
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        item_override = order_overrides.setdefault(str(item_number), {})
+        if not isinstance(item_override, dict):
+            item_override = {}
+            order_overrides[str(item_number)] = item_override
+        if enabled:
+            item_override["manual_x"] = True
+        else:
+            item_override.pop("manual_x", None)
+        self.save_manual_overrides(data)
+
     def set_mark_text_override(self, aw_order: str, item_number: int, mark_key: str, value: str) -> None:
         field_by_key = {
             "label": "label_text",
@@ -1731,13 +1848,13 @@ a {{ color: #1f4e79; }}
         kind = machine_kind.strip().upper()
         if kind == "WJ":
             item_override["machine"] = "WJ"
-            item_override["indicator_corner"] = "top_left"
+            item_override["indicator_corner"] = programmer.default_waterjet_indicator_corner(panel)
             item_override["rotation_degrees"] = -90 if panel.height and panel.width and panel.height > panel.width else 0
         else:
             machine = "DENVER 1" if programmer.has_door_programming_evidence(panel, config) else "DENVER 2"
             rotation = 90 if panel.height and panel.width and panel.height > panel.width else 0
             item_override["machine"] = machine
-            item_override["indicator_corner"] = programmer.denver_grabber_corner_for_rotation(rotation)
+            item_override["indicator_corner"] = programmer.denver_grabber_corner_for_panel(panel, rotation)
             item_override["rotation_degrees"] = rotation
 
         item_override["skip_dxf"] = False
@@ -1813,6 +1930,214 @@ a {{ color: #1f4e79; }}
         self.save_manual_overrides(data)
         return new_size
 
+    def check_for_updates(self) -> None:
+        git = shutil.which("git")
+        if not git:
+            messagebox.showerror("Git not found", "Git is not available on this computer.")
+            return
+        repo = Path(__file__).resolve().parents[1]
+        try:
+            status = subprocess.run(
+                [git, "status", "--porcelain"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=True,
+            ).stdout.strip()
+            fetch = subprocess.run(
+                [git, "fetch", "origin", "main"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            if fetch.returncode != 0:
+                messagebox.showerror("Update check failed", fetch.stderr.strip() or fetch.stdout.strip())
+                return
+            current = subprocess.run(
+                [git, "rev-parse", "HEAD"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=True,
+            ).stdout.strip()
+            remote = subprocess.run(
+                [git, "rev-parse", "origin/main"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=True,
+            ).stdout.strip()
+            base = subprocess.run(
+                [git, "merge-base", "HEAD", "origin/main"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=True,
+            ).stdout.strip()
+        except Exception as exc:
+            messagebox.showerror("Update check failed", str(exc))
+            return
+
+        if current == remote:
+            self.status_var.set("Program is already up to date with origin/main.")
+            messagebox.showinfo("No updates", "This program is already up to date with the GitHub main branch.")
+            return
+        if status:
+            self.status_var.set("Updates are available, but local changes must be committed or stashed first.")
+            messagebox.showwarning(
+                "Updates available",
+                "GitHub has newer code, but this working folder has local changes. "
+                "Commit or stash them before using automatic update.",
+            )
+            return
+        if base == current:
+            if not messagebox.askyesno("Update program?", "Updates are available on GitHub main. Pull them now?"):
+                return
+            pull = subprocess.run(
+                [git, "pull", "--ff-only", "origin", "main"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                timeout=120,
+            )
+            if pull.returncode != 0:
+                messagebox.showerror("Update failed", pull.stderr.strip() or pull.stdout.strip())
+                return
+            self.status_var.set("Program updated from GitHub main. Restart the GUI to use the new code.")
+            messagebox.showinfo("Updated", "The program was updated. Close and reopen the GUI to use the new code.")
+            return
+        if base == remote:
+            messagebox.showinfo("Local branch ahead", "This folder has local commits that are not on GitHub main.")
+            return
+        messagebox.showwarning(
+            "Branches diverged",
+            "This folder and GitHub main both have different changes. Update manually with Git.",
+        )
+
+    def send_sketches_to_shop(self) -> None:
+        self.send_outputs_to_shop(include_sketches=True, include_programs=False)
+
+    def send_programs_to_shop(self) -> None:
+        self.send_outputs_to_shop(include_sketches=False, include_programs=True)
+
+    def send_all_to_shop(self) -> None:
+        self.send_outputs_to_shop(include_sketches=True, include_programs=True)
+
+    def send_outputs_to_shop(self, *, include_sketches: bool, include_programs: bool) -> None:
+        output_dir = Path(self.output_dir_var.get()).resolve()
+        run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
+        sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
+        programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
+        copied: list[Path] = []
+        missing: list[str] = []
+        try:
+            if include_sketches:
+                sketch_paths = self.generated_sketch_paths(output_dir, sketch_dir)
+                if sketch_paths:
+                    copied.extend(self.copy_outputs_to_folder(sketch_paths, Path(r"I:\BAREFOOT-INSTALL\Glass Production\Sketches")))
+                else:
+                    missing.append("sketches")
+            if include_programs:
+                dxf_paths = self.generated_dxf_paths(output_dir, programs_dir)
+                if dxf_paths:
+                    copied.extend(self.copy_outputs_to_folder(dxf_paths, Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")))
+                else:
+                    missing.append("programs")
+        except Exception as exc:
+            messagebox.showerror("Send failed", str(exc))
+            return
+        if not copied:
+            messagebox.showinfo("Nothing sent", "No matching generated files were found.")
+            return
+        details = f"Copied {len(copied)} file(s) to the shop folders."
+        sent_names = "\n".join(f"- {path.name}" for path in copied[:30])
+        if sent_names:
+            details += "\n\nSent:\n" + sent_names
+        if len(copied) > 30:
+            details += f"\n...and {len(copied) - 30} more"
+        if missing:
+            details += "\nNo matching " + " or ".join(missing) + " were found."
+        self.status_var.set(details)
+        messagebox.showinfo("Send complete", details)
+
+    def copy_outputs_to_folder(self, paths: list[Path], target_dir: Path) -> list[Path]:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[Path] = []
+        for source in paths:
+            if not source.exists() or not source.is_file():
+                continue
+            target = target_dir / source.name
+            shutil.copy2(source, target)
+            copied.append(target)
+        return copied
+
+    def autocad_save_as_programs(self) -> None:
+        output_dir = Path(self.output_dir_var.get()).resolve()
+        run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
+        programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
+        paths = self.generated_dxf_paths(output_dir, programs_dir)
+        if not paths:
+            messagebox.showinfo("No DXFs", "No generated program DXFs were found.")
+            return
+        if not messagebox.askyesno(
+            "AutoCAD Save-As DXFs?",
+            f"Open and Save-As {len(paths)} generated program DXF file(s) through AutoCAD?",
+        ):
+            return
+        temp_file: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+                temp_file = Path(handle.name)
+                for path in paths:
+                    handle.write(str(path.resolve()) + "\n")
+            list_literal = str(temp_file).replace("'", "''")
+            script = f"""
+$ErrorActionPreference = 'Stop'
+$files = Get-Content -LiteralPath '{list_literal}'
+try {{
+    $acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application')
+}} catch {{
+    $acad = New-Object -ComObject AutoCAD.Application
+}}
+$count = 0
+foreach ($file in $files) {{
+    if (-not (Test-Path -LiteralPath $file)) {{ continue }}
+    $doc = $acad.Documents.Open($file)
+    try {{
+        $doc.SaveAs($file)
+        $count += 1
+    }} finally {{
+        $doc.Close($false)
+    }}
+}}
+Write-Output "AutoCAD saved $count DXF file(s)."
+"""
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                text=True,
+                capture_output=True,
+                timeout=max(120, len(paths) * 30),
+            )
+            if result.returncode != 0:
+                messagebox.showerror("AutoCAD Save-As failed", result.stderr.strip() or result.stdout.strip())
+                return
+            message = result.stdout.strip() or f"AutoCAD saved {len(paths)} DXF file(s)."
+            self.status_var.set(message)
+            messagebox.showinfo("AutoCAD Save-As complete", message)
+        except Exception as exc:
+            messagebox.showerror("AutoCAD Save-As failed", str(exc))
+        finally:
+            if temp_file is not None:
+                try:
+                    temp_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
     def clear_sketch_memory(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()
         if not messagebox.askyesno(
@@ -1857,38 +2182,7 @@ a {{ color: #1f4e79; }}
         )
 
     def convert_programs_to_ac1032(self) -> None:
-        output_dir = Path(self.output_dir_var.get()).resolve()
-        if not output_dir.exists():
-            messagebox.showinfo("No output folder", "The selected output folder does not exist yet.")
-            return
-        paths = [
-            path
-            for path in output_dir.rglob("*.dxf")
-            if path.is_file() and any(part.lower() == "programs" for part in path.parts)
-        ]
-        if not paths:
-            messagebox.showinfo("No DXFs", "No generated program DXFs were found.")
-            return
-        if not messagebox.askyesno(
-            "Convert program DXFs?",
-            f"Update {len(paths)} generated program DXF file(s) to AC1032?",
-        ):
-            return
-        updated = 0
-        failed: list[str] = []
-        for path in paths:
-            try:
-                pairs = programmer.read_dxf_pairs(path)
-                programmer.normalize_dxf_header_metadata(pairs, target_acadver="AC1032")
-                programmer.write_dxf_pairs(path, pairs)
-                updated += 1
-            except Exception as exc:
-                failed.append(f"{path.name}: {exc}")
-        self.status_var.set(f"Converted {updated} program DXF(s) to AC1032.")
-        message = f"Converted {updated} program DXF(s) to AC1032."
-        if failed:
-            message += "\n\nFailures:\n" + "\n".join(failed[:8])
-        messagebox.showinfo("DXF conversion complete", message)
+        self.autocad_save_as_programs()
 
     def clear_manual_sketch_fields(self) -> int:
         path = self.manual_overrides_path()
@@ -1917,6 +2211,7 @@ a {{ color: #1f4e79; }}
             "hide_indicator",
             "hide_diamon_fusion",
             "hide_remake",
+            "manual_x",
             "label_text",
             "diamon_fusion_text",
             "remake_text",
@@ -2233,7 +2528,7 @@ a {{ color: #1f4e79; }}
 
     def editor_remake_items(self, aw_order: str) -> set[int] | None:
         if self.remake_var.get():
-            return programmer.parse_item_list(self.remake_items_var.get())
+            return set()
         history = self.history_for_order(aw_order)
         if "remake_items" not in history:
             return self.remake_items_from_report(aw_order)
@@ -2466,9 +2761,22 @@ a {{ color: #1f4e79; }}
         scale: float,
         margin: float,
         top_offset: float = 0.0,
+        page_width: float | None = None,
+        rotation_degrees: int = 0,
     ) -> None:
         def to_canvas(x: float, y: float) -> tuple[float, float]:
-            return margin + x * scale, top_offset + margin + (page_height - y) * scale
+            rotation = rotation_degrees % 360
+            if rotation == 90:
+                view_x, view_y = y, x
+            elif rotation == 180:
+                width = float(page_width or 0)
+                view_x, view_y = width - x, y
+            elif rotation == 270:
+                width = float(page_width or 0)
+                view_x, view_y = page_height - y, width - x
+            else:
+                view_x, view_y = x, page_height - y
+            return margin + view_x * scale, top_offset + margin + view_y * scale
 
         def visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, font_size: float) -> None:
             value = str(text).strip()
@@ -2525,6 +2833,23 @@ a {{ color: #1f4e79; }}
         )
         if marker_rect is not None:
             avoid_rects.append(marker_rect)
+
+        if panel.remake_excluded or panel.manual_x:
+            remake_cfg = pdf_cfg.get("remake", {}) if isinstance(pdf_cfg.get("remake", {}), dict) else {}
+            x_margin = programmer.parse_float(remake_cfg.get("x_margin", 48), 48)
+            line_width = programmer.parse_float(remake_cfg.get("x_line_width", 10), 10)
+            x_key = "manual_x" if panel.manual_x else "remake_xout"
+            objects.append({
+                "key": x_key,
+                "name": "manual X" if panel.manual_x else "remake X-out",
+                "kind": "x",
+                "lines": [
+                    ((x_margin, x_margin), (width - x_margin, height - x_margin)),
+                    ((x_margin, height - x_margin), (width - x_margin, x_margin)),
+                ],
+                "line_width": line_width,
+                "rect": (x_margin, x_margin, width - x_margin, height - x_margin),
+            })
 
         remake_rect: tuple[float, float, float, float] | None = None
         if panel.remake and not panel.hide_remake:
@@ -2686,6 +3011,15 @@ a {{ color: #1f4e79; }}
             x1, y1 = to_canvas(rect[0], rect[3])
             x2, y2 = to_canvas(rect[2], rect[1])
             bind_item(canvas.create_rectangle(x1, y1, x2, y2, outline=blue, dash=(4, 3), width=1))
+        elif obj.get("kind") == "x":
+            for start, end in obj["lines"]:
+                x1, y1 = to_canvas(*start)
+                x2, y2 = to_canvas(*end)
+                bind_item(canvas.create_line(x1, y1, x2, y2, fill=blue, width=max(2, int(round(float(obj["line_width"]) * scale)))))
+            rect = obj["rect"]
+            x1, y1 = to_canvas(rect[0], rect[3])
+            x2, y2 = to_canvas(rect[2], rect[1])
+            bind_item(canvas.create_rectangle(x1, y1, x2, y2, outline=blue, dash=(4, 3), width=1))
         else:
             cx, cy = to_canvas(*obj["center"])
             radius = max(1.0, float(obj["radius"]) * scale)
@@ -2697,6 +3031,10 @@ a {{ color: #1f4e79; }}
 
         state["objects"][object_key] = obj
         canvas.tag_bind(tag, "<ButtonPress-1>", lambda event, object_key=object_key: state["start_drag"](event, object_key))
+        show_mark_menu = state.get("show_mark_menu")
+        if callable(show_mark_menu):
+            canvas.tag_bind(tag, "<Button-3>", lambda event, object_key=object_key: show_mark_menu(event, object_key))
+            canvas.tag_bind(tag, "<Double-Button-1>", lambda event, object_key=object_key: show_mark_menu(event, object_key))
 
     def open_last_report(self) -> None:
         if not self.last_reports:

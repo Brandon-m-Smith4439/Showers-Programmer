@@ -393,6 +393,52 @@ def attach_transom_panels(
     panels.sort(key=lambda panel: panel.item)
 
 
+def attach_unlabeled_process_pages(
+    reader: PdfReader,
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    config: dict[str, object],
+) -> None:
+    existing_items = {panel.item for panel in panels}
+    missing_items = [item for item in process_order.item_numbers if item not in existing_items]
+    if not missing_items:
+        return
+
+    used_pages = {panel.page_index for panel in panels}
+    candidates: list[tuple[int, str]] = []
+    for page_index, page in enumerate(reader.pages):
+        if page_index == 0 or page_index in used_pages:
+            continue
+        text = page.extract_text() or ""
+        if not text.strip() or programmer.looks_like_template_page(text):
+            continue
+        if programmer.extract_item_number(text) is not None:
+            continue
+        width, height = programmer.extract_dimensions(text)
+        if width is None or height is None:
+            continue
+        candidates.append((page_index, text))
+
+    for item_number, (page_index, text) in zip(sorted(missing_items), candidates):
+        width, height = programmer.extract_dimensions(text)
+        panel = programmer.classify_panel(
+            programmer.Panel(
+                item=item_number,
+                page_index=page_index,
+                text=text,
+                width=width,
+                height=height,
+                machine="",
+            ),
+            config,
+            process_order.aw_order,
+        )
+        panel.reasons.append(f"unlabeled piece page mapped to P{item_number} from process list")
+        panels.append(panel)
+
+    panels.sort(key=lambda panel: panel.item)
+
+
 def apply_process_hints(
     panels: list[programmer.Panel],
     process_order: ProcessOrder,
@@ -404,12 +450,13 @@ def apply_process_hints(
             panel.warnings.append("No matching process-list item row found.")
             continue
         panel.process_text = process_item.text_blob()
+        apply_process_dimensions(panel, process_item)
 
         is_mirror_order = process_order.is_mirror(config)
         if is_mirror_order:
             if process_item.has_mirror_fabrication(config):
                 set_panel_machine(panel, "WJ", "mirror fabrication uses WJ")
-                panel.indicator_corner = "top_left"
+                panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
                 panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
             else:
                 panel.machine = ""
@@ -452,11 +499,11 @@ def apply_process_hints(
             panel.reasons.append("process list has no cutting machine")
 
         if panel.machine == "WJ":
-            panel.indicator_corner = "top_left"
+            panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
             panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
         elif panel.machine.startswith("DENVER"):
             panel.rotation_degrees = 90 if panel.height and panel.width and panel.height > panel.width else 0
-            panel.indicator_corner = programmer.denver_grabber_corner_for_rotation(panel.rotation_degrees)
+            panel.indicator_corner = programmer.denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
 
         if process_item.has_diamon_fusion:
             panel.diamon_fusion = True
@@ -473,6 +520,17 @@ def set_panel_machine(panel: programmer.Panel, machine: str, reason: str) -> Non
     panel.label_only = False
     panel.skip_dxf = False
     panel.reasons.append(reason)
+
+
+def apply_process_dimensions(panel: programmer.Panel, process_item: ProcessItem) -> None:
+    width = programmer.parse_measurement(process_item.width_text)
+    height = programmer.parse_measurement(process_item.height_text)
+    if width is None or height is None:
+        return
+    if panel.width != width or panel.height != height:
+        panel.width = width
+        panel.height = height
+        panel.reasons.append("dimensions from process list")
 
 
 def denver_minimum_forces_wj(panel: programmer.Panel, config: dict[str, object]) -> bool:
@@ -526,6 +584,7 @@ def prepare_job(
     reader = PdfReader(str(pdf_path))
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
     attach_transom_panels(reader, panels, process_order, config)
+    attach_unlabeled_process_pages(reader, panels, process_order, config)
     apply_process_hints(panels, process_order, config)
     programmer.refine_panel_orientations(reader, panels, config)
     for panel in panels:
@@ -562,6 +621,8 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
         issues.append("PDF item(s) missing from process list: " + ", ".join(f"P{i}" for i in extra))
 
     for panel in job.panels:
+        if job.remake_items is not None and panel.remake_excluded:
+            continue
         for warning in panel.warnings:
             issues.append(f"P{panel.item}: {warning}")
         if not panel.skip_dxf and panel.source_dxf is None:
