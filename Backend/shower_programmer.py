@@ -462,7 +462,7 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
     label_only_allow = upper_set(config, "rules", "label_only_allow_keywords")
     denver_min = float(rules.get("denver_min_inches", 6.125))
 
-    has_door = any(k in upper for k in door_keywords | hinge_label_keywords)
+    has_door = any(k in upper for k in door_keywords | hinge_label_keywords) or has_hinge_label_text(upper, config)
     has_strong_waterjet = has_pdf_waterjet_evidence(panel.text, config)
     has_weak_waterjet = any(k in upper for k in weak_waterjet_keywords)
     has_fabrication = any(k in upper for k in fabrication_keywords)
@@ -813,8 +813,6 @@ def has_door_cut_in(panel: Panel, config: dict[str, Any]) -> bool:
     upper = panel_combined_text(panel).upper()
     if re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper):
         return True
-    if re.search(r"\bAV1E037\b", upper):
-        return True
     return any(keyword in upper for keyword in keywords)
 
 
@@ -849,6 +847,8 @@ def has_door_programming_evidence(panel: Panel, config: dict[str, Any]) -> bool:
     upper = panel_combined_text(panel).upper()
     if re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper):
         return True
+    if has_hinge_label_text(upper, config):
+        return True
     keywords = upper_set(config, "rules", "door_keywords")
     keywords.update(upper_set(config, "rules", "hinge_label_keywords"))
     keywords.update({"DOOR", "HINGE", "PULL", "HANDLE", "GEN037", "V1E037", "AV1E037"})
@@ -860,6 +860,15 @@ def has_door_programming_evidence(panel: Panel, config: dict[str, Any]) -> bool:
         if normalized_keyword and normalized_keyword in normalized:
             return True
     return False
+
+
+def has_hinge_label_text(text: str, config: dict[str, Any]) -> bool:
+    upper = text.upper()
+    labels = upper_set(config, "rules", "hinge_label_keywords")
+    labels.update({"GEN037", "V1E037", "AV1E037"})
+    if any(label and label in upper for label in labels):
+        return True
+    return bool(re.search(r"\b(?:A?V1E|GEN)\d{3}\b", upper))
 
 
 def door_rotation_for_hinge_side(hinge_side: str, hinges_up: bool) -> float:
@@ -1022,8 +1031,6 @@ def estimate_hinge_side_from_text(
         if label.startswith("AV") and len(label) > 5:
             normalized_labels.add(label[2:])
     normalized_labels = {label for label in normalized_labels if label}
-    if not normalized_labels:
-        return None
 
     left, bottom, right, top = bbox
     center_x = (left + right) / 2
@@ -1064,7 +1071,9 @@ def estimate_hinge_side_from_text(
 
     left_hits = 0
     right_hits = 0
-    pattern = re.compile("|".join(re.escape(label) for label in sorted(normalized_labels, key=len, reverse=True)))
+    pattern_parts = [re.escape(label) for label in sorted(normalized_labels, key=len, reverse=True)]
+    pattern_parts.append(r"(?:A?V1E|GEN)\d{3}")
+    pattern = re.compile("|".join(pattern_parts))
     for row in rows:
         chars = sorted(row["chars"], key=lambda entry: entry[0])
         text = "".join(char for _, char in chars)
@@ -1624,15 +1633,29 @@ def adjust_denver_panel_square_side(panel: Panel) -> None:
 
 
 def choose_square_panel_bottom_side(panel: Panel, square_sides: set[str]) -> str | None:
+    if panel.source_dxf is not None:
+        source_dims = dxf_outline_dimensions(panel.source_dxf)
+        if source_dims is not None:
+            source_width, source_height = source_dims
+            if source_height > source_width + 0.01:
+                candidates = ("right", "left")
+            elif source_width > source_height + 0.01:
+                candidates = ("bottom",)
+            else:
+                candidates = ("bottom", "right", "left")
+            for side in candidates:
+                if side in square_sides:
+                    return side
+            return None
     if panel.width is not None and panel.height is not None:
         if panel.height > panel.width:
             candidates = ("left", "right")
         elif panel.width > panel.height:
-            candidates = ("bottom", "top")
+            candidates = ("bottom",)
         else:
-            candidates = ("bottom", "left", "right", "top")
+            candidates = ("bottom", "left", "right")
     else:
-        candidates = ("bottom", "left", "right", "top")
+        candidates = ("bottom", "left", "right")
     for side in candidates:
         if side in square_sides:
             return side
@@ -1642,15 +1665,27 @@ def choose_square_panel_bottom_side(panel: Panel, square_sides: set[str]) -> str
 def choose_square_panel_grabber_rotation(panel: Panel, square_corners: set[str]) -> float | None:
     if not square_corners:
         return None
-    if panel.width is not None and panel.height is not None:
+    if panel.source_dxf is not None:
+        source_dims = dxf_outline_dimensions(panel.source_dxf)
+        if source_dims is not None:
+            source_width, source_height = source_dims
+            if source_height > source_width + 0.01:
+                candidates = (-90.0, 90.0)
+            elif source_width > source_height + 0.01:
+                candidates = (0.0,)
+            else:
+                candidates = (0.0, 90.0, -90.0)
+        else:
+            candidates = ()
+    elif panel.width is not None and panel.height is not None:
         if panel.height > panel.width:
             candidates = (90.0, -90.0)
         elif panel.width > panel.height:
-            candidates = (0.0, 180.0)
+            candidates = (0.0,)
         else:
-            candidates = (0.0, 90.0, -90.0, 180.0)
+            candidates = (0.0, 90.0, -90.0)
     else:
-        candidates = (0.0, 90.0, -90.0, 180.0)
+        candidates = (0.0, 90.0, -90.0)
     current = panel.rotation_degrees or 0
     ordered = sorted(candidates, key=lambda value: 0 if abs(value - current) <= 1 else 1)
     for rotation in ordered:
@@ -1681,6 +1716,18 @@ def rotation_for_bottom_side(side: str) -> float:
 
 def denver_indicator_corner_for_bottom_side(side: str) -> str:
     return denver_grabber_corner_for_rotation(rotation_for_bottom_side(side))
+
+
+def dxf_outline_dimensions(path: Path) -> tuple[float, float] | None:
+    segments = collect_dxf_outer_line_segments(path)
+    points = [point for start, end in segments for point in (start, end)]
+    if not points:
+        return None
+    min_x = min(x for x, _ in points)
+    min_y = min(y for _, y in points)
+    max_x = max(x for x, _ in points)
+    max_y = max(y for _, y in points)
+    return max_x - min_x, max_y - min_y
 
 
 def dxf_square_corners(path: Path) -> set[str]:

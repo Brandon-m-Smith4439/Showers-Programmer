@@ -96,7 +96,7 @@ class ProcessItem:
         door_keywords = upper_config_list(config, "door_keywords", ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"])
         door_keywords.update(upper_config_list(config, "hinge_label_keywords", ["GEN037", "V1E037", "AV1E037"]))
         fabrication = process_list_fabrication_keywords(config)
-        if any(keyword in text for keyword in door_keywords):
+        if any(keyword in text for keyword in door_keywords) or re.search(r"\b(?:A?V1E|GEN)\d{3}\b", text):
             return "DENVER 1"
         if any(keyword in text for keyword in fabrication):
             return "DENVER 2"
@@ -533,6 +533,31 @@ def apply_process_dimensions(panel: programmer.Panel, process_item: ProcessItem)
         panel.reasons.append("dimensions from process list")
 
 
+def apply_process_list_scope(panels: list[programmer.Panel], process_order: ProcessOrder) -> None:
+    expected = set(process_order.item_numbers)
+    for panel in panels:
+        if panel.item in expected:
+            continue
+        panel.remake_excluded = True
+        panel.machine = ""
+        panel.label_only = True
+        panel.skip_dxf = True
+        panel.indicator_corner = None
+        panel.rotation_degrees = None
+        panel.angle_correction_degrees = 0.0
+        panel.angle_correction_reason = ""
+        panel.diamon_fusion = False
+        panel.source_dxf = None
+        panel.output_dxf = None
+        panel.warnings = [
+            warning
+            for warning in panel.warnings
+            if warning != "No matching process-list item row found."
+        ]
+        if "not in process list; X out" not in panel.reasons:
+            panel.reasons.append("not in process list; X out")
+
+
 def denver_minimum_forces_wj(panel: programmer.Panel, config: dict[str, object]) -> bool:
     rules = config.get("rules", {})
     if not isinstance(rules, dict):
@@ -586,9 +611,11 @@ def prepare_job(
     attach_transom_panels(reader, panels, process_order, config)
     attach_unlabeled_process_pages(reader, panels, process_order, config)
     apply_process_hints(panels, process_order, config)
+    apply_process_list_scope(panels, process_order)
     programmer.refine_panel_orientations(reader, panels, config)
     for panel in panels:
         programmer.apply_override(panel, config, process_order.aw_order)
+    apply_process_list_scope(panels, process_order)
     effective_remake_items = (
         set(process_order.item_numbers)
         if remake_items is not None and not remake_items
@@ -617,11 +644,14 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
     extra = sorted(actual - expected)
     if missing:
         issues.append("Process list item(s) missing from PDF: " + ", ".join(f"P{i}" for i in missing))
-    if extra and job.remake_items is None:
-        issues.append("PDF item(s) missing from process list: " + ", ".join(f"P{i}" for i in extra))
+    if extra:
+        issues.append(
+            "Notice: PDF piece(s) not in process list; crossed out/not programmed (possible REMAKE): "
+            + ", ".join(f"P{i}" for i in extra)
+        )
 
     for panel in job.panels:
-        if job.remake_items is not None and panel.remake_excluded:
+        if panel.remake_excluded:
             continue
         for warning in panel.warnings:
             issues.append(f"P{panel.item}: {warning}")

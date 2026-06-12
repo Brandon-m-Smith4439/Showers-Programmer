@@ -972,8 +972,8 @@ a {{ color: #1f4e79; }}
         ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Open DXF", command=lambda: open_current_dxf()).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Minimize", command=dialog.iconify).pack(side=tk.RIGHT)
-        ttk.Button(toolbar, text="Maximize", command=lambda: self.toggle_window_maximize(dialog)).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(toolbar, text="Minimize", command=dialog.iconify).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(toolbar, text="Maximize", command=lambda: self.toggle_window_maximize(dialog)).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Label(toolbar, textvariable=status).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
@@ -1379,18 +1379,35 @@ a {{ color: #1f4e79; }}
             ordered_items = [current.item for current in sorted(job.panels, key=lambda current: current.item)]
             if panel.item in ordered_items:
                 page_count_var.set(f"{ordered_items.index(panel.item) + 1}/{len(ordered_items)}")
-            self.draw_order_review_sketch(
-                sketch_canvas,
-                source_reader,
-                job.pdf_path,
-                job,
-                panel,
-                config,
-                rotation_var.get(),
-                state,
-            )
+            try:
+                self.draw_order_review_sketch(
+                    sketch_canvas,
+                    source_reader,
+                    job.pdf_path,
+                    job,
+                    panel,
+                    config,
+                    rotation_var.get(),
+                    state,
+                )
+            except Exception as exc:
+                sketch_canvas.delete("all")
+                sketch_canvas.create_rectangle(
+                    0,
+                    0,
+                    sketch_canvas.winfo_width(),
+                    sketch_canvas.winfo_height(),
+                    fill="#e8edf3",
+                    outline="",
+                )
+                sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Sketch preview failed: {exc}", fill="#b42318")
             dxf_path = panel.output_dxf if panel.output_dxf and panel.output_dxf.exists() else panel.source_dxf
-            self.draw_order_review_dxf(dxf_canvas, dxf_path, panel)
+            try:
+                self.draw_order_review_dxf(dxf_canvas, dxf_path, panel)
+            except Exception as exc:
+                dxf_canvas.delete("all")
+                dxf_canvas.create_rectangle(0, 0, dxf_canvas.winfo_width(), dxf_canvas.winfo_height(), fill="#f8fafc", outline="")
+                dxf_canvas.create_text(16, 16, anchor=tk.NW, text=f"DXF preview failed: {exc}", fill="#b42318")
             issue_text = "; ".join(issues[:2]) if issues else ""
             rotation_text = self.panel_rotation_summary(panel)
             status.set(
@@ -1599,12 +1616,7 @@ a {{ color: #1f4e79; }}
     @classmethod
     def out_of_square_segment_label(cls, start: tuple[float, float], end: tuple[float, float]) -> str:
         amount = cls.out_of_square_segment_amount(start, end)
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        angle = math.degrees(math.atan2(dy, dx))
-        deviation = abs(programmer.normalize_axis_deviation(angle))
-        deviation = min(deviation, abs(programmer.normalize_axis_deviation(angle - 90)))
-        return f"OOS {cls.format_inches(amount)} / {ShowerProgrammerApp.format_degrees(deviation)} deg"
+        return f"{cls.format_inches(amount)} OOS"
 
     @staticmethod
     def out_of_square_segment_amount(start: tuple[float, float], end: tuple[float, float]) -> float:
@@ -2142,15 +2154,24 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         output_dir = Path(self.output_dir_var.get()).resolve()
         if not messagebox.askyesno(
             "Clear sketch memory?",
-            "This deletes generated sketch PDFs and removes saved sketch-edit positions "
-            "from manual_overrides.json. Machine overrides and process-list data are kept.",
+            "This deletes generated sketch PDFs, clears sketch history pointers, and removes "
+            "saved sketch-edit positions from manual_overrides.json. Machine overrides, DXFs, "
+            "and process-list data are kept.",
         ):
             return
         removed_files = 0
-        for folder, patterns in (
+        folders_and_patterns: list[tuple[Path, tuple[str, ...]]] = [
             (output_dir / "Sketches", ("*.pdf",)),
             (output_dir / "Reviews", ("sketch_review_*.pdf", "debug_*.png", "clean_*.png")),
-        ):
+        ]
+        runs_dir = output_dir / "Runs"
+        if runs_dir.exists():
+            for run_folder in runs_dir.iterdir():
+                if not run_folder.is_dir():
+                    continue
+                folders_and_patterns.append((run_folder / "Sketches", ("*.pdf",)))
+                folders_and_patterns.append((run_folder / "Reviews", ("sketch_review_*.pdf", "debug_*.png", "clean_*.png")))
+        for folder, patterns in folders_and_patterns:
             if not folder.exists():
                 continue
             for pattern in patterns:
@@ -2168,6 +2189,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 except OSError:
                     pass
         changed_fields = self.clear_manual_sketch_fields()
+        history_entries = self.clear_processing_history_sketch_fields()
+        self.last_run_folder = None
         for aw_order, row_id in self.tree_rows.items():
             values = list(self.tree.item(row_id, "values"))
             if len(values) >= 9:
@@ -2175,10 +2198,15 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 values[2] = ""
                 values[8] = self.review_status_for_order(aw_order)
                 self.tree.item(row_id, values=values)
-        self.status_var.set(f"Cleared {removed_files} sketch file(s) and {changed_fields} saved sketch field(s).")
+        self.status_var.set(
+            f"Cleared {removed_files} sketch file(s), {changed_fields} saved sketch field(s), "
+            f"and {history_entries} history entries."
+        )
         messagebox.showinfo(
             "Sketch memory cleared",
-            f"Deleted {removed_files} sketch/review file(s).\nRemoved {changed_fields} saved sketch field(s).",
+            f"Deleted {removed_files} sketch/review file(s).\n"
+            f"Removed {changed_fields} saved sketch field(s).\n"
+            f"Cleared {history_entries} sketch history entries.",
         )
 
     def convert_programs_to_ac1032(self) -> None:
@@ -2206,6 +2234,17 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             "diamon_fusion_y",
             "remake_x",
             "remake_y",
+            "label_nudge_x",
+            "label_nudge_y",
+            "indicator_nudge_x",
+            "indicator_nudge_y",
+            "diamon_fusion_nudge_x",
+            "diamon_fusion_nudge_y",
+            "label_font_size",
+            "diamon_fusion_font_size",
+            "remake_font_size",
+            "indicator_size",
+            "waterjet_indicator_size",
             "checked",
             "hide_label",
             "hide_indicator",
@@ -2242,6 +2281,41 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             item_overrides.pop(aw_order, None)
         self.save_manual_overrides(data)
         return removed
+
+    def clear_processing_history_sketch_fields(self) -> int:
+        path = self.processing_history_path()
+        if not path.exists():
+            return 0
+        data = self.load_processing_history()
+        orders = data.get("orders", {})
+        if not isinstance(orders, dict):
+            return 0
+        history_fields = {
+            "last_processed",
+            "output_pdf",
+            "report_path",
+            "run_folder",
+            "status",
+            "remake_items",
+        }
+        changed = 0
+        empty_orders: list[str] = []
+        for aw_order, entry in orders.items():
+            if not isinstance(entry, dict):
+                continue
+            removed_any = False
+            for field in history_fields:
+                if field in entry:
+                    del entry[field]
+                    removed_any = True
+            if removed_any:
+                changed += 1
+            if not entry:
+                empty_orders.append(str(aw_order))
+        for aw_order in empty_orders:
+            orders.pop(aw_order, None)
+        self.save_processing_history(data)
+        return changed
 
     def open_sketch_editor(self) -> None:
         selected = self.selected_orders()
@@ -2850,6 +2924,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 "line_width": line_width,
                 "rect": (x_margin, x_margin, width - x_margin, height - x_margin),
             })
+            return objects
 
         remake_rect: tuple[float, float, float, float] | None = None
         if panel.remake and not panel.hide_remake:
@@ -2977,13 +3052,29 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         page_height: float,
         state: dict[str, Any],
         top_offset: float = 0.0,
+        page_width: float | None = None,
+        rotation_degrees: int = 0,
     ) -> None:
         key = obj["key"]
         object_key = f"{obj.get('item')}_{key}" if obj.get("item") is not None else str(key)
         tag = f"edit_{object_key}"
+        effective_page_width = page_width if page_width is not None else float(obj.get("page_width", 0.0))
+        if effective_page_width <= 0:
+            effective_page_width = float(obj.get("page_height", page_height))
+        page_pixel_width = effective_page_width * scale
+        page_pixel_height = page_height * scale
+        rotation = rotation_degrees % 360
 
         def to_canvas(x: float, y: float) -> tuple[float, float]:
-            return margin + x * scale, top_offset + margin + (page_height - y) * scale
+            image_x = x * scale
+            image_y = (page_height - y) * scale
+            if rotation == 90:
+                image_x, image_y = page_pixel_height - image_y, image_x
+            elif rotation == 180:
+                image_x, image_y = page_pixel_width - image_x, page_pixel_height - image_y
+            elif rotation == 270:
+                image_x, image_y = image_y, page_pixel_width - image_x
+            return margin + image_x, top_offset + margin + image_y
 
         def bind_item(item_id: int) -> None:
             canvas.addtag_withtag(tag, item_id)

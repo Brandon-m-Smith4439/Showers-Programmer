@@ -11,348 +11,94 @@
         "skip_dxf": false
       }
     },
-    "234879": {
+    "234941": {
       "1": {
-        "diamon_fusion_font_size": 39.0,
-        "diamon_fusion_text": "DIAMON FUSION",
-        "hide_diamon_fusion": true,
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "2": {
-        "diamon_fusion_x": 305.167,
-        "diamon_fusion_y": 677.115,
-        "hinge_side": "right",
-        "hinges_up": true,
-        "indicator_corner": "top_right",
-        "indicator_x": 398.634,
-        "indicator_y": 587.958,
-        "label_x": 298.384,
-        "label_y": 493.903,
-        "manual_indicator_corner": true,
-        "remake_x": 306.0,
-        "remake_y": 616.615,
-        "rotation_degrees": 90.0
-      },
-      "_order_checked": true
-    },
-    "234880": {
-      "1": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "2": {
-        "hinge_side": "right",
-        "hinges_up": true,
-        "indicator_corner": "top_right",
-        "indicator_x": 414.201,
-        "indicator_y": 601.834,
-        "label_x": 299.455,
-        "label_y": 485.996,
-        "manual_indicator_corner": true,
-        "remake_x": 306.0,
-        "remake_y": 628.658,
-        "rotation_degrees": 90.0
-      },
-      "_order_checked": true
-    },
-    "234881": {
-      "1": {
-        "label_x": 305.738,
-        "label_y": 495.521,
-        "remake_x": 302.667,
-        "remake_y": 622.825
-      },
-      "2": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "3": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "_order_checked": true
-    },
-    "234882": {
-      "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 235.634,
-        "indicator_y": 158.351,
-        "label_x": 310.896,
-        "label_y": 472.188,
-        "manual_indicator_corner": true,
-        "manual_x": true,
-        "remake_x": 301.0,
-        "remake_y": 628.658,
-        "rotation_degrees": 90.0
-      },
-      "2": {
-        "label_x": 306.779,
-        "label_y": 485.163,
-        "remake_x": 301.0,
-        "remake_y": 623.667
-      },
-      "_order_checked": true
-    },
-    "234883": {
-      "1": {
-        "hide_indicator": true,
-        "hide_label": true,
-        "label_x": 309.613,
-        "label_y": 496.355
-      },
-      "2": {
-        "label_x": 302.623,
-        "label_y": 521.175,
-        "remake_x": 305.167,
-        "remake_y": 627.0
-      },
-      "_order_checked": true
-    },
-    "234884": {
-      "1": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "2": {
-        "hinge_side": "right",
-        "hinges_up": true,
-        "indicator_corner": "top_right",
-        "indicator_x": 408.44,
-        "indicator_y": 594.474,
-        "label_x": 307.317,
-        "label_y": 469.329,
-        "manual_indicator_corner": true,
-        "remake_x": 306.0,
-        "remake_y": 626.158,
-        "rotation_degrees": 90.0
-      },
-      "_order_checked": true
-    },
-    "234885": {
-      "1": {
-        "hide_indicator": true,
-        "hide_label": true,
-        "label_x": 309.196,
-        "label_y": 515.521
-      },
-      "2": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "3": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "4": {
         "indicator_corner": "top_left",
-        "indicator_x": 180.122,
-        "indicator_y": 593.865,
-        "label_x": 306.039,
-        "label_y": 443.911,
-        "remake_x": 311.833,
-        "remake_y": 606.866,
-        "rotation_degrees": 90.0
-      },
-      "5": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "_order_checked": true
-    },
-    "234886": {
-      "1": {
-        "label_x": 305.695,
-        "label_y": 443.138,
-        "remake_x": 305.167,
-        "remake_y": 623.658
-      },
-      "2": {
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "_order_checked": true
-    },
-    "234887": {
-      "1": {
-        "diamon_fusion_x": 321.833,
-        "diamon_fusion_y": 668.667,
-        "indicator_corner": "top_left",
-        "indicator_x": 158.367,
-        "indicator_y": 590.161,
-        "label_x": 349.138,
-        "label_y": 452.439,
-        "remake_x": 306.0,
-        "remake_y": 602.161,
+        "indicator_x": 183.533,
+        "indicator_y": 622.324,
+        "label_x": 298.171,
+        "label_y": 481.355,
         "rotation_degrees": 90.0
       },
       "2": {
-        "hide_diamon_fusion": true,
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "3": {
-        "hide_diamon_fusion": true,
-        "hide_indicator": true,
-        "hide_label": true
-      },
-      "4": {
-        "hide_diamon_fusion": true,
-        "hide_indicator": true,
-        "hide_label": true
+        "label_x": 303.279,
+        "label_y": 487.009
       },
       "_order_checked": true
     },
-    "234889": {
+    "234942": {
       "1": {
-        "hide_indicator": true,
-        "hide_label": true,
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 209.534,
-        "indicator_y": 166.751,
-        "label_x": 314.746,
-        "label_y": 518.021,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
+        "label_x": 308.488,
+        "label_y": 499.688
+      },
+      "2": {
+        "label_x": 308.446,
+        "label_y": 478.496
+      },
+      "_order_checked": true
+    },
+    "234943": {
+      "1": {
+        "indicator_corner": "bottom_right",
+        "indicator_x": 456.54,
+        "indicator_y": 121.334,
+        "label_x": 306.055,
+        "label_y": 485.521,
+        "rotation_degrees": -90.0
       },
       "2": {
         "hinge_side": "right",
-        "hinges_up": true,
+        "hinges_up": false,
         "indicator_corner": "top_right",
-        "indicator_x": 411.64,
-        "indicator_y": 596.591,
-        "label_x": 310.291,
-        "label_y": 482.663,
+        "indicator_x": 409.506,
+        "indicator_y": 600.458,
+        "label_x": 307.197,
+        "label_y": 480.996,
         "manual_indicator_corner": true,
-        "remake_x": 306.0,
-        "remake_y": 630.325,
-        "rotation_degrees": 90.0
+        "rotation_degrees": -90.0
       },
       "_order_checked": true
     },
-    "234897": {
+    "234944": {
       "1": {
-        "label_x": 305.03,
-        "label_y": 478.675
+        "hinge_side": "right",
+        "hinges_up": false,
+        "indicator_corner": "top_right",
+        "indicator_x": 409.577,
+        "indicator_y": 590.959,
+        "label_x": 315.03,
+        "label_y": 526.545,
+        "manual_indicator_corner": true,
+        "rotation_degrees": -90.0
       },
       "2": {
-        "label_x": 305.13,
-        "label_y": 467.367
+        "label_x": 294.336,
+        "label_y": 527.367
       },
       "_order_checked": true
     },
-    "234898": {
+    "234945": {
       "1": {
-        "hinge_side": "left",
+        "hinge_side": "right",
         "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 221.501,
-        "indicator_y": 158.968,
-        "label_x": 305.988,
-        "label_y": 495.521,
+        "indicator_corner": "top_right",
+        "indicator_x": 406.767,
+        "indicator_y": 588.841,
+        "label_x": 298.757,
+        "label_y": 465.57,
         "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
+        "rotation_degrees": -90.0
       },
+      "_order_checked": true
+    },
+    "234946": {
       "2": {
         "indicator_corner": "bottom_right",
-        "indicator_x": 458.207,
-        "indicator_y": 128.001,
-        "label_x": 302.221,
-        "label_y": 493.675,
+        "indicator_x": 461.541,
+        "indicator_y": 122.167,
+        "label_x": 298.055,
+        "label_y": 488.675,
         "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234899": {
-      "1": {
-        "label_x": 308.171,
-        "label_y": 488.021
-      },
-      "2": {
-        "label_x": 313.78,
-        "label_y": 483.496
-      },
-      "_order_checked": true
-    },
-    "234900": {
-      "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 224.301,
-        "indicator_y": 168.268,
-        "label_x": 304.584,
-        "label_y": 496.355,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
-      },
-      "_order_checked": true
-    },
-    "234901": {
-      "1": {
-        "indicator_corner": "top_right",
-        "indicator_x": 427.84,
-        "indicator_y": 595.874,
-        "label_x": 298.796,
-        "label_y": 455.288,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234902": {
-      "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 224.734,
-        "indicator_y": 160.035,
-        "label_x": 302.696,
-        "label_y": 508.855,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
-      },
-      "2": {
-        "indicator_corner": "top_left",
-        "indicator_x": 235.869,
-        "indicator_y": 627.325,
-        "label_x": 302.42,
-        "label_y": 493.496,
-        "rotation_degrees": 90.0
-      },
-      "_order_checked": true
-    },
-    "234903": {
-      "1": {
-        "indicator_corner": "top_left",
-        "indicator_x": 149.152,
-        "indicator_y": 485.686,
-        "label_x": 294.644,
-        "label_y": 420.547,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      }
-    },
-    "234904": {
-      "1": {
-        "diamon_fusion_x": 301.0,
-        "diamon_fusion_y": 598.91,
-        "label_x": 306.704,
-        "label_y": 413.277
-      },
-      "2": {
-        "diamon_fusion_x": 303.5,
-        "diamon_fusion_y": 624.949,
-        "label_x": 301.946,
-        "label_y": 425.924
-      },
-      "3": {
-        "label_x": 313.946,
-        "label_y": 458.424
       },
       "_order_checked": true
     }
