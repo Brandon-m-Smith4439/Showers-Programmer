@@ -171,6 +171,8 @@ class ShowerProgrammerApp:
         self.tree.tag_configure("FAILED", foreground="#b42318")
         self.tree.tag_configure("SKIPPED", foreground="#b42318")
         self.tree.bind("<Double-1>", self.open_order_review)
+        self.tree.bind("<Control-a>", self.select_all_orders)
+        self.tree.bind("<Control-A>", self.select_all_orders)
 
         y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
         x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -190,6 +192,7 @@ class ShowerProgrammerApp:
         send_buttons.pack(side=tk.RIGHT, padx=(10, 0))
         ttk.Button(send_buttons, text="Send Sketches", command=self.send_sketches_to_shop).pack(side=tk.LEFT)
         ttk.Button(send_buttons, text="Send Programs", command=self.send_programs_to_shop).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(send_buttons, text="Select All", command=self.select_all_orders).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(send_buttons, text="Send All", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
 
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
@@ -421,6 +424,17 @@ class ShowerProgrammerApp:
                 if order:
                     selected.append(order)
         return selected
+
+    def select_all_orders(self, _event: tk.Event | None = None) -> str | None:
+        row_ids = self.tree.get_children()
+        if not row_ids:
+            self.status_var.set("No scanned orders to select.")
+            return "break" if _event is not None else None
+        self.tree.selection_set(*row_ids)
+        self.tree.focus(row_ids[0])
+        self.tree.see(row_ids[0])
+        self.status_var.set(f"Selected {len(row_ids)} order(s).")
+        return "break" if _event is not None else None
 
     def selected_or_visible_aw_orders(self) -> list[str]:
         selected = [order.aw_order for order in self.selected_orders()]
