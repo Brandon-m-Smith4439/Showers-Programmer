@@ -13,7 +13,9 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import urllib.request
 import webbrowser
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,10 @@ except Exception:
 
 
 class ShowerProgrammerApp:
+    GITHUB_UPDATE_OWNER = "Brandon-m-Smith4439"
+    GITHUB_UPDATE_REPO = "Showers-Programmer"
+    GITHUB_UPDATE_BRANCH = "main"
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Shower Programmer")
@@ -1943,11 +1949,11 @@ a {{ color: #1f4e79; }}
         return new_size
 
     def check_for_updates(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
         git = shutil.which("git")
         if not git:
-            messagebox.showerror("Git not found", "Git is not available on this computer.")
+            self.check_for_updates_without_git(repo)
             return
-        repo = Path(__file__).resolve().parents[1]
         try:
             status = subprocess.run(
                 [git, "status", "--porcelain"],
@@ -2020,6 +2026,7 @@ a {{ color: #1f4e79; }}
             if pull.returncode != 0:
                 messagebox.showerror("Update failed", pull.stderr.strip() or pull.stdout.strip())
                 return
+            self.write_update_metadata(repo, remote, "git")
             self.status_var.set("Program updated from GitHub main. Restart the GUI to use the new code.")
             messagebox.showinfo("Updated", "The program was updated. Close and reopen the GUI to use the new code.")
             return
@@ -2030,6 +2037,186 @@ a {{ color: #1f4e79; }}
             "Branches diverged",
             "This folder and GitHub main both have different changes. Update manually with Git.",
         )
+
+    def check_for_updates_without_git(self, repo: Path) -> None:
+        owner, repo_name = self.github_update_repo(repo)
+        try:
+            latest_sha, latest_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+        except Exception as exc:
+            messagebox.showerror("Update check failed", f"Could not check GitHub for updates:\n\n{exc}")
+            return
+
+        current_sha = self.current_update_revision(repo)
+        if current_sha and current_sha == latest_sha:
+            self.status_var.set("Program is already up to date with GitHub main.")
+            messagebox.showinfo("No updates", "This program is already up to date with the GitHub main branch.")
+            return
+
+        if current_sha:
+            prompt = (
+                "Updates are available on GitHub main.\n\n"
+                f"Latest update: {latest_date or latest_sha[:12]}\n\n"
+                "Download and install them now?"
+            )
+        else:
+            prompt = (
+                "Git is not installed, so this computer cannot compare local Git history.\n\n"
+                f"Latest GitHub update: {latest_date or latest_sha[:12]}\n\n"
+                "Download and install the latest GitHub main files now?"
+            )
+        if not messagebox.askyesno("Update program?", prompt):
+            return
+
+        try:
+            self.install_update_zip(repo, owner, repo_name, self.GITHUB_UPDATE_BRANCH, latest_sha)
+        except Exception as exc:
+            messagebox.showerror("Update failed", str(exc))
+            return
+        self.write_update_metadata(repo, latest_sha, "zip")
+        self.status_var.set("Program updated from GitHub main. Restart the GUI to use the new code.")
+        messagebox.showinfo("Updated", "The program was updated. Close and reopen the GUI to use the new code.")
+
+    def github_update_repo(self, repo: Path) -> tuple[str, str]:
+        config_path = repo / ".git" / "config"
+        if config_path.exists():
+            try:
+                text = config_path.read_text(encoding="utf-8", errors="ignore")
+                match = re.search(r"url\s*=\s*(?:https://github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?\s*$", text, re.MULTILINE)
+                if match:
+                    return match.group(1), match.group(2)
+            except OSError:
+                pass
+        return self.GITHUB_UPDATE_OWNER, self.GITHUB_UPDATE_REPO
+
+    @staticmethod
+    def github_json(url: str) -> dict[str, object]:
+        request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
+        with urllib.request.urlopen(request, timeout=45) as response:
+            data = response.read().decode("utf-8")
+        parsed = json.loads(data)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("GitHub returned an unexpected response.")
+        return parsed
+
+    def github_latest_commit(self, owner: str, repo_name: str, branch: str) -> tuple[str, str]:
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/commits/{branch}"
+        data = self.github_json(url)
+        sha = str(data.get("sha", "")).strip()
+        if not sha:
+            raise RuntimeError("GitHub did not return a commit id.")
+        commit = data.get("commit", {})
+        latest_date = ""
+        if isinstance(commit, dict):
+            committer = commit.get("committer", {})
+            if isinstance(committer, dict):
+                latest_date = str(committer.get("date", "")).strip()
+        return sha, latest_date
+
+    def current_update_revision(self, repo: Path) -> str:
+        metadata_paths = [
+            repo / "Output" / "update_metadata.json",
+            repo / ".shower_update.json",
+        ]
+        for metadata_path in metadata_paths:
+            if not metadata_path.exists():
+                continue
+            try:
+                data = json.loads(metadata_path.read_text(encoding="utf-8"))
+                sha = str(data.get("sha", "")).strip() if isinstance(data, dict) else ""
+                if sha:
+                    return sha
+            except Exception:
+                pass
+        return self.git_head_without_git(repo)
+
+    @staticmethod
+    def git_head_without_git(repo: Path) -> str:
+        git_dir = repo / ".git"
+        head_path = git_dir / "HEAD"
+        if not head_path.exists():
+            return ""
+        try:
+            head = head_path.read_text(encoding="utf-8", errors="ignore").strip()
+        except OSError:
+            return ""
+        if not head.startswith("ref:"):
+            return head
+        ref = head.split(":", 1)[1].strip().replace("/", os.sep)
+        ref_path = git_dir / ref
+        if ref_path.exists():
+            try:
+                return ref_path.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                return ""
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.exists():
+            try:
+                for line in packed_refs.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1] == ref.replace(os.sep, "/"):
+                        return parts[0]
+            except OSError:
+                return ""
+        return ""
+
+    def install_update_zip(self, repo: Path, owner: str, repo_name: str, branch: str, latest_sha: str) -> None:
+        updates_dir = repo / "Output" / "Updates" / f"update_{datetime.now():%Y%m%d_%H%M%S}"
+        updates_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = updates_dir / "main.zip"
+        extract_dir = updates_dir / "extract"
+        backup_dir = updates_dir / "backup"
+        zip_url = f"https://codeload.github.com/{owner}/{repo_name}/zip/refs/heads/{branch}"
+        self.status_var.set("Downloading update from GitHub...")
+        self.download_file(zip_url, archive_path)
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(extract_dir)
+        roots = [path for path in extract_dir.iterdir() if path.is_dir()]
+        if not roots:
+            raise RuntimeError("Downloaded update package was empty.")
+        source_root = roots[0]
+        self.status_var.set("Installing update files...")
+        self.copy_update_tree(source_root, repo, backup_dir)
+        (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+
+    @staticmethod
+    def download_file(url: str, destination: Path) -> None:
+        request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
+        with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+
+    def copy_update_tree(self, source_root: Path, repo: Path, backup_dir: Path) -> None:
+        skip_root_names = {".git", ".github", ".agents", ".codex", "Input", "Output"}
+        for source in source_root.iterdir():
+            if source.name in skip_root_names:
+                continue
+            self.copy_update_item(source, repo / source.name, backup_dir / source.name)
+
+    def copy_update_item(self, source: Path, target: Path, backup: Path) -> None:
+        if source.name == "__pycache__" or source.suffix.lower() in {".pyc", ".pyo"}:
+            return
+        if source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            for child in source.iterdir():
+                self.copy_update_item(child, target / child.name, backup / child.name)
+            return
+        if target.exists():
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target, backup)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+    @staticmethod
+    def write_update_metadata(repo: Path, sha: str, method: str) -> None:
+        metadata = {
+            "sha": sha,
+            "method": method,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        metadata_path = repo / "Output" / "update_metadata.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
     def send_sketches_to_shop(self) -> None:
         self.send_outputs_to_shop(include_sketches=True, include_programs=False)
