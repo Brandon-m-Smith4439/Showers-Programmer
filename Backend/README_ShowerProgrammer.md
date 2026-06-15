@@ -145,7 +145,7 @@ Example orders are only test inputs. The default config does not contain rules f
 - Slot/macro fabrication wording such as `SCU4 Slot MACRO` is treated as real fabrication, so those pieces are not left as label-only when the PDF text is sparse.
 - Process-list notch wording is not used by itself to force `WJ`.
 - K cuts are Denver-allowed fabrication by default, so a K-cut panel can stay on Denver instead of being forced to WJ.
-- Denver 1 doors estimate the hinge side from hinge labels/cutout geometry. Normal doors orient hinges down; doors with cut-in, K-cut, PPH, SRPPH01, or AV1E037 wording orient hinges up. Plain V1E037 is treated as a hinge label, not a hinges-up trigger.
+- Denver 1 doors estimate the hinge side from hinge labels/cutout geometry. Normal doors orient hinges down; doors with cut-in, K-cut, PPH, or SRPPH01 wording orient hinges up. V1E037 and AV1E037 are treated as hinge labels, not hinges-up triggers by themselves.
 - Denver 1 doors with clear cut-in, kick-in, or K-cut/jut-out evidence in the matched DXF can use that DXF shape to correct the hinge side and orient hinges up before the program is rotated. The DXF detector checks for either an angled hinge-side kick or parallel offset side runs, which covers stepped jut-outs like `234584.2`.
 - Denver 2 panels prefer the square long side from the matched DXF when choosing the bottom side. This keeps panels off the out-of-square side when a square long side is available.
 - Tall WJ DXFs follow the selected WJ marker corner. WJ indicators are constrained to `top_left` or `bottom_right`; top-left rotates `90` and bottom-right rotates `-90`, which keeps the program aligned with the reviewed sketch.
@@ -153,6 +153,7 @@ Example orders are only test inputs. The default config does not contain rules f
 - DXFs are matched from names like `SO JOB_1__P1.dxf`.
 - If both a plain DXF like `SO JOB_1.dxf` and a detailed weighted DXF like `SO JOB_1__... (67.1lb).dxf` exist, the weighted DXF is used.
 - DXFs are rotated so tall programmed pieces put the long side along the bottom.
+- WJ program DXFs are scaled by `25.4` and written with metric DXF headers so inch source geometry opens at full millimeter size in NCEditor. Denver program DXFs stay in inches.
 - Mirror orders are hidden from the GUI unless the process list shows fabrication. Mirror fabrication is programmed as `WJ`.
 - Remake orders mark selected remake pieces with `REMAKE`; non-remake pages in that order get a giant X and skip DXF output.
 - Denver 1 angle correction is based on the matched DXF edge that will sit flat on the Denver. Out-of-square text alone does not apply the angle calculator; the source DXF must show that the hinge/bottom side needs correction. Raked-edge text by itself is not a manual-review issue.

@@ -729,12 +729,7 @@ def write_dxfs_with_issue_collection(job: programmer.Job, force: bool, config: d
             issues.append(f"P{panel.item}: output DXF path missing, skipped")
             continue
         try:
-            programmer.transform_dxf(
-                panel.source_dxf,
-                panel.output_dxf,
-                programmer.effective_rotation(panel),
-                force=force,
-            )
+            programmer.write_panel_dxf(panel, force=force, config=config)
         except Exception as exc:
             issues.append(f"P{panel.item}: DXF failed, {exc}")
     return issues

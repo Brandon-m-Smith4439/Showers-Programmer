@@ -810,6 +810,9 @@ def has_door_cut_in(panel: Panel, config: dict[str, Any]) -> bool:
     if not keywords:
         keywords = {"CUT IN", "CUT-IN", "CUTIN", "DOOR CUT IN"}
     keywords.update({"K CUT", "K-CUT", "K CUTS", "K-CUTS"})
+    hinge_labels = upper_set(config, "rules", "hinge_label_keywords")
+    hinge_labels.update({"GEN037", "V1E037", "AV1E037"})
+    keywords.difference_update(label for label in hinge_labels if label)
     upper = panel_combined_text(panel).upper()
     if re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper):
         return True
@@ -1176,6 +1179,7 @@ def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: d
             continue
         panel.source_dxf = find_source_dxf(dxf_folder, job.job_name, panel)
         panel.output_dxf = dxf_output_dir / f"{job.aw_order}{panel.item:02d}.dxf"
+        note_dxf_output_settings(panel, config)
         if panel.source_dxf is None:
             panel.warnings.append("No matching source DXF found.")
         else:
@@ -3142,12 +3146,16 @@ def transform_dxf(
     output: Path,
     rotation_degrees: float,
     force: bool,
+    scale: float = 1.0,
+    insunits: str = "1",
+    measurement: str = "0",
 ) -> None:
     if output.exists() and not force:
         raise FileExistsError(f"{output} already exists. Use --force to overwrite.")
+    scale = float(scale or 1.0)
     pairs = read_dxf_pairs(source)
     points = collect_entity_points(pairs)
-    transformed_points = rotate_points(points, rotation_degrees)
+    transformed_points = [(x * scale, y * scale) for x, y in rotate_points(points, rotation_degrees)]
     translate_x, translate_y = normalize_translation(transformed_points)
     final_points = [(x + translate_x, y + translate_y) for x, y in transformed_points]
 
@@ -3156,15 +3164,18 @@ def transform_dxf(
     sin_a = math.sin(angle)
     in_entities = False
     entity_start = 0
+    entity_type = ""
     index = 0
     while index < len(pairs):
         code, value = pairs[index][0].strip(), pairs[index][1].strip()
         if code == "2" and value.upper() == "ENTITIES":
             in_entities = True
         if in_entities and code == "0":
-            if value.upper() == "ENDSEC":
-                in_entities = False
             entity_start = index
+            entity_type = value.upper()
+            if entity_type == "ENDSEC":
+                in_entities = False
+                entity_type = ""
         if in_entities and code in {"10", "11", "12", "13", "14", "15", "16", "17", "18"}:
             y_code = str(int(code) + 10)
             y_index = find_next_code(pairs, index + 1, y_code, entity_start)
@@ -3175,10 +3186,15 @@ def transform_dxf(
                 except ValueError:
                     index += 1
                     continue
-                nx = x * cos_a - y * sin_a + translate_x
-                ny = x * sin_a + y * cos_a + translate_y
+                nx = (x * cos_a - y * sin_a) * scale + translate_x
+                ny = (x * sin_a + y * cos_a) * scale + translate_y
                 pairs[index][1] = format_number(nx)
                 pairs[y_index][1] = format_number(ny)
+        if in_entities and abs(scale - 1.0) > 1e-9 and is_scaled_entity_length_code(entity_type, code):
+            try:
+                pairs[index][1] = format_number(float(pairs[index][1]) * scale)
+            except ValueError:
+                pass
         if in_entities and code in {"50", "51"} and abs(rotation_degrees) > 1e-9:
             try:
                 pairs[index][1] = format_number((float(pairs[index][1]) + rotation_degrees) % 360)
@@ -3186,8 +3202,16 @@ def transform_dxf(
                 pass
         index += 1
     update_header_extents(pairs, final_points)
-    normalize_dxf_header_metadata(pairs)
+    normalize_dxf_header_metadata(pairs, insunits=insunits, measurement=measurement)
     write_dxf_pairs(output, pairs)
+
+
+def is_scaled_entity_length_code(entity_type: str, code: str) -> bool:
+    if entity_type in {"ARC", "CIRCLE"}:
+        return code == "40"
+    if entity_type in {"LWPOLYLINE", "POLYLINE", "VERTEX"}:
+        return code in {"40", "41"}
+    return False
 
 
 def find_next_code(pairs: list[list[str]], start: int, wanted: str, entity_start: int) -> int | None:
@@ -3270,9 +3294,9 @@ def update_header_extents(pairs: list[list[str]], points: list[tuple[float, floa
                 pairs[target][1] = format_number(y_value)
 
 
-def normalize_dxf_header_metadata(pairs: list[list[str]]) -> None:
-    set_header_variable(pairs, "$INSUNITS", "70", "1")
-    set_header_variable(pairs, "$MEASUREMENT", "70", "0")
+def normalize_dxf_header_metadata(pairs: list[list[str]], insunits: str = "1", measurement: str = "0") -> None:
+    set_header_variable(pairs, "$INSUNITS", "70", str(insunits))
+    set_header_variable(pairs, "$MEASUREMENT", "70", str(measurement))
 
 
 def set_header_variable(pairs: list[list[str]], variable: str, value_code: str, value: str) -> None:
@@ -3288,6 +3312,18 @@ def set_header_variable(pairs: list[list[str]], variable: str, value_code: str, 
                 return
         pairs.insert(index + 1, [value_code, value])
         return
+    insert_at = header_insert_index(pairs)
+    if insert_at is not None:
+        pairs[insert_at:insert_at] = [["9", variable], [value_code, value]]
+
+
+def header_insert_index(pairs: list[list[str]]) -> int | None:
+    for index in range(len(pairs) - 1):
+        if pairs[index][0].strip() != "0" or pairs[index][1].strip().upper() != "SECTION":
+            continue
+        if pairs[index + 1][0].strip() == "2" and pairs[index + 1][1].strip().upper() == "HEADER":
+            return index + 2
+    return None
 
 
 def format_number(value: float) -> str:
@@ -3300,17 +3336,69 @@ def format_number(value: float) -> str:
 
 
 def write_adjusted_dxfs(job: Job, force: bool, config: dict[str, Any] | None = None) -> None:
+    config = config or {}
     for panel in job.panels:
         if panel.skip_dxf:
             continue
         if panel.source_dxf is None or panel.output_dxf is None:
             continue
-        rotation = effective_rotation(panel)
-        transform_dxf(panel.source_dxf, panel.output_dxf, rotation, force=force)
+        write_panel_dxf(panel, force=force, config=config)
+
+
+def write_panel_dxf(panel: Panel, force: bool, config: dict[str, Any]) -> None:
+    if panel.source_dxf is None or panel.output_dxf is None:
+        raise ValueError("Panel is missing source or output DXF path.")
+    insunits, measurement = dxf_header_metadata_for_panel(panel, config)
+    transform_dxf(
+        panel.source_dxf,
+        panel.output_dxf,
+        effective_rotation(panel),
+        force=force,
+        scale=dxf_output_scale_for_panel(panel, config),
+        insunits=insunits,
+        measurement=measurement,
+    )
 
 
 def effective_rotation(panel: Panel) -> float:
     return (panel.rotation_degrees or 0.0) + (panel.angle_correction_degrees or 0.0)
+
+
+def dxf_output_scale_for_panel(panel: Panel, config: dict[str, Any]) -> float:
+    dxf_config = config.get("dxf", {})
+    if not isinstance(dxf_config, dict):
+        dxf_config = {}
+    if panel.machine == "WJ":
+        return parse_float(dxf_config.get("waterjet_output_scale", 25.4), 25.4)
+    return parse_float(dxf_config.get("default_output_scale", 1.0), 1.0)
+
+
+def dxf_header_metadata_for_panel(panel: Panel, config: dict[str, Any]) -> tuple[str, str]:
+    dxf_config = config.get("dxf", {})
+    if not isinstance(dxf_config, dict):
+        dxf_config = {}
+    if panel.machine == "WJ":
+        return (
+            str(dxf_config.get("waterjet_insunits", "4")),
+            str(dxf_config.get("waterjet_measurement", "1")),
+        )
+    return (
+        str(dxf_config.get("default_insunits", "1")),
+        str(dxf_config.get("default_measurement", "0")),
+    )
+
+
+def note_dxf_output_settings(panel: Panel, config: dict[str, Any]) -> None:
+    if panel.machine != "WJ":
+        return
+    scale = dxf_output_scale_for_panel(panel, config)
+    if abs(scale - 1.0) <= 1e-9:
+        return
+    insunits, measurement = dxf_header_metadata_for_panel(panel, config)
+    units_text = "millimeters" if insunits == "4" and measurement == "1" else f"INSUNITS {insunits}"
+    reason = f"WJ DXF output scaled {scale:g}x to {units_text}"
+    if reason not in panel.reasons:
+        panel.reasons.append(reason)
 
 
 def build_report(job: Job, apply: bool, skip_pdf: bool, skip_dxf: bool) -> str:

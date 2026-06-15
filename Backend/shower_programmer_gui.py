@@ -1560,6 +1560,8 @@ a {{ color: #1f4e79; }}
         height = max(max_y - min_y, 0.001)
         margin = 34.0
         header_height = 96.0
+        unit_label = self.dxf_unit_label(path)
+        inches_per_unit = self.dxf_inches_per_unit(path)
         scale = min(
             max(20, canvas.winfo_width() - margin * 2) / width,
             max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
@@ -1570,7 +1572,7 @@ a {{ color: #1f4e79; }}
             return margin + (x - min_x) * scale, header_height + (max_y - y) * scale
 
         long_side = max(width, height)
-        highlight_segments = self.out_of_square_preview_segments(segments, long_side)
+        highlight_segments = self.out_of_square_preview_segments(segments, long_side, inches_per_unit)
         for start, end in segments:
             x1, y1 = map_point(start)
             x2, y2 = map_point(end)
@@ -1590,7 +1592,7 @@ a {{ color: #1f4e79; }}
                     mx,
                     my - 12,
                     anchor=tk.CENTER,
-                text=self.out_of_square_segment_label(start, end),
+                    text=self.out_of_square_segment_label(start, end, inches_per_unit),
                     fill="#9a5b00",
                     font=("Arial", 9, "bold"),
                 )
@@ -1607,7 +1609,7 @@ a {{ color: #1f4e79; }}
             16,
             canvas.winfo_height() - 18,
             anchor=tk.SW,
-            text=f"{width:g} x {height:g} | {len(segments)} segment(s)",
+            text=f"{self.dxf_dimension_text(width, height, unit_label, inches_per_unit)} | {len(segments)} segment(s)",
             fill="#536471",
             font=("Arial", 9),
         )
@@ -1617,11 +1619,12 @@ a {{ color: #1f4e79; }}
         cls,
         segments: list[tuple[tuple[float, float], tuple[float, float]]],
         long_side: float,
+        inches_per_unit: float = 1.0,
     ) -> set[tuple[tuple[float, float], tuple[float, float]]]:
         angled: list[tuple[tuple[float, float], tuple[float, float]]] = []
         horizontal: list[tuple[tuple[float, float], tuple[float, float]]] = []
         for start, end in segments:
-            if not cls.is_out_of_square_preview_segment(start, end, long_side):
+            if not cls.is_out_of_square_preview_segment(start, end, long_side, inches_per_unit):
                 continue
             angled.append((start, end))
             dx = end[0] - start[0]
@@ -1634,8 +1637,13 @@ a {{ color: #1f4e79; }}
         return set(angled)
 
     @classmethod
-    def out_of_square_segment_label(cls, start: tuple[float, float], end: tuple[float, float]) -> str:
-        amount = cls.out_of_square_segment_amount(start, end)
+    def out_of_square_segment_label(
+        cls,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        inches_per_unit: float = 1.0,
+    ) -> str:
+        amount = cls.out_of_square_segment_amount(start, end) * inches_per_unit
         return f"{cls.format_inches(amount)} OOS"
 
     @staticmethod
@@ -1665,17 +1673,68 @@ a {{ color: #1f4e79; }}
         start: tuple[float, float],
         end: tuple[float, float],
         long_side: float,
+        inches_per_unit: float = 1.0,
     ) -> bool:
         dx = end[0] - start[0]
         dy = end[1] - start[1]
         length = (dx * dx + dy * dy) ** 0.5
-        if length < max(4.0, long_side * 0.12):
+        safe_inches_per_unit = inches_per_unit if inches_per_unit > 0 else 1.0
+        if length < max(4.0 / safe_inches_per_unit, long_side * 0.12):
             return False
         angle = math.degrees(math.atan2(dy, dx))
         deviation = abs(programmer.normalize_axis_deviation(angle))
         deviation = min(deviation, abs(programmer.normalize_axis_deviation(angle - 90)))
-        amount = ShowerProgrammerApp.out_of_square_segment_amount(start, end)
+        amount = ShowerProgrammerApp.out_of_square_segment_amount(start, end) * inches_per_unit
         return deviation >= 0.015 or amount >= 0.03125
+
+    @staticmethod
+    def dxf_inches_per_unit(path: Path) -> float:
+        insunits = ShowerProgrammerApp.dxf_insunits(path)
+        return {
+            "1": 1.0,  # inches
+            "2": 12.0,  # feet
+            "4": 1.0 / 25.4,  # millimeters
+            "5": 1.0 / 2.54,  # centimeters
+            "6": 39.37007874015748,  # meters
+        }.get(insunits, 1.0)
+
+    @staticmethod
+    def dxf_unit_label(path: Path) -> str:
+        return {
+            "1": "in",
+            "2": "ft",
+            "4": "mm",
+            "5": "cm",
+            "6": "m",
+        }.get(ShowerProgrammerApp.dxf_insunits(path), "units")
+
+    @staticmethod
+    def dxf_insunits(path: Path) -> str:
+        try:
+            pairs = programmer.read_dxf_pairs(path)
+        except Exception:
+            return "1"
+        for index, pair in enumerate(pairs):
+            if pair[0].strip() != "9" or pair[1].strip().upper() != "$INSUNITS":
+                continue
+            for target in range(index + 1, min(index + 8, len(pairs))):
+                code = pairs[target][0].strip()
+                if code == "9":
+                    break
+                if code == "70":
+                    return pairs[target][1].strip()
+        return "1"
+
+    @classmethod
+    def dxf_dimension_text(cls, width: float, height: float, unit_label: str, inches_per_unit: float) -> str:
+        if abs(inches_per_unit - 1.0) <= 1e-9 and unit_label == "in":
+            return f"{width:g} x {height:g} in"
+        width_inches = width * inches_per_unit
+        height_inches = height * inches_per_unit
+        return (
+            f"{width:g} x {height:g} {unit_label} "
+            f"({cls.format_inches(width_inches)} x {cls.format_inches(height_inches)})"
+        )
 
     @staticmethod
     def format_degrees(value: float) -> str:
@@ -2104,9 +2163,7 @@ a {{ color: #1f4e79; }}
 
     @staticmethod
     def github_json(url: str) -> dict[str, object]:
-        request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
-        with urllib.request.urlopen(request, timeout=45) as response:
-            data = response.read().decode("utf-8")
+        data = ShowerProgrammerApp.download_text(url, timeout=45)
         parsed = json.loads(data)
         if not isinstance(parsed, dict):
             raise RuntimeError("GitHub returned an unexpected response.")
@@ -2197,8 +2254,95 @@ a {{ color: #1f4e79; }}
     @staticmethod
     def download_file(url: str, destination: Path) -> None:
         request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
-        with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
+                shutil.copyfileobj(response, handle)
+        except Exception as exc:
+            try:
+                ShowerProgrammerApp.download_file_with_powershell(url, destination, timeout=120)
+            except Exception as fallback_exc:
+                raise RuntimeError(
+                    f"Python HTTPS download failed:\n{exc}\n\n"
+                    f"PowerShell HTTPS fallback also failed:\n{fallback_exc}"
+                ) from exc
+
+    @staticmethod
+    def download_text(url: str, timeout: int) -> str:
+        request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read().decode("utf-8")
+        except Exception as exc:
+            try:
+                return ShowerProgrammerApp.download_text_with_powershell(url, timeout=timeout)
+            except Exception as fallback_exc:
+                raise RuntimeError(
+                    f"Python HTTPS request failed:\n{exc}\n\n"
+                    f"PowerShell HTTPS fallback also failed:\n{fallback_exc}"
+                ) from exc
+
+    @staticmethod
+    def powershell_exe() -> str:
+        exe = shutil.which("powershell") or shutil.which("pwsh")
+        if not exe:
+            raise RuntimeError("PowerShell was not found for HTTPS fallback.")
+        return exe
+
+    @staticmethod
+    def powershell_literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    @staticmethod
+    def download_text_with_powershell(url: str, timeout: int) -> str:
+        url_literal = ShowerProgrammerApp.powershell_literal(url)
+        script = f"""
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$client = New-Object Net.WebClient
+$client.Headers.Set('User-Agent', 'Showers-Programmer-Updater')
+try {{
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $client.DownloadString({url_literal})
+}} finally {{
+    $client.Dispose()
+}}
+"""
+        result = subprocess.run(
+            [ShowerProgrammerApp.powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            text=True,
+            capture_output=True,
+            timeout=max(timeout, 30),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PowerShell download failed.")
+        return result.stdout
+
+    @staticmethod
+    def download_file_with_powershell(url: str, destination: Path, timeout: int) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        url_literal = ShowerProgrammerApp.powershell_literal(url)
+        destination_literal = ShowerProgrammerApp.powershell_literal(str(destination))
+        script = f"""
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$client = New-Object Net.WebClient
+$client.Headers.Set('User-Agent', 'Showers-Programmer-Updater')
+try {{
+    $client.DownloadFile({url_literal}, {destination_literal})
+}} finally {{
+    $client.Dispose()
+}}
+"""
+        result = subprocess.run(
+            [ShowerProgrammerApp.powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            text=True,
+            capture_output=True,
+            timeout=max(timeout, 30),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PowerShell download failed.")
 
     def copy_update_tree(self, source_root: Path, repo: Path, backup_dir: Path) -> None:
         skip_root_names = {".git", ".github", ".agents", ".codex", "Input", "Output"}
