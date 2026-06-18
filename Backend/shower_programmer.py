@@ -31,6 +31,7 @@ DEFAULT_CONFIG_NAME = "shower_programmer_config.json"
 TEMPLATE_PAGE_MARKERS = ("TEMPLATES FOR GLASS", "TEMPLATE A:", "TEMPLATE B:")
 LABEL_FONT = "Helvetica-Bold"
 PDF_MATRIX_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
 PdfMatrix = tuple[float, float, float, float, float, float]
 
 
@@ -397,7 +398,7 @@ def clean_job_name(value: str) -> str:
 
 
 def find_pdf(folder: Path, job: str | None) -> Path:
-    pdfs = sorted(p for p in folder.rglob("*.pdf") if p.is_file())
+    pdfs = sorted(p for p in folder.rglob("*.pdf") if p.is_file() and not is_archived_input_file(p, folder))
     if not pdfs:
         raise FileNotFoundError(f"No PDF files found in {folder}")
     if job:
@@ -419,6 +420,14 @@ def find_pdf(folder: Path, job: str | None) -> Path:
 
 def normalize_lookup(value: str) -> str:
     return re.sub(r"[^A-Z0-9.]+", " ", value.upper()).strip()
+
+
+def is_archived_input_file(path: Path, root: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return any(INPUT_ARCHIVE_FOLDER_RE.match(part) for part in relative.parts[:-1])
 
 
 def analyze_panels(reader: PdfReader, config: dict[str, Any], aw_order: str) -> list[Panel]:
@@ -1137,6 +1146,8 @@ def find_source_dxf(folder: Path, job_name: str, panel: Panel) -> Path | None:
     candidates: list[tuple[tuple[int, int, int, int], Path]] = []
     for path in folder.rglob("*.dxf"):
         if not path.is_file():
+            continue
+        if is_archived_input_file(path, folder):
             continue
         score = dxf_match_score(path, norm_job, panel.item)
         if score is not None:

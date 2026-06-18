@@ -38,6 +38,12 @@ class ShowerProgrammerApp:
     GITHUB_UPDATE_OWNER = "Brandon-m-Smith4439"
     GITHUB_UPDATE_REPO = "Showers-Programmer"
     GITHUB_UPDATE_BRANCH = "main"
+    SHOP_SKETCHES_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Sketches")
+    SHOP_PROGRAMS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")
+    EDI_IMPORT_ORDERS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\EDIImportSG\Showers Programmer Input")
+    ORDER_FILE_EXTENSIONS = {".pdf", ".dxf"}
+    PROCESS_LIST_FILE_EXTENSIONS = shower_batch.PROCESS_LIST_EXTENSIONS
+    INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -131,6 +137,7 @@ class ShowerProgrammerApp:
         ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(maintenance, text="AutoCAD Save-As DXFs", command=self.autocad_save_as_programs).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(maintenance, text="Import EDI Orders", command=self.import_edi_orders).pack(side=tk.LEFT, padx=(8, 0))
 
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -219,21 +226,107 @@ class ShowerProgrammerApp:
             self.output_dir_var.set(path)
 
     def scan_orders(self) -> None:
+        if self.is_busy:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
         try:
             folder = Path(self.folder_var.get()).resolve()
             process_list = Path(self.process_list_var.get()).resolve()
-            config = self.config_with_manual_overrides(folder, Path(self.output_dir_var.get()).resolve())
-            process_list_files = shower_batch.process_list_files(process_list)
-            self.orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
-            self.order_by_aw = {order.aw_order: order for order in self.orders}
-            previews = shower_batch.preview_orders(self.orders, folder)
-            self.tree.delete(*self.tree.get_children())
-            self.tree_rows.clear()
-            for result in previews:
-                self.insert_or_update_result(result)
-            self.status_var.set(f"Found {len(self.orders)} orders from {len(process_list_files)} process list(s).")
+            output_dir = Path(self.output_dir_var.get()).resolve()
         except Exception as exc:
-            messagebox.showerror("Scan failed", str(exc))
+            messagebox.showerror("Invalid settings", str(exc))
+            return
+
+        self.start_background_activity("Scanning process lists and importing matching EDI order files...")
+        worker = threading.Thread(
+            target=self.worker_scan_orders,
+            args=(folder, process_list, output_dir),
+            daemon=True,
+        )
+        worker.start()
+
+    def import_edi_orders(self) -> None:
+        if self.is_busy:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
+        try:
+            folder = Path(self.folder_var.get()).resolve()
+            process_list = Path(self.process_list_var.get()).resolve()
+            output_dir = Path(self.output_dir_var.get()).resolve()
+        except Exception as exc:
+            messagebox.showerror("Invalid settings", str(exc))
+            return
+
+        self.start_background_activity("Importing matching EDI order files...")
+        worker = threading.Thread(
+            target=self.worker_import_edi_orders,
+            args=(folder, process_list, output_dir),
+            daemon=True,
+        )
+        worker.start()
+
+    def start_background_activity(self, message: str) -> None:
+        self.is_busy = True
+        self.set_controls_enabled(False)
+        self.progress.stop()
+        self.progress.configure(mode="indeterminate", maximum=100, value=0)
+        self.progress.start(12)
+        self.status_var.set(message)
+
+    def finish_background_activity(self) -> None:
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=100, value=0)
+        self.is_busy = False
+        self.set_controls_enabled(True)
+
+    def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
+        try:
+            config = self.config_with_manual_overrides(folder, output_dir)
+            process_list_import_summary = self.copy_process_lists_from_import_folder(process_list)
+            process_list_files = shower_batch.process_list_files(process_list)
+            orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
+            import_summary = self.copy_edi_orders_for_process_orders(folder, orders)
+            previews = shower_batch.preview_orders(orders, folder)
+            self.worker_queue.put(
+                (
+                    "scan_done",
+                    {
+                        "orders": orders,
+                        "previews": previews,
+                        "process_list_count": len(process_list_files),
+                        "process_list_import_summary": process_list_import_summary,
+                        "import_summary": import_summary,
+                    },
+                )
+            )
+        except Exception as exc:
+            self.worker_queue.put(("scan_error", str(exc)))
+
+    def worker_import_edi_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
+        try:
+            process_list_import_summary = self.copy_process_lists_from_import_folder(process_list)
+            if self.orders:
+                orders = self.orders
+                process_list_count = 0
+            else:
+                config = self.config_with_manual_overrides(folder, output_dir)
+                process_list_files = shower_batch.process_list_files(process_list)
+                process_list_count = len(process_list_files)
+                orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
+            import_summary = self.copy_edi_orders_for_process_orders(folder, orders)
+            self.worker_queue.put(
+                (
+                    "import_done",
+                    {
+                        "orders": orders,
+                        "process_list_count": process_list_count,
+                        "process_list_import_summary": process_list_import_summary,
+                        "import_summary": import_summary,
+                    },
+                )
+            )
+        except Exception as exc:
+            self.worker_queue.put(("scan_error", str(exc)))
 
     def config_path(self, folder: Path) -> Path:
         return programmer.resolve_config_path(programmer.DEFAULT_CONFIG_NAME, folder)
@@ -502,7 +595,8 @@ class ShowerProgrammerApp:
 
         self.is_busy = True
         self.set_controls_enabled(False)
-        self.progress.configure(maximum=len(orders), value=0)
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=len(orders), value=0)
         self.status_var.set(("Processing" if apply else "Dry running") + f" {len(orders)} order(s)...")
 
         worker = threading.Thread(
@@ -730,13 +824,130 @@ class ShowerProgrammerApp:
                     self.status_var.set("Done. " + ", ".join(f"{k}={v}" for k, v in counts.items()))
                     messagebox.showinfo("Batch complete", f"Report written:\n{run.html_report}")
                 elif kind == "error":
-                    self.is_busy = False
-                    self.set_controls_enabled(True)
+                    self.finish_background_activity()
                     self.status_var.set("Error")
                     messagebox.showerror("Batch failed", str(payload))
+                elif kind == "scan_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    orders = data.get("orders", [])
+                    previews = data.get("previews", [])
+                    process_list_count = int(data.get("process_list_count", 0))
+                    process_list_import_summary = data.get("process_list_import_summary", {})
+                    import_summary = data.get("import_summary", {})
+                    assert isinstance(orders, list)
+                    assert isinstance(previews, list)
+                    self.orders = orders
+                    self.order_by_aw = {order.aw_order: order for order in self.orders}
+                    self.tree.delete(*self.tree.get_children())
+                    self.tree_rows.clear()
+                    for result in previews:
+                        assert isinstance(result, shower_batch.BatchJobResult)
+                        self.insert_or_update_result(result)
+                    self.finish_background_activity()
+                    self.status_var.set(
+                        self.scan_status_message(
+                            len(self.orders),
+                            process_list_count,
+                            import_summary,
+                            process_list_import_summary,
+                        )
+                    )
+                elif kind == "import_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    orders = data.get("orders", [])
+                    process_list_count = int(data.get("process_list_count", 0))
+                    process_list_import_summary = data.get("process_list_import_summary", {})
+                    import_summary = data.get("import_summary", {})
+                    if orders:
+                        assert isinstance(orders, list)
+                        self.orders = orders
+                        self.order_by_aw = {order.aw_order: order for order in self.orders}
+                    self.finish_background_activity()
+                    messages = [
+                        self.process_list_import_status_message(process_list_import_summary),
+                        self.import_status_message(import_summary, process_list_count),
+                    ]
+                    self.status_var.set(" ".join(message for message in messages if message))
+                elif kind == "scan_error":
+                    self.finish_background_activity()
+                    self.status_var.set("Scan failed")
+                    messagebox.showerror("Scan failed", str(payload))
+                elif kind == "send_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    copied = data.get("copied", [])
+                    missing = data.get("missing", [])
+                    archived = data.get("archived", [])
+                    archive_warnings = data.get("archive_warnings", [])
+                    assert isinstance(copied, list)
+                    assert isinstance(missing, list)
+                    assert isinstance(archived, list)
+                    assert isinstance(archive_warnings, list)
+                    self.finish_background_activity()
+                    if not copied:
+                        messagebox.showinfo("Nothing sent", "No matching generated files were found.")
+                        self.status_var.set("No matching generated files were found.")
+                        continue
+                    details = self.send_complete_details(copied, missing, archived, archive_warnings)
+                    self.status_var.set(details)
+                    messagebox.showinfo("Send complete", details)
+                elif kind == "send_error":
+                    self.finish_background_activity()
+                    self.status_var.set("Send failed")
+                    messagebox.showerror("Send failed", str(payload))
         except queue.Empty:
             pass
         self.root.after(150, self.drain_worker_queue)
+
+    @staticmethod
+    def scan_status_message(
+        order_count: int,
+        process_list_count: int,
+        import_summary: object,
+        process_list_import_summary: object | None = None,
+    ) -> str:
+        message = f"Found {order_count} orders from {process_list_count} process list(s)."
+        process_list_message = ShowerProgrammerApp.process_list_import_status_message(process_list_import_summary)
+        if process_list_message:
+            message += " " + process_list_message
+        import_message = ShowerProgrammerApp.import_status_message(import_summary, 0)
+        if import_message:
+            message += " " + import_message
+        return message
+
+    @staticmethod
+    def process_list_import_status_message(import_summary: object) -> str:
+        if not isinstance(import_summary, dict):
+            return ""
+        copied = import_summary.get("copied", [])
+        skipped = int(import_summary.get("skipped", 0) or 0)
+        source_missing = bool(import_summary.get("source_missing", False))
+        if source_missing:
+            return ""
+        copied_count = len(copied) if isinstance(copied, list) else 0
+        if copied_count:
+            return f"Imported/updated {copied_count} process list file(s); {skipped} already current."
+        if skipped:
+            return f"No process list files needed copying; {skipped} already current."
+        return ""
+
+    @staticmethod
+    def import_status_message(import_summary: object, process_list_count: int) -> str:
+        if not isinstance(import_summary, dict):
+            return ""
+        copied = import_summary.get("copied", [])
+        skipped = int(import_summary.get("skipped", 0) or 0)
+        source_missing = bool(import_summary.get("source_missing", False))
+        if source_missing:
+            return f"EDI import skipped; source folder not found: {import_summary.get('source', '')}"
+        copied_count = len(copied) if isinstance(copied, list) else 0
+        if copied_count:
+            return f"Imported/updated {copied_count} matching EDI file(s); {skipped} already current."
+        if process_list_count:
+            return f"No EDI files needed copying for {process_list_count} process list(s); {skipped} already current."
+        return f"No EDI files needed copying; {skipped} already current."
 
     def set_controls_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -992,8 +1203,6 @@ a {{ color: #1f4e79; }}
         ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Open DXF", command=lambda: open_current_dxf()).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Minimize", command=dialog.iconify).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(toolbar, text="Maximize", command=lambda: self.toggle_window_maximize(dialog)).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Label(toolbar, textvariable=status).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
@@ -2383,34 +2592,98 @@ try {{
         self.send_outputs_to_shop(include_sketches=False, include_programs=True)
 
     def send_all_to_shop(self) -> None:
-        self.send_outputs_to_shop(include_sketches=True, include_programs=True)
+        self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True)
 
-    def send_outputs_to_shop(self, *, include_sketches: bool, include_programs: bool) -> None:
-        output_dir = Path(self.output_dir_var.get()).resolve()
-        run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
-        sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
-        programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
-        copied: list[Path] = []
-        missing: list[str] = []
+    def send_outputs_to_shop(
+        self,
+        *,
+        include_sketches: bool,
+        include_programs: bool,
+        archive_inputs: bool = False,
+    ) -> None:
+        if self.is_busy:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
         try:
+            output_dir = Path(self.output_dir_var.get()).resolve()
+            run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
+            sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
+            programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
+            sketch_paths: list[Path] = []
+            dxf_paths: list[Path] = []
+            missing: list[str] = []
             if include_sketches:
                 sketch_paths = self.generated_sketch_paths(output_dir, sketch_dir)
-                if sketch_paths:
-                    copied.extend(self.copy_outputs_to_folder(sketch_paths, Path(r"I:\BAREFOOT-INSTALL\Glass Production\Sketches")))
-                else:
+                if not sketch_paths:
                     missing.append("sketches")
             if include_programs:
                 dxf_paths = self.generated_dxf_paths(output_dir, programs_dir)
-                if dxf_paths:
-                    copied.extend(self.copy_outputs_to_folder(dxf_paths, Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")))
-                else:
+                if not dxf_paths:
                     missing.append("programs")
+            if not sketch_paths and not dxf_paths:
+                messagebox.showinfo("Nothing sent", "No matching generated files were found.")
+                return
+            aw_orders = self.selected_or_visible_aw_orders()
+            orders = [self.order_by_aw[aw_order] for aw_order in aw_orders if aw_order in self.order_by_aw]
+            order_folder = Path(self.folder_var.get()).resolve()
+            process_list_path = Path(self.process_list_var.get()).resolve()
         except Exception as exc:
             messagebox.showerror("Send failed", str(exc))
             return
-        if not copied:
-            messagebox.showinfo("Nothing sent", "No matching generated files were found.")
-            return
+
+        self.start_background_activity("Sending generated files to shop folders...")
+        worker = threading.Thread(
+            target=self.worker_send_outputs,
+            args=(sketch_paths, dxf_paths, missing, archive_inputs, orders, order_folder, process_list_path),
+            daemon=True,
+        )
+        worker.start()
+
+    def worker_send_outputs(
+        self,
+        sketch_paths: list[Path],
+        dxf_paths: list[Path],
+        missing: list[str],
+        archive_inputs: bool,
+        orders: list[shower_batch.ProcessOrder],
+        order_folder: Path,
+        process_list_path: Path,
+    ) -> None:
+        try:
+            copied: list[Path] = []
+            archived: list[Path] = []
+            archive_warnings: list[str] = []
+            if sketch_paths:
+                copied.extend(self.copy_outputs_to_folder(sketch_paths, self.SHOP_SKETCHES_DIR))
+            if dxf_paths:
+                copied.extend(self.copy_outputs_to_folder(dxf_paths, self.SHOP_PROGRAMS_DIR))
+            if copied and archive_inputs:
+                archived, archive_warnings = self.archive_sent_input_files_for_orders(
+                    orders,
+                    order_folder,
+                    process_list_path,
+                )
+            self.worker_queue.put(
+                (
+                    "send_done",
+                    {
+                        "copied": copied,
+                        "missing": missing,
+                        "archived": archived,
+                        "archive_warnings": archive_warnings,
+                    },
+                )
+            )
+        except Exception as exc:
+            self.worker_queue.put(("send_error", str(exc)))
+
+    @staticmethod
+    def send_complete_details(
+        copied: list[Path],
+        missing: list[str],
+        archived: list[Path],
+        archive_warnings: list[str],
+    ) -> str:
         details = f"Copied {len(copied)} file(s) to the shop folders."
         sent_names = "\n".join(f"- {path.name}" for path in copied[:30])
         if sent_names:
@@ -2419,8 +2692,14 @@ try {{
             details += f"\n...and {len(copied) - 30} more"
         if missing:
             details += "\nNo matching " + " or ".join(missing) + " were found."
-        self.status_var.set(details)
-        messagebox.showinfo("Send complete", details)
+        if archived:
+            archive_names = "\n".join(f"- {path}" for path in archived[:20])
+            details += f"\n\nArchived {len(archived)} input file(s) into dated folders:\n{archive_names}"
+            if len(archived) > 20:
+                details += f"\n...and {len(archived) - 20} more"
+        if archive_warnings:
+            details += "\n\nArchive notes:\n" + "\n".join(f"- {warning}" for warning in archive_warnings)
+        return details
 
     def copy_outputs_to_folder(self, paths: list[Path], target_dir: Path) -> list[Path]:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -2432,6 +2711,238 @@ try {{
             shutil.copy2(source, target)
             copied.append(target)
         return copied
+
+    def archive_sent_input_files(self, aw_orders: list[str]) -> tuple[list[Path], list[str]]:
+        if not aw_orders:
+            return [], ["No scanned or selected orders were available to archive."]
+        orders = [self.order_by_aw[aw_order] for aw_order in aw_orders if aw_order in self.order_by_aw]
+        return self.archive_sent_input_files_for_orders(
+            orders,
+            Path(self.folder_var.get()).resolve(),
+            Path(self.process_list_var.get()).resolve(),
+        )
+
+    def archive_sent_input_files_for_orders(
+        self,
+        orders: list[shower_batch.ProcessOrder],
+        order_folder: Path,
+        process_list_path: Path,
+    ) -> tuple[list[Path], list[str]]:
+        if not orders:
+            return [], ["No matching scanned order records were available to archive."]
+
+        dated_name = self.dated_archive_folder_name()
+        order_archive_dir = self.archive_dir_for_input_root(order_folder, dated_name)
+        archived: list[Path] = []
+        warnings: list[str] = []
+
+        order_files = self.matching_order_files(order_folder, orders, root_only=True, inspect_pdf_text=True)
+        if order_files:
+            for source in order_files:
+                archived.append(self.move_file_to_folder(source, order_archive_dir))
+        else:
+            warnings.append("No root-level order PDF/DXF input files matched the sent orders.")
+
+        try:
+            process_list_files = shower_batch.process_list_files(process_list_path)
+        except Exception as exc:
+            process_list_files = []
+            warnings.append(f"Could not archive process lists: {exc}")
+
+        if process_list_files:
+            process_archive_dir = self.process_list_archive_dir(process_list_path, dated_name)
+            for source in process_list_files:
+                if source.parent.resolve() == process_archive_dir.resolve():
+                    continue
+                archived.append(self.move_file_to_folder(source, process_archive_dir))
+        else:
+            warnings.append("No process-list .xlsx files were available to archive.")
+
+        return archived, warnings
+
+    @staticmethod
+    def archive_dir_for_input_root(input_root: Path, dated_name: str) -> Path:
+        if ShowerProgrammerApp.INPUT_ARCHIVE_FOLDER_RE.match(input_root.name):
+            return input_root
+        return input_root / dated_name
+
+    @staticmethod
+    def process_list_archive_dir(process_list_path: Path, dated_name: str) -> Path:
+        if process_list_path.is_file():
+            if ShowerProgrammerApp.INPUT_ARCHIVE_FOLDER_RE.match(process_list_path.parent.name):
+                return process_list_path.parent
+            return process_list_path.parent / dated_name
+        if ShowerProgrammerApp.INPUT_ARCHIVE_FOLDER_RE.match(process_list_path.name):
+            return process_list_path
+        return process_list_path / dated_name
+
+    @staticmethod
+    def dated_archive_folder_name(moment: datetime | None = None) -> str:
+        moment = moment or datetime.now()
+        return f"{moment.month}.{moment.day}.{moment:%y}"
+
+    @staticmethod
+    def move_file_to_folder(source: Path, target_dir: Path) -> Path:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = ShowerProgrammerApp.unique_target_path(target_dir / source.name)
+        shutil.move(str(source), str(target))
+        return target
+
+    @staticmethod
+    def unique_target_path(path: Path) -> Path:
+        if not path.exists():
+            return path
+        stem = path.stem
+        suffix = path.suffix
+        for index in range(2, 10_000):
+            candidate = path.with_name(f"{stem} ({index}){suffix}")
+            if not candidate.exists():
+                return candidate
+        raise RuntimeError(f"Could not choose a unique archive name for {path}")
+
+    @classmethod
+    def copy_process_lists_from_import_folder(cls, process_list_path: Path) -> dict[str, object]:
+        source_dir = cls.EDI_IMPORT_ORDERS_DIR
+        summary: dict[str, object] = {
+            "copied": [],
+            "skipped": 0,
+            "source": str(source_dir),
+            "source_missing": False,
+        }
+        if not source_dir.exists():
+            summary["source_missing"] = True
+            return summary
+
+        target_dir = cls.process_list_import_target_dir(process_list_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[Path] = []
+        skipped = 0
+        for source in cls.importable_process_list_files(source_dir):
+            target = target_dir / source.name
+            if cls.copy_file_if_needed(source, target):
+                copied.append(target)
+            else:
+                skipped += 1
+        summary["copied"] = copied
+        summary["skipped"] = skipped
+        return summary
+
+    @classmethod
+    def importable_process_list_files(cls, source_dir: Path) -> list[Path]:
+        files = [
+            candidate
+            for candidate in source_dir.iterdir()
+            if candidate.is_file()
+            and not candidate.name.startswith("~$")
+            and candidate.suffix.lower() in cls.PROCESS_LIST_FILE_EXTENSIONS
+        ]
+        return sorted(files, key=lambda candidate: candidate.name.lower())
+
+    @staticmethod
+    def process_list_import_target_dir(process_list_path: Path) -> Path:
+        if process_list_path.suffix:
+            return process_list_path.parent
+        return process_list_path
+
+    @classmethod
+    def copy_edi_orders_for_process_orders(
+        cls,
+        target_dir: Path,
+        orders: list[shower_batch.ProcessOrder],
+    ) -> dict[str, object]:
+        source_dir = cls.EDI_IMPORT_ORDERS_DIR
+        summary: dict[str, object] = {
+            "copied": [],
+            "skipped": 0,
+            "source": str(source_dir),
+            "source_missing": False,
+        }
+        if not orders:
+            return summary
+        if not source_dir.exists():
+            summary["source_missing"] = True
+            return summary
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[Path] = []
+        skipped = 0
+        for source in cls.matching_order_files(source_dir, orders, root_only=True, inspect_pdf_text=True):
+            target = target_dir / source.name
+            if cls.copy_file_if_needed(source, target):
+                copied.append(target)
+            else:
+                skipped += 1
+        summary["copied"] = copied
+        summary["skipped"] = skipped
+        return summary
+
+    @classmethod
+    def matching_order_files(
+        cls,
+        folder: Path,
+        orders: list[shower_batch.ProcessOrder],
+        *,
+        root_only: bool,
+        inspect_pdf_text: bool,
+    ) -> list[Path]:
+        if not folder.exists():
+            return []
+        candidates = folder.glob("*") if root_only else folder.rglob("*")
+        matched: list[Path] = []
+        for path in candidates:
+            if not path.is_file() or path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
+                continue
+            if cls.file_matches_process_orders(path, orders, inspect_pdf_text=inspect_pdf_text):
+                matched.append(path)
+        return sorted(matched, key=lambda candidate: candidate.name.lower())
+
+    @staticmethod
+    def file_matches_process_orders(
+        path: Path,
+        orders: list[shower_batch.ProcessOrder],
+        *,
+        inspect_pdf_text: bool,
+    ) -> bool:
+        suffix = path.suffix.lower()
+        norm_stem = programmer.normalize_lookup(path.stem)
+        for order in orders:
+            norm_job = programmer.normalize_lookup(order.job_name)
+            if not norm_job:
+                continue
+            if suffix == ".dxf":
+                if any(programmer.dxf_match_score(path, norm_job, item) is not None for item in order.item_numbers):
+                    return True
+                continue
+            if suffix == ".pdf":
+                if norm_job in norm_stem:
+                    return True
+                guessed_job = programmer.job_from_filename(path.name)
+                if guessed_job and norm_job in programmer.normalize_lookup(guessed_job):
+                    return True
+                if inspect_pdf_text:
+                    try:
+                        extracted_job = programmer.extract_job_from_pdf(path)
+                    except Exception:
+                        extracted_job = ""
+                    if extracted_job and norm_job in programmer.normalize_lookup(extracted_job):
+                        return True
+        return False
+
+    @staticmethod
+    def copy_file_if_needed(source: Path, target: Path) -> bool:
+        if source.resolve() == target.resolve():
+            return False
+        if target.exists():
+            try:
+                source_stat = source.stat()
+                target_stat = target.stat()
+                if source_stat.st_size == target_stat.st_size and target_stat.st_mtime >= source_stat.st_mtime:
+                    return False
+            except OSError:
+                pass
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        return True
 
     def autocad_save_as_programs(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()

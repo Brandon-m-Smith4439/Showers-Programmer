@@ -8,8 +8,10 @@ import csv
 import html
 import re
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -20,6 +22,7 @@ import shower_programmer as programmer
 
 
 DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
+PROCESS_LIST_EXTENSIONS = {".xlsx", ".xml", ".rtf", ".xls"}
 
 
 def upper_config_list(config: dict[str, object], key: str, default: list[str]) -> set[str]:
@@ -208,6 +211,16 @@ def cell_text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def decode_text_file(path: Path) -> str:
+    data = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16", "utf-16le", "cp1252", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1", errors="replace")
+
+
 def parse_order_item(value: str) -> tuple[str, int] | None:
     match = re.search(r"\b(?P<order>\d{5,})\s*-\s*(?P<item>\d+)\b", value)
     if not match:
@@ -219,33 +232,95 @@ def process_list_files(path: Path) -> list[Path]:
     if path.is_dir():
         files = [
             candidate
-            for candidate in path.glob("*.xlsx")
-            if candidate.is_file() and not candidate.name.startswith("~$")
+            for candidate in path.iterdir()
+            if is_process_list_file(candidate)
         ]
         return sorted(files, key=lambda candidate: candidate.name.lower())
     if path.is_file():
+        if not is_process_list_file(path):
+            raise RuntimeError(
+                f"Unsupported process-list file type: {path.name}. "
+                f"Use one of: {process_list_extension_text()}."
+            )
         return [path]
     raise FileNotFoundError(f"Process list path not found: {path}")
+
+
+def is_process_list_file(path: Path) -> bool:
+    return (
+        path.is_file()
+        and not path.name.startswith("~$")
+        and path.suffix.lower() in PROCESS_LIST_EXTENSIONS
+    )
+
+
+def process_list_extension_text() -> str:
+    return ", ".join(sorted(PROCESS_LIST_EXTENSIONS))
 
 
 def load_process_orders(path: Path) -> list[ProcessOrder]:
     files = process_list_files(path)
     if not files:
-        raise FileNotFoundError(f"No .xlsx process lists found in: {path}")
+        raise FileNotFoundError(
+            f"No supported process lists ({process_list_extension_text()}) found in: {path}"
+        )
     merged: dict[tuple[str, str], ProcessOrder] = {}
-    for workbook_path in files:
-        for order in load_process_orders_from_workbook(workbook_path):
+    for process_list_path in files:
+        for order in load_process_orders_from_file(process_list_path):
             merge_process_order(merged, order)
     return sorted(merged.values(), key=lambda order: (int(order.aw_order), order.job_name))
+
+
+def load_process_orders_from_file(path: Path) -> list[ProcessOrder]:
+    suffix = path.suffix.lower()
+    if suffix == ".xlsx":
+        return load_process_orders_from_workbook(path)
+    if suffix == ".xml":
+        return load_process_orders_from_rows(load_rows_from_spreadsheet_xml(path))
+    if suffix == ".rtf":
+        return load_process_orders_from_rows(load_rows_from_rtf(path))
+    if suffix == ".xls":
+        return load_process_orders_from_legacy_xls(path)
+    raise RuntimeError(
+        f"Unsupported process-list file type: {path.name}. Use one of: {process_list_extension_text()}."
+    )
 
 
 def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
     workbook = load_workbook(path, data_only=True, read_only=True)
     worksheet = workbook.active
 
+    try:
+        return load_process_orders_from_rows(worksheet.iter_rows(values_only=True))
+    finally:
+        workbook.close()
+
+
+def load_process_orders_from_legacy_xls(path: Path) -> list[ProcessOrder]:
+    raw_prefix = path.read_bytes()[:512]
+    if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
+        raise RuntimeError(
+            f"{path.name} is a binary Excel 97-2003 .xls file. "
+            "Export it as XML Spreadsheet 2003 (.xml) for direct import."
+        )
+
+    text_prefix = decode_text_file(path)[:2048].lstrip().lower()
+    if text_prefix.startswith("<?xml") or text_prefix.startswith("<workbook"):
+        return load_process_orders_from_rows(load_rows_from_spreadsheet_xml(path))
+    if text_prefix.startswith("{\\rtf"):
+        return load_process_orders_from_rows(load_rows_from_rtf(path))
+    if text_prefix.startswith("<html") or "<table" in text_prefix:
+        return load_process_orders_from_rows(load_rows_from_html_table(path))
+    raise RuntimeError(
+        f"{path.name} is not a supported .xls process-list export. "
+        "Use Excel XML (.xml), RTF (.rtf), or the current .xlsx format."
+    )
+
+
+def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[ProcessOrder]:
     orders: dict[tuple[str, str], ProcessOrder] = {}
     last_key: tuple[str, str, int] | None = None
-    for row_number, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+    for row_number, row in enumerate(rows, start=1):
         values = list(row)
         order_item = cell_at(values, 6)
         job_name = programmer.clean_job_name(cell_at(values, 13))
@@ -281,8 +356,170 @@ def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
             order = orders[(aw_order, previous_job)]
             order.items[item_number].add_row(row_number, width_text, height_text, delivery_date, customer, processing, machine_hint)
 
-    workbook.close()
     return sorted(orders.values(), key=lambda order: int(order.aw_order))
+
+
+def load_rows_from_spreadsheet_xml(path: Path) -> list[list[str]]:
+    root = ET.parse(path).getroot()
+    for table in root.iter():
+        if xml_local_name(table.tag) != "Table":
+            continue
+        rows = parse_spreadsheet_xml_table(table)
+        if rows:
+            return rows
+    return []
+
+
+def parse_spreadsheet_xml_table(table: ET.Element) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row in table:
+        if xml_local_name(row.tag) != "Row":
+            continue
+        values: list[str] = []
+        current_col = 0
+        for cell in row:
+            if xml_local_name(cell.tag) != "Cell":
+                continue
+            index_text = xml_attr(cell, "Index")
+            if index_text and index_text.isdigit():
+                current_col = max(int(index_text) - 1, 0)
+            while len(values) < current_col:
+                values.append("")
+            values.append(xml_cell_text(cell))
+            current_col += 1
+        if any(value for value in values):
+            rows.append(values)
+    return rows
+
+
+def xml_cell_text(cell: ET.Element) -> str:
+    for child in cell:
+        if xml_local_name(child.tag) == "Data":
+            return cell_text("".join(child.itertext()))
+    return cell_text("".join(cell.itertext()))
+
+
+def xml_attr(element: ET.Element, local_name: str) -> str:
+    for key, value in element.attrib.items():
+        if xml_local_name(key) == local_name:
+            return value
+    return ""
+
+
+def xml_local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1]
+
+
+def load_rows_from_rtf(path: Path) -> list[list[str]]:
+    text = rtf_to_text(decode_text_file(path))
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        values = [cell_text(part) for part in line.split("\t")]
+        if any(values):
+            rows.append(values)
+    return rows
+
+
+def rtf_to_text(source: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char in "{}":
+            index += 1
+            continue
+        if char != "\\":
+            result.append(char)
+            index += 1
+            continue
+
+        index += 1
+        if index >= len(source):
+            break
+        escaped = source[index]
+        if escaped in "{}\\":
+            result.append(escaped)
+            index += 1
+            continue
+        if escaped == "'":
+            hex_value = source[index + 1:index + 3]
+            if len(hex_value) == 2:
+                try:
+                    result.append(bytes.fromhex(hex_value).decode("cp1252"))
+                except Exception:
+                    pass
+            index += 3
+            continue
+        if escaped in "\r\n":
+            index += 1
+            continue
+
+        start = index
+        while index < len(source) and source[index].isalpha():
+            index += 1
+        word = source[start:index]
+        sign = 1
+        if index < len(source) and source[index] == "-":
+            sign = -1
+            index += 1
+        number_start = index
+        while index < len(source) and source[index].isdigit():
+            index += 1
+        number = source[number_start:index]
+        if index < len(source) and source[index] == " ":
+            index += 1
+
+        if word == "cell":
+            result.append("\t")
+        elif word == "row":
+            result.append("\n")
+        elif word in {"par", "line"}:
+            result.append("\n")
+        elif word == "tab":
+            result.append("\t")
+        elif word == "u" and number:
+            codepoint = sign * int(number)
+            if codepoint < 0:
+                codepoint += 65536
+            try:
+                result.append(chr(codepoint))
+            except ValueError:
+                pass
+    return "".join(result)
+
+
+class ProcessListHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self.current_row: list[str] | None = None
+        self.current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "tr":
+            self.current_row = []
+        elif tag.lower() in {"td", "th"} and self.current_row is not None:
+            self.current_cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"td", "th"} and self.current_row is not None and self.current_cell is not None:
+            self.current_row.append(cell_text(html.unescape("".join(self.current_cell))))
+            self.current_cell = None
+        elif tag.lower() == "tr" and self.current_row is not None:
+            if any(self.current_row):
+                self.rows.append(self.current_row)
+            self.current_row = None
+            self.current_cell = None
+
+    def handle_data(self, data: str) -> None:
+        if self.current_cell is not None:
+            self.current_cell.append(data)
+
+
+def load_rows_from_html_table(path: Path) -> list[list[str]]:
+    parser = ProcessListHTMLParser()
+    parser.feed(decode_text_file(path))
+    return parser.rows
 
 
 def merge_process_order(

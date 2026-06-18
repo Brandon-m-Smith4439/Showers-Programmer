@@ -2,7 +2,6 @@
   "item_overrides": {
     "234780": {
       "1": {
-        "label_font_size": 21.0,
         "machine": "WJ",
         "skip_dxf": false
       },
@@ -11,310 +10,97 @@
         "skip_dxf": false
       }
     },
-    "234941": {
-      "1": {
-        "indicator_corner": "top_left",
-        "indicator_x": 183.533,
-        "indicator_y": 622.324,
-        "label_x": 298.171,
-        "label_y": 481.355,
-        "rotation_degrees": 90.0
-      },
-      "2": {
-        "label_x": 303.279,
-        "label_y": 487.009
-      },
-      "_order_checked": true
-    },
-    "234942": {
-      "1": {
-        "label_x": 308.488,
-        "label_y": 499.688
-      },
-      "2": {
-        "label_x": 308.446,
-        "label_y": 478.496
-      },
-      "_order_checked": true
-    },
-    "234943": {
-      "1": {
-        "indicator_corner": "bottom_right",
-        "indicator_x": 456.54,
-        "indicator_y": 121.334,
-        "label_x": 306.055,
-        "label_y": 485.521,
-        "rotation_degrees": -90.0
-      },
-      "2": {
-        "hinge_side": "right",
-        "hinges_up": false,
-        "indicator_corner": "top_right",
-        "indicator_x": 409.506,
-        "indicator_y": 600.458,
-        "label_x": 307.197,
-        "label_y": 480.996,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234944": {
-      "1": {
-        "hinge_side": "right",
-        "hinges_up": false,
-        "indicator_corner": "top_right",
-        "indicator_x": 409.577,
-        "indicator_y": 590.959,
-        "label_x": 315.03,
-        "label_y": 526.545,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "2": {
-        "label_x": 294.336,
-        "label_y": 527.367
-      },
-      "_order_checked": true
-    },
-    "234945": {
-      "1": {
-        "hinge_side": "right",
-        "hinges_up": false,
-        "indicator_corner": "top_right",
-        "indicator_x": 406.767,
-        "indicator_y": 588.841,
-        "label_x": 298.757,
-        "label_y": 465.57,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234946": {
-      "2": {
-        "indicator_corner": "bottom_right",
-        "indicator_x": 461.541,
-        "indicator_y": 122.167,
-        "label_x": 298.055,
-        "label_y": 488.675,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234991": {
-      "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 230.631,
-        "indicator_y": 160.001,
-        "label_x": 307.556,
-        "label_y": 483.847,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
-      },
-      "2": {
-        "label_x": 310.823,
-        "label_y": 491.82
-      },
-      "_order_checked": true
-    },
-    "234992": {
-      "1": {
-        "label_x": 298.472,
-        "label_y": 452.566
-      },
-      "2": {
-        "indicator_corner": "top_left",
-        "indicator_x": 169.784,
-        "indicator_y": 621.492,
-        "label_x": 307.88,
-        "label_y": 495.521,
-        "rotation_degrees": 90.0
-      },
-      "3": {
-        "label_x": 297.196,
-        "label_y": 488.675
-      },
-      "_order_checked": true
-    },
-    "234993": {
-      "1": {
-        "label_x": 301.197,
-        "label_y": 443.373
-      },
-      "2": {
-        "indicator_corner": "top_left",
-        "indicator_x": 135.116,
-        "indicator_y": 618.992,
-        "label_x": 310.28,
-        "label_y": 510.521,
-        "rotation_degrees": 90.0
-      },
-      "3": {
-        "label_x": 308.429,
-        "label_y": 501.175
-      },
-      "_order_checked": true
-    },
-    "234994": {
-      "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 233.134,
-        "indicator_y": 160.018,
-        "label_x": 304.23,
-        "label_y": 487.188,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
-      },
-      "2": {
-        "label_x": 299.667,
-        "label_y": 496.829
-      },
-      "_order_checked": true
-    },
-    "234995": {
-      "1": {
-        "label_x": 306.67,
-        "label_y": 539.034
-      },
-      "2": {
-        "label_x": 308.695,
-        "label_y": 448.317
-      },
-      "3": {
-        "label_x": 309.588,
-        "label_y": 524.867
-      },
-      "_order_checked": true
-    },
-    "234996": {
-      "1": {
-        "label_x": 301.805,
-        "label_y": 443.954
-      },
-      "2": {
-        "hinge_side": "right",
-        "hinges_up": false,
-        "indicator_corner": "top_right",
-        "indicator_x": 406.373,
-        "indicator_y": 597.491,
-        "label_x": 298.363,
-        "label_y": 472.663,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234997": {
-      "1": {
-        "label_x": 307.278,
-        "label_y": 503.424
-      },
-      "2": {
-        "hinge_side": "right",
-        "hinges_up": false,
-        "indicator_corner": "top_right",
-        "indicator_x": 412.668,
-        "indicator_y": 591.741,
-        "label_x": 313.78,
-        "label_y": 480.57,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
-    "234998": {
-      "1": {
-        "label_x": 302.98,
-        "label_y": 451.861
-      },
-      "2": {
-        "label_x": 312.029,
-        "label_y": 463.903
-      },
-      "_order_checked": true
-    },
-    "234999": {
-      "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 230.001,
-        "indicator_y": 157.825,
-        "label_x": 308.196,
-        "label_y": 493.778,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
-      },
-      "2": {
-        "label_x": 307.255,
-        "label_y": 486.861
-      },
-      "_order_checked": true
-    },
-    "235000": {
-      "1": {
-        "label_x": 313.168,
-        "label_y": 454.361
-      },
-      "2": {
-        "hinge_side": "right",
-        "hinges_up": false,
-        "indicator_corner": "top_right",
-        "indicator_x": 404.501,
-        "indicator_y": 591.075,
-        "label_x": 301.946,
-        "label_y": 479.736,
-        "manual_indicator_corner": true,
-        "rotation_degrees": -90.0
-      },
-      "_order_checked": true
-    },
     "235001": {
-      "1": {
-        "label_x": 307.43,
-        "label_y": 478.778
-      },
       "2": {
-        "diamon_fusion_x": 302.667,
-        "diamon_fusion_y": 614.5,
-        "indicator_corner": "bottom_left",
-        "indicator_size": 18.0,
-        "label_x": 313.612,
-        "label_y": 484.736,
         "machine": "DENVER 2",
-        "rotation_degrees": 90,
         "skip_dxf": false
+      }
+    },
+    "235191": {
+      "1": {
+        "hinge_side": "left",
+        "hinges_up": false,
+        "indicator_corner": "bottom_left",
+        "indicator_x": 230.368,
+        "indicator_y": 161.334,
+        "label_x": 295.863,
+        "label_y": 499.688,
+        "manual_indicator_corner": true,
+        "remake_x": 303.5,
+        "remake_y": 621.992,
+        "rotation_degrees": 90.0
       },
       "_order_checked": true
     },
-    "235002": {
-      "1": {
-        "indicator_corner": "top_left",
-        "indicator_x": 216.281,
-        "indicator_y": 628.156,
-        "label_x": 306.996,
-        "label_y": 478.959,
-        "rotation_degrees": 90.0
-      },
+    "235192": {
       "2": {
         "hinge_side": "right",
         "hinges_up": false,
         "indicator_corner": "top_right",
-        "indicator_x": 411.864,
-        "indicator_y": 597.817,
-        "label_x": 315.854,
-        "label_y": 445.806,
+        "indicator_x": 387.339,
+        "indicator_y": 595.374,
+        "label_x": 309.986,
+        "label_y": 482.842,
         "manual_indicator_corner": true,
+        "remake_x": 308.5,
+        "remake_y": 625.325,
         "rotation_degrees": -90.0
       },
+      "_order_checked": true
+    },
+    "235193": {
+      "2": {
+        "hinge_side": "right",
+        "hinges_up": false,
+        "indicator_corner": "top_right",
+        "indicator_x": 390.573,
+        "indicator_y": 596.441,
+        "label_x": 299.577,
+        "label_y": 495.996,
+        "manual_indicator_corner": true,
+        "remake_x": 301.0,
+        "remake_y": 625.325,
+        "rotation_degrees": -90.0
+      },
+      "_order_checked": true
+    },
+    "235194": {
+      "1": {
+        "hide_remake": true,
+        "indicator_corner": "top_left",
+        "indicator_x": 190.784,
+        "indicator_y": 623.158,
+        "label_x": 309.255,
+        "label_y": 493.855,
+        "rotation_degrees": 90.0
+      },
+      "2": {
+        "hide_remake": true,
+        "label_x": 305.355,
+        "label_y": 460.712
+      },
       "3": {
-        "label_x": 301.189,
-        "label_y": 435.874
+        "hide_remake": true,
+        "label_x": 307.863,
+        "label_y": 423.347
+      },
+      "_order_checked": true
+    },
+    "235195": {
+      "1": {
+        "hide_remake": true,
+        "label_x": 303.646,
+        "label_y": 509.034
+      },
+      "2": {
+        "hide_remake": true,
+        "label_x": 301.738,
+        "label_y": 498.974
+      },
+      "3": {
+        "hide_remake": true,
+        "label_x": 298.396,
+        "label_y": 454.045
       },
       "_order_checked": true
     }
