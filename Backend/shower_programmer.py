@@ -711,6 +711,37 @@ def sanitize_denver_indicator_override(panel: Panel) -> None:
     panel.manual_indicator_override = False
 
 
+def sanitize_denver_panel_long_side_rotation(panel: Panel, config: dict[str, Any]) -> None:
+    if panel.source_dxf is None or not panel.machine.startswith("DENVER"):
+        return
+    if panel.machine == "DENVER 1" and has_door_programming_evidence(panel, config):
+        return
+    source_dims = dxf_outline_dimensions(panel.source_dxf)
+    if source_dims is None:
+        return
+    source_width, source_height = source_dims
+    if abs(source_width - source_height) <= 0.01:
+        return
+    rotation = panel.rotation_degrees or 0.0
+    swaps_axes = rotation_swaps_source_axes(rotation)
+    if source_width > source_height and swaps_axes:
+        panel.rotation_degrees = 0.0
+        panel.manual_rotation_override = False
+        panel.reasons.append("Denver panel rotation reset to keep long side horizontal")
+    elif source_height > source_width and not swaps_axes:
+        target = denver_grabber_rotation_for_corner(panel.indicator_corner or "")
+        if target is None:
+            target = 90.0
+        panel.rotation_degrees = target
+        panel.manual_rotation_override = False
+        panel.reasons.append("Denver panel rotation adjusted to keep long side horizontal")
+
+
+def rotation_swaps_source_axes(rotation_degrees: float) -> bool:
+    normalized = abs(((float(rotation_degrees) + 180) % 360) - 180)
+    return abs(normalized - 90) <= 1
+
+
 def waterjet_allowed_indicator_corner(corner: str | None) -> str | None:
     if corner in {"top_left", "bottom_right"}:
         return corner
@@ -880,7 +911,7 @@ def has_hinge_label_text(text: str, config: dict[str, Any]) -> bool:
     labels.update({"GEN037", "V1E037", "AV1E037"})
     if any(label and label in upper for label in labels):
         return True
-    return bool(re.search(r"\b(?:A?V1E|GEN)\d{3}\b", upper))
+    return bool(re.search(r"\b(?:A?V1E|A?GEN)\d{3}\b", upper))
 
 
 def door_rotation_for_hinge_side(hinge_side: str, hinges_up: bool) -> float:
@@ -1084,7 +1115,7 @@ def estimate_hinge_side_from_text(
     left_hits = 0
     right_hits = 0
     pattern_parts = [re.escape(label) for label in sorted(normalized_labels, key=len, reverse=True)]
-    pattern_parts.append(r"(?:A?V1E|GEN)\d{3}")
+    pattern_parts.append(r"(?:A?V1E|A?GEN)\d{3}")
     pattern = re.compile("|".join(pattern_parts))
     for row in rows:
         chars = sorted(row["chars"], key=lambda entry: entry[0])
@@ -1203,6 +1234,7 @@ def adjust_indicator_for_source_dxf(panel: Panel, config: dict[str, Any]) -> Non
     if panel.source_dxf is None:
         return
     if panel.manual_rotation_override:
+        sanitize_denver_panel_long_side_rotation(panel, config)
         return
     if panel.machine == "WJ":
         adjust_wj_indicator_corner(panel)
@@ -1214,6 +1246,7 @@ def adjust_indicator_for_source_dxf(panel: Panel, config: dict[str, Any]) -> Non
             adjust_denver_panel_square_side(panel)
     elif panel.machine == "DENVER 2":
         adjust_denver_panel_square_side(panel)
+    sanitize_denver_panel_long_side_rotation(panel, config)
 
 
 def apply_dxf_manual_review_warning(panel: Panel, config: dict[str, Any]) -> None:
@@ -1450,9 +1483,14 @@ def adjust_wj_indicator_corner(panel: Panel) -> None:
 
 
 def adjust_wj_rotation_for_indicator(panel: Panel, config: dict[str, Any]) -> None:
-    if panel.source_dxf is None or panel.width is None or panel.height is None:
+    if panel.source_dxf is None:
         return
-    if panel.height <= panel.width or not panel.indicator_corner:
+    if not panel.indicator_corner:
+        return
+    if not wj_needs_quarter_turn_for_horizontal_output(panel):
+        if abs(panel.rotation_degrees or 0) > 1e-6:
+            panel.rotation_degrees = 0
+            panel.reasons.append("WJ source already long-side horizontal")
         return
     rotation = wj_rotation_for_indicator_corner(panel, config, panel.indicator_corner)
     if rotation is None:
@@ -1463,9 +1501,9 @@ def adjust_wj_rotation_for_indicator(panel: Panel, config: dict[str, Any]) -> No
 
 
 def wj_rotation_for_indicator_corner(panel: Panel, config: dict[str, Any], corner: str | None) -> float | None:
-    if panel.width is None or panel.height is None:
+    if not corner:
         return None
-    if panel.height <= panel.width or not corner:
+    if not wj_needs_quarter_turn_for_horizontal_output(panel):
         return None
     rules = config.get("rules", {})
     mapping = rules.get("waterjet_tall_rotation_by_indicator", {})
@@ -1480,6 +1518,20 @@ def wj_rotation_for_indicator_corner(panel: Panel, config: dict[str, Any], corne
     if value is None:
         return None
     return parse_float(value, panel.rotation_degrees or 0)
+
+
+def wj_needs_quarter_turn_for_horizontal_output(panel: Panel) -> bool:
+    if panel.source_dxf is not None:
+        source_dims = dxf_outline_dimensions(panel.source_dxf)
+        if source_dims is not None:
+            source_width, source_height = source_dims
+            if source_height > source_width + 0.01:
+                return True
+            if source_width > source_height + 0.01:
+                return False
+    if panel.width is not None and panel.height is not None:
+        return panel.height > panel.width
+    return False
 
 
 def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any]) -> None:
@@ -3359,6 +3411,7 @@ def write_adjusted_dxfs(job: Job, force: bool, config: dict[str, Any] | None = N
 def write_panel_dxf(panel: Panel, force: bool, config: dict[str, Any]) -> None:
     if panel.source_dxf is None or panel.output_dxf is None:
         raise ValueError("Panel is missing source or output DXF path.")
+    sanitize_denver_panel_long_side_rotation(panel, config)
     insunits, measurement = dxf_header_metadata_for_panel(panel, config)
     transform_dxf(
         panel.source_dxf,

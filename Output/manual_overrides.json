@@ -16,6 +16,17 @@
         "skip_dxf": false
       }
     },
+    "235131": {
+      "1": {
+        "indicator_corner": "top_right",
+        "indicator_x": 457.584,
+        "indicator_y": 467.786,
+        "label_x": 298.918,
+        "label_y": 392.547,
+        "manual_indicator_corner": true,
+        "rotation_degrees": -90.0
+      }
+    },
     "235191": {
       "1": {
         "hinge_side": "left",

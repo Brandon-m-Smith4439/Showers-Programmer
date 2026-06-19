@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import html
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -23,6 +25,7 @@ import shower_programmer as programmer
 
 DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
 PROCESS_LIST_EXTENSIONS = {".xlsx", ".xml", ".rtf", ".xls"}
+PROCESS_LIST_EXTENSION_PRIORITY = {".xlsx": 0, ".xml": 1, ".rtf": 2, ".xls": 3}
 
 
 def upper_config_list(config: dict[str, object], key: str, default: list[str]) -> set[str]:
@@ -99,7 +102,7 @@ class ProcessItem:
         door_keywords = upper_config_list(config, "door_keywords", ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"])
         door_keywords.update(upper_config_list(config, "hinge_label_keywords", ["GEN037", "V1E037", "AV1E037"]))
         fabrication = process_list_fabrication_keywords(config)
-        if any(keyword in text for keyword in door_keywords) or re.search(r"\b(?:A?V1E|GEN)\d{3}\b", text):
+        if any(keyword in text for keyword in door_keywords) or re.search(r"\b(?:A?V1E|A?GEN)\d{3}\b", text):
             return "DENVER 1"
         if any(keyword in text for keyword in fabrication):
             return "DENVER 2"
@@ -222,7 +225,7 @@ def decode_text_file(path: Path) -> str:
 
 
 def parse_order_item(value: str) -> tuple[str, int] | None:
-    match = re.search(r"\b(?P<order>\d{5,})\s*-\s*(?P<item>\d+)\b", value)
+    match = re.search(r"\b(?P<order>\d{5,})\s*[-_]\s*(?P<item>\d+)\b", value)
     if not match:
         return None
     return match.group("order"), int(match.group("item"))
@@ -235,7 +238,7 @@ def process_list_files(path: Path) -> list[Path]:
             for candidate in path.iterdir()
             if is_process_list_file(candidate)
         ]
-        return sorted(files, key=lambda candidate: candidate.name.lower())
+        return preferred_process_list_exports(files)
     if path.is_file():
         if not is_process_list_file(path):
             raise RuntimeError(
@@ -244,6 +247,20 @@ def process_list_files(path: Path) -> list[Path]:
             )
         return [path]
     raise FileNotFoundError(f"Process list path not found: {path}")
+
+
+def preferred_process_list_exports(files: Iterable[Path]) -> list[Path]:
+    preferred: dict[str, Path] = {}
+    for path in sorted(files, key=lambda candidate: candidate.name.lower()):
+        key = path.stem.lower()
+        current = preferred.get(key)
+        if current is None or process_list_extension_rank(path) < process_list_extension_rank(current):
+            preferred[key] = path
+    return sorted(preferred.values(), key=lambda candidate: candidate.name.lower())
+
+
+def process_list_extension_rank(path: Path) -> int:
+    return PROCESS_LIST_EXTENSION_PRIORITY.get(path.suffix.lower(), 99)
 
 
 def is_process_list_file(path: Path) -> bool:
@@ -265,9 +282,17 @@ def load_process_orders(path: Path) -> list[ProcessOrder]:
             f"No supported process lists ({process_list_extension_text()}) found in: {path}"
         )
     merged: dict[tuple[str, str], ProcessOrder] = {}
+    errors: list[str] = []
     for process_list_path in files:
-        for order in load_process_orders_from_file(process_list_path):
+        try:
+            process_orders = load_process_orders_from_file(process_list_path)
+        except RuntimeError as exc:
+            errors.append(f"{process_list_path.name}: {exc}")
+            continue
+        for order in process_orders:
             merge_process_order(merged, order)
+    if not merged and errors:
+        raise RuntimeError("No process-list orders could be loaded.\n" + "\n".join(errors))
     return sorted(merged.values(), key=lambda order: (int(order.aw_order), order.job_name))
 
 
@@ -276,9 +301,15 @@ def load_process_orders_from_file(path: Path) -> list[ProcessOrder]:
     if suffix == ".xlsx":
         return load_process_orders_from_workbook(path)
     if suffix == ".xml":
-        return load_process_orders_from_rows(load_rows_from_spreadsheet_xml(path))
+        rows = load_rows_from_spreadsheet_xml(path)
+        if not rows:
+            rows = load_rows_from_crystal_xml(path)
+        return load_process_orders_from_rows(rows)
     if suffix == ".rtf":
-        return load_process_orders_from_rows(load_rows_from_rtf(path))
+        orders = load_process_orders_from_rows(load_rows_from_rtf(path))
+        if orders:
+            return orders
+        return load_process_orders_from_rows(load_rows_from_crystal_rtf(path))
     if suffix == ".xls":
         return load_process_orders_from_legacy_xls(path)
     raise RuntimeError(
@@ -299,10 +330,8 @@ def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
 def load_process_orders_from_legacy_xls(path: Path) -> list[ProcessOrder]:
     raw_prefix = path.read_bytes()[:512]
     if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
-        raise RuntimeError(
-            f"{path.name} is a binary Excel 97-2003 .xls file. "
-            "Export it as XML Spreadsheet 2003 (.xml) for direct import."
-        )
+        converted = convert_legacy_xls_to_xlsx(path)
+        return load_process_orders_from_workbook(converted)
 
     text_prefix = decode_text_file(path)[:2048].lstrip().lower()
     if text_prefix.startswith("<?xml") or text_prefix.startswith("<workbook"):
@@ -315,6 +344,130 @@ def load_process_orders_from_legacy_xls(path: Path) -> list[ProcessOrder]:
         f"{path.name} is not a supported .xls process-list export. "
         "Use Excel XML (.xml), RTF (.rtf), or the current .xlsx format."
     )
+
+
+def convert_legacy_xls_to_xlsx(path: Path) -> Path:
+    target = converted_xlsx_path(path)
+    try:
+        if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
+            return target
+    except OSError:
+        pass
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_text = str(path.resolve())
+    target_text = str(target.resolve())
+    script = (
+        "$Source = @'\n"
+        + source_text
+        + "\n'@\n$Target = @'\n"
+        + target_text
+        + "\n'@\n"
+        + r"""
+$ErrorActionPreference = 'Stop'
+$excel = $null
+$workbook = $null
+try {
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = $false
+  $workbook = $excel.Workbooks.Open($Source)
+  $workbook.SaveAs($Target, 51)
+  $workbook.Close($false)
+} finally {
+  if ($workbook -ne $null) {
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+  }
+  if ($excel -ne $null) {
+    $excel.Quit()
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+  }
+}
+"""
+    )
+    excel_processes_before = excel_process_ids()
+    timeout_seconds = 45
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stop_excel_processes(excel_process_ids() - excel_processes_before)
+        raise RuntimeError(
+            f"{path.name} is a binary Excel 97-2003 .xls file and Excel did not finish "
+            f"auto-converting it within {timeout_seconds} seconds. Use the Crystal Reports XML "
+            "export or save the workbook as .xlsx."
+        ) from exc
+    except Exception as exc:
+        stop_excel_processes(excel_process_ids() - excel_processes_before)
+        raise RuntimeError(
+            f"{path.name} is a binary Excel 97-2003 .xls file and could not be auto-converted. "
+            "Use the Crystal Reports XML export or save the workbook as .xlsx."
+        ) from exc
+    if not target.exists():
+        raise RuntimeError(f"Excel did not create the converted workbook for {path.name}.")
+    return target
+
+
+def converted_xlsx_path(path: Path) -> Path:
+    digest = hashlib.sha1(str(path.resolve()).encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return programmer.default_output_dir() / "Converted Process Lists" / f"{path.stem}_{digest}.xlsx"
+
+
+def excel_process_ids() -> set[int]:
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-Process EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return set()
+    ids: set[int] = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.isdigit():
+            ids.add(int(line))
+    return ids
+
+
+def stop_excel_processes(process_ids: set[int]) -> None:
+    if not process_ids:
+        return
+    id_text = ",".join(str(process_id) for process_id in sorted(process_ids))
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Stop-Process -Id {id_text} -Force -ErrorAction SilentlyContinue",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
 
 
 def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[ProcessOrder]:
@@ -370,6 +523,90 @@ def load_rows_from_spreadsheet_xml(path: Path) -> list[list[str]]:
     return []
 
 
+def load_rows_from_crystal_xml(path: Path) -> list[list[str]]:
+    root = ET.parse(path).getroot()
+    if "crystal-reports" not in root.tag.lower():
+        return []
+
+    records: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    pending: dict[str, object] = {}
+
+    def finish_current() -> None:
+        nonlocal current
+        if current and current.get("order_item"):
+            records.append(current)
+        current = None
+
+    for field in root.iter():
+        if xml_local_name(field.tag) != "Field":
+            continue
+        field_name = field.attrib.get("FieldName", "")
+        value = crystal_field_value(field)
+        if not value:
+            continue
+
+        if field_name == "{@Processingtext}":
+            if current and current.get("order_item") and current.get("width") and current.get("height"):
+                finish_current()
+            pending = {"processing": value}
+            continue
+        if field_name == "{PROD_JOBITEM_GLASS.MENGE}":
+            pending["quantity"] = value
+            continue
+        if field_name == "{@order_item}":
+            finish_current()
+            current = dict(pending)
+            current["order_item"] = value
+            pending = {}
+            continue
+        if current is None:
+            continue
+
+        if field_name == "{@Sheet_Width}":
+            current["width"] = value
+        elif field_name == "{@Sheet_Height}":
+            current["height"] = value
+        elif field_name == "{BW_AUFTR_KOPF.BEST_TEXT2}":
+            current["delivery_date"] = value
+        elif field_name == "{BW_AUFTR_KOPF.AH_NAME1}":
+            current["customer"] = value
+        elif field_name == "{BW_AUFTR_KOPF.BEST_TEXT1}":
+            current["job_name"] = value
+        elif field_name == "{@Next_machine}":
+            machine_hints = current.setdefault("machine_hints", [])
+            if isinstance(machine_hints, list) and value not in machine_hints:
+                machine_hints.append(value)
+
+    finish_current()
+    return [crystal_record_to_process_row(record) for record in records]
+
+
+def crystal_field_value(field: ET.Element) -> str:
+    for child in field:
+        if xml_local_name(child.tag) == "FormattedValue":
+            return cell_text("".join(child.itertext()))
+    for child in field:
+        if xml_local_name(child.tag) == "Value":
+            return cell_text("".join(child.itertext()))
+    return cell_text("".join(field.itertext()))
+
+
+def crystal_record_to_process_row(record: dict[str, object]) -> list[str]:
+    row = [""] * 22
+    row[2] = str(record.get("width", ""))
+    row[3] = str(record.get("height", ""))
+    row[6] = str(record.get("order_item", ""))
+    row[7] = str(record.get("processing", ""))
+    row[8] = str(record.get("delivery_date", ""))
+    row[10] = str(record.get("customer", ""))
+    row[13] = str(record.get("job_name", ""))
+    machine_hints = record.get("machine_hints", [])
+    if isinstance(machine_hints, list):
+        row[21] = " | ".join(str(value) for value in machine_hints)
+    return row
+
+
 def parse_spreadsheet_xml_table(table: ET.Element) -> list[list[str]]:
     rows: list[list[str]] = []
     for row in table:
@@ -418,6 +655,69 @@ def load_rows_from_rtf(path: Path) -> list[list[str]]:
         if any(values):
             rows.append(values)
     return rows
+
+
+def load_rows_from_crystal_rtf(path: Path) -> list[list[str]]:
+    lines = [
+        cell_text(line)
+        for line in rtf_to_text(decode_text_file(path)).splitlines()
+        if cell_text(line)
+    ]
+    rows: list[list[str]] = []
+    for index, line in enumerate(lines):
+        parsed = parse_order_item(line)
+        if not parsed:
+            continue
+        measurements = measurement_lines_after(lines, index + 1, 2)
+        width = measurements[0] if len(measurements) >= 1 else ""
+        height = measurements[1] if len(measurements) >= 2 else ""
+        machine_hint = first_matching_line(lines[index + 1:index + 8], r"\b(?:WATER\s*JET|WATERJET|WJ|DENVER\s*[12])\b")
+        date_index = first_matching_index(lines, index + 1, index + 10, r"\b\d{1,2}/\d{1,2}/\d{2,4}\b")
+        delivery_date = lines[date_index] if date_index is not None else ""
+        customer = lines[date_index + 1] if date_index is not None and date_index + 1 < len(lines) else ""
+        job_name = lines[date_index + 2] if date_index is not None and date_index + 2 < len(lines) else ""
+        processing = " | ".join(
+            value
+            for value in lines[max(0, index - 4):index]
+            if not re.fullmatch(r"\d+(?:\.\d+)?", value)
+        )
+        row = [""] * 22
+        row[2] = width
+        row[3] = height
+        row[6] = line.replace("_", "-")
+        row[7] = processing
+        row[8] = delivery_date
+        row[10] = customer
+        row[13] = programmer.clean_job_name(job_name)
+        row[21] = machine_hint
+        rows.append(row)
+    return rows
+
+
+def measurement_lines_after(lines: list[str], start: int, count: int) -> list[str]:
+    measurements: list[str] = []
+    for line in lines[start:start + 8]:
+        if re.search(r'\d+\s*"\s*(?:\d+/\d+)?|\d+-\d+/\d+|\d+/\d+', line):
+            measurements.append(line)
+            if len(measurements) >= count:
+                break
+    return measurements
+
+
+def first_matching_line(lines: Iterable[str], pattern: str) -> str:
+    regex = re.compile(pattern, re.IGNORECASE)
+    for line in lines:
+        if regex.search(line):
+            return line
+    return ""
+
+
+def first_matching_index(lines: list[str], start: int, stop: int, pattern: str) -> int | None:
+    regex = re.compile(pattern)
+    for index in range(start, min(stop, len(lines))):
+        if regex.search(lines[index]):
+            return index
+    return None
 
 
 def rtf_to_text(source: str) -> str:

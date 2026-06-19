@@ -51,8 +51,8 @@ class ShowerProgrammerApp:
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
         self.root.after(0, lambda: self.maximize_window(self.root))
-        self.folder_var = tk.StringVar(value=str(programmer.default_orders_dir()))
-        self.process_list_var = tk.StringVar(value=str(programmer.default_process_list_path()))
+        self.folder_var = tk.StringVar(value=str(self.default_order_source_path()))
+        self.process_list_var = tk.StringVar(value=str(self.default_process_list_source_path()))
         self.output_dir_var = tk.StringVar(value=str(programmer.default_output_dir()))
         self.force_var = tk.BooleanVar(value=False)
         self.skip_dxf_var = tk.BooleanVar(value=False)
@@ -103,6 +103,16 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    @classmethod
+    def default_order_source_path(cls) -> Path:
+        return cls.EDI_IMPORT_ORDERS_DIR if cls.EDI_IMPORT_ORDERS_DIR.exists() else programmer.default_orders_dir()
+
+    @classmethod
+    def default_process_list_source_path(cls) -> Path:
+        if cls.EDI_IMPORT_ORDERS_DIR.exists() and cls.importable_process_list_files(cls.EDI_IMPORT_ORDERS_DIR):
+            return cls.EDI_IMPORT_ORDERS_DIR
+        return programmer.default_process_list_path()
+
     def build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -119,6 +129,7 @@ class ShowerProgrammerApp:
         ttk.Button(actions, text="Process Selected", command=self.process_selected).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Process All", command=lambda: self.run_orders(self.orders, apply=True)).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Review Order", command=self.open_order_review).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(actions, text="Open Input", command=self.open_input_folder).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Open Sketches", command=self.open_sketches_folder).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Open Programs", command=self.open_programs_folder).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Mark Checked", command=self.mark_selected_orders_checked).pack(side=tk.LEFT, padx=(8, 0))
@@ -128,8 +139,6 @@ class ShowerProgrammerApp:
         ttk.Button(actions, text="Open Last Report", command=self.open_last_report).pack(side=tk.RIGHT)
         ttk.Button(actions, text="Open Output Folder", command=self.open_output_folder).pack(side=tk.RIGHT, padx=(0, 8))
         ttk.Button(actions, text="Open Config", command=self.open_config).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(actions, text="Minimize", command=self.root.iconify).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(actions, text="Maximize", command=lambda: self.toggle_window_maximize(self.root)).pack(side=tk.RIGHT, padx=(0, 8))
 
         maintenance = ttk.Frame(outer)
         maintenance.pack(fill=tk.X, pady=(0, 8))
@@ -924,8 +933,11 @@ class ShowerProgrammerApp:
         copied = import_summary.get("copied", [])
         skipped = int(import_summary.get("skipped", 0) or 0)
         source_missing = bool(import_summary.get("source_missing", False))
+        direct = bool(import_summary.get("direct", False))
         if source_missing:
             return ""
+        if direct:
+            return "Using process lists directly from the dedicated input folder."
         copied_count = len(copied) if isinstance(copied, list) else 0
         if copied_count:
             return f"Imported/updated {copied_count} process list file(s); {skipped} already current."
@@ -940,8 +952,11 @@ class ShowerProgrammerApp:
         copied = import_summary.get("copied", [])
         skipped = int(import_summary.get("skipped", 0) or 0)
         source_missing = bool(import_summary.get("source_missing", False))
+        direct = bool(import_summary.get("direct", False))
         if source_missing:
             return f"EDI import skipped; source folder not found: {import_summary.get('source', '')}"
+        if direct:
+            return "Using order PDFs/DXFs directly from the dedicated input folder."
         copied_count = len(copied) if isinstance(copied, list) else 0
         if copied_count:
             return f"Imported/updated {copied_count} matching EDI file(s); {skipped} already current."
@@ -2808,12 +2823,16 @@ try {{
             "skipped": 0,
             "source": str(source_dir),
             "source_missing": False,
+            "direct": False,
         }
         if not source_dir.exists():
             summary["source_missing"] = True
             return summary
 
         target_dir = cls.process_list_import_target_dir(process_list_path)
+        if cls.same_path(source_dir, target_dir):
+            summary["direct"] = True
+            return summary
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
@@ -2856,11 +2875,15 @@ try {{
             "skipped": 0,
             "source": str(source_dir),
             "source_missing": False,
+            "direct": False,
         }
         if not orders:
             return summary
         if not source_dir.exists():
             summary["source_missing"] = True
+            return summary
+        if cls.same_path(source_dir, target_dir):
+            summary["direct"] = True
             return summary
 
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -2895,6 +2918,13 @@ try {{
             if cls.file_matches_process_orders(path, orders, inspect_pdf_text=inspect_pdf_text):
                 matched.append(path)
         return sorted(matched, key=lambda candidate: candidate.name.lower())
+
+    @staticmethod
+    def same_path(first: Path, second: Path) -> bool:
+        try:
+            return first.resolve() == second.resolve()
+        except Exception:
+            return str(first).lower() == str(second).lower()
 
     @staticmethod
     def file_matches_process_orders(
@@ -3992,6 +4022,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
     def open_output_folder(self) -> None:
         path = Path(self.output_dir_var.get()).resolve()
         path.mkdir(parents=True, exist_ok=True)
+        os.startfile(path)
+
+    def open_input_folder(self) -> None:
+        path = Path(self.folder_var.get()).resolve()
+        if not path.exists():
+            messagebox.showerror("Input folder not found", f"Could not find:\n{path}")
+            return
         os.startfile(path)
 
     def open_sketches_folder(self) -> None:

@@ -1,0 +1,1935 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CrystalReport xmlns="urn:crystal-reports:schemas:report-detail"  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:crystal-reports:schemas:report-detail http://www.businessobjects.com/products/xml/CR2008Schema.xsd">
+<Group Level="1">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="Station1" FieldName="{@Station}"><FormattedValue>Kodiak (Polisher)  (2000)</FormattedValue><Value>Kodiak (Polisher)  (2000)</Value></Field>
+<Field Name="TextProdukt1" FieldName="{@Text_Produkt}"><FormattedValue>Product Description:</FormattedValue><Value>Product Description:</Value></Field>
+<Field Name="TextProcess1" FieldName="{@Text_Process}"><FormattedValue>Processing</FormattedValue><Value>Processing</Value></Field>
+<Subreport Name="Subreport1">
+<ReportHeader>
+</ReportHeader>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="DIMDATABASE1" FieldName="{KA_FIRMA.DIM_DATABASE}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="DIMFRACTION1" FieldName="{KA_FIRMA.DIM_FRACTION}"><FormattedValue>32</FormattedValue><Value>32</Value></Field>
+<Field Name="DIMTHICKNESS1" FieldName="{KA_FIRMA.DIM_THICKNESS}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+</Section>
+</Details>
+<ReportFooter>
+</ReportFooter>
+</Subreport>
+<Field Name="TextHeadline111" FieldName="{@Text_Width}"><FormattedValue>Width</FormattedValue><Value>Width</Value></Field>
+<Field Name="TextHeadline132" FieldName="{@Text_Height}"><FormattedValue>Height</FormattedValue><Value>Height</Value></Field>
+<Field Name="TextShapeno1" FieldName="{@Text_Shapeno}"><FormattedValue>Shape</FormattedValue><Value>Shape</Value></Field>
+<Text Name="Text5"><TextValue>		ß					  	à
+ß
+</TextValue>
+</Text>
+<Text Name="Text2"><TextValue>Customer</TextValue>
+</Text>
+<Text Name="Text4"><TextValue>Job</TextValue>
+</Text>
+<Text Name="Text7"><TextValue>Del. date</TextValue>
+</Text>
+<Text Name="Text8"><TextValue>Order/Itm.</TextValue>
+</Text>
+<Text Name="Text9"><TextValue>Qty.</TextValue>
+</Text>
+</Section>
+</GroupHeader>
+<Group Level="2">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="GlassProduct1" FieldName="{@GlassProduct}"><FormattedValue>3/8&quot; Clear Annealed</FormattedValue><Value>3/8&quot; Clear Annealed</Value></Field>
+</Section>
+</GroupHeader>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-2</FormattedValue><Value>235194-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>29&quot;5/8</FormattedValue><Value>29&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>73&quot;7/8</FormattedValue><Value>73&quot;7/8</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-3</FormattedValue><Value>235194-3</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>57&quot;7/8</FormattedValue><Value>57&quot;7/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>39&quot;9/16</FormattedValue><Value>39&quot;9/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-1</FormattedValue><Value>235194-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>17&quot;15/16</FormattedValue><Value>17&quot;15/16</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>75&quot;3/16</FormattedValue><Value>75&quot;3/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Waterjet</FormattedValue><Value>Waterjet</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,200</FormattedValue><Value>2200</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-1</FormattedValue><Value>235195-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>26&quot;5/8</FormattedValue><Value>26&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;7/16</FormattedValue><Value>78&quot;7/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-2</FormattedValue><Value>235195-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>56&quot;1/8</FormattedValue><Value>56&quot;1/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;7/16</FormattedValue><Value>78&quot;7/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-3</FormattedValue><Value>235195-3</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>29&quot;5/8</FormattedValue><Value>29&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;1/8</FormattedValue><Value>78&quot;1/8</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235193-2</FormattedValue><Value>235193-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>79&quot;1/2</FormattedValue><Value>79&quot;1/2</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>27&quot;7/8</FormattedValue><Value>27&quot;7/8</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>2</FormattedValue><Value>2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 1 (CNC)</FormattedValue><Value>Denver 1 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,100</FormattedValue><Value>2100</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 1 (CNC)</FormattedValue><Value>Denver 1 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,100</FormattedValue><Value>2100</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>TAYLOR MORRIS BF AFTERPAINT</FormattedValue><Value>TAYLOR MORRIS BF AFTERPAINT</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87771310.2 NORTH GATE 193</FormattedValue><Value>87771310.2 NORTH GATE 193</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235191-1</FormattedValue><Value>235191-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>27&quot;3/4</FormattedValue><Value>27&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>90&quot;1/2</FormattedValue><Value>90&quot;1/2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 1 (CNC)</FormattedValue><Value>Denver 1 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,100</FormattedValue><Value>2100</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 1 (CNC)</FormattedValue><Value>Denver 1 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,100</FormattedValue><Value>2100</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.3.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.3.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>Flat Polish side(s) 1/2/3/4</FormattedValue><Value>Flat Polish side(s) 1/2/3/4</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235192-2</FormattedValue><Value>235192-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>90&quot;3/4</FormattedValue><Value>90&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>30&quot;</FormattedValue><Value>30&quot;</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 1 (CNC)</FormattedValue><Value>Denver 1 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,100</FormattedValue><Value>2100</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 1 (CNC)</FormattedValue><Value>Denver 1 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115</FormattedValue><Value>115</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,100</FormattedValue><Value>2100</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>105.00</FormattedValue><Value>105.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.5.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.5.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+</Group>
+<GroupFooter>
+<Section SectionNumber="0">
+</Section>
+</GroupFooter>
+</Group>
+<Group Level="1">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="Station1" FieldName="{@Station}"><FormattedValue>Denver 1 (CNC)  (2100)</FormattedValue><Value>Denver 1 (CNC)  (2100)</Value></Field>
+<Field Name="TextProdukt1" FieldName="{@Text_Produkt}"><FormattedValue>Product Description:</FormattedValue><Value>Product Description:</Value></Field>
+<Field Name="TextProcess1" FieldName="{@Text_Process}"><FormattedValue>Processing</FormattedValue><Value>Processing</Value></Field>
+<Subreport Name="Subreport1">
+<ReportHeader>
+</ReportHeader>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="DIMDATABASE1" FieldName="{KA_FIRMA.DIM_DATABASE}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="DIMFRACTION1" FieldName="{KA_FIRMA.DIM_FRACTION}"><FormattedValue>32</FormattedValue><Value>32</Value></Field>
+<Field Name="DIMTHICKNESS1" FieldName="{KA_FIRMA.DIM_THICKNESS}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+</Section>
+</Details>
+<ReportFooter>
+</ReportFooter>
+</Subreport>
+<Field Name="TextHeadline111" FieldName="{@Text_Width}"><FormattedValue>Width</FormattedValue><Value>Width</Value></Field>
+<Field Name="TextHeadline132" FieldName="{@Text_Height}"><FormattedValue>Height</FormattedValue><Value>Height</Value></Field>
+<Field Name="TextShapeno1" FieldName="{@Text_Shapeno}"><FormattedValue>Shape</FormattedValue><Value>Shape</Value></Field>
+<Text Name="Text5"><TextValue>		ß					  	à
+ß
+</TextValue>
+</Text>
+<Text Name="Text2"><TextValue>Customer</TextValue>
+</Text>
+<Text Name="Text4"><TextValue>Job</TextValue>
+</Text>
+<Text Name="Text7"><TextValue>Del. date</TextValue>
+</Text>
+<Text Name="Text8"><TextValue>Order/Itm.</TextValue>
+</Text>
+<Text Name="Text9"><TextValue>Qty.</TextValue>
+</Text>
+</Section>
+</GroupHeader>
+<Group Level="2">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="GlassProduct1" FieldName="{@GlassProduct}"><FormattedValue>3/8&quot; Clear Annealed</FormattedValue><Value>3/8&quot; Clear Annealed</Value></Field>
+</Section>
+</GroupHeader>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>GEN037</FormattedValue><Value>GEN037</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235193-2</FormattedValue><Value>235193-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>79&quot;1/2</FormattedValue><Value>79&quot;1/2</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>27&quot;7/8</FormattedValue><Value>27&quot;7/8</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>2</FormattedValue><Value>2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>TAYLOR MORRIS BF AFTERPAINT</FormattedValue><Value>TAYLOR MORRIS BF AFTERPAINT</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87771310.2 NORTH GATE 193</FormattedValue><Value>87771310.2 NORTH GATE 193</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>GEN037</FormattedValue><Value>GEN037</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>TAYLOR MORRIS BF AFTERPAINT</FormattedValue><Value>TAYLOR MORRIS BF AFTERPAINT</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87771310.2 NORTH GATE 193</FormattedValue><Value>87771310.2 NORTH GATE 193</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>V1E037</FormattedValue><Value>V1E037</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235191-1</FormattedValue><Value>235191-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>27&quot;3/4</FormattedValue><Value>27&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>90&quot;1/2</FormattedValue><Value>90&quot;1/2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.3.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.3.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>V1E037</FormattedValue><Value>V1E037</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.3.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.3.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>V1E037</FormattedValue><Value>V1E037</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235192-2</FormattedValue><Value>235192-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>90&quot;3/4</FormattedValue><Value>90&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>30&quot;</FormattedValue><Value>30&quot;</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Denver 2 (CNC)</FormattedValue><Value>Denver 2 (CNC)</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120</FormattedValue><Value>120</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>2,101</FormattedValue><Value>2101</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.5.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.5.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>V1E037</FormattedValue><Value>V1E037</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.5.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.5.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+</Group>
+<GroupFooter>
+<Section SectionNumber="0">
+</Section>
+</GroupFooter>
+</Group>
+<Group Level="1">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="Station1" FieldName="{@Station}"><FormattedValue>Denver 2 (CNC)  (2101)</FormattedValue><Value>Denver 2 (CNC)  (2101)</Value></Field>
+<Field Name="TextProdukt1" FieldName="{@Text_Produkt}"><FormattedValue>Product Description:</FormattedValue><Value>Product Description:</Value></Field>
+<Field Name="TextProcess1" FieldName="{@Text_Process}"><FormattedValue>Processing</FormattedValue><Value>Processing</Value></Field>
+<Subreport Name="Subreport1">
+<ReportHeader>
+</ReportHeader>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="DIMDATABASE1" FieldName="{KA_FIRMA.DIM_DATABASE}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="DIMFRACTION1" FieldName="{KA_FIRMA.DIM_FRACTION}"><FormattedValue>32</FormattedValue><Value>32</Value></Field>
+<Field Name="DIMTHICKNESS1" FieldName="{KA_FIRMA.DIM_THICKNESS}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+</Section>
+</Details>
+<ReportFooter>
+</ReportFooter>
+</Subreport>
+<Field Name="TextHeadline111" FieldName="{@Text_Width}"><FormattedValue>Width</FormattedValue><Value>Width</Value></Field>
+<Field Name="TextHeadline132" FieldName="{@Text_Height}"><FormattedValue>Height</FormattedValue><Value>Height</Value></Field>
+<Field Name="TextShapeno1" FieldName="{@Text_Shapeno}"><FormattedValue>Shape</FormattedValue><Value>Shape</Value></Field>
+<Text Name="Text5"><TextValue>		ß					  	à
+ß
+</TextValue>
+</Text>
+<Text Name="Text2"><TextValue>Customer</TextValue>
+</Text>
+<Text Name="Text4"><TextValue>Job</TextValue>
+</Text>
+<Text Name="Text7"><TextValue>Del. date</TextValue>
+</Text>
+<Text Name="Text8"><TextValue>Order/Itm.</TextValue>
+</Text>
+<Text Name="Text9"><TextValue>Qty.</TextValue>
+</Text>
+</Section>
+</GroupHeader>
+<Group Level="2">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="GlassProduct1" FieldName="{@GlassProduct}"><FormattedValue>3/8&quot; Clear Annealed</FormattedValue><Value>3/8&quot; Clear Annealed</Value></Field>
+</Section>
+</GroupHeader>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-2</FormattedValue><Value>235194-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>29&quot;5/8</FormattedValue><Value>29&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>73&quot;7/8</FormattedValue><Value>73&quot;7/8</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-3</FormattedValue><Value>235195-3</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>29&quot;5/8</FormattedValue><Value>29&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;1/8</FormattedValue><Value>78&quot;1/8</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235193-2</FormattedValue><Value>235193-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>79&quot;1/2</FormattedValue><Value>79&quot;1/2</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>27&quot;7/8</FormattedValue><Value>27&quot;7/8</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>2</FormattedValue><Value>2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>TAYLOR MORRIS BF AFTERPAINT</FormattedValue><Value>TAYLOR MORRIS BF AFTERPAINT</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87771310.2 NORTH GATE 193</FormattedValue><Value>87771310.2 NORTH GATE 193</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>TAYLOR MORRIS BF AFTERPAINT</FormattedValue><Value>TAYLOR MORRIS BF AFTERPAINT</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87771310.2 NORTH GATE 193</FormattedValue><Value>87771310.2 NORTH GATE 193</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235191-1</FormattedValue><Value>235191-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>27&quot;3/4</FormattedValue><Value>27&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>90&quot;1/2</FormattedValue><Value>90&quot;1/2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.3.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.3.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.3.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.3.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235192-2</FormattedValue><Value>235192-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>90&quot;3/4</FormattedValue><Value>90&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>30&quot;</FormattedValue><Value>30&quot;</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>120.00</FormattedValue><Value>120.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.5.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.5.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>0&apos;&apos; 1/2 Hole x 1</FormattedValue><Value>0&apos;&apos; 1/2 Hole x 1</Value></Field>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.5.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.5.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+</Group>
+<GroupFooter>
+<Section SectionNumber="0">
+</Section>
+</GroupFooter>
+</Group>
+<Group Level="1">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="Station1" FieldName="{@Station}"><FormattedValue>Waterjet  (2200)</FormattedValue><Value>Waterjet  (2200)</Value></Field>
+<Field Name="TextProdukt1" FieldName="{@Text_Produkt}"><FormattedValue>Product Description:</FormattedValue><Value>Product Description:</Value></Field>
+<Field Name="TextProcess1" FieldName="{@Text_Process}"><FormattedValue>Processing</FormattedValue><Value>Processing</Value></Field>
+<Subreport Name="Subreport1">
+<ReportHeader>
+</ReportHeader>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="DIMDATABASE1" FieldName="{KA_FIRMA.DIM_DATABASE}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="DIMFRACTION1" FieldName="{KA_FIRMA.DIM_FRACTION}"><FormattedValue>32</FormattedValue><Value>32</Value></Field>
+<Field Name="DIMTHICKNESS1" FieldName="{KA_FIRMA.DIM_THICKNESS}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+</Section>
+</Details>
+<ReportFooter>
+</ReportFooter>
+</Subreport>
+<Field Name="TextHeadline111" FieldName="{@Text_Width}"><FormattedValue>Width</FormattedValue><Value>Width</Value></Field>
+<Field Name="TextHeadline132" FieldName="{@Text_Height}"><FormattedValue>Height</FormattedValue><Value>Height</Value></Field>
+<Field Name="TextShapeno1" FieldName="{@Text_Shapeno}"><FormattedValue>Shape</FormattedValue><Value>Shape</Value></Field>
+<Text Name="Text5"><TextValue>		ß					  	à
+ß
+</TextValue>
+</Text>
+<Text Name="Text2"><TextValue>Customer</TextValue>
+</Text>
+<Text Name="Text4"><TextValue>Job</TextValue>
+</Text>
+<Text Name="Text7"><TextValue>Del. date</TextValue>
+</Text>
+<Text Name="Text8"><TextValue>Order/Itm.</TextValue>
+</Text>
+<Text Name="Text9"><TextValue>Qty.</TextValue>
+</Text>
+</Section>
+</GroupHeader>
+<Group Level="2">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="GlassProduct1" FieldName="{@GlassProduct}"><FormattedValue>3/8&quot; Clear Annealed</FormattedValue><Value>3/8&quot; Clear Annealed</Value></Field>
+</Section>
+</GroupHeader>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>1 Notched Corners</FormattedValue><Value>1 Notched Corners</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-1</FormattedValue><Value>235194-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>17&quot;15/16</FormattedValue><Value>17&quot;15/16</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>75&quot;3/16</FormattedValue><Value>75&quot;3/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Tempering Furnace</FormattedValue><Value>Tempering Furnace</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600</FormattedValue><Value>600</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>3,000</FormattedValue><Value>3000</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>20.00</FormattedValue><Value>20.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>115.00</FormattedValue><Value>115.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>1.00</FormattedValue><Value>1.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Cutting</FormattedValue><Value>Cutting</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue></FormattedValue><Value></Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+</Group>
+<GroupFooter>
+<Section SectionNumber="0">
+</Section>
+</GroupFooter>
+</Group>
+<Group Level="1">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="Station1" FieldName="{@Station}"><FormattedValue>Tempering Furnace  (3000)</FormattedValue><Value>Tempering Furnace  (3000)</Value></Field>
+<Field Name="TextProdukt1" FieldName="{@Text_Produkt}"><FormattedValue>Product Description:</FormattedValue><Value>Product Description:</Value></Field>
+<Field Name="TextProcess1" FieldName="{@Text_Process}"><FormattedValue>Processing</FormattedValue><Value>Processing</Value></Field>
+<Subreport Name="Subreport1">
+<ReportHeader>
+</ReportHeader>
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="DIMDATABASE1" FieldName="{KA_FIRMA.DIM_DATABASE}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="DIMFRACTION1" FieldName="{KA_FIRMA.DIM_FRACTION}"><FormattedValue>32</FormattedValue><Value>32</Value></Field>
+<Field Name="DIMTHICKNESS1" FieldName="{KA_FIRMA.DIM_THICKNESS}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+</Section>
+</Details>
+<ReportFooter>
+</ReportFooter>
+</Subreport>
+<Field Name="TextHeadline111" FieldName="{@Text_Width}"><FormattedValue>Width</FormattedValue><Value>Width</Value></Field>
+<Field Name="TextHeadline132" FieldName="{@Text_Height}"><FormattedValue>Height</FormattedValue><Value>Height</Value></Field>
+<Field Name="TextShapeno1" FieldName="{@Text_Shapeno}"><FormattedValue>Shape</FormattedValue><Value>Shape</Value></Field>
+<Text Name="Text5"><TextValue>		ß					  	à
+ß
+</TextValue>
+</Text>
+<Text Name="Text2"><TextValue>Customer</TextValue>
+</Text>
+<Text Name="Text4"><TextValue>Job</TextValue>
+</Text>
+<Text Name="Text7"><TextValue>Del. date</TextValue>
+</Text>
+<Text Name="Text8"><TextValue>Order/Itm.</TextValue>
+</Text>
+<Text Name="Text9"><TextValue>Qty.</TextValue>
+</Text>
+</Section>
+</GroupHeader>
+<Group Level="2">
+<GroupHeader>
+<Section SectionNumber="0">
+<Field Name="GlassProduct1" FieldName="{@GlassProduct}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+</Section>
+</GroupHeader>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-2</FormattedValue><Value>235194-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>29&quot;5/8</FormattedValue><Value>29&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>73&quot;7/8</FormattedValue><Value>73&quot;7/8</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-3</FormattedValue><Value>235194-3</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>57&quot;7/8</FormattedValue><Value>57&quot;7/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>39&quot;9/16</FormattedValue><Value>39&quot;9/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235194-1</FormattedValue><Value>235194-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>17&quot;15/16</FormattedValue><Value>17&quot;15/16</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>75&quot;3/16</FormattedValue><Value>75&quot;3/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88587270 Add It Po#61826-1-DTC</FormattedValue><Value>88587270 Add It Po#61826-1-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-1</FormattedValue><Value>235195-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>26&quot;5/8</FormattedValue><Value>26&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;7/16</FormattedValue><Value>78&quot;7/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-2</FormattedValue><Value>235195-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>56&quot;1/8</FormattedValue><Value>56&quot;1/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;7/16</FormattedValue><Value>78&quot;7/16</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235195-3</FormattedValue><Value>235195-3</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>29&quot;5/8</FormattedValue><Value>29&quot;5/8</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>78&quot;1/8</FormattedValue><Value>78&quot;1/8</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/24/2026</FormattedValue><Value>6/24/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>ADD IT HOME SERVICES</FormattedValue><Value>ADD IT HOME SERVICES</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>88589031Add It Po#61826-DTC</FormattedValue><Value>88589031Add It Po#61826-DTC</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235193-2</FormattedValue><Value>235193-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>79&quot;1/2</FormattedValue><Value>79&quot;1/2</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>27&quot;7/8</FormattedValue><Value>27&quot;7/8</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>2</FormattedValue><Value>2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>TAYLOR MORRIS BF AFTERPAINT</FormattedValue><Value>TAYLOR MORRIS BF AFTERPAINT</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87771310.2 NORTH GATE 193</FormattedValue><Value>87771310.2 NORTH GATE 193</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235191-1</FormattedValue><Value>235191-1</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>27&quot;3/4</FormattedValue><Value>27&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>90&quot;1/2</FormattedValue><Value>90&quot;1/2</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.3.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.3.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+<Details Level="3">
+<Section SectionNumber="0">
+<Field Name="Processingtext2" FieldName="{@Processingtext}"><FormattedValue>3/8&quot; Clear Tempered</FormattedValue><Value>3/8&quot; Clear Tempered</Value></Field>
+<Field Name="MENGE1" FieldName="{PROD_JOBITEM_GLASS.MENGE}"><FormattedValue>1</FormattedValue><Value>1.00</Value></Field>
+<Field Name="orderitem1" FieldName="{@order_item}"><FormattedValue>235192-2</FormattedValue><Value>235192-2</Value></Field>
+<Field Name="SheetWidth1" FieldName="{@Sheet_Width}"><FormattedValue>90&quot;3/4</FormattedValue><Value>90&quot;3/4</Value></Field>
+<Field Name="SheetHeight1" FieldName="{@Sheet_Height}"><FormattedValue>30&quot;</FormattedValue><Value>30&quot;</Value></Field>
+<Field Name="MODNUMMER1" FieldName="{PROD_JOBITEM_GLASS.MOD_NUMMER}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Subreport Name="Subreport3">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="Nextmachine1" FieldName="{@Next_machine}"><FormattedValue>Packing / Shipping</FormattedValue><Value>Packing / Shipping</Value></Field>
+<Field Name="RFOZ1" FieldName="{ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>800</FormattedValue><Value>800</Value></Field>
+<Field Name="PmPRODJOBITEMPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="PmZWAUFTRZEITRFOZ1" FieldName="{?Pm-ZW_AUFTR_ZEIT.RFOZ}"><FormattedValue>600.00</FormattedValue><Value>600.00</Value></Field>
+<Field Name="PmBomNodeNull1" FieldName="{?Pm-@Bom_NodeNull}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmParentbomid1" FieldName="{?Pm-@Parent_bomid}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+<Field Name="PmPRODJOBITEMGLASSPRODUKTART1" FieldName="{?Pm-PROD_JOBITEM_GLASS.PRODUKTART}"><FormattedValue>2.00</FormattedValue><Value>2.00</Value></Field>
+<Field Name="KZSELECTED1" FieldName="{ZW_AUFTR_ZEIT.KZ_SELECTED}"><FormattedValue>1</FormattedValue><Value>1</Value></Field>
+<Field Name="AGG1" FieldName="{ZW_AUFTR_ZEIT.AGG}"><FormattedValue>8,900</FormattedValue><Value>8900</Value></Field>
+<Field Name="PMMACHINETYPE1" FieldName="{ZW_AGGTYPEN.PM_MACHINETYPE}"><FormattedValue>0</FormattedValue><Value>0</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Subreport Name="Subreport6">
+<Details Level="1">
+<Section SectionNumber="0">
+<Field Name="AGGBEZ1" FieldName="{ZW_AGGREGATE.AGG_BEZ}"><FormattedValue>Kodiak (Polisher)</FormattedValue><Value>Kodiak (Polisher)</Value></Field>
+<Field Name="PmChildBomId1" FieldName="{?Pm-%ChildBomId}"><FormattedValue>0.00</FormattedValue><Value>0.00</Value></Field>
+</Section>
+</Details>
+</Subreport>
+<Field Name="BESTTEXT21" FieldName="{BW_AUFTR_KOPF.BEST_TEXT2}"><FormattedValue>6/22/2026</FormattedValue><Value>6/22/2026</Value></Field>
+<Field Name="AHNAME11" FieldName="{BW_AUFTR_KOPF.AH_NAME1}"><FormattedValue>PLATTNER CUS BLDS ****</FormattedValue><Value>PLATTNER CUS BLDS ****</Value></Field>
+<Field Name="BESTTEXT11" FieldName="{BW_AUFTR_KOPF.BEST_TEXT1}"><FormattedValue>87634304.5.3R 20540 BETHELWOOD</FormattedValue><Value>87634304.5.3R 20540 BETHELWOOD</Value></Field>
+</Section>
+</Details>
+</Group>
+<GroupFooter>
+<Section SectionNumber="0">
+</Section>
+</GroupFooter>
+</Group>
+</CrystalReport>
