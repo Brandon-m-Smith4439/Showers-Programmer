@@ -59,6 +59,7 @@ class ShowerProgrammerApp:
         self.remake_var = tk.BooleanVar(value=False)
         self.remake_items_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Scan the process list to begin.")
+        self.summary_var = tk.StringVar(value="Orders 0   Ready 0   Issues 0   Processed 0   Checked 0")
 
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -68,8 +69,9 @@ class ShowerProgrammerApp:
         self.last_run_folder: Path | None = None
         self.is_busy = False
 
+        self.configure_styles()
         self.build_ui()
-        self.root.after(150, self.drain_worker_queue)
+        self.root.after(75, self.drain_worker_queue)
         self.root.after(350, self.scan_orders)
 
     @staticmethod
@@ -103,11 +105,46 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    def configure_styles(self) -> None:
+        self.root.configure(bg="#f3f6fb")
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("TFrame", background="#f3f6fb")
+        style.configure("Surface.TFrame", background="#ffffff", borderwidth=1, relief="solid")
+        style.configure("TLabel", background="#f3f6fb", foreground="#1f2933")
+        style.configure("Title.TLabel", font=("Segoe UI", 16, "bold"), foreground="#12355b")
+        style.configure("Muted.TLabel", foreground="#536471")
+        style.configure("Summary.TLabel", font=("Segoe UI", 10, "bold"), foreground="#1f4e79")
+        style.configure("TLabelframe", background="#f3f6fb", bordercolor="#cfd8e3", relief="solid")
+        style.configure("TLabelframe.Label", background="#f3f6fb", foreground="#334155", font=("Segoe UI", 9, "bold"))
+        style.configure("TButton", padding=(10, 5))
+        style.configure("Accent.TButton", padding=(12, 6), font=("Segoe UI", 9, "bold"))
+        style.configure("TCheckbutton", background="#f3f6fb", foreground="#1f2933")
+        style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor="#dbe5ef",
+            background="#22c55e",
+            bordercolor="#cbd5e1",
+            lightcolor="#22c55e",
+            darkcolor="#15803d",
+        )
+        style.configure("Treeview", rowheight=26, fieldbackground="#ffffff", background="#ffffff", foreground="#1f2933")
+        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"), background="#e8eef6", foreground="#12355b")
+        style.map("Treeview", background=[("selected", "#cfe5ff")], foreground=[("selected", "#0f2438")])
+
     def build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        paths = ttk.Frame(outer)
+        header = ttk.Frame(outer)
+        header.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(header, text="Shower Programmer", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header, textvariable=self.summary_var, style="Summary.TLabel").pack(side=tk.RIGHT)
+
+        paths = ttk.LabelFrame(outer, text="Folders", padding=(10, 8))
         paths.pack(fill=tk.X)
         self.add_path_row(paths, 0, "Folder", self.folder_var, self.choose_folder)
         self.add_path_row(paths, 1, "Process Lists", self.process_list_var, self.choose_process_list)
@@ -115,7 +152,7 @@ class ShowerProgrammerApp:
 
         actions = ttk.Frame(outer)
         actions.pack(fill=tk.X, pady=(8, 8))
-        ttk.Button(actions, text="Scan Orders", command=self.scan_orders).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Scan Orders", style="Accent.TButton", command=self.scan_orders).pack(side=tk.LEFT)
         ttk.Button(actions, text="Process Selected", command=self.process_selected).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Process All", command=lambda: self.run_orders(self.orders, apply=True)).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Review Order", command=self.open_order_review).pack(side=tk.LEFT, padx=(8, 0))
@@ -137,7 +174,6 @@ class ShowerProgrammerApp:
         ttk.Label(maintenance, text="Maintenance").pack(side=tk.LEFT)
         ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(maintenance, text="Import EDI Orders", command=self.import_edi_orders).pack(side=tk.LEFT, padx=(8, 0))
 
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -157,22 +193,23 @@ class ShowerProgrammerApp:
             "issues": "Issues",
         }
         widths = {
-            "status": 66,
-            "processed": 66,
+            "status": 74,
+            "processed": 78,
             "last_processed": 132,
-            "delivery": 105,
+            "delivery": 102,
             "order": 82,
-            "job": 230,
+            "job": 250,
             "customer": 190,
-            "items": 110,
-            "review": 150,
-            "pdf": 230,
-            "issues": 330,
+            "items": 104,
+            "review": 126,
+            "pdf": 220,
+            "issues": 360,
         }
         for col in columns:
             self.tree.heading(col, text=headings[col])
-            min_width = 48 if col in {"status", "processed"} else 70
-            self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W)
+            min_width = 54 if col in {"status", "processed"} else 70
+            stretch = col in {"job", "customer", "pdf", "issues"}
+            self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=stretch)
         self.tree.tag_configure("OK", foreground="#0f7a3b")
         self.tree.tag_configure("READY", foreground="#1f4e79")
         self.tree.tag_configure("ISSUES", foreground="#9a5b00")
@@ -194,14 +231,14 @@ class ShowerProgrammerApp:
         bottom = ttk.Frame(outer)
         bottom.pack(fill=tk.X, pady=(8, 0))
         self.progress = ttk.Progressbar(bottom, mode="determinate")
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W).pack(side=tk.LEFT, padx=(10, 0))
+        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Muted.TLabel").pack(side=tk.LEFT, padx=(10, 0))
         send_buttons = ttk.Frame(bottom)
         send_buttons.pack(side=tk.RIGHT, padx=(10, 0))
         ttk.Button(send_buttons, text="Send Sketches", command=self.send_sketches_to_shop).pack(side=tk.LEFT)
         ttk.Button(send_buttons, text="Send Programs", command=self.send_programs_to_shop).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(send_buttons, text="Select All", command=self.select_all_orders).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(send_buttons, text="Send All", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(send_buttons, text="Send All", style="Accent.TButton", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
 
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
         ttk.Label(parent, text=label, width=12).grid(row=row, column=0, sticky=tk.W, pady=2)
@@ -495,6 +532,31 @@ class ShowerProgrammerApp:
         else:
             row_id = self.tree.insert("", tk.END, values=values, tags=(tag,))
             self.tree_rows[result.aw_order] = row_id
+        self.update_summary_strip()
+
+    def update_summary_strip(self) -> None:
+        total = 0
+        ready = 0
+        issues = 0
+        processed = 0
+        checked = 0
+        for row_id in self.tree.get_children():
+            values = self.tree.item(row_id, "values")
+            if len(values) < 9:
+                continue
+            total += 1
+            status = str(values[0]).upper()
+            if status in {"READY", "OK"}:
+                ready += 1
+            elif status in {"ISSUES", "FAILED"}:
+                issues += 1
+            if str(values[1]).lower() == "yes":
+                processed += 1
+            if "checked" in str(values[8]).lower():
+                checked += 1
+        self.summary_var.set(
+            f"Orders {total}   Ready {ready}   Issues {issues}   Processed {processed}   Checked {checked}"
+        )
 
     @staticmethod
     def issue_summary(issues: list[str]) -> str:
@@ -624,6 +686,7 @@ class ShowerProgrammerApp:
                     values[8] = "Order checked"
                     self.tree.item(row_id, values=values)
         self.save_manual_overrides(data)
+        self.update_summary_strip()
         self.status_var.set(f"Marked {len(orders)} order(s) checked.")
 
     def selected_orders(self) -> list[shower_batch.ProcessOrder]:
@@ -968,6 +1031,7 @@ class ShowerProgrammerApp:
                     self.order_by_aw = {order.aw_order: order for order in self.orders}
                     self.tree.delete(*self.tree.get_children())
                     self.tree_rows.clear()
+                    self.update_summary_strip()
                     for result in previews:
                         assert isinstance(result, shower_batch.BatchJobResult)
                         self.insert_or_update_result(result)
@@ -1334,8 +1398,10 @@ a {{ color: #1f4e79; }}
         ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Open DXF", command=lambda: open_current_dxf()).pack(side=tk.LEFT, padx=(6, 12))
+        file_actions = ttk.Frame(toolbar)
+        file_actions.pack(side=tk.RIGHT)
+        ttk.Button(file_actions, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
+        ttk.Button(file_actions, text="Open DXF", command=lambda: open_current_dxf()).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Label(toolbar, textvariable=status).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
@@ -2780,7 +2846,8 @@ try {{
             messagebox.showerror("Send failed", str(exc))
             return
 
-        self.start_background_activity("Sending generated files to shop folders...")
+        send_steps = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
+        self.start_background_activity("Sending generated files to shop folders...", maximum=send_steps)
         worker = threading.Thread(
             target=self.worker_send_outputs,
             args=(sketch_paths, dxf_paths, missing, archive_inputs, orders, order_folder, process_list_path),
@@ -2802,16 +2869,42 @@ try {{
             copied: list[Path] = []
             archived: list[Path] = []
             archive_warnings: list[str] = []
+            progress_value = 0
+            progress_max = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
+
+            def advance(message: str, remaining_hint: int = 1) -> None:
+                nonlocal progress_value, progress_max
+                progress_value += 1
+                progress_max = max(progress_max, progress_value + max(remaining_hint, 0))
+                self.queue_scan_progress(progress_value, progress_max, message)
+
             if sketch_paths:
-                copied.extend(self.copy_outputs_to_folder(sketch_paths, self.SHOP_SKETCHES_DIR))
+                copied.extend(
+                    self.copy_outputs_to_folder(
+                        sketch_paths,
+                        self.SHOP_SKETCHES_DIR,
+                        progress_callback=lambda source, _target: advance(f"Sent sketch: {source.name}", len(dxf_paths) + 1),
+                    )
+                )
             if dxf_paths:
-                copied.extend(self.copy_outputs_to_folder(dxf_paths, self.SHOP_PROGRAMS_DIR))
+                copied.extend(
+                    self.copy_outputs_to_folder(
+                        dxf_paths,
+                        self.SHOP_PROGRAMS_DIR,
+                        progress_callback=lambda source, _target: advance(f"Sent program: {source.name}", 1),
+                    )
+                )
             if copied and archive_inputs:
+                def archive_progress(done: int, total: int, source: Path) -> None:
+                    advance(f"Archived input {done}/{total}: {source.name}", total - done + 1)
+
                 archived, archive_warnings = self.archive_sent_input_files_for_orders(
                     orders,
                     order_folder,
                     process_list_path,
+                    progress_callback=archive_progress,
                 )
+            self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
             self.worker_queue.put(
                 (
                     "send_done",
@@ -2843,14 +2936,19 @@ try {{
             details += "\nNo matching " + " or ".join(missing) + " were found."
         if archived:
             archive_names = "\n".join(f"- {path}" for path in archived[:20])
-            details += f"\n\nArchived {len(archived)} input file(s) into dated folders:\n{archive_names}"
+            details += f"\n\nArchived {len(archived)} order/process-list input file(s) into dated folders:\n{archive_names}"
             if len(archived) > 20:
                 details += f"\n...and {len(archived) - 20} more"
         if archive_warnings:
             details += "\n\nArchive notes:\n" + "\n".join(f"- {warning}" for warning in archive_warnings)
         return details
 
-    def copy_outputs_to_folder(self, paths: list[Path], target_dir: Path) -> list[Path]:
+    def copy_outputs_to_folder(
+        self,
+        paths: list[Path],
+        target_dir: Path,
+        progress_callback: Callable[[Path, Path], None] | None = None,
+    ) -> list[Path]:
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         for source in paths:
@@ -2859,6 +2957,8 @@ try {{
             target = target_dir / source.name
             shutil.copy2(source, target)
             copied.append(target)
+            if progress_callback is not None:
+                progress_callback(source, target)
         return copied
 
     def archive_sent_input_files(self, aw_orders: list[str]) -> tuple[list[Path], list[str]]:
@@ -2876,6 +2976,7 @@ try {{
         orders: list[shower_batch.ProcessOrder],
         order_folder: Path,
         process_list_path: Path,
+        progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
         if not orders:
             return [], ["No matching scanned order records were available to archive."]
@@ -2886,10 +2987,7 @@ try {{
         warnings: list[str] = []
 
         order_files = self.matching_order_files(order_folder, orders, root_only=True, inspect_pdf_text=True)
-        if order_files:
-            for source in order_files:
-                archived.append(self.move_file_to_folder(source, order_archive_dir))
-        else:
+        if not order_files:
             warnings.append("No root-level order PDF/DXF input files matched the sent orders.")
 
         try:
@@ -2898,14 +2996,30 @@ try {{
             process_list_files = []
             warnings.append(f"Could not archive process lists: {exc}")
 
+        process_sources: list[Path] = []
         if process_list_files:
             process_archive_dir = self.process_list_archive_dir(process_list_path, dated_name)
             for source in process_list_files:
                 if source.parent.resolve() == process_archive_dir.resolve():
                     continue
-                archived.append(self.move_file_to_folder(source, process_archive_dir))
+                process_sources.append(source)
         else:
             warnings.append("No process-list files were available to archive.")
+
+        total_sources = len(order_files) + len(process_sources)
+        done = 0
+        for source in order_files:
+            archived.append(self.move_file_to_folder(source, order_archive_dir))
+            done += 1
+            if progress_callback is not None:
+                progress_callback(done, total_sources, source)
+        if process_sources:
+            process_archive_dir = self.process_list_archive_dir(process_list_path, dated_name)
+            for source in process_sources:
+                archived.append(self.move_file_to_folder(source, process_archive_dir))
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done, total_sources, source)
 
         return archived, warnings
 
