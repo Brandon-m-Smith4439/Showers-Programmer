@@ -51,8 +51,8 @@ class ShowerProgrammerApp:
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
         self.root.after(0, lambda: self.maximize_window(self.root))
-        self.folder_var = tk.StringVar(value=str(self.default_order_source_path()))
-        self.process_list_var = tk.StringVar(value=str(self.default_process_list_source_path()))
+        self.folder_var = tk.StringVar(value=str(programmer.default_orders_dir()))
+        self.process_list_var = tk.StringVar(value=str(programmer.default_process_list_path()))
         self.output_dir_var = tk.StringVar(value=str(programmer.default_output_dir()))
         self.force_var = tk.BooleanVar(value=False)
         self.skip_dxf_var = tk.BooleanVar(value=False)
@@ -102,16 +102,6 @@ class ShowerProgrammerApp:
             window.attributes("-fullscreen", not bool(window.attributes("-fullscreen")))
         except tk.TclError:
             pass
-
-    @classmethod
-    def default_order_source_path(cls) -> Path:
-        return cls.EDI_IMPORT_ORDERS_DIR if cls.EDI_IMPORT_ORDERS_DIR.exists() else programmer.default_orders_dir()
-
-    @classmethod
-    def default_process_list_source_path(cls) -> Path:
-        if cls.EDI_IMPORT_ORDERS_DIR.exists() and cls.importable_process_list_files(cls.EDI_IMPORT_ORDERS_DIR):
-            return cls.EDI_IMPORT_ORDERS_DIR
-        return programmer.default_process_list_path()
 
     def build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=10)
@@ -246,7 +236,7 @@ class ShowerProgrammerApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
 
-        self.start_background_activity("Scanning process lists and importing matching EDI order files...")
+        self.start_background_activity("Scanning process lists and importing matching EDI order files...", maximum=5)
         worker = threading.Thread(
             target=self.worker_scan_orders,
             args=(folder, process_list, output_dir),
@@ -266,7 +256,7 @@ class ShowerProgrammerApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
 
-        self.start_background_activity("Importing matching EDI order files...")
+        self.start_background_activity("Importing matching EDI order files...", maximum=4)
         worker = threading.Thread(
             target=self.worker_import_edi_orders,
             args=(folder, process_list, output_dir),
@@ -274,12 +264,15 @@ class ShowerProgrammerApp:
         )
         worker.start()
 
-    def start_background_activity(self, message: str) -> None:
+    def start_background_activity(self, message: str, maximum: int | None = None) -> None:
         self.is_busy = True
         self.set_controls_enabled(False)
         self.progress.stop()
-        self.progress.configure(mode="indeterminate", maximum=100, value=0)
-        self.progress.start(12)
+        if maximum:
+            self.progress.configure(mode="determinate", maximum=maximum, value=0)
+        else:
+            self.progress.configure(mode="indeterminate", maximum=100, value=0)
+            self.progress.start(12)
         self.status_var.set(message)
 
     def finish_background_activity(self) -> None:
@@ -290,12 +283,18 @@ class ShowerProgrammerApp:
 
     def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
+            self.queue_scan_progress(0, 5, "Loading configuration...")
             config = self.config_with_manual_overrides(folder, output_dir)
+            self.queue_scan_progress(1, 5, "Copying process lists into the local input folder...")
             process_list_import_summary = self.copy_process_lists_from_import_folder(process_list)
             process_list_files = shower_batch.process_list_files(process_list)
+            self.queue_scan_progress(2, 5, f"Reading {len(process_list_files)} process list file(s)...")
             orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
+            self.queue_scan_progress(3, 5, f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
             import_summary = self.copy_edi_orders_for_process_orders(folder, orders)
+            self.queue_scan_progress(4, 5, "Building order preview list...")
             previews = shower_batch.preview_orders(orders, folder)
+            self.queue_scan_progress(5, 5, f"Scan complete: {len(orders)} order(s).")
             self.worker_queue.put(
                 (
                     "scan_done",
@@ -313,16 +312,20 @@ class ShowerProgrammerApp:
 
     def worker_import_edi_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
+            self.queue_scan_progress(0, 4, "Copying process lists into the local input folder...")
             process_list_import_summary = self.copy_process_lists_from_import_folder(process_list)
             if self.orders:
                 orders = self.orders
                 process_list_count = 0
             else:
+                self.queue_scan_progress(1, 4, "Reading process lists...")
                 config = self.config_with_manual_overrides(folder, output_dir)
                 process_list_files = shower_batch.process_list_files(process_list)
                 process_list_count = len(process_list_files)
                 orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
+            self.queue_scan_progress(2, 4, f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
             import_summary = self.copy_edi_orders_for_process_orders(folder, orders)
+            self.queue_scan_progress(4, 4, "Import complete.")
             self.worker_queue.put(
                 (
                     "import_done",
@@ -336,6 +339,18 @@ class ShowerProgrammerApp:
             )
         except Exception as exc:
             self.worker_queue.put(("scan_error", str(exc)))
+
+    def queue_scan_progress(self, value: int, maximum: int, message: str) -> None:
+        self.worker_queue.put(
+            (
+                "scan_progress",
+                {
+                    "value": value,
+                    "maximum": maximum,
+                    "message": message,
+                },
+            )
+        )
 
     def config_path(self, folder: Path) -> Path:
         return programmer.resolve_config_path(programmer.DEFAULT_CONFIG_NAME, folder)
@@ -820,6 +835,15 @@ class ShowerProgrammerApp:
                     self.insert_or_update_result(result)
                     self.progress.step(1)
                     self.status_var.set(f"{result.status}: {result.aw_order} {result.job_name}")
+                elif kind == "scan_progress":
+                    data = payload
+                    assert isinstance(data, dict)
+                    maximum = int(data.get("maximum", 100) or 100)
+                    value = int(data.get("value", 0) or 0)
+                    message = str(data.get("message", "Scanning..."))
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate", maximum=max(maximum, 1), value=value)
+                    self.status_var.set(message)
                 elif kind == "done":
                     run, run_folder = payload
                     assert isinstance(run, shower_batch.BatchRunResult)
@@ -2771,7 +2795,7 @@ try {{
                     continue
                 archived.append(self.move_file_to_folder(source, process_archive_dir))
         else:
-            warnings.append("No process-list .xlsx files were available to archive.")
+            warnings.append("No process-list files were available to archive.")
 
         return archived, warnings
 
