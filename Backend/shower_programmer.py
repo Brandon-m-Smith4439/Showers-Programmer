@@ -197,6 +197,7 @@ class Panel:
     diamon_fusion_text: str | None = None
     remake_text: str | None = None
     manual_x: bool = False
+    source_item: int | None = None
     label_x: float | None = None
     label_y: float | None = None
     indicator_x: float | None = None
@@ -1174,13 +1175,14 @@ def estimate_hinge_side(
 
 def find_source_dxf(folder: Path, job_name: str, panel: Panel) -> Path | None:
     norm_job = normalize_lookup(job_name)
+    source_item = panel.source_item or panel.item
     candidates: list[tuple[tuple[int, int, int, int], Path]] = []
     for path in folder.rglob("*.dxf"):
         if not path.is_file():
             continue
         if is_archived_input_file(path, folder):
             continue
-        score = dxf_match_score(path, norm_job, panel.item)
+        score = dxf_match_score(path, norm_job, source_item)
         if score is not None:
             candidates.append((score, path))
     if candidates:

@@ -976,6 +976,39 @@ def attach_unlabeled_process_pages(
     panels.sort(key=lambda panel: panel.item)
 
 
+def reconcile_process_list_item_gaps(
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+) -> None:
+    expected_items = sorted(process_order.item_numbers)
+    ordered_panels = sorted(panels, key=lambda panel: (panel.page_index, panel.item))
+    actual_items = [panel.item for panel in ordered_panels]
+    if not expected_items or len(expected_items) != len(actual_items):
+        return
+    if set(expected_items) == set(actual_items):
+        return
+    missing = set(expected_items) - set(actual_items)
+    extra = set(actual_items) - set(expected_items)
+    if not missing or len(missing) != len(extra):
+        return
+
+    remaps: list[tuple[programmer.Panel, int, int]] = []
+    for panel, expected_item in zip(ordered_panels, expected_items):
+        if panel.item == expected_item:
+            continue
+        if expected_item not in missing or panel.item not in extra:
+            return
+        remaps.append((panel, panel.item, expected_item))
+    if len(remaps) != len(missing):
+        return
+
+    for panel, original_item, process_item in remaps:
+        panel.source_item = original_item
+        panel.item = process_item
+        panel.reasons.append(f"sketch P{original_item} mapped to process-list P{process_item}")
+    panels.sort(key=lambda panel: panel.item)
+
+
 def apply_process_hints(
     panels: list[programmer.Panel],
     process_order: ProcessOrder,
@@ -1147,6 +1180,7 @@ def prepare_job(
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
     attach_transom_panels(reader, panels, process_order, config)
     attach_unlabeled_process_pages(reader, panels, process_order, config)
+    reconcile_process_list_item_gaps(panels, process_order)
     apply_process_hints(panels, process_order, config)
     apply_process_list_scope(panels, process_order)
     programmer.refine_panel_orientations(reader, panels, config)
@@ -1180,21 +1214,30 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
     missing = sorted(expected - actual)
     extra = sorted(actual - expected)
     if missing:
-        issues.append("Process list item(s) missing from PDF: " + ", ".join(f"P{i}" for i in missing))
+        issues.append("Missing sketch page: " + ", ".join(f"P{i}" for i in missing))
     if extra:
-        issues.append(
-            "Notice: PDF piece(s) not in process list; crossed out/not programmed (possible REMAKE): "
-            + ", ".join(f"P{i}" for i in extra)
-        )
+        issues.append("Sketch page not in list; crossed out: " + ", ".join(f"P{i}" for i in extra))
 
     for panel in job.panels:
         if panel.remake_excluded:
             continue
         for warning in panel.warnings:
-            issues.append(f"P{panel.item}: {warning}")
+            issues.append(f"P{panel.item}: {concise_issue_message(warning)}")
         if not panel.skip_dxf and panel.source_dxf is None:
-            issues.append(f"P{panel.item}: missing source DXF")
+            issues.append(f"P{panel.item}: missing DXF")
     return issues
+
+
+def concise_issue_message(message: str) -> str:
+    normalized = re.sub(r"\s+", " ", message).strip()
+    replacements = {
+        "No matching process-list item row found.": "no process-list row",
+        "No matching source DXF found.": "missing DXF",
+        "Could not read dimensions from PDF text.": "could not read size",
+        "Label placed in best available open area inside glass.": "label placed inside best open area",
+        "FP-S cut-in/cut-out detected; manual DXF review required.": "FP-S cut; review DXF",
+    }
+    return replacements.get(normalized, normalized)
 
 
 def process_one_order(

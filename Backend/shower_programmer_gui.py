@@ -18,7 +18,7 @@ import webbrowser
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -119,23 +119,24 @@ class ShowerProgrammerApp:
         ttk.Button(actions, text="Process Selected", command=self.process_selected).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Process All", command=lambda: self.run_orders(self.orders, apply=True)).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Review Order", command=self.open_order_review).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Open Input", command=self.open_input_folder).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Open Sketches", command=self.open_sketches_folder).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Open Programs", command=self.open_programs_folder).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(actions, text="Mark Checked", command=self.mark_selected_orders_checked).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Checkbutton(actions, text="Overwrite existing outputs", variable=self.force_var).pack(side=tk.LEFT, padx=(18, 0))
         ttk.Checkbutton(actions, text="Skip DXF output", variable=self.skip_dxf_var).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Checkbutton(actions, text="REMAKE", variable=self.remake_var).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Button(actions, text="Open Last Report", command=self.open_last_report).pack(side=tk.RIGHT)
-        ttk.Button(actions, text="Open Output Folder", command=self.open_output_folder).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(actions, text="Open Config", command=self.open_config).pack(side=tk.RIGHT, padx=(0, 8))
+        file_actions = ttk.Frame(actions)
+        file_actions.pack(side=tk.RIGHT)
+        ttk.Button(file_actions, text="Open Input Folder", command=self.open_input_folder).pack(side=tk.LEFT)
+        ttk.Button(file_actions, text="Open Sketches", command=self.open_sketches_folder).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(file_actions, text="Open Programs", command=self.open_programs_folder).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(file_actions, text="Open Output Folder", command=self.open_output_folder).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(file_actions, text="Open Config", command=self.open_config).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(file_actions, text="Open Last Report", command=self.open_last_report).pack(side=tk.LEFT, padx=(6, 0))
 
         maintenance = ttk.Frame(outer)
         maintenance.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(maintenance, text="Maintenance").pack(side=tk.LEFT)
         ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(maintenance, text="AutoCAD Save-As DXFs", command=self.autocad_save_as_programs).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(maintenance, text="Import EDI Orders", command=self.import_edi_orders).pack(side=tk.LEFT, padx=(8, 0))
 
         table_frame = ttk.Frame(outer)
@@ -156,8 +157,8 @@ class ShowerProgrammerApp:
             "issues": "Issues",
         }
         widths = {
-            "status": 92,
-            "processed": 82,
+            "status": 66,
+            "processed": 66,
             "last_processed": 132,
             "delivery": 105,
             "order": 82,
@@ -170,7 +171,8 @@ class ShowerProgrammerApp:
         }
         for col in columns:
             self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], minwidth=70, anchor=tk.W)
+            min_width = 48 if col in {"status", "processed"} else 70
+            self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W)
         self.tree.tag_configure("OK", foreground="#0f7a3b")
         self.tree.tag_configure("READY", foreground="#1f4e79")
         self.tree.tag_configure("ISSUES", foreground="#9a5b00")
@@ -283,18 +285,50 @@ class ShowerProgrammerApp:
 
     def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
-            self.queue_scan_progress(0, 5, "Loading configuration...")
+            progress_value = 0
+            progress_max = 5
+            self.queue_scan_progress(progress_value, progress_max, "Loading configuration...")
             config = self.config_with_manual_overrides(folder, output_dir)
-            self.queue_scan_progress(1, 5, "Copying process lists into the local input folder...")
-            process_list_import_summary = self.copy_process_lists_from_import_folder(process_list)
+            progress_value += 1
+            self.queue_scan_progress(progress_value, progress_max, "Copying process lists into the local input folder...")
+
+            def process_list_progress(done: int, total: int, source: Path, copied: bool) -> None:
+                action = "Copied" if copied else "Checked"
+                self.queue_scan_progress(
+                    progress_value + done,
+                    max(progress_max, progress_value + total + 4),
+                    f"{action} process list {done}/{total}: {source.name}",
+                )
+
+            process_list_import_summary = self.copy_process_lists_from_import_folder(
+                process_list,
+                progress_callback=process_list_progress,
+            )
+            progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             process_list_files = shower_batch.process_list_files(process_list)
-            self.queue_scan_progress(2, 5, f"Reading {len(process_list_files)} process list file(s)...")
+            progress_value += 1
+            self.queue_scan_progress(progress_value, max(progress_max, progress_value + 3), f"Reading {len(process_list_files)} process list file(s)...")
             orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
-            self.queue_scan_progress(3, 5, f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
-            import_summary = self.copy_edi_orders_for_process_orders(folder, orders)
-            self.queue_scan_progress(4, 5, "Building order preview list...")
+
+            def order_file_progress(done: int, total: int, source: Path, copied: bool) -> None:
+                action = "Copied" if copied else "Checked"
+                self.queue_scan_progress(
+                    progress_value + done,
+                    max(progress_max, progress_value + total + 2),
+                    f"{action} order file {done}/{total}: {source.name}",
+                )
+
+            self.queue_scan_progress(progress_value, max(progress_max, progress_value + 2), f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
+            import_summary = self.copy_edi_orders_for_process_orders(
+                folder,
+                orders,
+                progress_callback=order_file_progress,
+            )
+            progress_value += int(import_summary.get("considered", 0) or 0)
+            progress_value += 1
+            self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building order preview list...")
             previews = shower_batch.preview_orders(orders, folder)
-            self.queue_scan_progress(5, 5, f"Scan complete: {len(orders)} order(s).")
+            self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} order(s).")
             self.worker_queue.put(
                 (
                     "scan_done",
@@ -312,20 +346,50 @@ class ShowerProgrammerApp:
 
     def worker_import_edi_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
-            self.queue_scan_progress(0, 4, "Copying process lists into the local input folder...")
-            process_list_import_summary = self.copy_process_lists_from_import_folder(process_list)
+            progress_value = 0
+            progress_max = 4
+
+            def process_list_progress(done: int, total: int, source: Path, copied: bool) -> None:
+                action = "Copied" if copied else "Checked"
+                self.queue_scan_progress(
+                    progress_value + done,
+                    max(progress_max, progress_value + total + 3),
+                    f"{action} process list {done}/{total}: {source.name}",
+                )
+
+            self.queue_scan_progress(progress_value, progress_max, "Copying process lists into the local input folder...")
+            process_list_import_summary = self.copy_process_lists_from_import_folder(
+                process_list,
+                progress_callback=process_list_progress,
+            )
+            progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             if self.orders:
                 orders = self.orders
                 process_list_count = 0
             else:
-                self.queue_scan_progress(1, 4, "Reading process lists...")
+                progress_value += 1
+                self.queue_scan_progress(progress_value, max(progress_max, progress_value + 2), "Reading process lists...")
                 config = self.config_with_manual_overrides(folder, output_dir)
                 process_list_files = shower_batch.process_list_files(process_list)
                 process_list_count = len(process_list_files)
                 orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
-            self.queue_scan_progress(2, 4, f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
-            import_summary = self.copy_edi_orders_for_process_orders(folder, orders)
-            self.queue_scan_progress(4, 4, "Import complete.")
+
+            def order_file_progress(done: int, total: int, source: Path, copied: bool) -> None:
+                action = "Copied" if copied else "Checked"
+                self.queue_scan_progress(
+                    progress_value + done,
+                    max(progress_max, progress_value + total + 1),
+                    f"{action} order file {done}/{total}: {source.name}",
+                )
+
+            self.queue_scan_progress(progress_value, max(progress_max, progress_value + 1), f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
+            import_summary = self.copy_edi_orders_for_process_orders(
+                folder,
+                orders,
+                progress_callback=order_file_progress,
+            )
+            progress_value += int(import_summary.get("considered", 0) or 0)
+            self.queue_scan_progress(progress_value + 1, progress_value + 1, "Import complete.")
             self.worker_queue.put(
                 (
                     "import_done",
@@ -422,7 +486,7 @@ class ShowerProgrammerApp:
             result.items,
             self.review_status_for_order(result.aw_order),
             result.input_pdf.name if result.input_pdf else "",
-            "; ".join(result.issues),
+            self.issue_summary(result.issues),
         )
         row_id = self.tree_rows.get(result.aw_order)
         tag = result.status if result.status in {"OK", "READY", "ISSUES", "FAILED", "SKIPPED"} else ""
@@ -431,6 +495,36 @@ class ShowerProgrammerApp:
         else:
             row_id = self.tree.insert("", tk.END, values=values, tags=(tag,))
             self.tree_rows[result.aw_order] = row_id
+
+    @staticmethod
+    def issue_summary(issues: list[str]) -> str:
+        if not issues:
+            return ""
+        concise = [ShowerProgrammerApp.concise_issue_text(issue) for issue in issues]
+        visible = concise[:3]
+        text = "; ".join(visible)
+        if len(concise) > len(visible):
+            text += f"; +{len(concise) - len(visible)} more"
+        return text
+
+    @staticmethod
+    def concise_issue_text(issue: str) -> str:
+        text = re.sub(r"\s+", " ", issue).strip()
+        replacements = [
+            (r"^Process list item\(s\) missing from PDF: ", "Missing sketch: "),
+            (r"^Missing sketch page: ", "Missing sketch: "),
+            (r"^Notice: PDF piece\(s\) not in process list; crossed out/not programmed \(possible REMAKE\): ", "Crossed out: "),
+            (r"^Sketch page not in list; crossed out: ", "Crossed out: "),
+            (r"^P(\d+): No matching process-list item row found\.$", r"P\1: no process row"),
+            (r"^P(\d+): no process-list row$", r"P\1: no process row"),
+            (r"^P(\d+): missing source DXF$", r"P\1: missing DXF"),
+            (r"^P(\d+): Label placed in best available open area inside glass\.$", r"P\1: label placed inside"),
+            (r"^P(\d+): label placed inside best open area$", r"P\1: label placed inside"),
+            (r"^P(\d+): FP-S cut-in/cut-out detected; manual DXF review required\.$", r"P\1: FP-S cut; review DXF"),
+        ]
+        for pattern, replacement in replacements:
+            text = re.sub(pattern, replacement, text)
+        return text
 
     def processed_summary_for_order(self, aw_order: str) -> tuple[str, str]:
         history = self.history_for_order(aw_order)
@@ -1795,9 +1889,19 @@ a {{ color: #1f4e79; }}
         except Exception as exc:
             canvas.create_text(16, 42, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill="#b42318")
             return
+        unit_label = self.dxf_unit_label(path)
+        inches_per_unit = self.dxf_inches_per_unit(path)
         canvas.create_text(16, 42, anchor=tk.NW, text=path.name, fill="#1f2933", font=("Arial", 10))
+        canvas.create_text(
+            16,
+            62,
+            anchor=tk.NW,
+            text=self.dxf_units_text(unit_label, inches_per_unit),
+            fill="#475569",
+            font=("Arial", 9),
+        )
         if not segments:
-            canvas.create_text(16, 66, anchor=tk.NW, text="No drawable DXF entities found.", fill="#334155")
+            canvas.create_text(16, 86, anchor=tk.NW, text="No drawable DXF entities found.", fill="#334155")
             return
         points = [point for segment in segments for point in segment]
         min_x = min(x for x, _ in points)
@@ -1807,9 +1911,7 @@ a {{ color: #1f4e79; }}
         width = max(max_x - min_x, 0.001)
         height = max(max_y - min_y, 0.001)
         margin = 34.0
-        header_height = 96.0
-        unit_label = self.dxf_unit_label(path)
-        inches_per_unit = self.dxf_inches_per_unit(path)
+        header_height = 116.0
         scale = min(
             max(20, canvas.winfo_width() - margin * 2) / width,
             max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
@@ -1847,7 +1949,7 @@ a {{ color: #1f4e79; }}
         if highlight_segments:
             canvas.create_text(
                 16,
-                66,
+                84,
                 anchor=tk.NW,
                 text="Orange = angled/out-of-square side",
                 fill="#9a5b00",
@@ -1955,6 +2057,14 @@ a {{ color: #1f4e79; }}
             "5": "cm",
             "6": "m",
         }.get(ShowerProgrammerApp.dxf_insunits(path), "units")
+
+    @staticmethod
+    def dxf_units_text(unit_label: str, inches_per_unit: float) -> str:
+        if unit_label == "in" and abs(inches_per_unit - 1.0) <= 1e-9:
+            return "DXF units: inches"
+        if unit_label == "mm":
+            return "DXF units: millimeters"
+        return f"DXF units: {unit_label}"
 
     @staticmethod
     def dxf_insunits(path: Path) -> str:
@@ -2840,7 +2950,11 @@ try {{
         raise RuntimeError(f"Could not choose a unique archive name for {path}")
 
     @classmethod
-    def copy_process_lists_from_import_folder(cls, process_list_path: Path) -> dict[str, object]:
+    def copy_process_lists_from_import_folder(
+        cls,
+        process_list_path: Path,
+        progress_callback: Callable[[int, int, Path, bool], None] | None = None,
+    ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
             "copied": [],
@@ -2848,6 +2962,7 @@ try {{
             "source": str(source_dir),
             "source_missing": False,
             "direct": False,
+            "considered": 0,
         }
         if not source_dir.exists():
             summary["source_missing"] = True
@@ -2860,12 +2975,17 @@ try {{
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
-        for source in cls.importable_process_list_files(source_dir):
+        sources = cls.importable_process_list_files(source_dir)
+        summary["considered"] = len(sources)
+        for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
-            if cls.copy_file_if_needed(source, target):
+            did_copy = cls.copy_file_if_needed(source, target)
+            if did_copy:
                 copied.append(target)
             else:
                 skipped += 1
+            if progress_callback is not None:
+                progress_callback(index, len(sources), source, did_copy)
         summary["copied"] = copied
         summary["skipped"] = skipped
         return summary
@@ -2892,6 +3012,7 @@ try {{
         cls,
         target_dir: Path,
         orders: list[shower_batch.ProcessOrder],
+        progress_callback: Callable[[int, int, Path, bool], None] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -2900,6 +3021,7 @@ try {{
             "source": str(source_dir),
             "source_missing": False,
             "direct": False,
+            "considered": 0,
         }
         if not orders:
             return summary
@@ -2913,12 +3035,17 @@ try {{
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
-        for source in cls.matching_order_files(source_dir, orders, root_only=True, inspect_pdf_text=True):
+        sources = cls.matching_order_files(source_dir, orders, root_only=True, inspect_pdf_text=True)
+        summary["considered"] = len(sources)
+        for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
-            if cls.copy_file_if_needed(source, target):
+            did_copy = cls.copy_file_if_needed(source, target)
+            if did_copy:
                 copied.append(target)
             else:
                 skipped += 1
+            if progress_callback is not None:
+                progress_callback(index, len(sources), source, did_copy)
         summary["copied"] = copied
         summary["skipped"] = skipped
         return summary
@@ -4050,6 +4177,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
     def open_input_folder(self) -> None:
         path = Path(self.folder_var.get()).resolve()
+        if path.name.lower() == "orders":
+            path = path.parent
         if not path.exists():
             messagebox.showerror("Input folder not found", f"Could not find:\n{path}")
             return
