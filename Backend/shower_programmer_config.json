@@ -19,21 +19,23 @@
     "label_color_rgb": [0, 120, 212],
     "label_position": {
       "_notes": {
+        "page_center_first": "true means start the order/machine label at the center of the sketch page before any ratio placement.",
         "center_first": "true means try the piece center first, then use the ratio/nudge values when center overlaps sketch text or lines.",
         "ratios": "0.5 is middle of the piece. Higher Y ratios move labels upward inside the piece.",
         "nudges": "Final point adjustments after automatic placement. Positive x moves right, positive y moves up."
       },
-      "center_first": false,
-      "x_ratio": 0.65,
-      "default_y_ratio": 0.74,
-      "denver_y_ratio": 0.74,
-      "waterjet_y_ratio": 0.82,
-      "manual_nudge_x": 10,
-      "manual_nudge_y": 55,
-      "denver_nudge_x": 10,
-      "denver_nudge_y": 55,
-      "waterjet_nudge_x": 10,
-      "waterjet_nudge_y": 55
+      "page_center_first": true,
+      "center_first": true,
+      "x_ratio": 0.5,
+      "default_y_ratio": 0.5,
+      "denver_y_ratio": 0.5,
+      "waterjet_y_ratio": 0.5,
+      "manual_nudge_x": 0,
+      "manual_nudge_y": 0,
+      "denver_nudge_x": 0,
+      "denver_nudge_y": 0,
+      "waterjet_nudge_x": 0,
+      "waterjet_nudge_y": 0
     },
     "diamon_fusion_font_size": 55,
     "diamon_fusion_min_font_size": 28,
@@ -70,6 +72,14 @@
       "denver_y": 0,
       "waterjet_outline_x": 0,
       "waterjet_outline_y": 25,
+      "waterjet_corner_x": {
+        "top_left": -18,
+        "bottom_right": 18,
+        "top_right": 18,
+        "bottom_left": -18
+      },
+      "waterjet_page_x": 0,
+      "waterjet_page_y": 0,
       "waterjet_x": 95,
       "waterjet_y": 0
     }

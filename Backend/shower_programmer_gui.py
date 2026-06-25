@@ -41,6 +41,8 @@ class ShowerProgrammerApp:
     SHOP_SKETCHES_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Sketches")
     SHOP_PROGRAMS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")
     EDI_IMPORT_ORDERS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\EDIImportSG\Showers Programmer Input")
+    APP_ICON_PATH = programmer.project_root() / "Assets" / "ShowersProgrammer.ico"
+    IMPORT_STAGING_FOLDER_NAME = "Showers Programmer Input"
     ORDER_FILE_EXTENSIONS = {".pdf", ".dxf"}
     PROCESS_LIST_FILE_EXTENSIONS = shower_batch.PROCESS_LIST_EXTENSIONS
     INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
@@ -50,8 +52,10 @@ class ShowerProgrammerApp:
         self.root.title("Shower Programmer")
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
+        self.set_window_icon(self.root)
         self.root.after(0, lambda: self.maximize_window(self.root))
         self.folder_var = tk.StringVar(value=str(programmer.default_orders_dir()))
+        self.import_source_var = tk.StringVar(value=str(self.EDI_IMPORT_ORDERS_DIR))
         self.process_list_var = tk.StringVar(value=str(programmer.default_process_list_path()))
         self.output_dir_var = tk.StringVar(value=str(programmer.default_output_dir()))
         self.force_var = tk.BooleanVar(value=False)
@@ -68,11 +72,25 @@ class ShowerProgrammerApp:
         self.last_reports: shower_batch.BatchRunResult | None = None
         self.last_run_folder: Path | None = None
         self.is_busy = False
+        self.background_progress_percent = 0.0
+        self.send_review_window: tk.Toplevel | None = None
+        self.send_review_progress: ttk.Progressbar | None = None
+        self.send_review_status_var: tk.StringVar | None = None
 
         self.configure_styles()
         self.build_ui()
         self.root.after(75, self.drain_worker_queue)
         self.root.after(350, self.scan_orders)
+
+    @staticmethod
+    def set_window_icon(window: Any) -> None:
+        icon_path = ShowerProgrammerApp.APP_ICON_PATH
+        if not icon_path.exists():
+            return
+        try:
+            window.iconbitmap(str(icon_path))
+        except tk.TclError:
+            pass
 
     @staticmethod
     def maximize_window(window: Any) -> None:
@@ -139,16 +157,12 @@ class ShowerProgrammerApp:
         outer = ttk.Frame(self.root, padding=10)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        header = ttk.Frame(outer)
-        header.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(header, text="Shower Programmer", style="Title.TLabel").pack(side=tk.LEFT)
-        ttk.Label(header, textvariable=self.summary_var, style="Summary.TLabel").pack(side=tk.RIGHT)
-
         paths = ttk.LabelFrame(outer, text="Folders", padding=(10, 8))
         paths.pack(fill=tk.X)
-        self.add_path_row(paths, 0, "Folder", self.folder_var, self.choose_folder)
-        self.add_path_row(paths, 1, "Process Lists", self.process_list_var, self.choose_process_list)
-        self.add_path_row(paths, 2, "Output", self.output_dir_var, self.choose_output_dir)
+        self.add_path_row(paths, 0, "Orders", self.folder_var, self.choose_folder)
+        self.add_path_row(paths, 1, "Import From", self.import_source_var, self.choose_import_source)
+        self.add_path_row(paths, 2, "Process Lists", self.process_list_var, self.choose_process_list)
+        self.add_path_row(paths, 3, "Output", self.output_dir_var, self.choose_output_dir)
 
         actions = ttk.Frame(outer)
         actions.pack(fill=tk.X, pady=(8, 8))
@@ -163,17 +177,14 @@ class ShowerProgrammerApp:
         file_actions = ttk.Frame(actions)
         file_actions.pack(side=tk.RIGHT)
         ttk.Button(file_actions, text="Open Input Folder", command=self.open_input_folder).pack(side=tk.LEFT)
-        ttk.Button(file_actions, text="Open Sketches", command=self.open_sketches_folder).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(file_actions, text="Open Programs", command=self.open_programs_folder).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(file_actions, text="Open Output Folder", command=self.open_output_folder).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(file_actions, text="Open Config", command=self.open_config).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(file_actions, text="Open Last Report", command=self.open_last_report).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(file_actions, text="Open Latest Batch", command=self.open_latest_batch).pack(side=tk.LEFT, padx=(6, 0))
 
         maintenance = ttk.Frame(outer)
         maintenance.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(maintenance, text="Maintenance").pack(side=tk.LEFT)
         ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(maintenance, textvariable=self.summary_var, style="Summary.TLabel").pack(side=tk.RIGHT, padx=(12, 0))
 
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -230,15 +241,17 @@ class ShowerProgrammerApp:
 
         bottom = ttk.Frame(outer)
         bottom.pack(fill=tk.X, pady=(8, 0))
+        bottom.columnconfigure(0, weight=1)
+        bottom.columnconfigure(1, weight=0)
+        bottom.columnconfigure(2, weight=0)
         self.progress = ttk.Progressbar(bottom, mode="determinate")
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Muted.TLabel").pack(side=tk.LEFT, padx=(10, 0))
+        self.progress.grid(row=0, column=0, sticky="ew", ipady=2)
+        self.status_label = ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Muted.TLabel", width=58)
+        self.status_label.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         send_buttons = ttk.Frame(bottom)
-        send_buttons.pack(side=tk.RIGHT, padx=(10, 0))
-        ttk.Button(send_buttons, text="Send Sketches", command=self.send_sketches_to_shop).pack(side=tk.LEFT)
-        ttk.Button(send_buttons, text="Send Programs", command=self.send_programs_to_shop).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(send_buttons, text="Select All", command=self.select_all_orders).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(send_buttons, text="Send All", style="Accent.TButton", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
+        send_buttons.grid(row=0, column=2, sticky=tk.E, padx=(10, 0))
+        ttk.Button(send_buttons, text="Select All", command=self.select_all_orders).pack(side=tk.LEFT)
+        ttk.Button(send_buttons, text="Review / Send", style="Accent.TButton", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
 
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
         ttk.Label(parent, text=label, width=12).grid(row=row, column=0, sticky=tk.W, pady=2)
@@ -250,6 +263,11 @@ class ShowerProgrammerApp:
         path = filedialog.askdirectory(initialdir=self.folder_var.get())
         if path:
             self.folder_var.set(path)
+
+    def choose_import_source(self) -> None:
+        path = filedialog.askdirectory(initialdir=self.import_source_var.get())
+        if path:
+            self.import_source_var.set(path)
 
     def choose_process_list(self) -> None:
         current = Path(self.process_list_var.get())
@@ -263,12 +281,18 @@ class ShowerProgrammerApp:
         if path:
             self.output_dir_var.set(path)
 
+    def apply_import_source_dir(self) -> Path:
+        path = Path(self.import_source_var.get()).resolve()
+        type(self).EDI_IMPORT_ORDERS_DIR = path
+        return path
+
     def scan_orders(self) -> None:
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         try:
             folder = Path(self.folder_var.get()).resolve()
+            self.apply_import_source_dir()
             process_list = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
         except Exception as exc:
@@ -289,6 +313,7 @@ class ShowerProgrammerApp:
             return
         try:
             folder = Path(self.folder_var.get()).resolve()
+            self.apply_import_source_dir()
             process_list = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
         except Exception as exc:
@@ -305,10 +330,11 @@ class ShowerProgrammerApp:
 
     def start_background_activity(self, message: str, maximum: int | None = None) -> None:
         self.is_busy = True
+        self.background_progress_percent = 0.0
         self.set_controls_enabled(False)
         self.progress.stop()
         if maximum:
-            self.progress.configure(mode="determinate", maximum=maximum, value=0)
+            self.progress.configure(mode="determinate", maximum=100, value=0)
         else:
             self.progress.configure(mode="indeterminate", maximum=100, value=0)
             self.progress.start(12)
@@ -317,6 +343,7 @@ class ShowerProgrammerApp:
     def finish_background_activity(self) -> None:
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
+        self.background_progress_percent = 0.0
         self.is_busy = False
         self.set_controls_enabled(True)
 
@@ -613,17 +640,14 @@ class ShowerProgrammerApp:
                 return run_folder
         runs_dir = output_dir / "Runs"
         if runs_dir.exists():
-            numeric_runs = sorted(
-                (path for path in runs_dir.iterdir() if path.is_dir() and path.name.isdigit()),
-                key=lambda path: int(path.name),
+            run_folders = sorted(
+                self.output_search_roots(output_dir),
+                key=lambda path: path.stat().st_mtime if path.exists() else 0,
                 reverse=True,
             )
-            other_runs = sorted(
-                (path for path in runs_dir.iterdir() if path.is_dir() and not path.name.isdigit()),
-                key=lambda path: path.name,
-                reverse=True,
-            )
-            for run_folder in numeric_runs + other_runs:
+            for run_folder in run_folders:
+                if run_folder == output_dir:
+                    continue
                 if (run_folder / "Sketches" / f"{aw_order}.pdf").exists():
                     return run_folder
         return None
@@ -662,6 +686,39 @@ class ShowerProgrammerApp:
             if bool(value.get("checked")):
                 checked.append(f"P{int(key)} checked")
         return ", ".join(sorted(checked, key=lambda text: int(text.split()[0][1:])))
+
+    def order_review_is_complete(self, order: shower_batch.ProcessOrder) -> bool:
+        try:
+            data = self.load_manual_overrides()
+        except Exception:
+            return False
+        item_overrides = data.get("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            return False
+        order_overrides = item_overrides.get(str(order.aw_order), {})
+        if not isinstance(order_overrides, dict):
+            return False
+        if bool(order_overrides.get("_order_checked")):
+            return True
+        item_numbers = set(getattr(order, "item_numbers", set()) or set())
+        if not item_numbers:
+            return False
+        for item in item_numbers:
+            item_override = order_overrides.get(str(item), {})
+            if not isinstance(item_override, dict) or not bool(item_override.get("checked")):
+                return False
+        return True
+
+    def tree_values_for_order(self, aw_order: str) -> tuple[str, ...]:
+        row_id = self.tree_rows.get(aw_order)
+        if not row_id:
+            return ()
+        values = self.tree.item(row_id, "values")
+        return tuple(str(value) for value in values)
+
+    def tree_issue_text_for_order(self, aw_order: str) -> str:
+        values = self.tree_values_for_order(aw_order)
+        return values[10] if len(values) > 10 else ""
 
     def mark_selected_orders_checked(self) -> None:
         orders = self.selected_orders()
@@ -769,7 +826,7 @@ class ShowerProgrammerApp:
                 if not messagebox.askyesno(
                     "Existing outputs found",
                     "Some selected outputs already exist:\n\n"
-                    f"{preview}\n\nOverwrite them and create a new indexed run folder?",
+                    f"{preview}\n\nOverwrite only the selected order files in the dated batch folder?",
                 ):
                     return
                 force = True
@@ -795,11 +852,7 @@ class ShowerProgrammerApp:
     ) -> list[str]:
         conflicts: list[str] = []
         for order in orders:
-            search_roots = [output_dir]
-            runs_dir = output_dir / "Runs"
-            if runs_dir.exists():
-                search_roots.extend(path for path in runs_dir.iterdir() if path.is_dir())
-            for root in search_roots:
+            for root in self.output_search_roots(output_dir):
                 sketch = root / "Sketches" / f"{order.aw_order}.pdf"
                 if sketch.exists():
                     conflicts.append(str(sketch.relative_to(output_dir)))
@@ -879,12 +932,8 @@ class ShowerProgrammerApp:
     ) -> int:
         removed = 0
         for order in orders:
-            roots = [output_dir]
-            runs_dir = output_dir / "Runs"
-            if runs_dir.exists():
-                roots.extend(path for path in runs_dir.iterdir() if path.is_dir())
             candidates: list[Path] = []
-            for root in roots:
+            for root in ShowerProgrammerApp.output_search_roots(output_dir):
                 candidates.extend(
                     [
                         root / "Sketches" / f"{order.aw_order}.pdf",
@@ -907,8 +956,21 @@ class ShowerProgrammerApp:
         return removed
 
     @staticmethod
-    def next_indexed_run_folder(output_dir: Path) -> Path:
+    def output_search_roots(output_dir: Path) -> list[Path]:
+        roots = [output_dir]
         runs_dir = output_dir / "Runs"
+        if not runs_dir.exists():
+            return roots
+        for path in runs_dir.rglob("*"):
+            if not path.is_dir():
+                continue
+            if (path / "Sketches").exists() or (path / "Programs").exists() or (path / "Reports").exists() or (path / "manifest.json").exists():
+                roots.append(path)
+        return roots
+
+    @staticmethod
+    def next_indexed_run_folder(output_dir: Path) -> Path:
+        runs_dir = output_dir / "Runs" / ShowerProgrammerApp.dated_archive_folder_name()
         runs_dir.mkdir(parents=True, exist_ok=True)
         indexes = [
             int(path.name)
@@ -918,18 +980,12 @@ class ShowerProgrammerApp:
         return runs_dir / str((max(indexes) if indexes else 0) + 1)
 
     def next_batch_run_folder(self, output_dir: Path, process_list_path: Path) -> Path:
-        runs_dir = output_dir / "Runs"
+        runs_dir = output_dir / "Runs" / self.dated_archive_folder_name()
         runs_dir.mkdir(parents=True, exist_ok=True)
         label = self.process_list_run_label(process_list_path)
         if not label:
             return self.next_indexed_run_folder(output_dir)
-        folder = runs_dir / label
-        if not folder.exists():
-            return folder
-        index = 2
-        while (runs_dir / f"{label}_{index}").exists():
-            index += 1
-        return runs_dir / f"{label}_{index}"
+        return runs_dir / label
 
     @staticmethod
     def process_list_run_label(process_list_path: Path) -> str:
@@ -976,10 +1032,7 @@ class ShowerProgrammerApp:
         self.save_processing_history(history)
 
     def latest_run_folder(self, output_dir: Path) -> Path | None:
-        runs_dir = output_dir / "Runs"
-        if not runs_dir.exists():
-            return None
-        runs = [path for path in runs_dir.iterdir() if path.is_dir()]
+        runs = [path for path in self.output_search_roots(output_dir) if path != output_dir]
         return max(runs, key=lambda path: path.stat().st_mtime) if runs else None
 
     def drain_worker_queue(self) -> None:
@@ -998,9 +1051,21 @@ class ShowerProgrammerApp:
                     maximum = int(data.get("maximum", 100) or 100)
                     value = int(data.get("value", 0) or 0)
                     message = str(data.get("message", "Scanning..."))
+                    percent = 100.0 if value >= maximum else max(0.0, min(99.0, (value / max(maximum, 1)) * 100.0))
+                    if percent < self.background_progress_percent:
+                        percent = self.background_progress_percent
+                    else:
+                        self.background_progress_percent = percent
                     self.progress.stop()
-                    self.progress.configure(mode="determinate", maximum=max(maximum, 1), value=value)
+                    self.progress.configure(mode="determinate", maximum=100, value=percent)
                     self.status_var.set(message)
+                    if self.send_review_progress is not None:
+                        try:
+                            self.send_review_progress.configure(mode="determinate", maximum=100, value=percent)
+                        except tk.TclError:
+                            self.send_review_progress = None
+                    if self.send_review_status_var is not None:
+                        self.send_review_status_var.set(message)
                 elif kind == "done":
                     run, run_folder = payload
                     assert isinstance(run, shower_batch.BatchRunResult)
@@ -1012,7 +1077,7 @@ class ShowerProgrammerApp:
                         self.insert_or_update_result(result)
                     counts = shower_batch.count_statuses(run.results)
                     self.status_var.set("Done. " + ", ".join(f"{k}={v}" for k, v in counts.items()))
-                    messagebox.showinfo("Batch complete", f"Report written:\n{run.html_report}")
+                    messagebox.showinfo("Batch complete", "Processing complete.")
                 elif kind == "error":
                     self.finish_background_activity()
                     self.status_var.set("Error")
@@ -1072,21 +1137,41 @@ class ShowerProgrammerApp:
                     missing = data.get("missing", [])
                     archived = data.get("archived", [])
                     archive_warnings = data.get("archive_warnings", [])
+                    import_deleted = data.get("import_deleted", [])
+                    input_cleanup_warnings = data.get("input_cleanup_warnings", [])
                     assert isinstance(copied, list)
                     assert isinstance(missing, list)
                     assert isinstance(archived, list)
                     assert isinstance(archive_warnings, list)
+                    assert isinstance(import_deleted, list)
+                    assert isinstance(input_cleanup_warnings, list)
                     self.finish_background_activity()
                     if not copied:
                         messagebox.showinfo("Nothing sent", "No matching generated files were found.")
                         self.status_var.set("No matching generated files were found.")
                         continue
-                    details = self.send_complete_details(copied, missing, archived, archive_warnings)
+                    details = self.send_complete_details(
+                        copied,
+                        missing,
+                        archived,
+                        archive_warnings,
+                        import_deleted,
+                        input_cleanup_warnings,
+                    )
                     self.status_var.set(details)
+                    if self.send_review_status_var is not None:
+                        self.send_review_status_var.set("Send complete.")
+                    if self.send_review_progress is not None:
+                        try:
+                            self.send_review_progress.configure(mode="determinate", maximum=100, value=100)
+                        except tk.TclError:
+                            self.send_review_progress = None
                     messagebox.showinfo("Send complete", details)
                 elif kind == "send_error":
                     self.finish_background_activity()
                     self.status_var.set("Send failed")
+                    if self.send_review_status_var is not None:
+                        self.send_review_status_var.set("Send failed.")
                     messagebox.showerror("Send failed", str(payload))
         except queue.Empty:
             pass
@@ -1201,13 +1286,16 @@ class ShowerProgrammerApp:
     def generated_sketch_paths(self, output_dir: Path, sketch_dir: Path) -> list[Path]:
         aw_orders = self.selected_or_visible_aw_orders()
         if aw_orders:
-            paths: list[Path] = []
-            for aw_order in aw_orders:
-                path = self.find_order_sketch_path(aw_order, output_dir)
-                if path.exists():
-                    paths.append(path)
-            return paths
+            return self.generated_sketch_paths_for_orders(aw_orders, output_dir)
         return sorted(sketch_dir.glob("*.pdf")) if sketch_dir.exists() else []
+
+    def generated_sketch_paths_for_orders(self, aw_orders: list[str], output_dir: Path) -> list[Path]:
+        paths: list[Path] = []
+        for aw_order in aw_orders:
+            path = self.find_order_sketch_path(aw_order, output_dir)
+            if path.exists():
+                paths.append(path)
+        return paths
 
     def sketch_review_page_indices(
         self,
@@ -1248,12 +1336,15 @@ class ShowerProgrammerApp:
     def generated_dxf_paths(self, output_dir: Path, programs_dir: Path) -> list[Path]:
         aw_orders = self.selected_or_visible_aw_orders()
         if aw_orders:
-            paths: list[Path] = []
-            for aw_order in aw_orders:
-                _run_folder, _sketch_dir, order_programs_dir, _report_dir = self.output_dirs_for_order(aw_order, output_dir)
-                paths.extend(sorted(order_programs_dir.glob(f"{aw_order}*.dxf")))
-            return paths
+            return self.generated_dxf_paths_for_orders(aw_orders, output_dir)
         return sorted(programs_dir.glob("*.dxf")) if programs_dir.exists() else []
+
+    def generated_dxf_paths_for_orders(self, aw_orders: list[str], output_dir: Path) -> list[Path]:
+        paths: list[Path] = []
+        for aw_order in aw_orders:
+            _run_folder, _sketch_dir, order_programs_dir, _report_dir = self.output_dirs_for_order(aw_order, output_dir)
+            paths.extend(sorted(order_programs_dir.glob(f"{aw_order}*.dxf")))
+        return paths
 
     def build_dxf_review_html(self, paths: list[Path]) -> str:
         cards = "\n".join(self.dxf_preview_card(path) for path in paths)
@@ -1371,8 +1462,10 @@ a {{ color: #1f4e79; }}
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Review Order - {process_order.aw_order}")
         dialog.geometry("1180x820")
+        dialog.minsize(980, 560)
+        dialog.resizable(True, True)
+        self.set_window_icon(dialog)
         dialog.after(0, lambda: self.maximize_window(dialog))
-        dialog.transient(self.root)
         
         toolbar = ttk.Frame(dialog, padding=(8, 8, 8, 4))
         toolbar.pack(fill=tk.X)
@@ -1395,6 +1488,7 @@ a {{ color: #1f4e79; }}
         ttk.Button(toolbar, text="Save Edits", command=lambda: save_review_edits()).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark()).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Add Text Box", command=lambda: add_text_box()).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90)).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
@@ -1723,6 +1817,24 @@ a {{ color: #1f4e79; }}
             state.get("pending_items", set()).add(panel.item)
             state["needs_output_save"] = True
             status.set(f"Added X-out mark on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
+            redraw()
+
+        def add_text_box() -> None:
+            panel = selected_panel()
+            initial = panel.label_text or f"{job.aw_order}.{panel.item}\n{panel.machine or ''}".strip()
+            value = simpledialog.askstring(
+                "Add Text Box",
+                "Enter sketch text. Use \\n for a line break.",
+                initialvalue=initial,
+                parent=dialog,
+            )
+            if value is None:
+                return
+            self.set_label_text_and_detect_machine(job.aw_order, panel.item, value, panel, config)
+            refresh_prepared_job()
+            state.get("pending_items", set()).add(panel.item)
+            state["needs_output_save"] = True
+            status.set(f"Added text box on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
             redraw()
 
         def set_current_indicator_machine(machine_kind: str) -> None:
@@ -2338,6 +2450,29 @@ a {{ color: #1f4e79; }}
             item_override.pop(field, None)
         self.save_manual_overrides(data)
 
+    def set_label_text_and_detect_machine(
+        self,
+        aw_order: str,
+        item_number: int,
+        value: str,
+        panel: programmer.Panel,
+        config: dict[str, object],
+    ) -> None:
+        text = value.replace("\\n", "\n").strip()
+        if not text:
+            return
+        self.set_mark_hidden(aw_order, item_number, "label", hidden=False)
+        self.set_mark_text_override(aw_order, item_number, "label", text)
+        upper = text.upper()
+        if "WATER" in upper or re.search(r"\bWJ\b", upper):
+            self.set_indicator_machine_override(aw_order, item_number, "WJ", panel, config)
+        elif "DENVER 1" in upper or "DENVER1" in upper:
+            self.set_indicator_machine_override(aw_order, item_number, "DENVER 1", panel, config)
+        elif "DENVER 2" in upper or "DENVER2" in upper:
+            self.set_indicator_machine_override(aw_order, item_number, "DENVER 2", panel, config)
+        elif "DENVER" in upper:
+            self.set_indicator_machine_override(aw_order, item_number, "DENVER", panel, config)
+
     def set_indicator_machine_override(
         self,
         aw_order: str,
@@ -2366,7 +2501,12 @@ a {{ color: #1f4e79; }}
             item_override["indicator_corner"] = programmer.default_waterjet_indicator_corner(panel)
             item_override["rotation_degrees"] = -90 if panel.height and panel.width and panel.height > panel.width else 0
         else:
-            machine = "DENVER 1" if programmer.has_door_programming_evidence(panel, config) else "DENVER 2"
+            if kind in {"DENVER 1", "DENVER1"}:
+                machine = "DENVER 1"
+            elif kind in {"DENVER 2", "DENVER2"}:
+                machine = "DENVER 2"
+            else:
+                machine = "DENVER 1" if programmer.has_door_programming_evidence(panel, config) else "DENVER 2"
             rotation = 90 if panel.height and panel.width and panel.height > panel.width else 0
             item_override["machine"] = machine
             item_override["indicator_corner"] = programmer.denver_grabber_corner_for_panel(panel, rotation)
@@ -2801,13 +2941,28 @@ try {{
         metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
     def send_sketches_to_shop(self) -> None:
-        self.send_outputs_to_shop(include_sketches=True, include_programs=False)
+        self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True, review_before_send=True)
 
     def send_programs_to_shop(self) -> None:
-        self.send_outputs_to_shop(include_sketches=False, include_programs=True)
+        self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True, review_before_send=True)
 
     def send_all_to_shop(self) -> None:
-        self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True)
+        if self.is_busy:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
+        self.progress.stop()
+        self.progress.configure(mode="indeterminate", maximum=100, value=0)
+        self.progress.start(12)
+        self.status_var.set("Preparing Review / Send...")
+        self.root.after(
+            50,
+            lambda: self.send_outputs_to_shop(
+                include_sketches=True,
+                include_programs=True,
+                archive_inputs=True,
+                review_before_send=True,
+            ),
+        )
 
     def send_outputs_to_shop(
         self,
@@ -2815,37 +2970,80 @@ try {{
         include_sketches: bool,
         include_programs: bool,
         archive_inputs: bool = False,
+        review_before_send: bool = False,
     ) -> None:
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         try:
             output_dir = Path(self.output_dir_var.get()).resolve()
+            self.apply_import_source_dir()
             run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
             sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
             programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
+            aw_orders = self.selected_or_visible_aw_orders()
             sketch_paths: list[Path] = []
             dxf_paths: list[Path] = []
             missing: list[str] = []
             if include_sketches:
-                sketch_paths = self.generated_sketch_paths(output_dir, sketch_dir)
+                sketch_paths = (
+                    self.generated_sketch_paths_for_orders(aw_orders, output_dir)
+                    if aw_orders
+                    else self.generated_sketch_paths(output_dir, sketch_dir)
+                )
                 if not sketch_paths:
                     missing.append("sketches")
             if include_programs:
-                dxf_paths = self.generated_dxf_paths(output_dir, programs_dir)
+                dxf_paths = (
+                    self.generated_dxf_paths_for_orders(aw_orders, output_dir)
+                    if aw_orders
+                    else self.generated_dxf_paths(output_dir, programs_dir)
+                )
                 if not dxf_paths:
                     missing.append("programs")
             if not sketch_paths and not dxf_paths:
+                self.progress.stop()
+                self.progress.configure(mode="determinate", maximum=100, value=0)
                 messagebox.showinfo("Nothing sent", "No matching generated files were found.")
                 return
-            aw_orders = self.selected_or_visible_aw_orders()
             orders = [self.order_by_aw[aw_order] for aw_order in aw_orders if aw_order in self.order_by_aw]
             order_folder = Path(self.folder_var.get()).resolve()
             process_list_path = Path(self.process_list_var.get()).resolve()
         except Exception as exc:
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=100, value=0)
             messagebox.showerror("Send failed", str(exc))
             return
 
+        if review_before_send and orders:
+            self.open_send_review_dialog(
+                output_dir,
+                include_sketches,
+                include_programs,
+                archive_inputs,
+                orders,
+                sketch_paths,
+                dxf_paths,
+                missing,
+                order_folder,
+                process_list_path,
+            )
+            return
+
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=100, value=0)
+        self.start_send_outputs_worker(sketch_paths, dxf_paths, missing, archive_inputs, orders, order_folder, process_list_path)
+
+    def start_send_outputs_worker(
+        self,
+        sketch_paths: list[Path],
+        dxf_paths: list[Path],
+        missing: list[str],
+        archive_inputs: bool,
+        orders: list[shower_batch.ProcessOrder],
+        order_folder: Path,
+        process_list_path: Path,
+    ) -> None:
         send_steps = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
         self.start_background_activity("Sending generated files to shop folders...", maximum=send_steps)
         worker = threading.Thread(
@@ -2854,6 +3052,289 @@ try {{
             daemon=True,
         )
         worker.start()
+
+    def open_send_review_dialog(
+        self,
+        output_dir: Path,
+        include_sketches: bool,
+        include_programs: bool,
+        archive_inputs: bool,
+        orders: list[shower_batch.ProcessOrder],
+        sketch_paths: list[Path],
+        dxf_paths: list[Path],
+        missing: list[str],
+        order_folder: Path,
+        process_list_path: Path,
+    ) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Review / Send Output")
+        dialog.geometry("1120x680")
+        dialog.minsize(860, 520)
+        dialog.resizable(True, True)
+        self.set_window_icon(dialog)
+        dialog.after(0, lambda: self.maximize_window(dialog))
+        self.send_review_window = dialog
+
+        heading = ttk.Frame(dialog, padding=(12, 10, 12, 4))
+        heading.pack(fill=tk.X)
+        ttk.Label(heading, text="Review / Send Output", style="Title.TLabel").pack(side=tk.LEFT)
+        summary_var = tk.StringVar()
+        ttk.Label(heading, textvariable=summary_var, style="Summary.TLabel").pack(side=tk.RIGHT)
+
+        body = ttk.Frame(dialog, padding=(12, 4, 12, 8))
+        body.pack(fill=tk.BOTH, expand=True)
+        columns = ("status", "source", "destination", "note")
+        tree = ttk.Treeview(body, columns=columns, show="tree headings", selectmode="browse")
+        tree.heading("#0", text="Order / Action")
+        tree.heading("status", text="Status")
+        tree.heading("source", text="Source")
+        tree.heading("destination", text="Destination")
+        tree.heading("note", text="Note")
+        tree.column("#0", width=230, minwidth=180, stretch=True)
+        tree.column("status", width=120, minwidth=90, stretch=False)
+        tree.column("source", width=280, minwidth=180, stretch=True)
+        tree.column("destination", width=260, minwidth=180, stretch=True)
+        tree.column("note", width=220, minwidth=140, stretch=True)
+        tree.tag_configure("ready", foreground="#0f7a3b")
+        tree.tag_configure("warning", foreground="#9a5b00")
+        tree.tag_configure("blocked", foreground="#b42318")
+        y_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        x_scroll = ttk.Scrollbar(body, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        archive_candidates = (
+            self.matching_order_files(order_folder, orders, root_only=True, inspect_pdf_text=False)
+            if archive_inputs
+            else []
+        )
+        checked_orders: list[shower_batch.ProcessOrder] = []
+        checked_aw_orders: list[str] = []
+        blocked_count = 0
+        warning_count = 0
+        checked_warning_count = 0
+
+        for order in orders:
+            checked = self.order_review_is_complete(order)
+            order_sketches = self.paths_for_order(sketch_paths, order.aw_order)
+            order_dxfs = self.paths_for_order(dxf_paths, order.aw_order)
+            order_archive_files = (
+                self.paths_matching_order_by_name(archive_candidates, order)
+                if archive_inputs
+                else []
+            )
+            warnings = self.send_plan_warnings_for_order(
+                order,
+                include_sketches=include_sketches,
+                include_programs=include_programs,
+                sketch_paths=order_sketches,
+                dxf_paths=order_dxfs,
+            )
+            if not checked:
+                blocked_count += 1
+                warnings.insert(0, "Not marked checked; this order will not send.")
+            if warnings:
+                warning_count += 1
+                if checked:
+                    checked_warning_count += 1
+            else:
+                checked_orders.append(order)
+                checked_aw_orders.append(order.aw_order)
+
+            if checked and warnings:
+                checked_orders.append(order)
+                checked_aw_orders.append(order.aw_order)
+
+            tag = "blocked" if not checked else "warning" if warnings else "ready"
+            status = "Blocked" if not checked else "Warnings" if warnings else "Ready"
+            parent = tree.insert(
+                "",
+                tk.END,
+                text=f"{order.aw_order}  {order.job_name}",
+                values=(status, "", "", "; ".join(warnings[:2])),
+                open=bool(warnings),
+                tags=(tag,),
+            )
+            if not checked:
+                tree.insert(parent, tk.END, text="Skip", values=("Blocked", "", "", "Mark checked before sending."), tags=("blocked",))
+                continue
+            if include_sketches:
+                if order_sketches:
+                    for path in order_sketches:
+                        tree.insert(parent, tk.END, text="Send sketch", values=("Ready", path.name, str(self.SHOP_SKETCHES_DIR), ""), tags=("ready",))
+                else:
+                    tree.insert(parent, tk.END, text="Send sketch", values=("Missing", "", str(self.SHOP_SKETCHES_DIR), "No sketch PDF found."), tags=("warning",))
+            if include_programs:
+                if order_dxfs:
+                    for path in order_dxfs:
+                        tree.insert(parent, tk.END, text="Send DXF", values=("Ready", path.name, str(self.SHOP_PROGRAMS_DIR), ""), tags=("ready",))
+                else:
+                    tree.insert(parent, tk.END, text="Send DXF", values=("Missing", "", str(self.SHOP_PROGRAMS_DIR), "No program DXF found."), tags=("warning",))
+            if archive_inputs:
+                if order_archive_files:
+                    for path in order_archive_files:
+                        tree.insert(parent, tk.END, text="Archive input", values=("Ready", path.name, "dated input archive", ""), tags=("ready",))
+                else:
+                    tree.insert(parent, tk.END, text="Archive input", values=("Missing", "", "dated input archive", "No matching input file found."), tags=("warning",))
+            for warning in warnings:
+                tree.insert(parent, tk.END, text="Warning", values=("Review", "", "", warning), tags=("warning",))
+
+        process_list_files = self.archive_process_list_files(process_list_path) if archive_inputs and checked_orders else []
+        if process_list_files:
+            parent = tree.insert("", tk.END, text="Process Lists", values=("Ready", "", "dated process-list archive", ""), open=False, tags=("ready",))
+            for path in process_list_files:
+                tree.insert(parent, tk.END, text="Archive process list", values=("Ready", path.name, "dated process-list archive", ""), tags=("ready",))
+
+        send_sketch_paths = self.generated_sketch_paths_for_orders(checked_aw_orders, output_dir) if include_sketches else []
+        send_dxf_paths = self.generated_dxf_paths_for_orders(checked_aw_orders, output_dir) if include_programs else []
+        send_missing: list[str] = []
+        if include_sketches and not send_sketch_paths:
+            send_missing.append("sketches")
+        if include_programs and not send_dxf_paths:
+            send_missing.append("programs")
+
+        summary_var.set(f"Ready {len(checked_orders)}   Blocked {blocked_count}   Warnings {warning_count}")
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=100, value=0)
+        footer = ttk.Frame(dialog, padding=(12, 0, 12, 12))
+        footer.pack(fill=tk.X)
+        self.send_review_status_var = tk.StringVar(
+            value="Review the send list. Unchecked orders are blocked and will not send."
+        )
+        self.send_review_progress = ttk.Progressbar(footer, mode="determinate", maximum=100, value=0)
+        self.send_review_progress.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        ttk.Label(footer, textvariable=self.send_review_status_var, style="Muted.TLabel", width=54).pack(side=tk.LEFT, padx=(10, 0))
+        buttons = ttk.Frame(footer)
+        buttons.pack(side=tk.RIGHT, padx=(10, 0))
+
+        def close_dialog() -> None:
+            if self.send_review_window is dialog:
+                self.send_review_window = None
+                self.send_review_progress = None
+                self.send_review_status_var = None
+            dialog.destroy()
+
+        send_action_buttons: list[ttk.Button] = []
+
+        def begin_send(send_sketches: bool, send_programs: bool, do_archive: bool) -> None:
+            if not checked_orders:
+                messagebox.showinfo("Nothing ready", "No checked orders are ready to send.")
+                return
+            chosen_sketches = send_sketch_paths if send_sketches else []
+            chosen_dxfs = send_dxf_paths if send_programs else []
+            if not chosen_sketches and not chosen_dxfs:
+                messagebox.showinfo("Nothing ready", "No generated files were found for the checked orders.")
+                return
+            if checked_warning_count and not messagebox.askyesno(
+                "Warnings found",
+                "Some checked orders have warnings. Send the checked orders anyway?",
+                parent=dialog,
+            ):
+                return
+            chosen_missing: list[str] = []
+            if send_sketches and not chosen_sketches:
+                chosen_missing.append("sketches")
+            if send_programs and not chosen_dxfs:
+                chosen_missing.append("programs")
+            for button in send_action_buttons:
+                button.configure(state=tk.DISABLED)
+            cancel_button.configure(text="Close")
+            self.send_review_status_var.set("Sending checked orders...")
+            self.start_send_outputs_worker(
+                chosen_sketches,
+                chosen_dxfs,
+                chosen_missing or missing,
+                bool(do_archive),
+                checked_orders,
+                order_folder,
+                process_list_path,
+            )
+
+        cancel_button = ttk.Button(buttons, text="Cancel", command=close_dialog)
+        cancel_button.pack(side=tk.RIGHT)
+        send_all_button = ttk.Button(
+            buttons,
+            text="Send All Checked Orders",
+            style="Accent.TButton",
+            command=lambda: begin_send(True, True, archive_inputs),
+        )
+        send_all_button.pack(side=tk.RIGHT, padx=(0, 8))
+        send_programs_button = ttk.Button(
+            buttons,
+            text="Send Programs",
+            command=lambda: begin_send(False, True, False),
+        )
+        send_programs_button.pack(side=tk.RIGHT, padx=(0, 8))
+        send_sketches_button = ttk.Button(
+            buttons,
+            text="Send Sketches",
+            command=lambda: begin_send(True, False, False),
+        )
+        send_sketches_button.pack(side=tk.RIGHT, padx=(0, 8))
+        send_action_buttons.extend([send_sketches_button, send_programs_button, send_all_button])
+        if not checked_orders:
+            for button in send_action_buttons:
+                button.configure(state=tk.DISABLED)
+        if not send_sketch_paths:
+            send_sketches_button.configure(state=tk.DISABLED)
+        if not send_dxf_paths:
+            send_programs_button.configure(state=tk.DISABLED)
+        if not send_sketch_paths and not send_dxf_paths:
+            send_all_button.configure(state=tk.DISABLED)
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+
+    @staticmethod
+    def paths_for_order(paths: list[Path], aw_order: str) -> list[Path]:
+        prefixes = (f"{aw_order}.", f"{aw_order}_", f"{aw_order}-")
+        matched: list[Path] = []
+        for path in paths:
+            stem = path.stem
+            if stem == aw_order or any(stem.startswith(prefix) for prefix in prefixes):
+                matched.append(path)
+                continue
+            suffix = stem[len(aw_order):] if stem.startswith(aw_order) else ""
+            if suffix.isdigit():
+                matched.append(path)
+        return matched
+
+    @classmethod
+    def paths_matching_order_by_name(cls, paths: list[Path], order: shower_batch.ProcessOrder) -> list[Path]:
+        aw_order = str(order.aw_order)
+        matched: list[Path] = []
+        normalized_jobs = [programmer.normalize_lookup(order.job_name)] if order.job_name else []
+        for path in paths:
+            if path.suffix.lower() == ".pdf":
+                if cls.pdf_file_matches_jobs(path, normalized_jobs, {aw_order}, inspect_pdf_text=False):
+                    matched.append(path)
+            elif path in cls.paths_for_order([path], aw_order):
+                matched.append(path)
+        return matched
+
+    def send_plan_warnings_for_order(
+        self,
+        order: shower_batch.ProcessOrder,
+        *,
+        include_sketches: bool,
+        include_programs: bool,
+        sketch_paths: list[Path],
+        dxf_paths: list[Path],
+    ) -> list[str]:
+        warnings: list[str] = []
+        if include_sketches and not sketch_paths:
+            warnings.append("Missing generated sketch PDF.")
+        if include_programs and not dxf_paths:
+            warnings.append("Missing generated program DXF.")
+        issue_text = self.tree_issue_text_for_order(order.aw_order)
+        if issue_text:
+            warnings.append(f"Issues: {issue_text}")
+        lower_issue = issue_text.lower()
+        if any(token in lower_issue for token in ("manual", "review", "mismatch", "orientation", "dxf")):
+            warnings.append("Possible sketch/DXF review item.")
+        return warnings
 
     def worker_send_outputs(
         self,
@@ -2869,6 +3350,8 @@ try {{
             copied: list[Path] = []
             archived: list[Path] = []
             archive_warnings: list[str] = []
+            import_deleted: list[Path] = []
+            input_cleanup_warnings: list[str] = []
             progress_value = 0
             progress_max = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
 
@@ -2904,6 +3387,14 @@ try {{
                     process_list_path,
                     progress_callback=archive_progress,
                 )
+
+                def cleanup_progress(done: int, total: int, source: Path) -> None:
+                    advance(f"Cleared input staging {done}/{total}: {source.name}", total - done)
+
+                import_deleted, input_cleanup_warnings = self.clear_import_staging_folder(
+                    orders=orders,
+                    progress_callback=cleanup_progress,
+                )
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
             self.worker_queue.put(
                 (
@@ -2913,6 +3404,8 @@ try {{
                         "missing": missing,
                         "archived": archived,
                         "archive_warnings": archive_warnings,
+                        "import_deleted": import_deleted,
+                        "input_cleanup_warnings": input_cleanup_warnings,
                     },
                 )
             )
@@ -2925,7 +3418,11 @@ try {{
         missing: list[str],
         archived: list[Path],
         archive_warnings: list[str],
+        import_deleted: list[Path] | None = None,
+        input_cleanup_warnings: list[str] | None = None,
     ) -> str:
+        import_deleted = import_deleted or []
+        input_cleanup_warnings = input_cleanup_warnings or []
         details = f"Copied {len(copied)} file(s) to the shop folders."
         sent_names = "\n".join(f"- {path.name}" for path in copied[:30])
         if sent_names:
@@ -2941,6 +3438,19 @@ try {{
                 details += f"\n...and {len(archived) - 20} more"
         if archive_warnings:
             details += "\n\nArchive notes:\n" + "\n".join(f"- {warning}" for warning in archive_warnings)
+        if import_deleted:
+            deleted_names = "\n".join(f"- {path.name}" for path in import_deleted[:20])
+            details += (
+                f"\n\nCleared {len(import_deleted)} file(s) from "
+                f"{ShowerProgrammerApp.IMPORT_STAGING_FOLDER_NAME}:\n{deleted_names}"
+            )
+            if len(import_deleted) > 20:
+                details += f"\n...and {len(import_deleted) - 20} more"
+        if input_cleanup_warnings:
+            shown_warnings = "\n".join(f"- {warning}" for warning in input_cleanup_warnings[:10])
+            details += "\n\nInput cleanup notes:\n" + shown_warnings
+            if len(input_cleanup_warnings) > 10:
+                details += f"\n...and {len(input_cleanup_warnings) - 10} more"
         return details
 
     def copy_outputs_to_folder(
@@ -2990,11 +3500,7 @@ try {{
         if not order_files:
             warnings.append("No root-level order PDF/DXF input files matched the sent orders.")
 
-        try:
-            process_list_files = shower_batch.process_list_files(process_list_path)
-        except Exception as exc:
-            process_list_files = []
-            warnings.append(f"Could not archive process lists: {exc}")
+        process_list_files = self.archive_process_list_files(process_list_path)
 
         process_sources: list[Path] = []
         if process_list_files:
@@ -3022,6 +3528,21 @@ try {{
                     progress_callback(done, total_sources, source)
 
         return archived, warnings
+
+    @staticmethod
+    def archive_process_list_files(process_list_path: Path) -> list[Path]:
+        if process_list_path.is_file():
+            return [process_list_path] if shower_batch.is_process_list_file(process_list_path) else []
+        if not process_list_path.exists() or not process_list_path.is_dir():
+            return []
+        return sorted(
+            (
+                candidate
+                for candidate in process_list_path.iterdir()
+                if shower_batch.is_process_list_file(candidate)
+            ),
+            key=lambda candidate: candidate.name.lower(),
+        )
 
     @staticmethod
     def archive_dir_for_input_root(input_root: Path, dated_name: str) -> Path:
@@ -3062,6 +3583,53 @@ try {{
             if not candidate.exists():
                 return candidate
         raise RuntimeError(f"Could not choose a unique archive name for {path}")
+
+    @classmethod
+    def clear_import_staging_folder(
+        cls,
+        orders: list[shower_batch.ProcessOrder] | None = None,
+        progress_callback: Callable[[int, int, Path], None] | None = None,
+    ) -> tuple[list[Path], list[str]]:
+        source_dir = cls.EDI_IMPORT_ORDERS_DIR
+        deleted: list[Path] = []
+        warnings: list[str] = []
+        if not source_dir.exists():
+            return deleted, [f"Input staging folder was not found: {source_dir}"]
+        if not source_dir.is_dir():
+            return deleted, [f"Input staging path is not a folder: {source_dir}"]
+        if source_dir.name.lower() != cls.IMPORT_STAGING_FOLDER_NAME.lower():
+            return deleted, [f"Skipped input cleanup because the configured folder is not named {cls.IMPORT_STAGING_FOLDER_NAME}."]
+
+        if orders:
+            target_paths = {
+                path.resolve()
+                for path in cls.matching_order_files(source_dir, orders, root_only=True, inspect_pdf_text=True)
+            }
+            target_paths.update(path.resolve() for path in cls.importable_process_list_files(source_dir))
+            entries = [path for path in sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower()) if path.resolve() in target_paths]
+        else:
+            entries = sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower())
+        file_entries = [path for path in entries if path.is_file() and not path.is_symlink()]
+        total = len(file_entries)
+        done = 0
+        for path in entries:
+            if path.is_dir():
+                warnings.append(f"Skipped folder {path.name}.")
+                continue
+            if path.is_symlink():
+                warnings.append(f"Skipped linked file {path.name}.")
+                continue
+            if not path.is_file():
+                continue
+            try:
+                path.unlink()
+                deleted.append(path)
+            except OSError as exc:
+                warnings.append(f"Could not delete {path.name}: {exc}")
+            done += 1
+            if progress_callback is not None:
+                progress_callback(done, max(total, 1), path)
+        return deleted, warnings
 
     @classmethod
     def copy_process_lists_from_import_folder(
@@ -3175,14 +3743,55 @@ try {{
     ) -> list[Path]:
         if not folder.exists():
             return []
+        normalized_jobs = [
+            programmer.normalize_lookup(order.job_name)
+            for order in orders
+            if programmer.normalize_lookup(order.job_name)
+        ]
+        aw_orders = {str(order.aw_order) for order in orders if str(order.aw_order)}
         candidates = folder.glob("*") if root_only else folder.rglob("*")
         matched: list[Path] = []
         for path in candidates:
             if not path.is_file() or path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
                 continue
-            if cls.file_matches_process_orders(path, orders, inspect_pdf_text=inspect_pdf_text):
+            suffix = path.suffix.lower()
+            if suffix == ".dxf":
+                if cls.file_matches_process_orders(path, orders, inspect_pdf_text=False):
+                    matched.append(path)
+                continue
+            if cls.pdf_file_matches_jobs(path, normalized_jobs, aw_orders, inspect_pdf_text=inspect_pdf_text):
                 matched.append(path)
         return sorted(matched, key=lambda candidate: candidate.name.lower())
+
+    @staticmethod
+    def pdf_file_matches_jobs(
+        path: Path,
+        normalized_jobs: list[str],
+        aw_orders: set[str],
+        *,
+        inspect_pdf_text: bool,
+    ) -> bool:
+        if not normalized_jobs and not aw_orders:
+            return False
+        stem = path.stem
+        norm_stem = programmer.normalize_lookup(stem)
+        if any(aw_order and aw_order in stem for aw_order in aw_orders):
+            return True
+        if any(norm_job in norm_stem for norm_job in normalized_jobs):
+            return True
+        guessed_job = programmer.job_from_filename(path.name)
+        if guessed_job:
+            norm_guess = programmer.normalize_lookup(guessed_job)
+            if any(norm_job in norm_guess for norm_job in normalized_jobs):
+                return True
+        if not inspect_pdf_text:
+            return False
+        try:
+            extracted_job = programmer.extract_job_from_pdf(path)
+        except Exception:
+            return False
+        norm_extracted = programmer.normalize_lookup(extracted_job)
+        return bool(norm_extracted and any(norm_job in norm_extracted for norm_job in normalized_jobs))
 
     @staticmethod
     def same_path(first: Path, second: Path) -> bool:
@@ -4288,6 +4897,14 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         path = Path(self.output_dir_var.get()).resolve()
         path.mkdir(parents=True, exist_ok=True)
         os.startfile(path)
+
+    def open_latest_batch(self) -> None:
+        output_dir = Path(self.output_dir_var.get()).resolve()
+        run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
+        if run_folder is None or not run_folder.exists():
+            messagebox.showinfo("No batch yet", "No generated batch folder was found.")
+            return
+        os.startfile(run_folder)
 
     def open_input_folder(self) -> None:
         path = Path(self.folder_var.get()).resolve()

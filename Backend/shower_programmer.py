@@ -610,9 +610,9 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         if corner:
             allow_manual_denver_corner = bool(override.get("manual_indicator_corner"))
             if panel.machine.startswith("DENVER") and not allow_manual_denver_corner:
-                coerced_denver_indicator_override = denver_allowed_indicator_corner(corner) != corner
+                coerced_denver_indicator_override = denver_allowed_indicator_corner(corner, panel) != corner
             elif panel.machine == "WJ":
-                coerced_waterjet_indicator_override = waterjet_allowed_indicator_corner(corner) != corner
+                coerced_waterjet_indicator_override = waterjet_allowed_indicator_corner(corner, panel) != corner
             apply_indicator_corner_override_with_options(
                 panel,
                 corner,
@@ -621,7 +621,11 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
             )
         else:
             panel.indicator_corner = None
-    if "rotation_degrees" in override and not position_only_indicator_override:
+    if (
+        "rotation_degrees" in override
+        and not position_only_indicator_override
+        and not (panel.machine.startswith("DENVER") and bool(override.get("manual_indicator_corner")))
+    ):
         value = override["rotation_degrees"]
         panel.rotation_degrees = None if value is None else float(value)
         panel.manual_rotation_override = value is not None
@@ -703,7 +707,7 @@ def sanitize_denver_indicator_override(panel: Panel) -> None:
         return
     if panel.manual_indicator_override and panel.indicator_corner in {"bottom_left", "bottom_right", "top_left", "top_right"}:
         return
-    allowed = denver_allowed_indicator_corner(panel.indicator_corner)
+    allowed = denver_allowed_indicator_corner(panel.indicator_corner, panel)
     if allowed == panel.indicator_corner:
         return
     panel.indicator_corner = allowed
@@ -714,6 +718,8 @@ def sanitize_denver_indicator_override(panel: Panel) -> None:
 
 def sanitize_denver_panel_long_side_rotation(panel: Panel, config: dict[str, Any]) -> None:
     if panel.source_dxf is None or not panel.machine.startswith("DENVER"):
+        return
+    if panel.manual_indicator_override or panel.manual_rotation_override:
         return
     if panel.machine == "DENVER 1" and has_door_programming_evidence(panel, config):
         return
@@ -727,13 +733,15 @@ def sanitize_denver_panel_long_side_rotation(panel: Panel, config: dict[str, Any
     swaps_axes = rotation_swaps_source_axes(rotation)
     if source_width > source_height and swaps_axes:
         panel.rotation_degrees = 0.0
+        panel.indicator_corner = denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
         panel.manual_rotation_override = False
         panel.reasons.append("Denver panel rotation reset to keep long side horizontal")
     elif source_height > source_width and not swaps_axes:
-        target = denver_grabber_rotation_for_corner(panel.indicator_corner or "")
+        target = denver_grabber_rotation_for_corner(panel.indicator_corner or "", panel)
         if target is None:
             target = 90.0
         panel.rotation_degrees = target
+        panel.indicator_corner = denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
         panel.manual_rotation_override = False
         panel.reasons.append("Denver panel rotation adjusted to keep long side horizontal")
 
@@ -743,8 +751,40 @@ def rotation_swaps_source_axes(rotation_degrees: float) -> bool:
     return abs(normalized - 90) <= 1
 
 
-def waterjet_allowed_indicator_corner(corner: str | None) -> str | None:
-    if corner in {"top_left", "bottom_right"}:
+def panel_is_landscape(panel: Panel | None) -> bool:
+    if panel is None:
+        return False
+    if panel.source_dxf is not None:
+        source_dims = dxf_outline_dimensions(panel.source_dxf)
+        if source_dims is not None:
+            source_width, source_height = source_dims
+            return source_width > source_height + 0.01
+    if panel.width is not None and panel.height is not None:
+        return panel.width > panel.height + 0.01
+    return False
+
+
+def denver_allowed_indicator_corners(panel: Panel | None = None) -> set[str]:
+    return {"top_left", "bottom_right"} if panel_is_landscape(panel) else {"bottom_left", "top_right"}
+
+
+def waterjet_allowed_indicator_corners(panel: Panel | None = None) -> set[str]:
+    return {"top_right", "bottom_left"} if panel_is_landscape(panel) else {"top_left", "bottom_right"}
+
+
+def waterjet_indicator_corner_order(panel: Panel | None = None) -> tuple[str, str]:
+    return ("top_right", "bottom_left") if panel_is_landscape(panel) else ("top_left", "bottom_right")
+
+
+def waterjet_allowed_indicator_corner(corner: str | None, panel: Panel | None = None) -> str | None:
+    allowed = waterjet_allowed_indicator_corners(panel)
+    if corner in allowed:
+        return corner
+    if allowed == {"top_right", "bottom_left"}:
+        if corner == "top_left":
+            return "top_right"
+        if corner == "bottom_right":
+            return "bottom_left"
         return corner
     if corner == "top_right":
         return "top_left"
@@ -756,7 +796,7 @@ def waterjet_allowed_indicator_corner(corner: str | None) -> str | None:
 def sanitize_waterjet_indicator(panel: Panel) -> None:
     if panel.machine != "WJ":
         return
-    allowed = waterjet_allowed_indicator_corner(panel.indicator_corner)
+    allowed = waterjet_allowed_indicator_corner(panel.indicator_corner, panel)
     if allowed == panel.indicator_corner:
         return
     panel.indicator_corner = allowed
@@ -931,8 +971,15 @@ def door_indicator_corner_off_hinge_side(hinge_side: str, hinges_up: bool) -> st
     return "top_right" if hinge_side == "left" else "bottom_left"
 
 
-def denver_allowed_indicator_corner(corner: str | None) -> str | None:
-    if corner in {"bottom_left", "top_right"}:
+def denver_allowed_indicator_corner(corner: str | None, panel: Panel | None = None) -> str | None:
+    allowed = denver_allowed_indicator_corners(panel)
+    if corner in allowed:
+        return corner
+    if allowed == {"top_left", "bottom_right"}:
+        if corner == "top_right":
+            return "top_left"
+        if corner == "bottom_left":
+            return "bottom_right"
         return corner
     if corner == "bottom_right":
         return "top_right"
@@ -961,7 +1008,7 @@ def denver_door_orientation_for_indicator_corner(
         raw_orientation = door_orientation_for_indicator_corner(corner)
         if raw_orientation is not None:
             return raw_orientation
-    corner = denver_allowed_indicator_corner(corner) or corner
+    corner = denver_allowed_indicator_corner(corner, panel) or corner
     if corner not in {"bottom_left", "top_right"}:
         return None
     cut_in = has_door_cut_in(panel, config)
@@ -990,25 +1037,38 @@ def denver_grabber_corner_for_rotation(rotation_degrees: float | None) -> str:
 
 
 def denver_grabber_corner_for_panel(panel: Panel, rotation_degrees: float | None) -> str:
-    corner = denver_grabber_corner_for_rotation(rotation_degrees)
-    if panel.width is not None and panel.height is not None and panel.height < panel.width:
+    if panel_is_landscape(panel):
         normalized = ((float(rotation_degrees or 0) + 180) % 360) - 180
-        if abs(normalized) <= 1:
+        if abs(normalized - 90) <= 1:
+            return "bottom_left"
+        if abs(normalized + 90) <= 1:
             return "top_right"
+        if abs(abs(normalized) - 180) <= 1:
+            return "top_left"
+        return "bottom_right"
+    corner = denver_grabber_corner_for_rotation(rotation_degrees)
     return corner
 
 
 def default_waterjet_indicator_corner(panel: Panel) -> str:
-    if panel.width is not None and panel.height is not None and panel.height < panel.width:
-        return "bottom_right"
-    return "top_left"
+    return "top_right" if panel_is_landscape(panel) else "top_left"
 
 
-def denver_grabber_rotation_for_corner(corner: str) -> float | None:
-    return {
+def denver_grabber_rotation_for_corner(corner: str, panel: Panel | None = None) -> float | None:
+    if panel_is_landscape(panel):
+        return {
+            "bottom_right": 0.0,
+            "top_left": 180.0,
+            "bottom_left": 90.0,
+            "top_right": -90.0,
+        }.get(corner)
+    mapping = {
         "bottom_left": 90.0,
         "top_right": -90.0,
-    }.get(corner)
+    }
+    if corner in {"top_left", "bottom_right"}:
+        mapping.update({"top_left": -90.0, "bottom_right": 90.0})
+    return mapping.get(corner)
 
 
 def apply_indicator_corner_override(panel: Panel, corner: str, config: dict[str, Any]) -> None:
@@ -1026,9 +1086,9 @@ def apply_indicator_corner_override_with_options(
     if corner not in {"bottom_left", "bottom_right", "top_left", "top_right"}:
         return
     if panel.machine.startswith("DENVER") and not allow_manual_denver_corner:
-        corner = denver_allowed_indicator_corner(corner) or corner
+        corner = denver_allowed_indicator_corner(corner, panel) or corner
     elif panel.machine == "WJ":
-        corner = waterjet_allowed_indicator_corner(corner) or corner
+        corner = waterjet_allowed_indicator_corner(corner, panel) or corner
     panel.indicator_corner = corner
     panel.manual_indicator_override = True
     if panel.machine == "WJ":
@@ -1052,10 +1112,7 @@ def apply_indicator_corner_override_with_options(
             panel.rotation_degrees = rotation
             panel.manual_rotation_override = True
     elif panel.machine.startswith("DENVER"):
-        rotation = denver_grabber_rotation_for_corner(corner)
-        if rotation is None and allow_manual_denver_corner:
-            raw_orientation = door_orientation_for_indicator_corner(corner)
-            rotation = None if raw_orientation is None else raw_orientation[2]
+        rotation = denver_grabber_rotation_for_corner(corner, panel)
         if rotation is not None:
             panel.rotation_degrees = rotation
             panel.manual_rotation_override = True
@@ -1235,8 +1292,7 @@ def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: d
 def adjust_indicator_for_source_dxf(panel: Panel, config: dict[str, Any]) -> None:
     if panel.source_dxf is None:
         return
-    if panel.manual_rotation_override:
-        sanitize_denver_panel_long_side_rotation(panel, config)
+    if panel.manual_indicator_override or panel.manual_rotation_override:
         return
     if panel.machine == "WJ":
         adjust_wj_indicator_corner(panel)
@@ -1245,9 +1301,9 @@ def adjust_indicator_for_source_dxf(panel: Panel, config: dict[str, Any]) -> Non
         if has_door_programming_evidence(panel, config):
             adjust_denver_door_hinge_side_from_dxf(panel, config)
         else:
-            adjust_denver_panel_square_side(panel)
+            adjust_denver_panel_square_side(panel, config)
     elif panel.machine == "DENVER 2":
-        adjust_denver_panel_square_side(panel)
+        adjust_denver_panel_square_side(panel, config)
     sanitize_denver_panel_long_side_rotation(panel, config)
 
 
@@ -1263,7 +1319,7 @@ def needs_manual_review_for_fps_dxf_cut(panel: Panel, config: dict[str, Any]) ->
     has_fps = bool(re.search(r"\bFP\s*-\s*S\b|\bFPS\b", upper))
     if not has_fps:
         return False
-    return any(dxf_hinge_side_has_cut_in(panel.source_dxf, side, config) for side in ("left", "right"))
+    return any(dxf_side_has_cut_in(panel.source_dxf, side, config) for side in ("left", "right", "bottom", "top"))
 
 
 def apply_dxf_angle_correction(panel: Panel, config: dict[str, Any]) -> None:
@@ -1273,6 +1329,21 @@ def apply_dxf_angle_correction(panel: Panel, config: dict[str, Any]) -> None:
     if not bool(rules.get("auto_dxf_angle_correction", True)):
         return
     if panel.source_dxf is None or panel.rotation_degrees is None:
+        return
+    if needs_manual_review_for_fps_dxf_cut(panel, config):
+        if panel.angle_correction_degrees and panel.angle_correction_reason.startswith("auto "):
+            panel.angle_correction_degrees = 0.0
+            panel.angle_correction_reason = ""
+        return
+    if (
+        panel.machine.startswith("DENVER")
+        and not has_door_programming_evidence(panel, config)
+        and panel_is_landscape(panel)
+        and panel.indicator_corner in denver_allowed_indicator_corners(panel)
+    ):
+        if panel.angle_correction_degrees and panel.angle_correction_reason.startswith("auto "):
+            panel.angle_correction_degrees = 0.0
+            panel.angle_correction_reason = ""
         return
     if panel.angle_correction_degrees and not panel.angle_correction_reason.startswith("auto "):
         return
@@ -1469,13 +1540,13 @@ def adjust_wj_indicator_corner(panel: Panel) -> None:
         return
     corners = dxf_square_corners(panel.source_dxf)
     if not corners:
-        panel.indicator_corner = waterjet_allowed_indicator_corner(panel.indicator_corner) or "top_left"
+        panel.indicator_corner = waterjet_allowed_indicator_corner(panel.indicator_corner, panel) or default_waterjet_indicator_corner(panel)
         return
-    preferred = waterjet_allowed_indicator_corner(panel.indicator_corner) or "bottom_right"
+    preferred = waterjet_allowed_indicator_corner(panel.indicator_corner, panel) or default_waterjet_indicator_corner(panel)
     if preferred in corners:
         panel.indicator_corner = preferred
         return
-    for candidate in ("bottom_right", "top_left"):
+    for candidate in waterjet_indicator_corner_order(panel):
         if candidate in corners:
             panel.indicator_corner = candidate
             panel.reasons.append(f"WJ marker moved to square corner: {candidate}")
@@ -1515,7 +1586,7 @@ def wj_rotation_for_indicator_corner(panel: Panel, config: dict[str, Any], corne
         "top_left": 90,
         "bottom_right": -90,
     }
-    allowed_corner = waterjet_allowed_indicator_corner(corner)
+    allowed_corner = waterjet_allowed_indicator_corner(corner, panel)
     value = mapping.get(allowed_corner, default_mapping.get(allowed_corner))
     if value is None:
         return None
@@ -1602,22 +1673,33 @@ def dxf_hinge_side_candidate(path: Path) -> str | None:
 def dxf_hinge_side_has_cut_in(path: Path, side: str, config: dict[str, Any]) -> bool:
     if side not in {"left", "right"}:
         return False
+    return dxf_side_has_cut_in(path, side, config)
+
+
+def dxf_side_has_cut_in(path: Path, side: str, config: dict[str, Any]) -> bool:
+    if side not in {"left", "right", "bottom", "top"}:
+        return False
     segments = dxf_side_segments(path, side)
     if len(segments) < 2:
         return False
     points = [point for start, end in segments for point in (start, end)]
     if not points:
         return False
-    span = max(y for _, y in points) - min(y for _, y in points)
+    vertical_side = side in {"left", "right"}
+    span_values = [y if vertical_side else x for x, y in points]
+    offset_values = [x if vertical_side else y for x, y in points]
+    span = max(span_values) - min(span_values)
     if span <= 0:
         return False
     rules = config.get("rules", {})
     min_ratio = parse_float(rules.get("auto_dxf_cut_in_min_segment_ratio", 0.20), 0.20)
+    if side in {"bottom", "top"}:
+        min_ratio = min(min_ratio, 0.08)
     min_degrees = parse_float(rules.get("auto_dxf_cut_in_min_degrees", 0.05), 0.05)
     min_offset = parse_float(rules.get("auto_dxf_cut_in_min_offset", 0.03125), 0.03125)
     long_segments = []
-    x_values: list[float] = []
-    vertical_segment_x_values: list[float] = []
+    side_offset_values: list[float] = []
+    axis_segment_offset_values: list[float] = []
     has_angled_segment = False
     for start, end in segments:
         dx = end[0] - start[0]
@@ -1625,24 +1707,26 @@ def dxf_hinge_side_has_cut_in(path: Path, side: str, config: dict[str, Any]) -> 
         length = math.hypot(dx, dy)
         if length < span * min_ratio:
             continue
-        if abs(dy) >= span * 0.90 and abs(dx) >= min_offset:
+        side_delta = dx if vertical_side else dy
+        span_delta = dy if vertical_side else dx
+        if abs(span_delta) >= span * 0.90 and abs(side_delta) >= min_offset:
             continue
         long_segments.append((start, end))
-        x_values.extend([start[0], end[0]])
-        if abs(dy) >= length * 0.80:
-            vertical_segment_x_values.append((start[0] + end[0]) / 2)
+        side_offset_values.extend([start[0] if vertical_side else start[1], end[0] if vertical_side else end[1]])
+        if abs(span_delta) >= length * 0.80:
+            axis_segment_offset_values.append(((start[0] + end[0]) / 2) if vertical_side else ((start[1] + end[1]) / 2))
         angle = math.degrees(math.atan2(dy, dx))
-        deviation = abs(normalize_axis_deviation(angle - 90))
-        deviation = min(deviation, abs(normalize_axis_deviation(angle + 90)))
+        target_angle = 90 if vertical_side else 0
+        deviation = abs(normalize_axis_deviation(angle - target_angle))
         if deviation >= min_degrees:
             has_angled_segment = True
     if len(long_segments) < 2:
         return False
     has_parallel_offset = (
-        len(vertical_segment_x_values) >= 2
-        and (max(vertical_segment_x_values) - min(vertical_segment_x_values)) >= min_offset
+        len(axis_segment_offset_values) >= 2
+        and (max(axis_segment_offset_values) - min(axis_segment_offset_values)) >= min_offset
     )
-    return (has_angled_segment or has_parallel_offset) and (max(x_values) - min(x_values)) >= min_offset
+    return (has_angled_segment or has_parallel_offset) and (max(side_offset_values) - min(side_offset_values)) >= min_offset
 
 
 def dxf_hinge_side_score(path: Path, side: str) -> float:
@@ -1677,25 +1761,45 @@ def dxf_hinge_side_score(path: Path, side: str) -> float:
     return score
 
 
-def adjust_denver_panel_square_side(panel: Panel) -> None:
+def adjust_denver_panel_square_side(panel: Panel, config: dict[str, Any]) -> None:
     if panel.source_dxf is None:
         return
     square_corners = dxf_square_corners(panel.source_dxf)
     square_sides = dxf_square_sides(panel.source_dxf)
     current_bottom = side_for_rotation(panel.rotation_degrees or 0)
-    current_corner = denver_grabber_corner_for_rotation(panel.rotation_degrees)
+    current_corner = denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
     if current_bottom in square_sides and current_corner in square_corners:
+        return
+    if panel_is_landscape(panel):
+        if "bottom_right" in square_corners:
+            panel.rotation_degrees = denver_grabber_rotation_for_corner("bottom_right", panel)
+            panel.indicator_corner = "bottom_right"
+            panel.reasons.append("Denver landscape panel uses square bottom_right grabber corner")
+            return
+        if needs_manual_review_for_fps_dxf_cut(panel, config) or needs_manual_review_for_fps_cut(panel, config):
+            panel.rotation_degrees = denver_grabber_rotation_for_corner("top_left", panel)
+            panel.indicator_corner = "top_left"
+            panel.reasons.append("Denver FP-S landscape panel uses top_left marker for manual review")
+            return
+        if "top_left" in square_corners and "left" not in square_sides:
+            panel.rotation_degrees = denver_grabber_rotation_for_corner("top_left", panel)
+            panel.indicator_corner = "top_left"
+            panel.reasons.append("Denver landscape panel uses square top_left grabber corner")
+            return
+        panel.rotation_degrees = denver_grabber_rotation_for_corner("bottom_right", panel)
+        panel.indicator_corner = "bottom_right"
+        panel.reasons.append("Denver landscape panel uses bottom_right grabber corner")
         return
     target_side = choose_square_panel_bottom_side(panel, square_sides)
     if target_side is not None:
         panel.rotation_degrees = rotation_for_bottom_side(target_side)
-        panel.indicator_corner = denver_indicator_corner_for_bottom_side(target_side)
+        panel.indicator_corner = denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
         panel.reasons.append(f"Denver panel uses square {target_side} side down")
         return
     target_rotation = choose_square_panel_grabber_rotation(panel, square_corners)
     if target_rotation is not None:
         panel.rotation_degrees = target_rotation
-        panel.indicator_corner = denver_grabber_corner_for_rotation(target_rotation)
+        panel.indicator_corner = denver_grabber_corner_for_panel(panel, target_rotation)
         panel.reasons.append(f"Denver panel uses square {panel.indicator_corner} grabber corner")
         return
     panel.reasons.append("no square long side/corner found; kept long side down")
@@ -1758,7 +1862,7 @@ def choose_square_panel_grabber_rotation(panel: Panel, square_corners: set[str])
     current = panel.rotation_degrees or 0
     ordered = sorted(candidates, key=lambda value: 0 if abs(value - current) <= 1 else 1)
     for rotation in ordered:
-        if denver_grabber_corner_for_rotation(rotation) in square_corners:
+        if denver_grabber_corner_for_panel(panel, rotation) in square_corners:
             return rotation
     return None
 
@@ -2486,6 +2590,9 @@ def choose_label_position(
     label_height = font_size * 1.18 * len(lines) + 8
     preferred_x, preferred_y = label_preference(pdf_cfg, panel)
     label_cfg = pdf_cfg.get("label_position", {})
+    if bool(label_cfg.get("page_center_first", False)):
+        x, y = clamp_label_point(page_width / 2, page_height / 2, lines, font_size, page_width, page_height)
+        return x, y
     center_first = bool(label_cfg.get("center_first", True))
     bias_x = 0.5 if center_first else preferred_x
     bias_y = 0.5 if center_first else preferred_y
@@ -3071,12 +3178,20 @@ def apply_indicator_nudge_for_corner(
 ) -> tuple[float, float]:
     nudge_cfg = pdf_cfg.get("indicator_nudge", {})
     machine_key = "waterjet" if machine == "WJ" else "denver"
+    waterjet_corner_x = nudge_cfg.get("waterjet_corner_x", {})
+    waterjet_corner_y = nudge_cfg.get("waterjet_corner_y", {})
     if precise_edges and machine == "WJ":
         nudge_x = parse_float(nudge_cfg.get("waterjet_outline_x", 0), 0)
         nudge_y = parse_float(nudge_cfg.get("waterjet_outline_y", 0), 0)
         if panel is not None:
             nudge_x += panel.indicator_nudge_x
             nudge_y += panel.indicator_nudge_y
+        if isinstance(waterjet_corner_x, dict):
+            nudge_x += parse_float(waterjet_corner_x.get(corner, 0), 0)
+        if isinstance(waterjet_corner_y, dict):
+            nudge_y += parse_float(waterjet_corner_y.get(corner, 0), 0)
+        nudge_x += parse_float(nudge_cfg.get("waterjet_page_x", 0), 0)
+        nudge_y += parse_float(nudge_cfg.get("waterjet_page_y", 0), 0)
         return x + nudge_x, y + nudge_y
     else:
         nudge_x = parse_float(nudge_cfg.get("x", 0), 0) + parse_float(nudge_cfg.get(f"{machine_key}_x", 0), 0)
@@ -3089,6 +3204,12 @@ def apply_indicator_nudge_for_corner(
             nudge_x *= -1
         if "top" in corner:
             nudge_y *= -1
+        if isinstance(waterjet_corner_x, dict):
+            nudge_x += parse_float(waterjet_corner_x.get(corner, 0), 0)
+        if isinstance(waterjet_corner_y, dict):
+            nudge_y += parse_float(waterjet_corner_y.get(corner, 0), 0)
+        nudge_x += parse_float(nudge_cfg.get("waterjet_page_x", 0), 0)
+        nudge_y += parse_float(nudge_cfg.get("waterjet_page_y", 0), 0)
     return x + nudge_x, y + nudge_y
 
 
