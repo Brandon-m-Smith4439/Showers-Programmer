@@ -42,10 +42,12 @@ class ShowerProgrammerApp:
     SHOP_PROGRAMS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")
     EDI_IMPORT_ORDERS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\EDIImportSG\Showers Programmer Input")
     APP_ICON_PATH = programmer.project_root() / "Assets" / "ShowersProgrammer.ico"
+    APP_ICON_PNG_PATH = programmer.project_root() / "Assets" / "ShowersProgrammer.png"
     IMPORT_STAGING_FOLDER_NAME = "Showers Programmer Input"
     ORDER_FILE_EXTENSIONS = {".pdf", ".dxf"}
     PROCESS_LIST_FILE_EXTENSIONS = shower_batch.PROCESS_LIST_EXTENSIONS
     INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
+    HARDWARE_LIST_PREFIX = "hardware list"
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -64,6 +66,13 @@ class ShowerProgrammerApp:
         self.remake_items_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Scan the process list to begin.")
         self.summary_var = tk.StringVar(value="Orders 0   Ready 0   Issues 0   Processed 0   Checked 0")
+        self.summary_count_vars = {
+            "orders": tk.StringVar(value="0"),
+            "ready": tk.StringVar(value="0"),
+            "issues": tk.StringVar(value="0"),
+            "processed": tk.StringVar(value="0"),
+            "checked": tk.StringVar(value="0"),
+        }
 
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -84,6 +93,14 @@ class ShowerProgrammerApp:
 
     @staticmethod
     def set_window_icon(window: Any) -> None:
+        png_path = ShowerProgrammerApp.APP_ICON_PNG_PATH
+        if png_path.exists():
+            try:
+                photo = tk.PhotoImage(file=str(png_path))
+                window.iconphoto(True, photo)
+                window._shower_programmer_icon = photo
+            except tk.TclError:
+                pass
         icon_path = ShowerProgrammerApp.APP_ICON_PATH
         if not icon_path.exists():
             return
@@ -123,24 +140,53 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    def position_child_window(self, window: tk.Toplevel, width: int, height: int) -> None:
+        try:
+            self.root.update_idletasks()
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = max(self.root.winfo_width(), 1)
+            root_h = max(self.root.winfo_height(), 1)
+            x = root_x + max(24, min(80, root_w // 12))
+            y = root_y + max(24, min(80, root_h // 12))
+            window.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            window.geometry(f"{width}x{height}")
+
     def configure_styles(self) -> None:
-        self.root.configure(bg="#f3f6fb")
+        self.root.configure(bg="#f6f9fd")
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#f3f6fb")
-        style.configure("Surface.TFrame", background="#ffffff", borderwidth=1, relief="solid")
-        style.configure("TLabel", background="#f3f6fb", foreground="#1f2933")
-        style.configure("Title.TLabel", font=("Segoe UI", 16, "bold"), foreground="#12355b")
-        style.configure("Muted.TLabel", foreground="#536471")
+        style.configure("TFrame", background="#f6f9fd")
+        style.configure("AppHeader.TFrame", background="#f6f9fd")
+        style.configure("Card.TFrame", background="#ffffff", borderwidth=1, relief="solid")
+        style.configure("Metric.TFrame", background="#f8fbff", borderwidth=1, relief="solid")
+        style.configure("TLabel", background="#f6f9fd", foreground="#172033")
+        style.configure("Card.TLabel", background="#ffffff", foreground="#172033")
+        style.configure("Metric.TLabel", background="#f8fbff", foreground="#1f5ca8")
+        style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"), foreground="#111827", background="#f6f9fd")
+        style.configure("Section.TLabel", font=("Segoe UI", 10, "bold"), foreground="#1f4e86", background="#ffffff")
+        style.configure("Muted.TLabel", foreground="#516176", background="#f6f9fd")
+        style.configure("Status.TLabel", foreground="#516176", background="#f6f9fd")
         style.configure("Summary.TLabel", font=("Segoe UI", 10, "bold"), foreground="#1f4e79")
-        style.configure("TLabelframe", background="#f3f6fb", bordercolor="#cfd8e3", relief="solid")
-        style.configure("TLabelframe.Label", background="#f3f6fb", foreground="#334155", font=("Segoe UI", 9, "bold"))
-        style.configure("TButton", padding=(10, 5))
-        style.configure("Accent.TButton", padding=(12, 6), font=("Segoe UI", 9, "bold"))
-        style.configure("TCheckbutton", background="#f3f6fb", foreground="#1f2933")
+        style.configure("MetricNumber.TLabel", font=("Segoe UI", 15, "bold"), foreground="#1f5ca8", background="#f8fbff")
+        style.configure("MetricCaption.TLabel", font=("Segoe UI", 8, "bold"), foreground="#315f9f", background="#f8fbff")
+        style.configure("TEntry", padding=(6, 4), fieldbackground="#ffffff", bordercolor="#cbd6e2", lightcolor="#dce6f2", darkcolor="#cbd6e2")
+        style.configure("TButton", padding=(12, 6), font=("Segoe UI", 9))
+        style.configure("Accent.TButton", padding=(16, 8), font=("Segoe UI", 9, "bold"), background="#2d7ad3", foreground="#ffffff")
+        style.map(
+            "Accent.TButton",
+            background=[("active", "#1f66b5"), ("pressed", "#185a9f"), ("disabled", "#9dbce0")],
+            foreground=[("disabled", "#f3f8ff")],
+        )
+        style.configure("Action.TButton", padding=(18, 12), font=("Segoe UI", 9, "bold"), background="#f7fbff", foreground="#1f3555")
+        style.map("Action.TButton", background=[("active", "#eaf4ff"), ("pressed", "#d8ebff")])
+        style.configure("Primary.Action.TButton", padding=(18, 12), font=("Segoe UI", 9, "bold"), background="#2c73ca", foreground="#ffffff")
+        style.map("Primary.Action.TButton", background=[("active", "#215fac"), ("pressed", "#184f94")], foreground=[("disabled", "#eaf2fb")])
+        style.configure("TCheckbutton", background="#ffffff", foreground="#1f2933")
         style.configure(
             "Horizontal.TProgressbar",
             troughcolor="#dbe5ef",
@@ -149,44 +195,72 @@ class ShowerProgrammerApp:
             lightcolor="#22c55e",
             darkcolor="#15803d",
         )
-        style.configure("Treeview", rowheight=26, fieldbackground="#ffffff", background="#ffffff", foreground="#1f2933")
-        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"), background="#e8eef6", foreground="#12355b")
-        style.map("Treeview", background=[("selected", "#cfe5ff")], foreground=[("selected", "#0f2438")])
+        style.configure("Treeview", rowheight=27, fieldbackground="#ffffff", background="#ffffff", foreground="#172033", bordercolor="#dfe7f1")
+        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"), background="#e8f1fb", foreground="#235ea4", relief="flat")
+        style.map("Treeview", background=[("selected", "#d7eaff")], foreground=[("selected", "#102033")])
 
     def build_ui(self) -> None:
-        outer = ttk.Frame(self.root, padding=10)
+        outer = ttk.Frame(self.root, padding=(12, 8, 12, 10))
         outer.pack(fill=tk.BOTH, expand=True)
 
-        paths = ttk.LabelFrame(outer, text="Folders", padding=(10, 8))
+        header = ttk.Frame(outer, style="AppHeader.TFrame")
+        header.pack(fill=tk.X, pady=(0, 8))
+        if self.APP_ICON_PNG_PATH.exists():
+            try:
+                icon = tk.PhotoImage(file=str(self.APP_ICON_PNG_PATH))
+                self.header_icon_photo = icon.subsample(max(1, icon.width() // 28), max(1, icon.height() // 28))
+                ttk.Label(header, image=self.header_icon_photo, style="Title.TLabel").pack(side=tk.LEFT, padx=(2, 8))
+            except tk.TclError:
+                self.header_icon_photo = None
+        ttk.Label(header, text="Shower Programmer", style="Title.TLabel").pack(side=tk.LEFT)
+
+        paths = self.make_section(outer, "FOLDERS")
         paths.pack(fill=tk.X)
         self.add_path_row(paths, 0, "Orders", self.folder_var, self.choose_folder)
         self.add_path_row(paths, 1, "Import From", self.import_source_var, self.choose_import_source)
         self.add_path_row(paths, 2, "Process Lists", self.process_list_var, self.choose_process_list)
         self.add_path_row(paths, 3, "Output", self.output_dir_var, self.choose_output_dir)
 
-        actions = ttk.Frame(outer)
-        actions.pack(fill=tk.X, pady=(8, 8))
-        ttk.Button(actions, text="Scan Orders", style="Accent.TButton", command=self.scan_orders).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Process Selected", command=self.process_selected).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Process All", command=lambda: self.run_orders(self.orders, apply=True)).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Review Order", command=self.open_order_review).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(actions, text="Mark Checked", command=self.mark_selected_orders_checked).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Checkbutton(actions, text="Overwrite existing outputs", variable=self.force_var).pack(side=tk.LEFT, padx=(18, 0))
-        ttk.Checkbutton(actions, text="Skip DXF output", variable=self.skip_dxf_var).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Checkbutton(actions, text="REMAKE", variable=self.remake_var).pack(side=tk.LEFT, padx=(12, 0))
-        file_actions = ttk.Frame(actions)
+        action_row = ttk.Frame(outer)
+        action_row.pack(fill=tk.X, pady=(8, 8))
+        actions = self.make_section(action_row, "MAIN ACTIONS")
+        actions.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        action_buttons = ttk.Frame(actions, style="Card.TFrame")
+        action_buttons.pack(side=tk.LEFT, fill=tk.Y)
+        ttk.Button(action_buttons, text="Scan Orders", style="Primary.Action.TButton", command=self.scan_orders).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
+        ttk.Button(action_buttons, text="Process Selected", style="Action.TButton", command=self.process_selected).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
+        ttk.Button(action_buttons, text="Process All", style="Action.TButton", command=lambda: self.run_orders(self.orders, apply=True)).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
+        ttk.Button(action_buttons, text="Review Order", style="Action.TButton", command=self.open_order_review).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
+        ttk.Button(action_buttons, text="Mark Checked", style="Action.TButton", command=self.mark_selected_orders_checked).pack(side=tk.LEFT, ipady=8)
+        options = ttk.Frame(actions, style="Card.TFrame")
+        options.pack(side=tk.LEFT, padx=(22, 0), fill=tk.Y)
+        ttk.Checkbutton(options, text="Overwrite existing outputs", variable=self.force_var).pack(anchor=tk.W, pady=(2, 4))
+        ttk.Checkbutton(options, text="Skip DXF output", variable=self.skip_dxf_var).pack(anchor=tk.W, pady=4)
+        ttk.Checkbutton(options, text="REMAKE", variable=self.remake_var).pack(anchor=tk.W, pady=4)
+
+        summary = self.make_section(action_row, "SUMMARY")
+        summary.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
+        metric_row = ttk.Frame(summary, style="Card.TFrame")
+        metric_row.pack(fill=tk.X)
+        self.add_metric_card(metric_row, "orders", "Orders")
+        self.add_metric_card(metric_row, "ready", "Ready")
+        self.add_metric_card(metric_row, "issues", "Issues")
+        self.add_metric_card(metric_row, "processed", "Processed")
+        self.add_metric_card(metric_row, "checked", "Checked")
+
+        maintenance = self.make_section(outer, "MAINTENANCE / TOOLS")
+        maintenance.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT)
+        ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(maintenance, text="Install Shortcut", command=self.install_shortcut).pack(side=tk.LEFT, padx=(8, 0))
+        file_actions = ttk.Frame(maintenance, style="Card.TFrame")
         file_actions.pack(side=tk.RIGHT)
         ttk.Button(file_actions, text="Open Input Folder", command=self.open_input_folder).pack(side=tk.LEFT)
-        ttk.Button(file_actions, text="Open Latest Batch", command=self.open_latest_batch).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(file_actions, text="Open Latest Batch", command=self.open_latest_batch).pack(side=tk.LEFT, padx=(8, 0))
 
-        maintenance = ttk.Frame(outer)
-        maintenance.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(maintenance, text="Maintenance").pack(side=tk.LEFT)
-        ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(maintenance, textvariable=self.summary_var, style="Summary.TLabel").pack(side=tk.RIGHT, padx=(12, 0))
-
-        table_frame = ttk.Frame(outer)
+        table_outer = self.make_section(outer, "ORDERS")
+        table_outer.pack(fill=tk.BOTH, expand=True)
+        table_frame = ttk.Frame(table_outer, style="Card.TFrame")
         table_frame.pack(fill=tk.BOTH, expand=True)
         columns = ("status", "processed", "last_processed", "delivery", "order", "job", "customer", "items", "review", "pdf", "issues")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
@@ -246,18 +320,30 @@ class ShowerProgrammerApp:
         bottom.columnconfigure(2, weight=0)
         self.progress = ttk.Progressbar(bottom, mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew", ipady=2)
-        self.status_label = ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Muted.TLabel", width=58)
+        self.status_label = ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Status.TLabel", width=58)
         self.status_label.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         send_buttons = ttk.Frame(bottom)
         send_buttons.grid(row=0, column=2, sticky=tk.E, padx=(10, 0))
         ttk.Button(send_buttons, text="Select All", command=self.select_all_orders).pack(side=tk.LEFT)
         ttk.Button(send_buttons, text="Review / Send", style="Accent.TButton", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
 
+    def make_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
+        frame = ttk.Frame(parent, style="Card.TFrame", padding=(12, 9), borderwidth=1, relief=tk.SOLID)
+        ttk.Label(frame, text=title, style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
+        return frame
+
+    def add_metric_card(self, parent: ttk.Frame, key: str, caption: str) -> None:
+        card = ttk.Frame(parent, style="Metric.TFrame", padding=(14, 8), borderwidth=1, relief=tk.SOLID)
+        card.pack(side=tk.LEFT, padx=(0, 10), fill=tk.Y)
+        ttk.Label(card, textvariable=self.summary_count_vars[key], style="MetricNumber.TLabel").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(card, text=caption, style="MetricCaption.TLabel").pack(side=tk.LEFT)
+
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
-        ttk.Label(parent, text=label, width=12).grid(row=row, column=0, sticky=tk.W, pady=2)
-        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", padx=(4, 6), pady=2)
-        ttk.Button(parent, text="Browse", command=command).grid(row=row, column=2, sticky=tk.E, pady=2)
-        parent.columnconfigure(1, weight=1)
+        row_frame = ttk.Frame(parent, style="Card.TFrame")
+        row_frame.pack(fill=tk.X, pady=(0 if row == 0 else 3, 3))
+        ttk.Label(row_frame, text=label, width=13, style="Card.TLabel").pack(side=tk.LEFT)
+        ttk.Entry(row_frame, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 8), ipady=2)
+        ttk.Button(row_frame, text="Browse", command=command).pack(side=tk.RIGHT)
 
     def choose_folder(self) -> None:
         path = filedialog.askdirectory(initialdir=self.folder_var.get())
@@ -537,6 +623,25 @@ class ShowerProgrammerApp:
         entry = orders.get(str(aw_order), {})
         return entry if isinstance(entry, dict) else {}
 
+    def clear_remake_history_for_orders(self, aw_orders: list[str]) -> None:
+        if not aw_orders:
+            return
+        try:
+            history = self.load_processing_history()
+        except Exception:
+            return
+        orders = history.get("orders", {})
+        if not isinstance(orders, dict):
+            return
+        changed = False
+        for aw_order in aw_orders:
+            entry = orders.get(str(aw_order))
+            if isinstance(entry, dict) and "remake_items" in entry:
+                entry.pop("remake_items", None)
+                changed = True
+        if changed:
+            self.save_processing_history(history)
+
     def insert_or_update_result(self, result: shower_batch.BatchJobResult) -> None:
         processed, last_processed = self.processed_summary_for_order(result.aw_order)
         values = (
@@ -577,13 +682,18 @@ class ShowerProgrammerApp:
                 ready += 1
             elif status in {"ISSUES", "FAILED"}:
                 issues += 1
-            if str(values[1]).lower() == "yes":
+            if str(values[1]).lower() in {"yes", "remake"}:
                 processed += 1
             if "checked" in str(values[8]).lower():
                 checked += 1
         self.summary_var.set(
             f"Orders {total}   Ready {ready}   Issues {issues}   Processed {processed}   Checked {checked}"
         )
+        self.summary_count_vars["orders"].set(str(total))
+        self.summary_count_vars["ready"].set(str(ready))
+        self.summary_count_vars["issues"].set(str(issues))
+        self.summary_count_vars["processed"].set(str(processed))
+        self.summary_count_vars["checked"].set(str(checked))
 
     @staticmethod
     def issue_summary(issues: list[str]) -> str:
@@ -619,12 +729,24 @@ class ShowerProgrammerApp:
         history = self.history_for_order(aw_order)
         last_processed = str(history.get("last_processed", ""))
         if last_processed:
-            return "Yes", last_processed
+            return ("REMAKE" if self.history_has_remake(history) else "Yes"), last_processed
         output_dir = Path(self.output_dir_var.get()).resolve()
         sketch_path = self.find_order_sketch_path(aw_order, output_dir)
         if sketch_path.exists():
             return "Yes", datetime.fromtimestamp(sketch_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         return "No", ""
+
+    @staticmethod
+    def history_has_remake(history: dict[str, object]) -> bool:
+        return isinstance(history.get("remake_items"), list)
+
+    def remake_badge_for_order(self, aw_order: str) -> str:
+        history = self.history_for_order(aw_order)
+        value = history.get("remake_items")
+        if not isinstance(value, list):
+            return ""
+        items = sorted(int(item) for item in value if str(item).strip().isdigit())
+        return "REMAKE" if not items else "REMAKE " + ",".join(f"P{item}" for item in items)
 
     def output_dirs_for_run(self, run_folder: Path) -> tuple[Path, Path, Path]:
         return run_folder / "Sketches", run_folder / "Programs", run_folder / "Reports"
@@ -817,6 +939,8 @@ class ShowerProgrammerApp:
         except Exception as exc:
             messagebox.showerror("Invalid settings", str(exc))
             return
+        if remake_items_by_order is None:
+            self.clear_remake_history_for_orders([order.aw_order for order in orders])
         if apply and not force:
             conflicts = self.existing_output_conflicts(orders, output_dir, skip_dxf)
             if conflicts:
@@ -1167,6 +1291,7 @@ class ShowerProgrammerApp:
                         except tk.TclError:
                             self.send_review_progress = None
                     messagebox.showinfo("Send complete", details)
+                    self.root.after(100, self.scan_orders)
                 elif kind == "send_error":
                     self.finish_background_activity()
                     self.status_var.set("Send failed")
@@ -1218,18 +1343,21 @@ class ShowerProgrammerApp:
             return ""
         copied = import_summary.get("copied", [])
         skipped = int(import_summary.get("skipped", 0) or 0)
+        hardware_deleted = import_summary.get("hardware_deleted", [])
         source_missing = bool(import_summary.get("source_missing", False))
         direct = bool(import_summary.get("direct", False))
+        hardware_count = len(hardware_deleted) if isinstance(hardware_deleted, list) else 0
+        hardware_note = f" Removed {hardware_count} hardware list PDF(s)." if hardware_count else ""
         if source_missing:
             return f"EDI import skipped; source folder not found: {import_summary.get('source', '')}"
         if direct:
-            return "Using order PDFs/DXFs directly from the dedicated input folder."
+            return "Using order PDFs/DXFs directly from the dedicated input folder." + hardware_note
         copied_count = len(copied) if isinstance(copied, list) else 0
         if copied_count:
-            return f"Imported/updated {copied_count} matching EDI file(s); {skipped} already current."
+            return f"Imported/updated {copied_count} matching EDI file(s); {skipped} already current." + hardware_note
         if process_list_count:
-            return f"No EDI files needed copying for {process_list_count} process list(s); {skipped} already current."
-        return f"No EDI files needed copying; {skipped} already current."
+            return f"No EDI files needed copying for {process_list_count} process list(s); {skipped} already current." + hardware_note
+        return f"No EDI files needed copying; {skipped} already current." + hardware_note
 
     def set_controls_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -1461,7 +1589,7 @@ a {{ color: #1f4e79; }}
 
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Review Order - {process_order.aw_order}")
-        dialog.geometry("1180x820")
+        self.position_child_window(dialog, 1180, 820)
         dialog.minsize(980, 560)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
@@ -1488,6 +1616,7 @@ a {{ color: #1f4e79; }}
         ttk.Button(toolbar, text="Save Edits", command=lambda: save_review_edits()).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark()).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides()).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(toolbar, text="Add Text Box", command=lambda: add_text_box()).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark()).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90)).pack(side=tk.LEFT)
@@ -1665,8 +1794,9 @@ a {{ color: #1f4e79; }}
                     precise_edges=bool(obj.get("precise_edges")),
                 )
                 position["indicator_corner"] = corner
-                if str(obj["machine"]).startswith("DENVER"):
-                    position["raw_indicator_corner"] = programmer.nearest_indicator_corner_for_point(
+                machine = str(obj["machine"])
+                if machine.startswith("DENVER") or machine == "WJ":
+                    raw_corner = programmer.nearest_indicator_corner_for_point(
                         obj["machine"],
                         (obj["x"], obj["y"]),
                         obj.get("anchor_bbox"),
@@ -1675,7 +1805,11 @@ a {{ color: #1f4e79; }}
                         obj["pdf_cfg"],
                         precise_edges=bool(obj.get("precise_edges")),
                         allowed_denver_only=False,
+                        allowed_waterjet_only=False,
                     )
+                    position["raw_indicator_corner"] = raw_corner
+                    if machine == "WJ":
+                        position["indicator_corner"] = raw_corner
             state["positions"][item_key] = position
             status.set(f"Moved {obj['name']} on {job.aw_order}.{item_number}")
 
@@ -1808,6 +1942,21 @@ a {{ color: #1f4e79; }}
             state.get("pending_items", set()).add(panel.item)
             state["needs_output_save"] = True
             status.set(f"Restored indicator on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
+            redraw()
+
+        def flip_indicator_sides() -> None:
+            panel = selected_panel()
+            current = panel.indicator_corner or (
+                programmer.default_waterjet_indicator_corner(panel)
+                if panel.machine == "WJ"
+                else programmer.denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
+            )
+            corner = self.flipped_indicator_corner(current)
+            self.set_indicator_corner_override(job.aw_order, panel.item, corner, panel, config)
+            refresh_prepared_job()
+            state.get("pending_items", set()).add(panel.item)
+            state["needs_output_save"] = True
+            status.set(f"Flipped indicator side to {corner} on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
             redraw()
 
         def add_x_mark() -> None:
@@ -2330,7 +2479,10 @@ a {{ color: #1f4e79; }}
                     corner = str(position.get("indicator_corner") or panel.indicator_corner or "").strip().lower()
                     if corner:
                         raw_corner = str(position.get("raw_indicator_corner") or corner).strip().lower()
-                        if panel.machine.startswith("DENVER") and raw_corner in {"bottom_left", "bottom_right", "top_left", "top_right"}:
+                        if (
+                            (panel.machine.startswith("DENVER") or panel.machine == "WJ")
+                            and raw_corner in {"bottom_left", "bottom_right", "top_left", "top_right"}
+                        ):
                             corner = raw_corner
                             item_override["manual_indicator_corner"] = True
                         else:
@@ -2344,6 +2496,7 @@ a {{ color: #1f4e79; }}
                             corner,
                             config,
                             allow_manual_denver_corner=bool(item_override.get("manual_indicator_corner")),
+                            allow_manual_waterjet_corner=bool(item_override.get("manual_indicator_corner")),
                         )
                         item_override["indicator_corner"] = corner
                         if panel.rotation_degrees is not None:
@@ -2472,6 +2625,64 @@ a {{ color: #1f4e79; }}
             self.set_indicator_machine_override(aw_order, item_number, "DENVER 2", panel, config)
         elif "DENVER" in upper:
             self.set_indicator_machine_override(aw_order, item_number, "DENVER", panel, config)
+
+    @staticmethod
+    def flipped_indicator_corner(corner: str | None) -> str:
+        return {
+            "top_left": "top_right",
+            "top_right": "top_left",
+            "bottom_right": "bottom_left",
+            "bottom_left": "bottom_right",
+        }.get(str(corner or "").strip().lower(), "top_right")
+
+    def set_indicator_corner_override(
+        self,
+        aw_order: str,
+        item_number: int,
+        corner: str,
+        panel: programmer.Panel,
+        config: dict[str, object],
+    ) -> None:
+        corner = str(corner).strip().lower()
+        if corner not in {"bottom_left", "bottom_right", "top_left", "top_right"}:
+            return
+        data = self.load_manual_overrides()
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        item_override = order_overrides.setdefault(str(item_number), {})
+        if not isinstance(item_override, dict):
+            item_override = {}
+            order_overrides[str(item_number)] = item_override
+
+        programmer.apply_indicator_corner_override_with_options(
+            panel,
+            corner,
+            config,
+            allow_manual_denver_corner=True,
+            allow_manual_waterjet_corner=True,
+        )
+        item_override["indicator_corner"] = corner
+        item_override["manual_indicator_corner"] = True
+        item_override["skip_dxf"] = False
+        item_override.pop("hide_indicator", None)
+        item_override.pop("indicator_x", None)
+        item_override.pop("indicator_y", None)
+        if panel.rotation_degrees is not None:
+            item_override["rotation_degrees"] = round(float(panel.rotation_degrees), 6)
+        if panel.machine == "DENVER 1" and programmer.has_door_programming_evidence(panel, config):
+            if panel.hinge_side:
+                item_override["hinge_side"] = panel.hinge_side
+            item_override["hinges_up"] = bool(panel.hinges_up)
+        else:
+            item_override.pop("hinge_side", None)
+            item_override.pop("hinges_up", None)
+        self.save_manual_overrides(data)
 
     def set_indicator_machine_override(
         self,
@@ -2982,6 +3193,12 @@ try {{
             sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
             programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
             aw_orders = self.selected_or_visible_aw_orders()
+            if not aw_orders:
+                self.progress.stop()
+                self.progress.configure(mode="determinate", maximum=100, value=0)
+                messagebox.showinfo("No orders", "Scan orders first. No scanned orders are available to send.")
+                self.status_var.set("No scanned orders are available to send.")
+                return
             sketch_paths: list[Path] = []
             dxf_paths: list[Path] = []
             missing: list[str] = []
@@ -3068,7 +3285,7 @@ try {{
     ) -> None:
         dialog = tk.Toplevel(self.root)
         dialog.title("Review / Send Output")
-        dialog.geometry("1120x680")
+        self.position_child_window(dialog, 1120, 680)
         dialog.minsize(860, 520)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
@@ -3120,6 +3337,7 @@ try {{
 
         for order in orders:
             checked = self.order_review_is_complete(order)
+            remake_badge = self.remake_badge_for_order(order.aw_order)
             order_sketches = self.paths_for_order(sketch_paths, order.aw_order)
             order_dxfs = self.paths_for_order(dxf_paths, order.aw_order)
             order_archive_files = (
@@ -3154,7 +3372,7 @@ try {{
             parent = tree.insert(
                 "",
                 tk.END,
-                text=f"{order.aw_order}  {order.job_name}",
+                text=f"{order.aw_order}  {remake_badge + '  ' if remake_badge else ''}{order.job_name}",
                 values=(status, "", "", "; ".join(warnings[:2])),
                 open=bool(warnings),
                 tags=(tag,),
@@ -3378,6 +3596,7 @@ try {{
                     )
                 )
             if copied and archive_inputs:
+                advance("Archiving sent input files...", 2)
                 def archive_progress(done: int, total: int, source: Path) -> None:
                     advance(f"Archived input {done}/{total}: {source.name}", total - done + 1)
 
@@ -3391,8 +3610,8 @@ try {{
                 def cleanup_progress(done: int, total: int, source: Path) -> None:
                     advance(f"Cleared input staging {done}/{total}: {source.name}", total - done)
 
+                advance("Clearing Showers Programmer Input...", 1)
                 import_deleted, input_cleanup_warnings = self.clear_import_staging_folder(
-                    orders=orders,
                     progress_callback=cleanup_progress,
                 )
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
@@ -3423,34 +3642,35 @@ try {{
     ) -> str:
         import_deleted = import_deleted or []
         input_cleanup_warnings = input_cleanup_warnings or []
-        details = f"Copied {len(copied)} file(s) to the shop folders."
-        sent_names = "\n".join(f"- {path.name}" for path in copied[:30])
-        if sent_names:
-            details += "\n\nSent:\n" + sent_names
-        if len(copied) > 30:
-            details += f"\n...and {len(copied) - 30} more"
+        def copied_order_number(path: Path) -> str | None:
+            stem = path.stem
+            dxf_match = re.match(r"^(\d{6})\d{2}$", stem)
+            if dxf_match:
+                return dxf_match.group(1)
+            match = re.match(r"(\d{5,})", stem)
+            return match.group(1) if match else None
+
+        order_numbers = sorted({order for path in copied for order in [copied_order_number(path)] if order})
+        sketch_count = sum(1 for path in copied if path.suffix.lower() == ".pdf")
+        program_count = sum(1 for path in copied if path.suffix.lower() == ".dxf")
+        order_text = ", ".join(order_numbers[:12]) if order_numbers else "selected orders"
+        if len(order_numbers) > 12:
+            order_text += f", +{len(order_numbers) - 12} more"
+        details = (
+            f"Sent {len(order_numbers) or 'selected'} order(s) to the shop folders.\n"
+            f"Orders: {order_text}\n"
+            f"Sketches: {sketch_count}   Programs: {program_count}"
+        )
         if missing:
-            details += "\nNo matching " + " or ".join(missing) + " were found."
+            details += "\nMissing: " + " or ".join(missing)
         if archived:
-            archive_names = "\n".join(f"- {path}" for path in archived[:20])
-            details += f"\n\nArchived {len(archived)} order/process-list input file(s) into dated folders:\n{archive_names}"
-            if len(archived) > 20:
-                details += f"\n...and {len(archived) - 20} more"
+            details += f"\nArchived inputs: {len(archived)}"
         if archive_warnings:
-            details += "\n\nArchive notes:\n" + "\n".join(f"- {warning}" for warning in archive_warnings)
+            details += f"\nArchive notes: {len(archive_warnings)}"
         if import_deleted:
-            deleted_names = "\n".join(f"- {path.name}" for path in import_deleted[:20])
-            details += (
-                f"\n\nCleared {len(import_deleted)} file(s) from "
-                f"{ShowerProgrammerApp.IMPORT_STAGING_FOLDER_NAME}:\n{deleted_names}"
-            )
-            if len(import_deleted) > 20:
-                details += f"\n...and {len(import_deleted) - 20} more"
+            details += f"\nCleared staging files: {len(import_deleted)}"
         if input_cleanup_warnings:
-            shown_warnings = "\n".join(f"- {warning}" for warning in input_cleanup_warnings[:10])
-            details += "\n\nInput cleanup notes:\n" + shown_warnings
-            if len(input_cleanup_warnings) > 10:
-                details += f"\n...and {len(input_cleanup_warnings) - 10} more"
+            details += f"\nInput cleanup notes: {len(input_cleanup_warnings)}"
         return details
 
     def copy_outputs_to_folder(
@@ -3704,12 +3924,17 @@ try {{
             "source_missing": False,
             "direct": False,
             "considered": 0,
+            "hardware_deleted": [],
+            "hardware_warnings": [],
         }
         if not orders:
             return summary
         if not source_dir.exists():
             summary["source_missing"] = True
             return summary
+        hardware_deleted, hardware_warnings = cls.delete_hardware_list_pdfs(source_dir)
+        summary["hardware_deleted"] = hardware_deleted
+        summary["hardware_warnings"] = hardware_warnings
         if cls.same_path(source_dir, target_dir):
             summary["direct"] = True
             return summary
@@ -3733,6 +3958,26 @@ try {{
         return summary
 
     @classmethod
+    def delete_hardware_list_pdfs(cls, source_dir: Path) -> tuple[list[Path], list[str]]:
+        deleted: list[Path] = []
+        warnings: list[str] = []
+        if not source_dir.exists() or not source_dir.is_dir():
+            return deleted, warnings
+        for path in sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower()):
+            if not cls.is_hardware_list_pdf(path):
+                continue
+            try:
+                path.unlink()
+                deleted.append(path)
+            except OSError as exc:
+                warnings.append(f"Could not delete hardware list {path.name}: {exc}")
+        return deleted, warnings
+
+    @classmethod
+    def is_hardware_list_pdf(cls, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() == ".pdf" and path.name.lower().startswith(cls.HARDWARE_LIST_PREFIX)
+
+    @classmethod
     def matching_order_files(
         cls,
         folder: Path,
@@ -3753,6 +3998,8 @@ try {{
         matched: list[Path] = []
         for path in candidates:
             if not path.is_file() or path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
+                continue
+            if cls.is_hardware_list_pdf(path):
                 continue
             suffix = path.suffix.lower()
             if suffix == ".dxf":
@@ -4108,7 +4355,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Edit Sketch - {process_order.aw_order}")
-        dialog.geometry("1040x820")
+        self.position_child_window(dialog, 1040, 820)
         dialog.transient(self.root)
 
         toolbar = ttk.Frame(dialog, padding=(8, 8, 8, 4))
@@ -4118,6 +4365,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         item_values = [f"P{panel.item}" for panel in job.panels]
         item_box = ttk.Combobox(toolbar, textvariable=item_var, values=item_values, state="readonly", width=8)
         item_box.pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides()).pack(side=tk.LEFT, padx=(0, 12))
         editor_status = tk.StringVar(value="Drag blue markings, then save.")
         ttk.Label(toolbar, textvariable=editor_status).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -4191,8 +4439,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     precise_edges=bool(obj.get("precise_edges")),
                 )
                 position["indicator_corner"] = corner
-                if str(obj["machine"]).startswith("DENVER"):
-                    position["raw_indicator_corner"] = programmer.nearest_indicator_corner_for_point(
+                machine = str(obj["machine"])
+                if machine.startswith("DENVER") or machine == "WJ":
+                    raw_corner = programmer.nearest_indicator_corner_for_point(
                         obj["machine"],
                         (obj["x"], obj["y"]),
                         obj.get("anchor_bbox"),
@@ -4201,7 +4450,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         obj["pdf_cfg"],
                         precise_edges=bool(obj.get("precise_edges")),
                         allowed_denver_only=False,
+                        allowed_waterjet_only=False,
                     )
+                    position["raw_indicator_corner"] = raw_corner
+                    if machine == "WJ":
+                        position["indicator_corner"] = raw_corner
             state["positions"][item_key] = position
             editor_status.set(f"Moved {obj['name']} on {job.aw_order}.{item_number}")
 
@@ -4241,7 +4494,10 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         corner = str(position.get("indicator_corner") or panel.indicator_corner or "").strip().lower()
                         if corner:
                             raw_corner = str(position.get("raw_indicator_corner") or corner).strip().lower()
-                            if panel.machine.startswith("DENVER") and raw_corner in {"bottom_left", "bottom_right", "top_left", "top_right"}:
+                            if (
+                                (panel.machine.startswith("DENVER") or panel.machine == "WJ")
+                                and raw_corner in {"bottom_left", "bottom_right", "top_left", "top_right"}
+                            ):
                                 corner = raw_corner
                                 item_override["manual_indicator_corner"] = True
                             else:
@@ -4255,6 +4511,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                                 corner,
                                 config,
                                 allow_manual_denver_corner=bool(item_override.get("manual_indicator_corner")),
+                                allow_manual_waterjet_corner=bool(item_override.get("manual_indicator_corner")),
                             )
                             item_override["indicator_corner"] = corner
                             if panel.rotation_degrees is not None:
@@ -4290,6 +4547,18 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 dialog.destroy()
                 remake_map = None if remake_items is None else {process_order.aw_order: set(remake_items)}
                 self.run_orders([process_order], apply=True, remake_items_by_order=remake_map, force_override=True)
+
+        def flip_indicator_sides() -> None:
+            panel = selected_panel()
+            current = panel.indicator_corner or (
+                programmer.default_waterjet_indicator_corner(panel)
+                if panel.machine == "WJ"
+                else programmer.denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
+            )
+            corner = self.flipped_indicator_corner(current)
+            self.set_indicator_corner_override(job.aw_order, panel.item, corner, panel, config)
+            editor_status.set(f"Flipped indicator side to {corner} on {job.aw_order}.{panel.item}.")
+            redraw()
 
         def mark_checked(item_number: int | None = None) -> None:
             try:
@@ -4361,15 +4630,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         dialog.after(100, redraw)
 
     def editor_remake_items(self, aw_order: str) -> set[int] | None:
-        if self.remake_var.get():
-            return set()
         history = self.history_for_order(aw_order)
-        if "remake_items" not in history:
-            return self.remake_items_from_report(aw_order)
         value = history.get("remake_items")
-        if not isinstance(value, list):
-            return self.remake_items_from_report(aw_order)
-        return {int(item) for item in value if str(item).strip().isdigit()}
+        if isinstance(value, list):
+            return {int(item) for item in value if str(item).strip().isdigit()}
+        return None
 
     def remake_items_from_report(self, aw_order: str) -> set[int] | None:
         output_dir = Path(self.output_dir_var.get()).resolve()
@@ -4914,6 +5179,35 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             messagebox.showerror("Input folder not found", f"Could not find:\n{path}")
             return
         os.startfile(path)
+
+    def install_shortcut(self) -> None:
+        script = programmer.project_root() / "Create-ShowerProgrammerShortcut.ps1"
+        if not script.exists():
+            messagebox.showerror("Shortcut installer missing", f"Could not find {script.name}.")
+            return
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                ],
+                cwd=str(programmer.project_root()),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as exc:
+            messagebox.showerror("Install shortcut failed", str(exc))
+            return
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
+        if result.returncode != 0:
+            messagebox.showerror("Install shortcut failed", output or f"PowerShell exited with {result.returncode}.")
+            return
+        messagebox.showinfo("Shortcut installed", output or "Shortcut installed.")
 
     def open_sketches_folder(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()

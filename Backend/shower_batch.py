@@ -855,6 +855,22 @@ def merge_process_order(
         target_item.rows.extend(item.rows)
 
 
+def clone_process_order(order: ProcessOrder) -> ProcessOrder:
+    cloned = ProcessOrder(aw_order=order.aw_order, job_name=order.job_name, customer=order.customer)
+    for item_number, item in order.items.items():
+        cloned.items[item_number] = ProcessItem(
+            item=item.item,
+            width_text=item.width_text,
+            height_text=item.height_text,
+            delivery_date=item.delivery_date,
+            customer=item.customer,
+            processing=list(item.processing),
+            machine_hints=list(item.machine_hints),
+            rows=list(item.rows),
+        )
+    return cloned
+
+
 def cell_at(values: list[object], index: int) -> str:
     if index >= len(values):
         return ""
@@ -1006,6 +1022,94 @@ def reconcile_process_list_item_gaps(
         panel.source_item = original_item
         panel.item = process_item
         panel.reasons.append(f"sketch P{original_item} mapped to process-list P{process_item}")
+    panels.sort(key=lambda panel: panel.item)
+
+
+def remap_process_items_to_sketch_pages(
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    remake_items: set[int] | None = None,
+) -> dict[int, int]:
+    if not panels or not process_order.items:
+        return {}
+    actual_items = sorted({panel.item for panel in panels})
+    process_items = sorted(process_order.item_numbers)
+    extra_sketch_items = [item for item in actual_items if item not in set(process_items)]
+    if not extra_sketch_items:
+        return {}
+
+    remaps: dict[int, int] = {}
+    used_targets: set[int] = set()
+    missing_process_items = [item for item in process_items if item not in set(actual_items)]
+    for missing_item in missing_process_items:
+        target = choose_sketch_item_for_process_gap(missing_item, extra_sketch_items, used_targets)
+        if target is None:
+            continue
+        remaps[missing_item] = target
+        used_targets.add(target)
+
+    for process_item, sketch_item in remaps.items():
+        if process_item not in process_order.items or sketch_item in process_order.items:
+            continue
+        item = process_order.items.pop(process_item)
+        item.item = sketch_item
+        process_order.items[sketch_item] = item
+        for panel in panels:
+            if panel.item == sketch_item:
+                panel.source_item = process_item
+                reason = f"process-list P{process_item} applied to sketch P{sketch_item}"
+                if reason not in panel.reasons:
+                    panel.reasons.append(reason)
+    return remaps
+
+
+def choose_sketch_item_for_process_gap(
+    process_item: int,
+    extra_sketch_items: list[int],
+    used_targets: set[int],
+) -> int | None:
+    candidates = [item for item in extra_sketch_items if item not in used_targets]
+    if not candidates:
+        return None
+    higher = [item for item in candidates if item > process_item]
+    if higher:
+        return min(higher, key=lambda item: (item - process_item, item))
+    return min(candidates, key=lambda item: (abs(item - process_item), item))
+
+
+def reconcile_missing_items_from_extra_sketch_pages(
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+) -> None:
+    expected_items = sorted(process_order.item_numbers)
+    if not expected_items:
+        return
+    actual_items = {panel.item for panel in panels}
+    missing_items = sorted(set(expected_items) - actual_items)
+    if not missing_items:
+        return
+    extra_panels = sorted(
+        (panel for panel in panels if panel.item not in set(expected_items)),
+        key=lambda panel: (panel.page_index, panel.item),
+    )
+    if not extra_panels:
+        return
+
+    for missing_item in missing_items:
+        higher = [panel for panel in extra_panels if panel.item > missing_item]
+        if higher:
+            chosen = min(higher, key=lambda panel: (panel.item - missing_item, panel.page_index))
+        else:
+            chosen = min(extra_panels, key=lambda panel: (abs(panel.item - missing_item), panel.page_index))
+        original_item = chosen.item
+        chosen.source_item = original_item
+        chosen.item = missing_item
+        chosen.reasons.append(
+            f"sketch P{original_item} mapped to process-list P{missing_item}; missing process-list item matched to extra sketch page"
+        )
+        extra_panels.remove(chosen)
+        if not extra_panels:
+            break
     panels.sort(key=lambda panel: panel.item)
 
 
@@ -1175,12 +1279,17 @@ def prepare_job(
     process_order: ProcessOrder,
     remake_items: set[int] | None = None,
 ) -> tuple[programmer.Job, PdfReader, list[str]]:
+    process_order = clone_process_order(process_order)
     pdf_path = programmer.find_pdf(folder, process_order.job_name).resolve()
     reader = PdfReader(str(pdf_path))
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
+    item_remaps = remap_process_items_to_sketch_pages(panels, process_order, remake_items)
+    if remake_items:
+        remake_items = {item_remaps.get(item, item) for item in remake_items}
     attach_transom_panels(reader, panels, process_order, config)
     attach_unlabeled_process_pages(reader, panels, process_order, config)
     reconcile_process_list_item_gaps(panels, process_order)
+    reconcile_missing_items_from_extra_sketch_pages(panels, process_order)
     apply_process_hints(panels, process_order, config)
     apply_process_list_scope(panels, process_order)
     programmer.refine_panel_orientations(reader, panels, config)
@@ -1221,11 +1330,20 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
     for panel in job.panels:
         if panel.remake_excluded:
             continue
+        has_process_remap_reason = any(
+            reason.startswith("process-list P") and "applied to sketch" in reason
+            for reason in panel.reasons
+        )
+        if panel.source_item is not None and panel.source_item != panel.item and not has_process_remap_reason:
+            issues.append(f"P{panel.item}: source item P{panel.source_item}")
+        for reason in panel.reasons:
+            if reason.startswith("process-list P") and "applied to sketch" in reason:
+                issues.append(f"P{panel.item}: {reason}")
         for warning in panel.warnings:
             issues.append(f"P{panel.item}: {concise_issue_message(warning)}")
         if not panel.skip_dxf and panel.source_dxf is None:
             issues.append(f"P{panel.item}: missing DXF")
-    return issues
+    return list(dict.fromkeys(issues))
 
 
 def concise_issue_message(message: str) -> str:
@@ -1273,6 +1391,9 @@ def process_one_order(
             process_order,
             remake_items=remake_items,
         )
+        programmed_items = sorted({panel.item for panel in job.panels if not panel.remake_excluded})
+        if programmed_items:
+            result.items = ", ".join(f"P{i}" for i in programmed_items)
         result.input_pdf = job.pdf_path
         result.output_pdf = job.output_pdf
         result.report_path = job.report_path

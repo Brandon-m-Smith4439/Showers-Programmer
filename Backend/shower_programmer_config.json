@@ -49,8 +49,8 @@
         "x_line_width": "Stroke width for X-out pages."
       },
       "font_size": 55,
-      "midpoint_nudge_y": 5,
-      "above_piece_y": 28,
+      "midpoint_nudge_y": -3,
+      "above_piece_y": 20,
       "x_line_width": 10,
       "x_margin": 48
     },

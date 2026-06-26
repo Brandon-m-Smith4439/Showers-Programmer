@@ -15,6 +15,46 @@
         "machine": "DENVER 2",
         "skip_dxf": false
       }
+    },
+    "235497": {
+      "3": {
+        "indicator_corner": "bottom_right",
+        "indicator_x": 135.539,
+        "indicator_y": 124.0,
+        "rotation_degrees": -90.0
+      }
+    },
+    "235503": {
+      "1": {
+        "remake_x": 313.5,
+        "remake_y": 627.834
+      },
+      "2": {
+        "hinge_side": "right",
+        "hinges_up": false,
+        "indicator_corner": "top_right",
+        "indicator_x": 412.631,
+        "indicator_y": 590.922,
+        "manual_indicator_corner": true,
+        "rotation_degrees": -90.0
+      }
+    },
+    "235508": {
+      "1": {
+        "hinge_side": "right",
+        "hinges_up": false,
+        "indicator_corner": "top_right",
+        "indicator_x": 451.915,
+        "indicator_y": 642.533,
+        "manual_indicator_corner": true,
+        "rotation_degrees": -90.0
+      },
+      "2": {
+        "indicator_corner": "top_left",
+        "indicator_x": 138.032,
+        "indicator_y": 617.863,
+        "rotation_degrees": 90.0
+      }
     }
   }
 }
