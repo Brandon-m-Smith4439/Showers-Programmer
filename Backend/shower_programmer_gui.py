@@ -154,39 +154,118 @@ class ShowerProgrammerApp:
             window.geometry(f"{width}x{height}")
 
     def configure_styles(self) -> None:
-        self.root.configure(bg="#f6f9fd")
+        bg = "#f4f7fb"
+        card = "#ffffff"
+        border = "#d8e3ee"
+        blue = "#2c73ca"
+        blue_dark = "#1f5fa8"
+        text = "#172033"
+        muted = "#516176"
+
+        self.root.configure(bg=bg)
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TFrame", background="#f6f9fd")
-        style.configure("AppHeader.TFrame", background="#f6f9fd")
-        style.configure("Card.TFrame", background="#ffffff", borderwidth=1, relief="solid")
-        style.configure("Metric.TFrame", background="#f8fbff", borderwidth=1, relief="solid")
-        style.configure("TLabel", background="#f6f9fd", foreground="#172033")
-        style.configure("Card.TLabel", background="#ffffff", foreground="#172033")
-        style.configure("Metric.TLabel", background="#f8fbff", foreground="#1f5ca8")
-        style.configure("Title.TLabel", font=("Segoe UI", 18, "bold"), foreground="#111827", background="#f6f9fd")
-        style.configure("Section.TLabel", font=("Segoe UI", 10, "bold"), foreground="#1f4e86", background="#ffffff")
-        style.configure("Muted.TLabel", foreground="#516176", background="#f6f9fd")
-        style.configure("Status.TLabel", foreground="#516176", background="#f6f9fd")
-        style.configure("Summary.TLabel", font=("Segoe UI", 10, "bold"), foreground="#1f4e79")
-        style.configure("MetricNumber.TLabel", font=("Segoe UI", 15, "bold"), foreground="#1f5ca8", background="#f8fbff")
-        style.configure("MetricCaption.TLabel", font=("Segoe UI", 8, "bold"), foreground="#315f9f", background="#f8fbff")
-        style.configure("TEntry", padding=(6, 4), fieldbackground="#ffffff", bordercolor="#cbd6e2", lightcolor="#dce6f2", darkcolor="#cbd6e2")
-        style.configure("TButton", padding=(12, 6), font=("Segoe UI", 9))
-        style.configure("Accent.TButton", padding=(16, 8), font=("Segoe UI", 9, "bold"), background="#2d7ad3", foreground="#ffffff")
+
+        style.configure("TFrame", background=bg)
+        style.configure("AppHeader.TFrame", background=bg)
+
+        # Outer white cards only. Do not use this for every nested row.
+        style.configure("Card.TFrame", background=card)
+
+        # Inner content areas. No border, so sections look seamless.
+        style.configure("SectionBody.TFrame", background=card)
+        style.configure("Toolbar.TFrame", background=card)
+
+        style.configure("Metric.TFrame", background="#f8fbff")
+        style.configure("TLabel", background=bg, foreground=text)
+        style.configure("Card.TLabel", background=card, foreground=text)
+        style.configure(
+            "Section.TLabel",
+            font=("Segoe UI", 9, "bold"),
+            foreground="#1f4e86",
+            background=card,
+        )
+        style.configure("Muted.TLabel", foreground=muted, background=bg)
+        style.configure("Status.TLabel", foreground=muted, background=bg)
+        style.configure("Summary.TLabel", foreground=muted, background=bg)
+
+        style.configure(
+            "Title.TLabel",
+            font=("Segoe UI", 18, "bold"),
+            foreground="#0f172a",
+            background=bg,
+        )
+
+        style.configure(
+            "MetricNumber.TLabel",
+            font=("Segoe UI", 15, "bold"),
+            foreground=blue,
+            background="#f8fbff",
+        )
+        style.configure(
+            "MetricCaption.TLabel",
+            font=("Segoe UI", 8, "bold"),
+            foreground="#315f9f",
+            background="#f8fbff",
+        )
+
+        style.configure(
+            "TEntry",
+            padding=(7, 4),
+            fieldbackground="#ffffff",
+            bordercolor="#cbd6e2",
+            lightcolor="#dce6f2",
+            darkcolor="#cbd6e2",
+        )
+
+        style.configure("TButton", padding=(11, 6), font=("Segoe UI", 9))
+        style.configure(
+            "Accent.TButton",
+            padding=(16, 8),
+            font=("Segoe UI", 9, "bold"),
+            background=blue,
+            foreground="#ffffff",
+        )
         style.map(
             "Accent.TButton",
-            background=[("active", "#1f66b5"), ("pressed", "#185a9f"), ("disabled", "#9dbce0")],
+            background=[
+                ("active", blue_dark),
+                ("pressed", "#184f94"),
+                ("disabled", "#9dbce0"),
+            ],
             foreground=[("disabled", "#f3f8ff")],
         )
-        style.configure("Action.TButton", padding=(18, 12), font=("Segoe UI", 9, "bold"), background="#f7fbff", foreground="#1f3555")
-        style.map("Action.TButton", background=[("active", "#eaf4ff"), ("pressed", "#d8ebff")])
-        style.configure("Primary.Action.TButton", padding=(18, 12), font=("Segoe UI", 9, "bold"), background="#2c73ca", foreground="#ffffff")
-        style.map("Primary.Action.TButton", background=[("active", "#215fac"), ("pressed", "#184f94")], foreground=[("disabled", "#eaf2fb")])
-        style.configure("TCheckbutton", background="#ffffff", foreground="#1f2933")
+
+        style.configure(
+            "Action.TButton",
+            padding=(13, 8),
+            font=("Segoe UI", 9, "bold"),
+            background="#f7fbff",
+            foreground="#1f3555",
+        )
+        style.map(
+            "Action.TButton",
+            background=[("active", "#eaf4ff"), ("pressed", "#d8ebff")],
+        )
+
+        style.configure(
+            "Primary.Action.TButton",
+            padding=(13, 8),
+            font=("Segoe UI", 9, "bold"),
+            background=blue,
+            foreground="#ffffff",
+        )
+        style.map(
+            "Primary.Action.TButton",
+            background=[("active", blue_dark), ("pressed", "#184f94")],
+            foreground=[("disabled", "#eaf2fb")],
+        )
+
+        style.configure("TCheckbutton", background=card, foreground="#1f2933")
+
         style.configure(
             "Horizontal.TProgressbar",
             troughcolor="#dbe5ef",
@@ -195,9 +274,27 @@ class ShowerProgrammerApp:
             lightcolor="#22c55e",
             darkcolor="#15803d",
         )
-        style.configure("Treeview", rowheight=27, fieldbackground="#ffffff", background="#ffffff", foreground="#172033", bordercolor="#dfe7f1")
-        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"), background="#e8f1fb", foreground="#235ea4", relief="flat")
-        style.map("Treeview", background=[("selected", "#d7eaff")], foreground=[("selected", "#102033")])
+
+        style.configure(
+            "Treeview",
+            rowheight=28,
+            fieldbackground="#ffffff",
+            background="#ffffff",
+            foreground=text,
+            bordercolor=border,
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Segoe UI", 9, "bold"),
+            background="#e8f1fb",
+            foreground="#235ea4",
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#d7eaff")],
+            foreground=[("selected", "#102033")],
+        )
 
     def build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=(12, 8, 12, 10))
@@ -223,25 +320,85 @@ class ShowerProgrammerApp:
 
         action_row = ttk.Frame(outer)
         action_row.pack(fill=tk.X, pady=(8, 8))
+        action_row.columnconfigure(0, weight=1)
+        action_row.columnconfigure(1, weight=0)
+
         actions = self.make_section(action_row, "MAIN ACTIONS")
-        actions.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        action_buttons = ttk.Frame(actions, style="Card.TFrame")
-        action_buttons.pack(side=tk.LEFT, fill=tk.Y)
-        ttk.Button(action_buttons, text="Scan Orders", style="Primary.Action.TButton", command=self.scan_orders).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
-        ttk.Button(action_buttons, text="Process Selected", style="Action.TButton", command=self.process_selected).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
-        ttk.Button(action_buttons, text="Process All", style="Action.TButton", command=lambda: self.run_orders(self.orders, apply=True)).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
-        ttk.Button(action_buttons, text="Review Order", style="Action.TButton", command=self.open_order_review).pack(side=tk.LEFT, padx=(0, 8), ipady=8)
-        ttk.Button(action_buttons, text="Mark Checked", style="Action.TButton", command=self.mark_selected_orders_checked).pack(side=tk.LEFT, ipady=8)
-        options = ttk.Frame(actions, style="Card.TFrame")
-        options.pack(side=tk.LEFT, padx=(22, 0), fill=tk.Y)
-        ttk.Checkbutton(options, text="Overwrite existing outputs", variable=self.force_var).pack(anchor=tk.W, pady=(2, 4))
-        ttk.Checkbutton(options, text="Skip DXF output", variable=self.skip_dxf_var).pack(anchor=tk.W, pady=4)
-        ttk.Checkbutton(options, text="REMAKE", variable=self.remake_var).pack(anchor=tk.W, pady=4)
+        actions.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        action_body = ttk.Frame(actions, style="SectionBody.TFrame")
+        action_body.pack(fill=tk.X)
+
+        action_buttons = ttk.Frame(action_body, style="SectionBody.TFrame")
+        action_buttons.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        ttk.Button(
+            action_buttons,
+            text="Scan Orders",
+            style="Primary.Action.TButton",
+            command=self.scan_orders,
+            width=15,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            action_buttons,
+            text="Process Selected",
+            style="Action.TButton",
+            command=self.process_selected,
+            width=16,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            action_buttons,
+            text="Process All",
+            style="Action.TButton",
+            command=lambda: self.run_orders(self.orders, apply=True),
+            width=13,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            action_buttons,
+            text="Review Order",
+            style="Action.TButton",
+            command=self.open_order_review,
+            width=14,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            action_buttons,
+            text="Mark Checked",
+            style="Action.TButton",
+            command=self.mark_selected_orders_checked,
+            width=14,
+        ).pack(side=tk.LEFT)
+
+        options = ttk.Frame(action_body, style="SectionBody.TFrame", padding=(18, 0, 0, 0))
+        options.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0))
+
+        ttk.Checkbutton(
+            options,
+            text="Overwrite existing outputs",
+            variable=self.force_var,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        ttk.Checkbutton(
+            options,
+            text="Skip DXF output",
+            variable=self.skip_dxf_var,
+        ).pack(anchor=tk.W, pady=4)
+
+        ttk.Checkbutton(
+            options,
+            text="REMAKE",
+            variable=self.remake_var,
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         summary = self.make_section(action_row, "SUMMARY")
-        summary.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
-        metric_row = ttk.Frame(summary, style="Card.TFrame")
+        summary.grid(row=0, column=1, sticky="nsew")
+
+        metric_row = ttk.Frame(summary, style="SectionBody.TFrame")
         metric_row.pack(fill=tk.X)
+
         self.add_metric_card(metric_row, "orders", "Orders")
         self.add_metric_card(metric_row, "ready", "Ready")
         self.add_metric_card(metric_row, "issues", "Issues")
@@ -250,17 +407,49 @@ class ShowerProgrammerApp:
 
         maintenance = self.make_section(outer, "MAINTENANCE / TOOLS")
         maintenance.pack(fill=tk.X, pady=(0, 8))
-        ttk.Button(maintenance, text="Clear Sketch Memory", command=self.clear_sketch_memory).pack(side=tk.LEFT)
-        ttk.Button(maintenance, text="Check for Updates", command=self.check_for_updates).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(maintenance, text="Install Shortcut", command=self.install_shortcut).pack(side=tk.LEFT, padx=(8, 0))
-        file_actions = ttk.Frame(maintenance, style="Card.TFrame")
+
+        maintenance_body = ttk.Frame(maintenance, style="SectionBody.TFrame")
+        maintenance_body.pack(fill=tk.X)
+
+        tool_buttons = ttk.Frame(maintenance_body, style="SectionBody.TFrame")
+        tool_buttons.pack(side=tk.LEFT)
+
+        ttk.Button(
+            tool_buttons,
+            text="Clear Sketch Memory",
+            command=self.clear_sketch_memory,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(
+            tool_buttons,
+            text="Check for Updates",
+            command=self.check_for_updates,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(
+            tool_buttons,
+            text="Install Shortcut",
+            command=self.install_shortcut,
+        ).pack(side=tk.LEFT)
+
+        file_actions = ttk.Frame(maintenance_body, style="SectionBody.TFrame")
         file_actions.pack(side=tk.RIGHT)
-        ttk.Button(file_actions, text="Open Input Folder", command=self.open_input_folder).pack(side=tk.LEFT)
-        ttk.Button(file_actions, text="Open Latest Batch", command=self.open_latest_batch).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Button(
+            file_actions,
+            text="Open Input Folder",
+            command=self.open_input_folder,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(
+            file_actions,
+            text="Open Latest Batch",
+            command=self.open_latest_batch,
+        ).pack(side=tk.LEFT)
 
         table_outer = self.make_section(outer, "ORDERS")
         table_outer.pack(fill=tk.BOTH, expand=True)
-        table_frame = ttk.Frame(table_outer, style="Card.TFrame")
+        table_frame = ttk.Frame(table_outer, style="SectionBody.TFrame")
         table_frame.pack(fill=tk.BOTH, expand=True)
         columns = ("status", "processed", "last_processed", "delivery", "order", "job", "customer", "items", "review", "pdf", "issues")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
@@ -320,7 +509,7 @@ class ShowerProgrammerApp:
         bottom.columnconfigure(2, weight=0)
         self.progress = ttk.Progressbar(bottom, mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew", ipady=2)
-        self.status_label = ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Status.TLabel", width=58)
+        self.status_label = ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Status.TLabel", width=64)
         self.status_label.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         send_buttons = ttk.Frame(bottom)
         send_buttons.grid(row=0, column=2, sticky=tk.E, padx=(10, 0))
@@ -328,22 +517,60 @@ class ShowerProgrammerApp:
         ttk.Button(send_buttons, text="Review / Send", style="Accent.TButton", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
 
     def make_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
-        frame = ttk.Frame(parent, style="Card.TFrame", padding=(12, 9), borderwidth=1, relief=tk.SOLID)
+        frame = ttk.Frame(
+            parent,
+            style="Card.TFrame",
+            padding=(12, 9),
+            borderwidth=1,
+            relief=tk.SOLID,
+        )
         ttk.Label(frame, text=title, style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
         return frame
 
     def add_metric_card(self, parent: ttk.Frame, key: str, caption: str) -> None:
-        card = ttk.Frame(parent, style="Metric.TFrame", padding=(14, 8), borderwidth=1, relief=tk.SOLID)
-        card.pack(side=tk.LEFT, padx=(0, 10), fill=tk.Y)
-        ttk.Label(card, textvariable=self.summary_count_vars[key], style="MetricNumber.TLabel").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Label(card, text=caption, style="MetricCaption.TLabel").pack(side=tk.LEFT)
+        card = ttk.Frame(
+            parent,
+            style="Metric.TFrame",
+            padding=(10, 6),
+            borderwidth=1,
+            relief=tk.SOLID,
+        )
+        card.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+
+        ttk.Label(
+            card,
+            textvariable=self.summary_count_vars[key],
+            style="MetricNumber.TLabel",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+
+        ttk.Label(
+            card,
+            text=caption,
+            style="MetricCaption.TLabel",
+        ).pack(side=tk.LEFT)
 
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
-        row_frame = ttk.Frame(parent, style="Card.TFrame")
-        row_frame.pack(fill=tk.X, pady=(0 if row == 0 else 3, 3))
-        ttk.Label(row_frame, text=label, width=13, style="Card.TLabel").pack(side=tk.LEFT)
-        ttk.Entry(row_frame, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 8), ipady=2)
-        ttk.Button(row_frame, text="Browse", command=command).pack(side=tk.RIGHT)
+        row_frame = ttk.Frame(parent, style="SectionBody.TFrame")
+        row_frame.pack(fill=tk.X, pady=(0, 6))
+        row_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            row_frame,
+            text=label,
+            width=13,
+            style="Card.TLabel",
+        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
+
+        ttk.Entry(
+            row_frame,
+            textvariable=var,
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 8), ipady=2)
+
+        ttk.Button(
+            row_frame,
+            text="Browse",
+            command=command,
+        ).grid(row=0, column=2, sticky=tk.E)
 
     def choose_folder(self) -> None:
         path = filedialog.askdirectory(initialdir=self.folder_var.get())
