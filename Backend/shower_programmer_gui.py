@@ -28,9 +28,10 @@ import shower_batch
 import shower_programmer as programmer
 
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageDraw, ImageTk
 except Exception:
     Image = None
+    ImageDraw = None
     ImageTk = None
 
 
@@ -85,6 +86,7 @@ class ShowerProgrammerApp:
         self.send_review_window: tk.Toplevel | None = None
         self.send_review_progress: ttk.Progressbar | None = None
         self.send_review_status_var: tk.StringVar | None = None
+        self.ui_icon_cache: dict[tuple[str, int, str], tk.PhotoImage] = {}
 
         self.configure_styles()
         self.build_ui()
@@ -182,6 +184,23 @@ class ShowerProgrammerApp:
         style.configure("Metric.TFrame", background="#f8fbff")
         style.configure("TLabel", background=bg, foreground=text)
         style.configure("Card.TLabel", background=card, foreground=text)
+        style.configure("Metric.TLabel", background="#f8fbff", foreground=text)
+        style.configure(
+            "PanelHeader.TFrame",
+            background="#f8fbff",
+        )
+        style.configure(
+            "PanelHeader.TLabel",
+            background="#f8fbff",
+            foreground="#17365f",
+            font=("Segoe UI", 10, "bold"),
+        )
+        style.configure(
+            "InfoStrip.TLabel",
+            background="#f8fbff",
+            foreground="#2c3e56",
+            font=("Segoe UI", 9),
+        )
         style.configure(
             "Section.TLabel",
             font=("Segoe UI", 9, "bold"),
@@ -296,34 +315,160 @@ class ShowerProgrammerApp:
             foreground=[("selected", "#102033")],
         )
 
+    def ui_icon(self, name: str, size: int = 18, color: str = "#1f5fa8") -> tk.PhotoImage | None:
+        key = (name, size, color)
+        cached = self.ui_icon_cache.get(key)
+        if cached is not None:
+            return cached
+        if Image is None or ImageDraw is None or ImageTk is None:
+            return None
+
+        scale = 4
+        canvas_size = max(1, size * scale)
+        image = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(image)
+        stroke = max(2, int(round(size * scale / 9)))
+
+        def p(*values: float) -> tuple[int, ...]:
+            return tuple(int(round(value * scale)) for value in values)
+
+        def line(points: list[tuple[float, float]], width: float = 2.0) -> None:
+            draw.line([(p(x, y)[0], p(x, y)[1]) for x, y in points], fill=color, width=max(1, int(round(width * scale))))
+
+        icon = name.lower().replace("-", "_")
+        if icon in {"folder", "open_folder"}:
+            draw.rounded_rectangle(p(2, 5, 16, 15), radius=p(2)[0], outline=color, width=stroke)
+            line([(3.5, 6), (7.2, 6), (8.2, 8), (15, 8)], width=2)
+        elif icon in {"scan", "search"}:
+            draw.ellipse(p(3, 3, 11.5, 11.5), outline=color, width=stroke)
+            line([(10.2, 10.2), (15, 15)], width=2.2)
+        elif icon in {"check", "check_circle", "ready", "checked"}:
+            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
+            line([(5.8, 9.3), (8.0, 11.5), (12.7, 6.5)], width=2.1)
+        elif icon == "play":
+            draw.polygon([p(6, 4), p(14, 9), p(6, 14)], fill=color)
+        elif icon == "eye":
+            draw.ellipse(p(2, 5.2, 16, 12.8), outline=color, width=stroke)
+            draw.ellipse(p(7.2, 7.2, 10.8, 10.8), fill=color)
+        elif icon == "trash":
+            line([(4, 5), (14, 5)], width=2)
+            line([(7, 3), (11, 3)], width=2)
+            draw.rounded_rectangle(p(5, 6, 13, 15), radius=p(1.5)[0], outline=color, width=stroke)
+            line([(7.5, 8), (7.5, 13)], width=1.6)
+            line([(10.5, 8), (10.5, 13)], width=1.6)
+        elif icon == "refresh":
+            draw.arc(p(3, 3, 15, 15), 35, 315, fill=color, width=stroke)
+            draw.polygon([p(13.2, 2.8), p(15.6, 4.0), p(13.8, 6.1)], fill=color)
+        elif icon == "rotate_left":
+            draw.arc(p(3, 3, 15, 15), 70, 340, fill=color, width=stroke)
+            draw.polygon([p(4.6, 4.0), p(3.0, 7.0), p(6.5, 6.4)], fill=color)
+        elif icon == "rotate_right":
+            draw.arc(p(3, 3, 15, 15), 200, 110, fill=color, width=stroke)
+            draw.polygon([p(13.4, 4.0), p(15.0, 7.0), p(11.5, 6.4)], fill=color)
+        elif icon == "link":
+            draw.rounded_rectangle(p(2, 7, 10, 12), radius=p(2.5)[0], outline=color, width=stroke)
+            draw.rounded_rectangle(p(8, 6, 16, 11), radius=p(2.5)[0], outline=color, width=stroke)
+            line([(6.4, 9.5), (11.6, 8.5)], width=1.6)
+        elif icon == "clock":
+            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
+            line([(9, 5.4), (9, 9.2), (12, 10.8)], width=1.8)
+        elif icon in {"file", "pdf", "dxf", "orders"}:
+            draw.line([p(5, 2), p(11.5, 2), p(14, 4.5), p(14, 16), p(4, 16), p(4, 2), p(5, 2)], fill=color, width=stroke)
+            line([(11.5, 2.2), (11.5, 5), (14, 5)], width=1.7)
+            line([(6.5, 8), (11.5, 8)], width=1.4)
+            line([(6.5, 11), (11.5, 11)], width=1.4)
+        elif icon == "save":
+            draw.rounded_rectangle(p(3, 3, 15, 15), radius=p(1.5)[0], outline=color, width=stroke)
+            draw.rectangle(p(6, 4, 12.5, 7.5), outline=color, width=max(1, stroke - 1))
+            line([(6, 13), (12, 13)], width=1.8)
+        elif icon == "indicator":
+            draw.ellipse(p(5, 5, 13, 13), fill=color)
+            line([(3, 9), (5, 9)], width=1.4)
+            line([(13, 9), (15, 9)], width=1.4)
+            line([(9, 3), (9, 5)], width=1.4)
+            line([(9, 13), (9, 15)], width=1.4)
+        elif icon == "flip":
+            line([(4, 6), (13.5, 6)], width=1.9)
+            draw.polygon([p(13.5, 3.7), p(16, 6), p(13.5, 8.3)], fill=color)
+            line([(14, 12), (4.5, 12)], width=1.9)
+            draw.polygon([p(4.5, 9.7), p(2, 12), p(4.5, 14.3)], fill=color)
+        elif icon == "text":
+            line([(4, 4), (14, 4)], width=2)
+            line([(9, 4), (9, 14)], width=2)
+            line([(6.5, 14), (11.5, 14)], width=2)
+        elif icon in {"x", "close"}:
+            line([(5, 5), (13, 13)], width=2.2)
+            line([(13, 5), (5, 13)], width=2.2)
+        elif icon == "chevron_left":
+            line([(11.5, 4), (6.5, 9), (11.5, 14)], width=2.4)
+        elif icon == "chevron_right":
+            line([(6.5, 4), (11.5, 9), (6.5, 14)], width=2.4)
+        elif icon == "chevron_up":
+            line([(4, 11.5), (9, 6.5), (14, 11.5)], width=2.4)
+        elif icon == "chevron_down":
+            line([(4, 6.5), (9, 11.5), (14, 6.5)], width=2.4)
+        elif icon in {"send", "paper_plane"}:
+            draw.polygon([p(2.5, 4.5), p(16, 2.5), p(10.8, 15.5), p(8.4, 10.1)], outline=color)
+            line([(8.4, 10.1), (16, 2.5)], width=1.4)
+        elif icon == "image":
+            draw.rounded_rectangle(p(3, 4, 15, 14), radius=p(1.5)[0], outline=color, width=stroke)
+            draw.ellipse(p(5, 6, 7.5, 8.5), fill=color)
+            line([(4.5, 13), (8, 9.5), (10, 11.4), (12.2, 8.6), (14.5, 13)], width=1.6)
+        elif icon == "program":
+            draw.line([p(5, 2), p(11.5, 2), p(14, 4.5), p(14, 16), p(4, 16), p(4, 2), p(5, 2)], fill=color, width=stroke)
+            line([(7.2, 8), (5.6, 9.7), (7.2, 11.4)], width=1.5)
+            line([(10.8, 8), (12.4, 9.7), (10.8, 11.4)], width=1.5)
+        elif icon == "info":
+            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
+            draw.ellipse(p(8.2, 5, 9.8, 6.6), fill=color)
+            line([(9, 8), (9, 12.7)], width=2)
+        elif icon == "warning":
+            draw.polygon([p(9, 2.5), p(16, 15), p(2, 15)], outline=color)
+            line([(9, 6), (9, 10.5)], width=2)
+            draw.ellipse(p(8.2, 12, 9.8, 13.6), fill=color)
+        elif icon == "minus_circle":
+            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
+            line([(5.8, 9), (12.2, 9)], width=2.2)
+        elif icon == "plus":
+            line([(9, 4), (9, 14)], width=2.2)
+            line([(4, 9), (14, 9)], width=2.2)
+        else:
+            draw.line([p(5, 2), p(11.5, 2), p(14, 4.5), p(14, 16), p(4, 16), p(4, 2), p(5, 2)], fill=color, width=stroke)
+
+        resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+        image = image.resize((size, size), resampling)
+        photo = ImageTk.PhotoImage(image)
+        self.ui_icon_cache[key] = photo
+        return photo
+
+    def button_icon(self, name: str, size: int = 16, color: str = "#1f5fa8") -> dict[str, object]:
+        icon = self.ui_icon(name, size=size, color=color)
+        if icon is None:
+            return {}
+        return {"image": icon, "compound": tk.LEFT}
+
+    def icon_label(self, parent: ttk.Frame, icon_name: str, size: int = 18, color: str = "#1f5fa8", style: str = "Card.TLabel") -> None:
+        icon = self.ui_icon(icon_name, size=size, color=color)
+        if icon is not None:
+            ttk.Label(parent, image=icon, style=style).pack(side=tk.LEFT, padx=(0, 8))
+
     def build_ui(self) -> None:
-        outer = ttk.Frame(self.root, padding=(12, 8, 12, 10))
+        outer = ttk.Frame(self.root, padding=(12, 6, 12, 10))
         outer.pack(fill=tk.BOTH, expand=True)
 
-        header = ttk.Frame(outer, style="AppHeader.TFrame")
-        header.pack(fill=tk.X, pady=(0, 8))
-        if self.APP_ICON_PNG_PATH.exists():
-            try:
-                icon = tk.PhotoImage(file=str(self.APP_ICON_PNG_PATH))
-                self.header_icon_photo = icon.subsample(max(1, icon.width() // 28), max(1, icon.height() // 28))
-                ttk.Label(header, image=self.header_icon_photo, style="Title.TLabel").pack(side=tk.LEFT, padx=(2, 8))
-            except tk.TclError:
-                self.header_icon_photo = None
-        ttk.Label(header, text="Shower Programmer", style="Title.TLabel").pack(side=tk.LEFT)
-
-        paths = self.make_section(outer, "FOLDERS")
+        paths, paths_body = self.make_collapsible_section(outer, "FOLDERS", "folder")
         paths.pack(fill=tk.X)
-        self.add_path_row(paths, 0, "Orders", self.folder_var, self.choose_folder)
-        self.add_path_row(paths, 1, "Import From", self.import_source_var, self.choose_import_source)
-        self.add_path_row(paths, 2, "Process Lists", self.process_list_var, self.choose_process_list)
-        self.add_path_row(paths, 3, "Output", self.output_dir_var, self.choose_output_dir)
+        self.add_path_row(paths_body, 0, "Orders", self.folder_var, self.choose_folder)
+        self.add_path_row(paths_body, 1, "Import From", self.import_source_var, self.choose_import_source)
+        self.add_path_row(paths_body, 2, "Process Lists", self.process_list_var, self.choose_process_list)
+        self.add_path_row(paths_body, 3, "Output", self.output_dir_var, self.choose_output_dir)
 
         action_row = ttk.Frame(outer)
         action_row.pack(fill=tk.X, pady=(8, 8))
         action_row.columnconfigure(0, weight=1)
         action_row.columnconfigure(1, weight=0)
 
-        actions = self.make_section(action_row, "MAIN ACTIONS")
+        actions = self.make_section(action_row, "MAIN ACTIONS", "play")
         actions.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         action_body = ttk.Frame(actions, style="SectionBody.TFrame")
@@ -338,6 +483,7 @@ class ShowerProgrammerApp:
             style="Primary.Action.TButton",
             command=self.scan_orders,
             width=15,
+            **self.button_icon("scan", 20, "#ffffff"),
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Button(
@@ -346,6 +492,7 @@ class ShowerProgrammerApp:
             style="Action.TButton",
             command=self.process_selected,
             width=16,
+            **self.button_icon("check_circle"),
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Button(
@@ -354,6 +501,7 @@ class ShowerProgrammerApp:
             style="Action.TButton",
             command=lambda: self.run_orders(self.orders, apply=True),
             width=13,
+            **self.button_icon("play"),
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Button(
@@ -362,6 +510,7 @@ class ShowerProgrammerApp:
             style="Action.TButton",
             command=self.open_order_review,
             width=14,
+            **self.button_icon("eye"),
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         ttk.Button(
@@ -370,6 +519,7 @@ class ShowerProgrammerApp:
             style="Action.TButton",
             command=self.mark_selected_orders_checked,
             width=14,
+            **self.button_icon("check"),
         ).pack(side=tk.LEFT)
 
         options = ttk.Frame(action_body, style="SectionBody.TFrame", padding=(18, 0, 0, 0))
@@ -393,19 +543,19 @@ class ShowerProgrammerApp:
             variable=self.remake_var,
         ).pack(anchor=tk.W, pady=(4, 0))
 
-        summary = self.make_section(action_row, "SUMMARY")
+        summary = self.make_section(action_row, "SUMMARY", "orders")
         summary.grid(row=0, column=1, sticky="nsew")
 
         metric_row = ttk.Frame(summary, style="SectionBody.TFrame")
         metric_row.pack(fill=tk.X)
 
-        self.add_metric_card(metric_row, "orders", "Orders")
-        self.add_metric_card(metric_row, "ready", "Ready")
-        self.add_metric_card(metric_row, "issues", "Issues")
-        self.add_metric_card(metric_row, "processed", "Processed")
-        self.add_metric_card(metric_row, "checked", "Checked")
+        self.add_metric_card(metric_row, "orders", "Orders", "orders", "#1f5fa8")
+        self.add_metric_card(metric_row, "ready", "Ready", "check_circle", "#15945b")
+        self.add_metric_card(metric_row, "issues", "Issues", "warning", "#d97706")
+        self.add_metric_card(metric_row, "processed", "Processed", "refresh", "#6b4bb5")
+        self.add_metric_card(metric_row, "checked", "Checked", "checked", "#1f5fa8")
 
-        maintenance = self.make_section(outer, "MAINTENANCE / TOOLS")
+        maintenance = self.make_section(outer, "MAINTENANCE / TOOLS", "refresh")
         maintenance.pack(fill=tk.X, pady=(0, 8))
 
         maintenance_body = ttk.Frame(maintenance, style="SectionBody.TFrame")
@@ -418,18 +568,21 @@ class ShowerProgrammerApp:
             tool_buttons,
             text="Clear Sketch Memory",
             command=self.clear_sketch_memory,
+            **self.button_icon("trash"),
         ).pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Button(
             tool_buttons,
             text="Check for Updates",
             command=self.check_for_updates,
+            **self.button_icon("refresh"),
         ).pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Button(
             tool_buttons,
             text="Install Shortcut",
             command=self.install_shortcut,
+            **self.button_icon("link"),
         ).pack(side=tk.LEFT)
 
         file_actions = ttk.Frame(maintenance_body, style="SectionBody.TFrame")
@@ -439,15 +592,17 @@ class ShowerProgrammerApp:
             file_actions,
             text="Open Input Folder",
             command=self.open_input_folder,
+            **self.button_icon("folder"),
         ).pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Button(
             file_actions,
             text="Open Latest Batch",
             command=self.open_latest_batch,
+            **self.button_icon("clock"),
         ).pack(side=tk.LEFT)
 
-        table_outer = self.make_section(outer, "ORDERS")
+        table_outer = self.make_section(outer, "ORDERS", "orders")
         table_outer.pack(fill=tk.BOTH, expand=True)
         table_frame = ttk.Frame(table_outer, style="SectionBody.TFrame")
         table_frame.pack(fill=tk.BOTH, expand=True)
@@ -513,10 +668,21 @@ class ShowerProgrammerApp:
         self.status_label.grid(row=0, column=1, sticky="ew", padx=(10, 0))
         send_buttons = ttk.Frame(bottom)
         send_buttons.grid(row=0, column=2, sticky=tk.E, padx=(10, 0))
-        ttk.Button(send_buttons, text="Select All", command=self.select_all_orders).pack(side=tk.LEFT)
-        ttk.Button(send_buttons, text="Review / Send", style="Accent.TButton", command=self.send_all_to_shop).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(
+            send_buttons,
+            text="Select All",
+            command=self.select_all_orders,
+            **self.button_icon("check_circle"),
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            send_buttons,
+            text="Review / Send",
+            style="Accent.TButton",
+            command=self.send_all_to_shop,
+            **self.button_icon("send", 16, "#ffffff"),
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
-    def make_section(self, parent: ttk.Frame, title: str) -> ttk.Frame:
+    def make_section(self, parent: ttk.Frame, title: str, icon_name: str | None = None) -> ttk.Frame:
         frame = ttk.Frame(
             parent,
             style="Card.TFrame",
@@ -524,10 +690,74 @@ class ShowerProgrammerApp:
             borderwidth=1,
             relief=tk.SOLID,
         )
-        ttk.Label(frame, text=title, style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
+        header = ttk.Frame(frame, style="Card.TFrame")
+        header.pack(fill=tk.X, pady=(0, 8))
+        if icon_name:
+            self.icon_label(header, icon_name, size=16, style="Card.TLabel")
+        ttk.Label(header, text=title, style="Section.TLabel").pack(side=tk.LEFT)
         return frame
 
-    def add_metric_card(self, parent: ttk.Frame, key: str, caption: str) -> None:
+    def make_collapsible_section(
+        self,
+        parent: ttk.Frame,
+        title: str,
+        icon_name: str | None = None,
+    ) -> tuple[ttk.Frame, ttk.Frame]:
+        frame = ttk.Frame(
+            parent,
+            style="Card.TFrame",
+            padding=(12, 9),
+            borderwidth=1,
+            relief=tk.SOLID,
+        )
+        header = ttk.Frame(frame, style="Card.TFrame")
+        header.pack(fill=tk.X, pady=(0, 8))
+        if icon_name:
+            self.icon_label(header, icon_name, size=16, style="Card.TLabel")
+        ttk.Label(header, text=title, style="Section.TLabel").pack(side=tk.LEFT)
+
+        body = ttk.Frame(frame, style="SectionBody.TFrame")
+        body.pack(fill=tk.X)
+        collapsed = tk.BooleanVar(value=False)
+
+        def toggle() -> None:
+            if collapsed.get():
+                body.pack(fill=tk.X)
+                toggle_button.configure(text="Hide", **self.button_icon("chevron_up"))
+                collapsed.set(False)
+            else:
+                body.pack_forget()
+                toggle_button.configure(text="Show", **self.button_icon("chevron_down"))
+                collapsed.set(True)
+
+        toggle_button = ttk.Button(
+            header,
+            text="Hide",
+            width=9,
+            command=toggle,
+            **self.button_icon("chevron_up"),
+        )
+        toggle_button.pack(side=tk.RIGHT)
+        return frame, body
+
+    def add_metric_card(
+        self,
+        parent: ttk.Frame,
+        key: str,
+        caption: str,
+        icon_name: str | None = None,
+        icon_color: str = "#1f5fa8",
+    ) -> None:
+        self.add_count_card(parent, self.summary_count_vars[key], caption, icon_name, icon_color)
+
+    def add_count_card(
+        self,
+        parent: ttk.Frame,
+        number_var: tk.StringVar,
+        caption: str,
+        icon_name: str | None = None,
+        icon_color: str = "#1f5fa8",
+    ) -> ttk.Frame:
         card = ttk.Frame(
             parent,
             style="Metric.TFrame",
@@ -537,9 +767,12 @@ class ShowerProgrammerApp:
         )
         card.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
 
+        if icon_name:
+            self.icon_label(card, icon_name, size=21, color=icon_color, style="Metric.TLabel")
+
         ttk.Label(
             card,
-            textvariable=self.summary_count_vars[key],
+            textvariable=number_var,
             style="MetricNumber.TLabel",
         ).pack(side=tk.LEFT, padx=(0, 7))
 
@@ -548,6 +781,7 @@ class ShowerProgrammerApp:
             text=caption,
             style="MetricCaption.TLabel",
         ).pack(side=tk.LEFT)
+        return card
 
     def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
         row_frame = ttk.Frame(parent, style="SectionBody.TFrame")
@@ -570,6 +804,7 @@ class ShowerProgrammerApp:
             row_frame,
             text="Browse",
             command=command,
+            **self.button_icon("folder"),
         ).grid(row=0, column=2, sticky=tk.E)
 
     def choose_folder(self) -> None:
@@ -1820,9 +2055,10 @@ a {{ color: #1f4e79; }}
         dialog.minsize(980, 560)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
+        dialog.configure(bg="#f4f7fb")
         dialog.after(0, lambda: self.maximize_window(dialog))
         
-        toolbar = ttk.Frame(dialog, padding=(8, 8, 8, 4))
+        toolbar = ttk.Frame(dialog, padding=(12, 10, 12, 8))
         toolbar.pack(fill=tk.X)
         ttk.Label(toolbar, text="Piece").pack(side=tk.LEFT)
         item_var = tk.StringVar(value=f"P{job.panels[0].item}")
@@ -1838,40 +2074,62 @@ a {{ color: #1f4e79; }}
         ttk.Label(toolbar, textvariable=page_count_var).pack(side=tk.LEFT, padx=(0, 12))
         rotation_var = tk.IntVar(value=0)
         status = tk.StringVar(value="Double-check the sketch and matching DXF together.")
-        ttk.Button(toolbar, text="Prev P", command=lambda: change_piece(-1)).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Next P", command=lambda: change_piece(1)).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Save Edits", command=lambda: save_review_edits()).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order()).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark()).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides()).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Add Text Box", command=lambda: add_text_box()).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark()).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90)).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90)).pack(side=tk.LEFT, padx=(6, 12))
+        review_info_var = tk.StringVar(value="")
+        ttk.Button(toolbar, text="Previous", command=lambda: change_piece(-1), **self.button_icon("chevron_left")).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Next", command=lambda: change_piece(1), **self.button_icon("chevron_right")).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Save Edits", command=lambda: save_review_edits(), **self.button_icon("save")).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order(), **self.button_icon("play")).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark(), **self.button_icon("indicator")).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides(), **self.button_icon("flip")).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Add Text Box", command=lambda: add_text_box(), **self.button_icon("text")).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark(), **self.button_icon("x")).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90), **self.button_icon("rotate_left")).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90), **self.button_icon("rotate_right")).pack(side=tk.LEFT, padx=(6, 12))
         file_actions = ttk.Frame(toolbar)
         file_actions.pack(side=tk.RIGHT)
-        ttk.Button(file_actions, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path)).pack(side=tk.LEFT)
-        ttk.Button(file_actions, text="Open DXF", command=lambda: open_current_dxf()).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Label(toolbar, textvariable=status).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(file_actions, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path), **self.button_icon("pdf")).pack(side=tk.LEFT)
+        ttk.Button(file_actions, text="Open DXF", command=lambda: open_current_dxf(), **self.button_icon("dxf")).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(toolbar, textvariable=status, style="Muted.TLabel").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        info_strip = ttk.Frame(
+            dialog,
+            style="Card.TFrame",
+            padding=(12, 9),
+            borderwidth=1,
+            relief=tk.SOLID,
+        )
+        info_strip.pack(fill=tk.X, padx=12, pady=(0, 8))
+        self.icon_label(info_strip, "orders", size=18, style="Card.TLabel")
+        ttk.Label(info_strip, textvariable=review_info_var, style="InfoStrip.TLabel").pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
-        panes.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
-        sketch_frame = ttk.Frame(panes)
-        dxf_frame = ttk.Frame(panes)
+        panes.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+        sketch_frame = ttk.Frame(panes, style="Card.TFrame", borderwidth=1, relief=tk.SOLID)
+        dxf_frame = ttk.Frame(panes, style="Card.TFrame", borderwidth=1, relief=tk.SOLID)
         panes.add(sketch_frame, weight=3)
         panes.add(dxf_frame, weight=2)
 
+        sketch_header = ttk.Frame(sketch_frame, style="PanelHeader.TFrame", padding=(12, 8))
+        sketch_header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.icon_label(sketch_header, "pdf", size=17, style="PanelHeader.TLabel")
+        ttk.Label(sketch_header, text="Sketch / PDF", style="PanelHeader.TLabel").pack(side=tk.LEFT)
         sketch_canvas = tk.Canvas(sketch_frame, background="#e8edf3", highlightthickness=0)
         sketch_y_scroll = ttk.Scrollbar(sketch_frame, orient=tk.VERTICAL, command=sketch_canvas.yview)
         sketch_x_scroll = ttk.Scrollbar(sketch_frame, orient=tk.HORIZONTAL, command=sketch_canvas.xview)
         sketch_canvas.configure(yscrollcommand=sketch_y_scroll.set, xscrollcommand=sketch_x_scroll.set)
-        sketch_canvas.grid(row=0, column=0, sticky="nsew")
-        sketch_y_scroll.grid(row=0, column=1, sticky="ns")
-        sketch_x_scroll.grid(row=1, column=0, sticky="ew")
+        sketch_canvas.grid(row=1, column=0, sticky="nsew")
+        sketch_y_scroll.grid(row=1, column=1, sticky="ns")
+        sketch_x_scroll.grid(row=2, column=0, sticky="ew")
         sketch_frame.columnconfigure(0, weight=1)
-        sketch_frame.rowconfigure(0, weight=1)
+        sketch_frame.rowconfigure(1, weight=1)
+        dxf_header = ttk.Frame(dxf_frame, style="PanelHeader.TFrame", padding=(12, 8))
+        dxf_header.grid(row=0, column=0, sticky="ew")
+        self.icon_label(dxf_header, "dxf", size=17, style="PanelHeader.TLabel")
+        ttk.Label(dxf_header, text="DXF Preview", style="PanelHeader.TLabel").pack(side=tk.LEFT)
         dxf_canvas = tk.Canvas(dxf_frame, background="#f8fafc", highlightthickness=0)
-        dxf_canvas.pack(fill=tk.BOTH, expand=True)
+        dxf_canvas.grid(row=1, column=0, sticky="nsew")
+        dxf_frame.columnconfigure(0, weight=1)
+        dxf_frame.rowconfigure(1, weight=1)
 
         state: dict[str, Any] = {
             "objects": {},
@@ -2326,6 +2584,19 @@ a {{ color: #1f4e79; }}
                 dxf_canvas.create_text(16, 16, anchor=tk.NW, text=f"DXF preview failed: {exc}", fill="#b42318")
             issue_text = "; ".join(issues[:2]) if issues else ""
             rotation_text = self.panel_rotation_summary(panel)
+            review_info_var.set(
+                "  -  ".join(
+                    [
+                        f"Order {job.aw_order}",
+                        f"Piece P{panel.item}",
+                        f"Job: {process_order.job_name or '-'}",
+                        f"Customer: {process_order.customer or '-'}",
+                        f"Marks: P{panel.item}",
+                        f"Machine: {panel.machine or 'Label Only'}",
+                        f"DXF Rotation: {rotation_text}",
+                    ]
+                )
+            )
             status.set(
                 f"{job.aw_order}.{panel.item}  {panel.machine or 'LABEL ONLY'}  "
                 f"Sketch view {rotation_var.get()} deg  |  {rotation_text}"
@@ -2427,35 +2698,71 @@ a {{ color: #1f4e79; }}
     def draw_order_review_dxf(self, canvas: tk.Canvas, path: Path | None, panel: programmer.Panel) -> None:
         canvas.delete("all")
         canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill="#f8fafc", outline="")
+        canvas_width = max(520, canvas.winfo_width())
+        rotation_text = self.panel_rotation_summary(panel)
+        col_1 = 18
+        col_2 = max(190, int(canvas_width * 0.42))
+        col_3 = max(340, int(canvas_width * 0.72))
         canvas.create_text(
-            16,
+            col_1,
             16,
             anchor=tk.NW,
-            text=self.panel_rotation_summary(panel),
-            fill="#1f2933",
-            font=("Arial", 11, "bold"),
+            text="DXF File",
+            fill="#64748b",
+            font=("Segoe UI", 9, "bold"),
+        )
+        canvas.create_text(
+            col_3,
+            16,
+            anchor=tk.NW,
+            text="DXF Rotation",
+            fill="#64748b",
+            font=("Segoe UI", 9, "bold"),
+        )
+        canvas.create_text(
+            col_3,
+            38,
+            anchor=tk.NW,
+            text=rotation_text,
+            fill="#1f5fa8",
+            font=("Segoe UI", 10, "bold"),
         )
         if path is None or not path.exists():
-            canvas.create_text(16, 42, anchor=tk.NW, text="No DXF for this piece.", fill="#334155")
+            canvas.create_text(col_1, 38, anchor=tk.NW, text="No DXF for this piece.", fill="#334155", font=("Segoe UI", 10))
             return
         try:
             segments = programmer.collect_dxf_preview_segments(path)
         except Exception as exc:
-            canvas.create_text(16, 42, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill="#b42318")
+            canvas.create_text(col_1, 38, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill="#b42318", font=("Segoe UI", 10))
             return
         unit_label = self.dxf_unit_label(path)
         inches_per_unit = self.dxf_inches_per_unit(path)
-        canvas.create_text(16, 42, anchor=tk.NW, text=path.name, fill="#1f2933", font=("Arial", 10))
         canvas.create_text(
+            col_1,
+            38,
+            anchor=tk.NW,
+            text=path.name,
+            fill="#17365f",
+            font=("Segoe UI", 10),
+        )
+        canvas.create_text(
+            col_2,
             16,
-            62,
+            anchor=tk.NW,
+            text="DXF Units",
+            fill="#64748b",
+            font=("Segoe UI", 9, "bold"),
+        )
+        canvas.create_text(
+            col_2,
+            38,
             anchor=tk.NW,
             text=self.dxf_units_text(unit_label, inches_per_unit),
-            fill="#475569",
-            font=("Arial", 9),
+            fill="#17365f",
+            font=("Segoe UI", 10),
         )
         if not segments:
-            canvas.create_text(16, 86, anchor=tk.NW, text="No drawable DXF entities found.", fill="#334155")
+            canvas.create_text(col_1, 76, anchor=tk.NW, text="No drawable DXF entities found.", fill="#334155", font=("Segoe UI", 10))
             return
         points = [point for segment in segments for point in segment]
         min_x = min(x for x, _ in points)
@@ -2502,20 +2809,20 @@ a {{ color: #1f4e79; }}
                 )
         if highlight_segments:
             canvas.create_text(
-                16,
-                84,
+                col_1,
+                76,
                 anchor=tk.NW,
                 text="Orange = angled/out-of-square side",
                 fill="#9a5b00",
-                font=("Arial", 9, "bold"),
+                font=("Segoe UI", 9, "bold"),
             )
         canvas.create_text(
-            16,
+            col_1,
             canvas.winfo_height() - 18,
             anchor=tk.SW,
             text=f"{self.dxf_dimension_text(width, height, unit_label, inches_per_unit)} | {len(segments)} segment(s)",
             fill="#536471",
-            font=("Arial", 9),
+            font=("Segoe UI", 9),
         )
 
     @classmethod
@@ -3516,14 +3823,24 @@ try {{
         dialog.minsize(860, 520)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
+        dialog.configure(bg="#f4f7fb")
         dialog.after(0, lambda: self.maximize_window(dialog))
         self.send_review_window = dialog
 
-        heading = ttk.Frame(dialog, padding=(12, 10, 12, 4))
+        heading = ttk.Frame(dialog, padding=(18, 14, 18, 8))
         heading.pack(fill=tk.X)
-        ttk.Label(heading, text="Review / Send Output", style="Title.TLabel").pack(side=tk.LEFT)
-        summary_var = tk.StringVar()
-        ttk.Label(heading, textvariable=summary_var, style="Summary.TLabel").pack(side=tk.RIGHT)
+        title_group = ttk.Frame(heading)
+        title_group.pack(side=tk.LEFT)
+        self.icon_label(title_group, "send", size=22, style="Title.TLabel")
+        ttk.Label(title_group, text="Review / Send Output", style="Title.TLabel").pack(side=tk.LEFT)
+        summary_cards = ttk.Frame(heading)
+        summary_cards.pack(side=tk.RIGHT)
+        ready_count_var = tk.StringVar(value="0")
+        blocked_count_var = tk.StringVar(value="0")
+        other_count_var = tk.StringVar(value="0")
+        self.add_count_card(summary_cards, ready_count_var, "Ready", "check_circle", "#15945b")
+        self.add_count_card(summary_cards, blocked_count_var, "Blocked", "minus_circle", "#c92a2a")
+        self.add_count_card(summary_cards, other_count_var, "Other", "minus_circle", "#3f6aa3")
 
         body = ttk.Frame(dialog, padding=(12, 4, 12, 8))
         body.pack(fill=tk.BOTH, expand=True)
@@ -3642,7 +3959,9 @@ try {{
         if include_programs and not send_dxf_paths:
             send_missing.append("programs")
 
-        summary_var.set(f"Ready {len(checked_orders)}   Blocked {blocked_count}   Warnings {warning_count}")
+        ready_count_var.set(str(len(checked_orders)))
+        blocked_count_var.set(str(blocked_count))
+        other_count_var.set(str(warning_count))
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
         footer = ttk.Frame(dialog, padding=(12, 0, 12, 12))
@@ -3699,25 +4018,28 @@ try {{
                 process_list_path,
             )
 
-        cancel_button = ttk.Button(buttons, text="Cancel", command=close_dialog)
+        cancel_button = ttk.Button(buttons, text="Cancel", command=close_dialog, **self.button_icon("x"))
         cancel_button.pack(side=tk.RIGHT)
         send_all_button = ttk.Button(
             buttons,
             text="Send All Checked Orders",
             style="Accent.TButton",
             command=lambda: begin_send(True, True, archive_inputs),
+            **self.button_icon("send", 16, "#ffffff"),
         )
         send_all_button.pack(side=tk.RIGHT, padx=(0, 8))
         send_programs_button = ttk.Button(
             buttons,
             text="Send Programs",
             command=lambda: begin_send(False, True, False),
+            **self.button_icon("program"),
         )
         send_programs_button.pack(side=tk.RIGHT, padx=(0, 8))
         send_sketches_button = ttk.Button(
             buttons,
             text="Send Sketches",
             command=lambda: begin_send(True, False, False),
+            **self.button_icon("image"),
         )
         send_sketches_button.pack(side=tk.RIGHT, padx=(0, 8))
         send_action_buttons.extend([send_sketches_button, send_programs_button, send_all_button])
@@ -4592,7 +4914,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         item_values = [f"P{panel.item}" for panel in job.panels]
         item_box = ttk.Combobox(toolbar, textvariable=item_var, values=item_values, state="readonly", width=8)
         item_box.pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides()).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides(), **self.button_icon("flip")).pack(side=tk.LEFT, padx=(0, 12))
         editor_status = tk.StringVar(value="Drag blue markings, then save.")
         ttk.Label(toolbar, textvariable=editor_status).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -4839,11 +5161,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         buttons = ttk.Frame(dialog, padding=(8, 0, 8, 8))
         buttons.pack(fill=tk.X)
-        ttk.Button(buttons, text="Save Edits", command=save).pack(side=tk.LEFT)
-        ttk.Button(buttons, text="Save + Overwrite Sketch", command=save_and_process).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(buttons, text="Mark P Checked", command=lambda: mark_checked(selected_panel().item)).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(buttons, text="Mark Order Checked", command=lambda: mark_checked(None)).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(buttons, text="Close", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Save Edits", command=save, **self.button_icon("save")).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Save + Overwrite Sketch", command=save_and_process, **self.button_icon("save")).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(buttons, text="Mark P Checked", command=lambda: mark_checked(selected_panel().item), **self.button_icon("check_circle")).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(buttons, text="Mark Order Checked", command=lambda: mark_checked(None), **self.button_icon("checked")).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(buttons, text="Close", command=dialog.destroy, **self.button_icon("x")).pack(side=tk.RIGHT)
 
         state["start_drag"] = start_drag
         def cleanup_render_temp(_event: tk.Event | None = None) -> None:

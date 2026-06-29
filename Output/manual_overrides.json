@@ -39,6 +39,9 @@
         "rotation_degrees": -90.0
       }
     },
+    "235507": {
+      "_order_checked": true
+    },
     "235508": {
       "1": {
         "hinge_side": "right",
@@ -55,6 +58,18 @@
         "indicator_y": 617.863,
         "rotation_degrees": 90.0
       }
+    },
+    "235509": {
+      "_order_checked": true
+    },
+    "235567": {
+      "_order_checked": true
+    },
+    "235568": {
+      "_order_checked": true
+    },
+    "235569": {
+      "_order_checked": true
     }
   }
 }
