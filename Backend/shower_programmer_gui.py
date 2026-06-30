@@ -717,8 +717,7 @@ class ShowerProgrammerApp:
         ttk.Label(header, text=title, style="Section.TLabel").pack(side=tk.LEFT)
 
         body = ttk.Frame(frame, style="SectionBody.TFrame")
-        body.pack(fill=tk.X)
-        collapsed = tk.BooleanVar(value=False)
+        collapsed = tk.BooleanVar(value=True)
 
         def toggle() -> None:
             if collapsed.get():
@@ -732,10 +731,10 @@ class ShowerProgrammerApp:
 
         toggle_button = ttk.Button(
             header,
-            text="Hide",
+            text="Show",
             width=9,
             command=toggle,
-            **self.button_icon("chevron_up"),
+            **self.button_icon("chevron_down"),
         )
         toggle_button.pack(side=tk.RIGHT)
         return frame, body
