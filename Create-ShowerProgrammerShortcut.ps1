@@ -2,7 +2,9 @@ $ErrorActionPreference = 'Stop'
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ShortcutPath = Join-Path $Root 'Shower Programmer.lnk'
-$TargetPath = Join-Path $Root 'GUI.bat'
+$FastExePath = Join-Path $Root 'Shower Programmer\Shower Programmer.exe'
+$BatchPath = Join-Path $Root 'GUI.bat'
+$TargetPath = if (Test-Path -LiteralPath $FastExePath) { $FastExePath } else { $BatchPath }
 $IconPath = Join-Path $Root 'Assets\ShowersProgrammer.ico'
 $DesktopShortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Shower Programmer.lnk'
 $StartMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Shower Programmer'
@@ -11,7 +13,7 @@ $TaskbarDir = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\U
 $TaskbarShortcutPath = Join-Path $TaskbarDir 'Shower Programmer.lnk'
 
 if (-not (Test-Path -LiteralPath $TargetPath)) {
-    throw "Could not find launcher batch file: $TargetPath"
+    throw "Could not find Shower Programmer launcher: $TargetPath"
 }
 
 function New-ShowerProgrammerShortcut {

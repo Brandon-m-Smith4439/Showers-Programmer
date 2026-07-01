@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import html
 import json
 import math
@@ -11,6 +12,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import urllib.request
@@ -27,6 +29,36 @@ from pypdf import PdfReader, PdfWriter
 import shower_batch
 import shower_programmer as programmer
 
+_SCRIPT_PROJECT_ROOT = programmer.project_root()
+
+
+def _gui_project_root() -> Path:
+    if getattr(sys, "frozen", False):
+        executable_dir = Path(sys.executable).resolve().parent
+        candidates = [executable_dir, executable_dir.parent, Path.cwd()]
+        for candidate in candidates:
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                continue
+            if (candidate / "Input").exists() and (candidate / "Output").exists() and (candidate / "Assets").exists():
+                return candidate
+        return executable_dir
+    return _SCRIPT_PROJECT_ROOT
+
+
+programmer.project_root = _gui_project_root
+
+try:
+    import customtkinter as ctk
+except Exception:
+    ctk = None
+
+try:
+    import pypdfium2 as pdfium
+except Exception:
+    pdfium = None
+
 try:
     from PIL import Image, ImageDraw, ImageTk
 except Exception:
@@ -36,6 +68,17 @@ except Exception:
 
 
 class ShowerProgrammerApp:
+    APP_BG = "#f5f8fc"
+    CARD_BG = "#ffffff"
+    SOFT_CARD_BG = "#f8fbff"
+    PANEL_BG = "#fbfdff"
+    BORDER = "#d7e3ef"
+    ACCENT = "#2b73c6"
+    ACCENT_DARK = "#1f5fa8"
+    ACCENT_LIGHT = "#eaf4ff"
+    TEXT = "#172033"
+    MUTED = "#516176"
+    REVIEW_RENDER_DPI = 96
     GITHUB_UPDATE_OWNER = "Brandon-m-Smith4439"
     GITHUB_UPDATE_REPO = "Showers-Programmer"
     GITHUB_UPDATE_BRANCH = "main"
@@ -87,11 +130,17 @@ class ShowerProgrammerApp:
         self.send_review_progress: ttk.Progressbar | None = None
         self.send_review_status_var: tk.StringVar | None = None
         self.ui_icon_cache: dict[tuple[str, int, str], tk.PhotoImage] = {}
+        self.ui_icon_pil_cache: dict[tuple[str, int, str], Any] = {}
+        self.ctk_icon_cache: dict[tuple[str, int, str], Any] = {}
+        self.review_context_cache: dict[str, dict[str, Any]] = {}
+        self.review_context_cache_lock = threading.Lock()
+        self.review_cache_generation = 0
+        self.review_cache_worker_active = False
 
         self.configure_styles()
         self.build_ui()
         self.root.after(75, self.drain_worker_queue)
-        self.root.after(350, self.scan_orders)
+        self.root.after_idle(lambda: self.root.after(850, self.scan_orders))
 
     @staticmethod
     def set_window_icon(window: Any) -> None:
@@ -156,14 +205,17 @@ class ShowerProgrammerApp:
             window.geometry(f"{width}x{height}")
 
     def configure_styles(self) -> None:
-        bg = "#f4f7fb"
-        card = "#ffffff"
-        border = "#d8e3ee"
-        blue = "#2c73ca"
-        blue_dark = "#1f5fa8"
-        text = "#172033"
-        muted = "#516176"
+        bg = self.APP_BG
+        card = self.CARD_BG
+        border = self.BORDER
+        blue = self.ACCENT
+        blue_dark = self.ACCENT_DARK
+        text = self.TEXT
+        muted = self.MUTED
 
+        if ctk is not None:
+            ctk.set_appearance_mode("Light")
+            ctk.set_default_color_theme("blue")
         self.root.configure(bg=bg)
         style = ttk.Style(self.root)
         try:
@@ -181,23 +233,23 @@ class ShowerProgrammerApp:
         style.configure("SectionBody.TFrame", background=card)
         style.configure("Toolbar.TFrame", background=card)
 
-        style.configure("Metric.TFrame", background="#f8fbff")
+        style.configure("Metric.TFrame", background=self.SOFT_CARD_BG)
         style.configure("TLabel", background=bg, foreground=text)
         style.configure("Card.TLabel", background=card, foreground=text)
         style.configure("Metric.TLabel", background="#f8fbff", foreground=text)
         style.configure(
             "PanelHeader.TFrame",
-            background="#f8fbff",
+            background=self.SOFT_CARD_BG,
         )
         style.configure(
             "PanelHeader.TLabel",
-            background="#f8fbff",
+            background=self.SOFT_CARD_BG,
             foreground="#17365f",
             font=("Segoe UI", 10, "bold"),
         )
         style.configure(
             "InfoStrip.TLabel",
-            background="#f8fbff",
+            background=self.SOFT_CARD_BG,
             foreground="#2c3e56",
             font=("Segoe UI", 9),
         )
@@ -222,13 +274,13 @@ class ShowerProgrammerApp:
             "MetricNumber.TLabel",
             font=("Segoe UI", 15, "bold"),
             foreground=blue,
-            background="#f8fbff",
+            background=self.SOFT_CARD_BG,
         )
         style.configure(
             "MetricCaption.TLabel",
             font=("Segoe UI", 8, "bold"),
             foreground="#315f9f",
-            background="#f8fbff",
+            background=self.SOFT_CARD_BG,
         )
 
         style.configure(
@@ -305,7 +357,7 @@ class ShowerProgrammerApp:
         style.configure(
             "Treeview.Heading",
             font=("Segoe UI", 9, "bold"),
-            background="#e8f1fb",
+            background="#eaf3fd",
             foreground="#235ea4",
             relief="flat",
         )
@@ -437,15 +489,88 @@ class ShowerProgrammerApp:
 
         resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
         image = image.resize((size, size), resampling)
+        self.ui_icon_pil_cache[key] = image.copy()
         photo = ImageTk.PhotoImage(image)
         self.ui_icon_cache[key] = photo
         return photo
 
-    def button_icon(self, name: str, size: int = 16, color: str = "#1f5fa8") -> dict[str, object]:
+    def ctk_button_icon(self, name: str, size: int = 16, color: str = "#1f5fa8", compound: str = "left") -> dict[str, object]:
+        if ctk is None:
+            return {}
+        key = (name, size, color)
+        cached = self.ctk_icon_cache.get(key)
+        if cached is None:
+            self.ui_icon(name, size=size, color=color)
+            image = self.ui_icon_pil_cache.get(key)
+            if image is None:
+                return {}
+            cached = ctk.CTkImage(light_image=image, dark_image=image, size=(size, size))
+            self.ctk_icon_cache[key] = cached
+        return {"image": cached, "compound": compound}
+
+    def button_icon(self, name: str, size: int = 16, color: str = "#1f5fa8", compound: str = tk.LEFT) -> dict[str, object]:
         icon = self.ui_icon(name, size=size, color=color)
         if icon is None:
             return {}
-        return {"image": icon, "compound": tk.LEFT}
+        return {"image": icon, "compound": compound}
+
+    def app_logo_image(self, size: int = 24) -> Any:
+        if ctk is None or Image is None:
+            return self.ctk_button_icon("dxf", size, self.ACCENT_DARK).get("image")
+        key = ("app_logo", size, "native")
+        cached = self.ctk_icon_cache.get(key)
+        if cached is not None:
+            return cached
+        image = None
+        if self.APP_ICON_PNG_PATH.exists():
+            try:
+                image = Image.open(self.APP_ICON_PNG_PATH).convert("RGBA")
+                resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+                image.thumbnail((size, size), resampling)
+                canvas = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+                canvas.paste(image, ((size - image.width) // 2, (size - image.height) // 2), image)
+                image = canvas
+            except Exception:
+                image = None
+        if image is None:
+            self.ui_icon("dxf", size=size, color=self.ACCENT_DARK)
+            image = self.ui_icon_pil_cache.get(("dxf", size, self.ACCENT_DARK))
+        if image is None:
+            return None
+        cached = ctk.CTkImage(light_image=image, dark_image=image, size=(size, size))
+        self.ctk_icon_cache[key] = cached
+        return cached
+
+    def make_app_header(self, parent: Any, title: str, padx: int = 0) -> Any:
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.pack(fill=tk.X, padx=padx, pady=(0, 8))
+
+        row = ctk.CTkFrame(header, fg_color="transparent", height=34)
+        row.pack(fill=tk.X)
+        row.pack_propagate(False)
+
+        icon_box = ctk.CTkFrame(
+            row,
+            fg_color="#e9f3ff",
+            corner_radius=7,
+            border_width=1,
+            border_color="#c7d9ec",
+            width=30,
+            height=30,
+        )
+        icon_box.pack(side=tk.LEFT, pady=2)
+        icon_box.pack_propagate(False)
+        logo = self.app_logo_image(22)
+        ctk.CTkLabel(icon_box, text="", image=logo, width=24, height=24).pack(expand=True)
+        ctk.CTkLabel(
+            row,
+            text=title,
+            font=("Segoe UI", 18, "bold"),
+            text_color="#101828",
+            anchor="w",
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        ctk.CTkFrame(header, fg_color=self.BORDER, height=1, corner_radius=0).pack(fill=tk.X, pady=(7, 0))
+        return header
 
     def icon_label(self, parent: ttk.Frame, icon_name: str, size: int = 18, color: str = "#1f5fa8", style: str = "Card.TLabel") -> None:
         icon = self.ui_icon(icon_name, size=size, color=color)
@@ -453,158 +578,173 @@ class ShowerProgrammerApp:
             ttk.Label(parent, image=icon, style=style).pack(side=tk.LEFT, padx=(0, 8))
 
     def build_ui(self) -> None:
-        outer = ttk.Frame(self.root, padding=(12, 6, 12, 10))
-        outer.pack(fill=tk.BOTH, expand=True)
+        if ctk is None:
+            raise RuntimeError("CustomTkinter is required for the modern Shower Programmer GUI.")
 
-        paths, paths_body = self.make_collapsible_section(outer, "FOLDERS", "folder")
-        paths.pack(fill=tk.X)
+        outer = ctk.CTkFrame(self.root, fg_color=self.APP_BG, corner_radius=0)
+        outer.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 10))
+        self.make_app_header(outer, "Shower Programmer")
+
+        paths, paths_body = self.make_collapsible_section(outer, "FOLDERS", "folder", expanded=True)
+        paths.pack(fill=tk.X, pady=(0, 8))
         self.add_path_row(paths_body, 0, "Orders", self.folder_var, self.choose_folder)
         self.add_path_row(paths_body, 1, "Import From", self.import_source_var, self.choose_import_source)
         self.add_path_row(paths_body, 2, "Process Lists", self.process_list_var, self.choose_process_list)
         self.add_path_row(paths_body, 3, "Output", self.output_dir_var, self.choose_output_dir)
 
-        action_row = ttk.Frame(outer)
-        action_row.pack(fill=tk.X, pady=(8, 8))
+        action_row = ctk.CTkFrame(outer, fg_color="transparent")
+        action_row.pack(fill=tk.X, pady=(0, 8))
         action_row.columnconfigure(0, weight=1)
         action_row.columnconfigure(1, weight=0)
 
         actions = self.make_section(action_row, "MAIN ACTIONS", "play")
         actions.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        action_body = ttk.Frame(actions, style="SectionBody.TFrame")
+        action_body = ctk.CTkFrame(actions, fg_color="transparent")
         action_body.pack(fill=tk.X)
 
-        action_buttons = ttk.Frame(action_body, style="SectionBody.TFrame")
+        action_buttons = ctk.CTkFrame(action_body, fg_color="transparent")
         action_buttons.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Button(
+        self.make_main_action_button(
             action_buttons,
             text="Scan Orders",
-            style="Primary.Action.TButton",
+            icon_name="scan",
             command=self.scan_orders,
-            width=15,
-            **self.button_icon("scan", 20, "#ffffff"),
-        ).pack(side=tk.LEFT, padx=(0, 6))
+            primary=True,
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(
+        self.make_main_action_button(
             action_buttons,
             text="Process Selected",
-            style="Action.TButton",
+            icon_name="check_circle",
             command=self.process_selected,
-            width=16,
-            **self.button_icon("check_circle"),
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(
+        self.make_main_action_button(
             action_buttons,
             text="Process All",
-            style="Action.TButton",
-            command=lambda: self.run_orders(self.orders, apply=True),
-            width=13,
-            **self.button_icon("play"),
-        ).pack(side=tk.LEFT, padx=(0, 6))
+            icon_name="play",
+            command=self.process_all_orders,
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(
+        self.make_main_action_button(
             action_buttons,
             text="Review Order",
-            style="Action.TButton",
+            icon_name="eye",
             command=self.open_order_review,
-            width=14,
-            **self.button_icon("eye"),
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(
+        self.make_main_action_button(
             action_buttons,
             text="Mark Checked",
-            style="Action.TButton",
+            icon_name="check",
             command=self.mark_selected_orders_checked,
-            width=14,
-            **self.button_icon("check"),
         ).pack(side=tk.LEFT)
 
-        options = ttk.Frame(action_body, style="SectionBody.TFrame", padding=(18, 0, 0, 0))
+        options = ctk.CTkFrame(action_body, fg_color="transparent")
         options.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0))
 
-        ttk.Checkbutton(
+        ctk.CTkCheckBox(
             options,
             text="Overwrite existing outputs",
             variable=self.force_var,
-        ).pack(anchor=tk.W, pady=(0, 4))
+            font=("Segoe UI", 12),
+            text_color=self.TEXT,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            border_color="#b7c6d6",
+        ).pack(anchor=tk.W, pady=(2, 5))
 
-        ttk.Checkbutton(
+        ctk.CTkCheckBox(
             options,
             text="Skip DXF output",
             variable=self.skip_dxf_var,
-        ).pack(anchor=tk.W, pady=4)
+            font=("Segoe UI", 12),
+            text_color=self.TEXT,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            border_color="#b7c6d6",
+        ).pack(anchor=tk.W, pady=5)
 
-        ttk.Checkbutton(
+        ctk.CTkCheckBox(
             options,
             text="REMAKE",
             variable=self.remake_var,
-        ).pack(anchor=tk.W, pady=(4, 0))
+            font=("Segoe UI", 12),
+            text_color=self.TEXT,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            border_color="#b7c6d6",
+        ).pack(anchor=tk.W, pady=(5, 0))
 
         summary = self.make_section(action_row, "SUMMARY", "orders")
         summary.grid(row=0, column=1, sticky="nsew")
 
-        metric_row = ttk.Frame(summary, style="SectionBody.TFrame")
+        metric_row = ctk.CTkFrame(summary, fg_color="transparent")
         metric_row.pack(fill=tk.X)
 
-        self.add_metric_card(metric_row, "orders", "Orders", "orders", "#1f5fa8")
+        self.add_metric_card(metric_row, "orders", "Orders", "orders", self.ACCENT_DARK)
         self.add_metric_card(metric_row, "ready", "Ready", "check_circle", "#15945b")
         self.add_metric_card(metric_row, "issues", "Issues", "warning", "#d97706")
         self.add_metric_card(metric_row, "processed", "Processed", "refresh", "#6b4bb5")
-        self.add_metric_card(metric_row, "checked", "Checked", "checked", "#1f5fa8")
+        self.add_metric_card(metric_row, "checked", "Checked", "checked", self.ACCENT_DARK)
 
         maintenance = self.make_section(outer, "MAINTENANCE / TOOLS", "refresh")
         maintenance.pack(fill=tk.X, pady=(0, 8))
 
-        maintenance_body = ttk.Frame(maintenance, style="SectionBody.TFrame")
+        maintenance_body = ctk.CTkFrame(maintenance, fg_color="transparent")
         maintenance_body.pack(fill=tk.X)
 
-        tool_buttons = ttk.Frame(maintenance_body, style="SectionBody.TFrame")
+        tool_buttons = ctk.CTkFrame(maintenance_body, fg_color="transparent")
         tool_buttons.pack(side=tk.LEFT)
 
-        ttk.Button(
+        self.make_tool_button(
             tool_buttons,
             text="Clear Sketch Memory",
+            icon_name="trash",
             command=self.clear_sketch_memory,
-            **self.button_icon("trash"),
-        ).pack(side=tk.LEFT, padx=(0, 8))
+            width=210,
+        ).pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Button(
+        self.make_tool_button(
             tool_buttons,
             text="Check for Updates",
+            icon_name="refresh",
             command=self.check_for_updates,
-            **self.button_icon("refresh"),
-        ).pack(side=tk.LEFT, padx=(0, 8))
+            width=210,
+        ).pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Button(
+        self.make_tool_button(
             tool_buttons,
             text="Install Shortcut",
+            icon_name="link",
             command=self.install_shortcut,
-            **self.button_icon("link"),
+            width=190,
         ).pack(side=tk.LEFT)
 
-        file_actions = ttk.Frame(maintenance_body, style="SectionBody.TFrame")
+        file_actions = ctk.CTkFrame(maintenance_body, fg_color="transparent")
         file_actions.pack(side=tk.RIGHT)
 
-        ttk.Button(
+        self.make_tool_button(
             file_actions,
             text="Open Input Folder",
+            icon_name="folder",
             command=self.open_input_folder,
-            **self.button_icon("folder"),
-        ).pack(side=tk.LEFT, padx=(0, 8))
+            width=210,
+        ).pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Button(
+        self.make_tool_button(
             file_actions,
             text="Open Latest Batch",
+            icon_name="clock",
             command=self.open_latest_batch,
-            **self.button_icon("clock"),
+            width=210,
         ).pack(side=tk.LEFT)
 
         table_outer = self.make_section(outer, "ORDERS", "orders")
         table_outer.pack(fill=tk.BOTH, expand=True)
-        table_frame = ttk.Frame(table_outer, style="SectionBody.TFrame")
+        table_frame = ctk.CTkFrame(table_outer, fg_color="transparent")
         table_frame.pack(fill=tk.BOTH, expand=True)
         columns = ("status", "processed", "last_processed", "delivery", "order", "job", "customer", "items", "review", "pdf", "issues")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
@@ -657,91 +797,177 @@ class ShowerProgrammerApp:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        bottom = ttk.Frame(outer)
+        bottom = ctk.CTkFrame(outer, fg_color="transparent")
         bottom.pack(fill=tk.X, pady=(8, 0))
         bottom.columnconfigure(0, weight=1)
         bottom.columnconfigure(1, weight=0)
         bottom.columnconfigure(2, weight=0)
         self.progress = ttk.Progressbar(bottom, mode="determinate")
         self.progress.grid(row=0, column=0, sticky="ew", ipady=2)
-        self.status_label = ttk.Label(bottom, textvariable=self.status_var, anchor=tk.W, style="Status.TLabel", width=64)
+        self.status_label = ctk.CTkLabel(
+            bottom,
+            textvariable=self.status_var,
+            anchor="w",
+            text_color=self.MUTED,
+            font=("Segoe UI", 12),
+            width=520,
+        )
         self.status_label.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        send_buttons = ttk.Frame(bottom)
+        send_buttons = ctk.CTkFrame(bottom, fg_color="transparent")
         send_buttons.grid(row=0, column=2, sticky=tk.E, padx=(10, 0))
-        ttk.Button(
+        self.make_tool_button(
             send_buttons,
             text="Select All",
+            icon_name="check_circle",
             command=self.select_all_orders,
-            **self.button_icon("check_circle"),
+            width=140,
         ).pack(side=tk.LEFT)
-        ttk.Button(
+        ctk.CTkButton(
             send_buttons,
             text="Review / Send",
-            style="Accent.TButton",
             command=self.send_all_to_shop,
-            **self.button_icon("send", 16, "#ffffff"),
+            width=170,
+            height=42,
+            corner_radius=7,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 13, "bold"),
+            **self.ctk_button_icon("send", 17, "#ffffff", "left"),
         ).pack(side=tk.LEFT, padx=(6, 0))
 
-    def make_section(self, parent: ttk.Frame, title: str, icon_name: str | None = None) -> ttk.Frame:
-        frame = ttk.Frame(
+    def make_main_action_button(
+        self,
+        parent: Any,
+        text: str,
+        icon_name: str,
+        command: Callable[[], object],
+        primary: bool = False,
+    ) -> Any:
+        return ctk.CTkButton(
             parent,
-            style="Card.TFrame",
-            padding=(12, 9),
-            borderwidth=1,
-            relief=tk.SOLID,
+            text=text,
+            command=command,
+            width=92,
+            height=62,
+            corner_radius=7,
+            fg_color=self.ACCENT if primary else self.PANEL_BG,
+            hover_color=self.ACCENT_DARK if primary else self.ACCENT_LIGHT,
+            border_width=0 if primary else 1,
+            border_color="#ccd9e8",
+            text_color="#ffffff" if primary else "#1f3555",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon(icon_name, 23, "#ffffff" if primary else self.ACCENT_DARK, "top"),
         )
-        header = ttk.Frame(frame, style="Card.TFrame")
-        header.pack(fill=tk.X, pady=(0, 8))
+
+    def make_tool_button(
+        self,
+        parent: Any,
+        text: str,
+        icon_name: str,
+        command: Callable[..., object],
+        width: int = 180,
+    ) -> Any:
+        return ctk.CTkButton(
+            parent,
+            text=text,
+            command=command,
+            width=width,
+            height=32,
+            corner_radius=7,
+            fg_color=self.PANEL_BG,
+            hover_color=self.ACCENT_LIGHT,
+            border_width=1,
+            border_color="#ccd9e8",
+            text_color="#1f3555",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon(icon_name, 15, self.ACCENT_DARK, "left"),
+        )
+
+    def make_section(self, parent: Any, title: str, icon_name: str | None = None) -> Any:
+        frame = ctk.CTkFrame(
+            parent,
+            fg_color=self.CARD_BG,
+            corner_radius=8,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill=tk.X, padx=14, pady=(8, 7))
         if icon_name:
-            self.icon_label(header, icon_name, size=16, style="Card.TLabel")
-        ttk.Label(header, text=title, style="Section.TLabel").pack(side=tk.LEFT)
+            ctk.CTkLabel(header, text="", image=self.ctk_button_icon(icon_name, 16, self.ACCENT_DARK).get("image"), width=18).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(
+            header,
+            text=title,
+            font=("Segoe UI", 12, "bold"),
+            text_color="#1f4e86",
+            anchor="w",
+        ).pack(side=tk.LEFT)
         return frame
 
     def make_collapsible_section(
         self,
-        parent: ttk.Frame,
+        parent: Any,
         title: str,
         icon_name: str | None = None,
-    ) -> tuple[ttk.Frame, ttk.Frame]:
-        frame = ttk.Frame(
+        expanded: bool = False,
+    ) -> tuple[Any, Any]:
+        frame = ctk.CTkFrame(
             parent,
-            style="Card.TFrame",
-            padding=(12, 9),
-            borderwidth=1,
-            relief=tk.SOLID,
+            fg_color=self.CARD_BG,
+            corner_radius=8,
+            border_width=1,
+            border_color=self.BORDER,
         )
-        header = ttk.Frame(frame, style="Card.TFrame")
-        header.pack(fill=tk.X, pady=(0, 8))
+        header = ctk.CTkFrame(frame, fg_color="transparent")
+        header.pack(fill=tk.X, padx=14, pady=(8, 7))
         if icon_name:
-            self.icon_label(header, icon_name, size=16, style="Card.TLabel")
-        ttk.Label(header, text=title, style="Section.TLabel").pack(side=tk.LEFT)
+            ctk.CTkLabel(header, text="", image=self.ctk_button_icon(icon_name, 16, self.ACCENT_DARK).get("image"), width=18).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(
+            header,
+            text=title,
+            font=("Segoe UI", 12, "bold"),
+            text_color="#1f4e86",
+            anchor="w",
+        ).pack(side=tk.LEFT)
 
-        body = ttk.Frame(frame, style="SectionBody.TFrame")
-        collapsed = tk.BooleanVar(value=True)
+        body = ctk.CTkFrame(frame, fg_color="transparent")
+        collapsed = tk.BooleanVar(value=not expanded)
 
         def toggle() -> None:
             if collapsed.get():
-                body.pack(fill=tk.X)
-                toggle_button.configure(text="Hide", **self.button_icon("chevron_up"))
+                body.pack(fill=tk.X, padx=14, pady=(0, 12))
+                toggle_button.configure(text="Hide", **self.ctk_button_icon("chevron_up", 14, self.ACCENT_DARK, "left"))
                 collapsed.set(False)
             else:
                 body.pack_forget()
-                toggle_button.configure(text="Show", **self.button_icon("chevron_down"))
+                toggle_button.configure(text="Show", **self.ctk_button_icon("chevron_down", 14, self.ACCENT_DARK, "left"))
                 collapsed.set(True)
 
-        toggle_button = ttk.Button(
+        toggle_button = ctk.CTkButton(
             header,
             text="Show",
-            width=9,
             command=toggle,
-            **self.button_icon("chevron_down"),
+            width=82,
+            height=28,
+            corner_radius=7,
+            fg_color=self.PANEL_BG,
+            hover_color=self.ACCENT_LIGHT,
+            border_width=1,
+            border_color="#ccd9e8",
+            text_color="#1f3555",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("chevron_down", 14, self.ACCENT_DARK, "left"),
         )
         toggle_button.pack(side=tk.RIGHT)
+        if expanded:
+            body.pack(fill=tk.X, padx=14, pady=(0, 10))
+            toggle_button.configure(text="Hide", **self.ctk_button_icon("chevron_up", 14, self.ACCENT_DARK, "left"))
         return frame, body
 
     def add_metric_card(
         self,
-        parent: ttk.Frame,
+        parent: Any,
         key: str,
         caption: str,
         icon_name: str | None = None,
@@ -751,59 +977,74 @@ class ShowerProgrammerApp:
 
     def add_count_card(
         self,
-        parent: ttk.Frame,
+        parent: Any,
         number_var: tk.StringVar,
         caption: str,
         icon_name: str | None = None,
         icon_color: str = "#1f5fa8",
-    ) -> ttk.Frame:
-        card = ttk.Frame(
+    ) -> Any:
+        card = ctk.CTkFrame(
             parent,
-            style="Metric.TFrame",
-            padding=(10, 6),
-            borderwidth=1,
-            relief=tk.SOLID,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=8,
+            border_width=1,
+            border_color="#d5e4f2",
+            width=124,
+            height=50,
         )
         card.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+        card.pack_propagate(False)
 
         if icon_name:
-            self.icon_label(card, icon_name, size=21, color=icon_color, style="Metric.TLabel")
-
-        ttk.Label(
-            card,
+            ctk.CTkLabel(card, text="", image=self.ctk_button_icon(icon_name, 24, icon_color).get("image"), width=30).pack(side=tk.LEFT, padx=(10, 6))
+        text_stack = ctk.CTkFrame(card, fg_color="transparent")
+        text_stack.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=6)
+        ctk.CTkLabel(
+            text_stack,
             textvariable=number_var,
-            style="MetricNumber.TLabel",
-        ).pack(side=tk.LEFT, padx=(0, 7))
-
-        ttk.Label(
-            card,
+            font=("Segoe UI", 14, "bold"),
+            text_color=icon_color,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            text_stack,
             text=caption,
-            style="MetricCaption.TLabel",
-        ).pack(side=tk.LEFT)
+            font=("Segoe UI", 8, "bold"),
+            text_color="#315f9f",
+            anchor="w",
+        ).pack(anchor=tk.W)
         return card
 
-    def add_path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
-        row_frame = ttk.Frame(parent, style="SectionBody.TFrame")
-        row_frame.pack(fill=tk.X, pady=(0, 6))
+    def add_path_row(self, parent: Any, row: int, label: str, var: tk.StringVar, command) -> None:
+        row_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        row_frame.pack(fill=tk.X, pady=(0, 5))
         row_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(
+        ctk.CTkLabel(
             row_frame,
             text=label,
-            width=13,
-            style="Card.TLabel",
+            width=115,
+            text_color="#203047",
+            font=("Segoe UI", 11),
+            anchor="w",
         ).grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
 
-        ttk.Entry(
+        ctk.CTkEntry(
             row_frame,
             textvariable=var,
-        ).grid(row=0, column=1, sticky="ew", padx=(0, 8), ipady=2)
+            height=28,
+            corner_radius=7,
+            border_color="#ccd9e8",
+            fg_color="#ffffff",
+            text_color=self.TEXT,
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
 
-        ttk.Button(
+        self.make_tool_button(
             row_frame,
             text="Browse",
+            icon_name="folder",
             command=command,
-            **self.button_icon("folder"),
+            width=100,
         ).grid(row=0, column=2, sticky=tk.E)
 
     def choose_folder(self) -> None:
@@ -1059,13 +1300,17 @@ class ShowerProgrammerApp:
         with path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
 
-    def load_processing_history(self) -> dict[str, object]:
-        path = self.processing_history_path()
+    @staticmethod
+    def load_processing_history_for_output(output_dir: Path) -> dict[str, object]:
+        path = output_dir / "processing_history.json"
         if not path.exists():
             return {"orders": {}}
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
         return data if isinstance(data, dict) else {"orders": {}}
+
+    def load_processing_history(self) -> dict[str, object]:
+        return self.load_processing_history_for_output(Path(self.output_dir_var.get()).resolve())
 
     def save_processing_history(self, data: dict[str, object]) -> None:
         path = self.processing_history_path()
@@ -1078,11 +1323,22 @@ class ShowerProgrammerApp:
             data = self.load_processing_history()
         except Exception:
             return {}
+        return self.history_entry_from_data(data, aw_order)
+
+    @staticmethod
+    def history_entry_from_data(data: dict[str, object], aw_order: str) -> dict[str, object]:
         orders = data.get("orders", {})
         if not isinstance(orders, dict):
             return {}
         entry = orders.get(str(aw_order), {})
         return entry if isinstance(entry, dict) else {}
+
+    def history_for_order_from_output(self, aw_order: str, output_dir: Path) -> dict[str, object]:
+        try:
+            data = self.load_processing_history_for_output(output_dir)
+        except Exception:
+            return {}
+        return self.history_entry_from_data(data, aw_order)
 
     def clear_remake_history_for_orders(self, aw_orders: list[str]) -> None:
         if not aw_orders:
@@ -1213,7 +1469,7 @@ class ShowerProgrammerApp:
         return run_folder / "Sketches", run_folder / "Programs", run_folder / "Reports"
 
     def run_folder_for_order(self, aw_order: str, output_dir: Path) -> Path | None:
-        history = self.history_for_order(aw_order)
+        history = self.history_for_order_from_output(aw_order, output_dir)
         run_value = str(history.get("run_folder", "")).strip()
         if run_value:
             run_folder = Path(run_value)
@@ -1248,6 +1504,336 @@ class ShowerProgrammerApp:
         if path.exists():
             return path
         return output_dir / "Sketches" / f"{aw_order}.pdf"
+
+    @staticmethod
+    def file_signature(path: Path | None) -> tuple[str, int, int]:
+        if path is None:
+            return ("", 0, 0)
+        try:
+            resolved = str(path.resolve())
+            stat = path.stat()
+            return (resolved, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return (str(path), 0, 0)
+
+    @classmethod
+    def review_raster_cache_key(cls, pdf_path: Path, dpi: int) -> str:
+        signature = cls.file_signature(pdf_path)
+        raw = "|".join(str(part) for part in (*signature, dpi))
+        return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:20]
+
+    @classmethod
+    def review_raster_cache_dir(cls, output_dir: Path, pdf_path: Path, dpi: int) -> Path:
+        return output_dir / ".review_preview_cache" / cls.review_raster_cache_key(pdf_path, dpi)
+
+    @classmethod
+    def review_raster_page_path(cls, output_dir: Path, pdf_path: Path, dpi: int, page_index: int) -> Path:
+        return cls.review_raster_cache_dir(output_dir, pdf_path, dpi) / f"page_{page_index + 1:03d}.png"
+
+    @staticmethod
+    def close_pdfium_object(obj: Any) -> None:
+        close = getattr(obj, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    def render_pdfium_page_to_file(
+        self,
+        document: Any,
+        page_index: int,
+        output_path: Path,
+        dpi: int,
+    ) -> bool:
+        if pdfium is None or Image is None:
+            return False
+        page = None
+        bitmap = None
+        temp_path = output_path.with_name(f"{output_path.stem}.{threading.get_ident()}.tmp{output_path.suffix}")
+        try:
+            page = document[page_index]
+            bitmap = page.render(scale=max(0.1, dpi / 72.0))
+            image = bitmap.to_pil().convert("RGB")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            image.save(temp_path, format="PNG")
+            temp_path.replace(output_path)
+            return True
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+        finally:
+            self.close_pdfium_object(bitmap)
+            self.close_pdfium_object(page)
+
+    def render_pdfium_single_page_to_file(
+        self,
+        pdf_path: Path,
+        page_index: int,
+        output_path: Path,
+        dpi: int,
+    ) -> bool:
+        if pdfium is None:
+            return False
+        document = None
+        try:
+            document = pdfium.PdfDocument(str(pdf_path))
+            if page_index < 0 or page_index >= len(document):
+                return False
+            return self.render_pdfium_page_to_file(document, page_index, output_path, dpi)
+        except Exception:
+            return False
+        finally:
+            self.close_pdfium_object(document)
+
+    def render_pdfium_pages_to_cache(
+        self,
+        pdf_path: Path,
+        expected_paths: list[Path],
+        dpi: int,
+    ) -> bool:
+        if pdfium is None:
+            return False
+        document = None
+        try:
+            document = pdfium.PdfDocument(str(pdf_path))
+            page_total = min(len(document), len(expected_paths))
+            if page_total <= 0:
+                return False
+            for page_index in range(page_total):
+                output_path = expected_paths[page_index]
+                if output_path.exists():
+                    continue
+                if not self.render_pdfium_page_to_file(document, page_index, output_path, dpi):
+                    return False
+            return all(path.exists() for path in expected_paths[:page_total])
+        except Exception:
+            return False
+        finally:
+            self.close_pdfium_object(document)
+
+    def ensure_review_pdf_raster_cache(
+        self,
+        pdf_path: Path,
+        page_count: int,
+        output_dir: Path,
+        dpi: int | None = None,
+    ) -> bool:
+        render_dpi = int(dpi or self.REVIEW_RENDER_DPI)
+        if page_count <= 0:
+            return False
+        cache_dir = self.review_raster_cache_dir(output_dir, pdf_path, render_dpi)
+        expected = [cache_dir / f"page_{page_index + 1:03d}.png" for page_index in range(page_count)]
+        if expected and all(path.exists() for path in expected):
+            return True
+        if self.render_pdfium_pages_to_cache(pdf_path, expected, render_dpi):
+            return True
+        ghostscript = self.ghostscript_executable()
+        if ghostscript is None:
+            return False
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        output_pattern = cache_dir / "page_%03d.png"
+        command = [
+            str(ghostscript),
+            "-q",
+            "-dSAFER",
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-sDEVICE=png16m",
+            f"-r{render_dpi}",
+            "-dFirstPage=1",
+            f"-dLastPage={page_count}",
+            f"-sOutputFile={output_pattern}",
+            str(pdf_path),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, timeout=max(30, page_count * 12))
+        except Exception:
+            return False
+        return all(path.exists() for path in expected)
+
+    def start_async_review_raster_render(
+        self,
+        pdf_path: Path,
+        page_count: int,
+        output_dir: Path,
+        state: dict[str, Any],
+        redraw_callback: Callable[[], object] | None = None,
+    ) -> None:
+        render_dpi = self.REVIEW_RENDER_DPI
+        cache_key = (str(pdf_path.resolve()), self.file_signature(pdf_path), page_count, render_dpi)
+        rendering = state.setdefault("raster_rendering", set())
+        if cache_key in rendering:
+            return
+        rendering.add(cache_key)
+
+        root = state.get("render_root")
+
+        def worker() -> None:
+            ok = self.ensure_review_pdf_raster_cache(pdf_path, page_count, output_dir, render_dpi)
+
+            def finish() -> None:
+                state.setdefault("raster_rendering", set()).discard(cache_key)
+                if ok and redraw_callback is not None:
+                    try:
+                        redraw_callback()
+                    except tk.TclError:
+                        pass
+
+            try:
+                if root is not None:
+                    root.after(0, finish)
+                else:
+                    finish()
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def process_order_signature(order: shower_batch.ProcessOrder) -> tuple[object, ...]:
+        items: list[tuple[object, ...]] = []
+        for item_number in order.item_numbers:
+            item = order.items[item_number]
+            items.append(
+                (
+                    item_number,
+                    item.width_text,
+                    item.height_text,
+                    item.delivery_date,
+                    item.customer,
+                    tuple(item.processing),
+                    tuple(item.machine_hints),
+                )
+            )
+        return (order.aw_order, order.job_name, order.customer, tuple(items))
+
+    def review_context_cache_key(
+        self,
+        order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+        sketch_path: Path,
+    ) -> tuple[object, ...]:
+        return (
+            str(folder.resolve()),
+            str(output_dir.resolve()),
+            self.process_order_signature(order),
+            self.file_signature(sketch_path),
+            self.file_signature(output_dir / "manual_overrides.json"),
+        )
+
+    def clear_review_context_cache(self, aw_order: str | None = None) -> None:
+        with self.review_context_cache_lock:
+            if aw_order is None:
+                self.review_context_cache.clear()
+            else:
+                self.review_context_cache.pop(str(aw_order), None)
+            self.review_cache_generation += 1
+
+    def prepare_order_review_context(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+        *,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(process_order.aw_order, output_dir)
+        sketch_path = sketch_dir / f"{process_order.aw_order}.pdf"
+        if not sketch_path.exists():
+            raise FileNotFoundError("Process this order first so the marked sketch exists.")
+
+        cache_key = self.review_context_cache_key(process_order, folder, output_dir, sketch_path)
+        if use_cache:
+            with self.review_context_cache_lock:
+                cached = self.review_context_cache.get(process_order.aw_order)
+            if cached and cached.get("cache_key") == cache_key:
+                source_path = cached.get("source_pdf_path")
+                if not isinstance(source_path, Path) or self.file_signature(source_path) == cached.get("source_pdf_signature"):
+                    return cached
+
+        config = self.config_with_manual_overrides(folder, output_dir)
+        job, source_reader, issues = shower_batch.prepare_job(
+            folder,
+            sketch_dir,
+            programs_dir,
+            report_dir,
+            config,
+            process_order,
+            remake_items=self.editor_remake_items(process_order.aw_order, output_dir),
+        )
+        sketch_reader = PdfReader(str(sketch_path))
+        context = {
+            "cache_key": cache_key,
+            "folder": folder,
+            "output_dir": output_dir,
+            "run_folder": run_folder,
+            "sketch_dir": sketch_dir,
+            "programs_dir": programs_dir,
+            "report_dir": report_dir,
+            "sketch_path": sketch_path,
+            "config": config,
+            "job": job,
+            "source_reader": source_reader,
+            "issues": issues,
+            "sketch_reader": sketch_reader,
+            "source_pdf_path": job.pdf_path,
+            "source_pdf_signature": self.file_signature(job.pdf_path),
+        }
+        with self.review_context_cache_lock:
+            if len(self.review_context_cache) > 30:
+                self.review_context_cache.clear()
+            self.review_context_cache[process_order.aw_order] = context
+        return context
+
+    def start_review_cache_warmup(self, orders: list[shower_batch.ProcessOrder] | None = None) -> None:
+        if self.review_cache_worker_active:
+            return
+        orders_to_warm = list(orders if orders is not None else self.orders)
+        if not orders_to_warm:
+            return
+        try:
+            folder = Path(self.folder_var.get()).resolve()
+            output_dir = Path(self.output_dir_var.get()).resolve()
+        except Exception:
+            return
+        with self.review_context_cache_lock:
+            self.review_cache_generation += 1
+            generation = self.review_cache_generation
+        self.review_cache_worker_active = True
+        worker = threading.Thread(
+            target=self.worker_warm_review_cache,
+            args=(orders_to_warm, folder, output_dir, generation),
+            daemon=True,
+        )
+        worker.start()
+
+    def worker_warm_review_cache(
+        self,
+        orders: list[shower_batch.ProcessOrder],
+        folder: Path,
+        output_dir: Path,
+        generation: int,
+    ) -> None:
+        try:
+            for order in orders:
+                with self.review_context_cache_lock:
+                    if generation != self.review_cache_generation:
+                        return
+                try:
+                    context = self.prepare_order_review_context(order, folder, output_dir, use_cache=True)
+                    job = context.get("job")
+                    source_reader = context.get("source_reader")
+                    if isinstance(job, programmer.Job) and isinstance(source_reader, PdfReader):
+                        self.ensure_review_pdf_raster_cache(job.pdf_path, len(source_reader.pages), output_dir)
+                except Exception:
+                    continue
+        finally:
+            self.review_cache_worker_active = False
 
     def review_status_for_order(self, aw_order: str) -> str:
         try:
@@ -1365,6 +1951,22 @@ class ShowerProgrammerApp:
         orders = self.selected_orders()
         if not orders:
             messagebox.showinfo("No selection", "Select one or more orders first.")
+            return
+        remake_items_by_order = None
+        if self.remake_var.get():
+            self.remake_items_var.set("")
+            remake_items_by_order = {order.aw_order: set() for order in orders}
+        self.run_orders(
+            orders,
+            apply=True,
+            remake_items_by_order=remake_items_by_order,
+            force_override=True if remake_items_by_order is not None else None,
+        )
+
+    def process_all_orders(self) -> None:
+        orders = list(self.orders)
+        if not orders:
+            messagebox.showinfo("No orders", "Scan the process list first.")
             return
         remake_items_by_order = None
         if self.remake_var.get():
@@ -1662,6 +2264,8 @@ class ShowerProgrammerApp:
                         self.insert_or_update_result(result)
                     counts = shower_batch.count_statuses(run.results)
                     self.status_var.set("Done. " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+                    self.clear_review_context_cache()
+                    self.start_review_cache_warmup(self.orders)
                     messagebox.showinfo("Batch complete", "Processing complete.")
                 elif kind == "error":
                     self.finish_background_activity()
@@ -1694,6 +2298,7 @@ class ShowerProgrammerApp:
                             process_list_import_summary,
                         )
                     )
+                    self.start_review_cache_warmup(self.orders)
                 elif kind == "import_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -1713,8 +2318,18 @@ class ShowerProgrammerApp:
                     self.status_var.set(" ".join(message for message in messages if message))
                 elif kind == "scan_error":
                     self.finish_background_activity()
-                    self.status_var.set("Scan failed")
-                    messagebox.showerror("Scan failed", str(payload))
+                    message = str(payload)
+                    lowered = message.lower()
+                    if "process list" in lowered and ("no " in lowered or "not " in lowered or "missing" in lowered):
+                        self.orders = []
+                        self.order_by_aw = {}
+                        self.tree.delete(*self.tree.get_children())
+                        self.tree_rows.clear()
+                        self.update_summary_strip()
+                        self.status_var.set(f"Scan complete: {message}")
+                    else:
+                        self.status_var.set("Scan failed")
+                        messagebox.showerror("Scan failed", message)
                 elif kind == "send_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -1751,6 +2366,14 @@ class ShowerProgrammerApp:
                             self.send_review_progress.configure(mode="determinate", maximum=100, value=100)
                         except tk.TclError:
                             self.send_review_progress = None
+                    if self.send_review_window is not None:
+                        try:
+                            self.send_review_window.destroy()
+                        except tk.TclError:
+                            pass
+                        self.send_review_window = None
+                        self.send_review_progress = None
+                        self.send_review_status_var = None
                     messagebox.showinfo("Send complete", details)
                     self.root.after(100, self.scan_orders)
                 elif kind == "send_error":
@@ -1828,6 +2451,8 @@ class ShowerProgrammerApp:
     def set_child_state(self, widget: tk.Widget, state: str) -> None:
         try:
             if isinstance(widget, (ttk.Button, ttk.Checkbutton, ttk.Entry)):
+                widget.configure(state=state)
+            elif ctk is not None and isinstance(widget, (ctk.CTkButton, ctk.CTkCheckBox, ctk.CTkEntry, ctk.CTkComboBox)):
                 widget.configure(state=state)
         except tk.TclError:
             pass
@@ -2025,44 +2650,48 @@ a {{ color: #1f4e79; }}
         try:
             folder = Path(self.folder_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
-            run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(process_order.aw_order, output_dir)
-            sketch_path = sketch_dir / f"{process_order.aw_order}.pdf"
-            if not sketch_path.exists():
-                messagebox.showinfo("No sketch yet", "Process this order first so the marked sketch exists.")
-                return
-            config = self.config_with_manual_overrides(folder, output_dir)
-            job, source_reader, issues = shower_batch.prepare_job(
-                folder,
-                sketch_dir,
-                programs_dir,
-                report_dir,
-                config,
-                process_order,
-                remake_items=self.editor_remake_items(process_order.aw_order),
-            )
-            sketch_reader = PdfReader(str(sketch_path))
+            self.status_var.set(f"Preparing review for {process_order.aw_order}...")
+            self.root.update_idletasks()
+            context = self.prepare_order_review_context(process_order, folder, output_dir, use_cache=True)
+            run_folder = context["run_folder"]
+            sketch_dir = context["sketch_dir"]
+            programs_dir = context["programs_dir"]
+            report_dir = context["report_dir"]
+            sketch_path = context["sketch_path"]
+            config = context["config"]
+            job = context["job"]
+            source_reader = context["source_reader"]
+            issues = context["issues"]
+            sketch_reader = context["sketch_reader"]
         except Exception as exc:
-            messagebox.showerror("Order review failed", str(exc))
+            if isinstance(exc, FileNotFoundError):
+                messagebox.showinfo("No sketch yet", str(exc))
+            else:
+                messagebox.showerror("Order review failed", str(exc))
             return
         if not job.panels:
             messagebox.showinfo("No pieces", "No piece pages were found for this order.")
             return
 
-        dialog = tk.Toplevel(self.root)
+        dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
         dialog.title(f"Review Order - {process_order.aw_order}")
         self.position_child_window(dialog, 1180, 820)
         dialog.minsize(980, 560)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
-        dialog.configure(bg="#f4f7fb")
+        dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
         dialog.after(0, lambda: self.maximize_window(dialog))
-        
-        toolbar = ttk.Frame(dialog, padding=(12, 10, 12, 8))
-        toolbar.pack(fill=tk.X)
-        ttk.Label(toolbar, text="Piece").pack(side=tk.LEFT)
+
+        self.make_app_header(dialog, "Review Order", padx=12)
+
+        toolbar = ctk.CTkFrame(dialog, fg_color="transparent", corner_radius=0)
+        toolbar.pack(fill=tk.X, padx=12, pady=(0, 8))
+        toolbar_inner = ctk.CTkFrame(toolbar, fg_color="transparent")
+        toolbar_inner.pack(fill=tk.X)
+        ctk.CTkLabel(toolbar_inner, text="Piece", font=("Segoe UI", 12), text_color=self.TEXT).pack(side=tk.LEFT)
         item_var = tk.StringVar(value=f"P{job.panels[0].item}")
         item_box = ttk.Combobox(
-            toolbar,
+            toolbar_inner,
             textvariable=item_var,
             values=[f"P{panel.item}" for panel in job.panels],
             state="readonly",
@@ -2070,48 +2699,50 @@ a {{ color: #1f4e79; }}
         )
         item_box.pack(side=tk.LEFT, padx=(6, 12))
         page_count_var = tk.StringVar(value=f"1/{len(job.panels)}")
-        ttk.Label(toolbar, textvariable=page_count_var).pack(side=tk.LEFT, padx=(0, 12))
+        ctk.CTkLabel(toolbar_inner, textvariable=page_count_var, font=("Segoe UI", 12), text_color=self.TEXT).pack(side=tk.LEFT, padx=(0, 12))
         rotation_var = tk.IntVar(value=0)
         status = tk.StringVar(value="Double-check the sketch and matching DXF together.")
         review_info_var = tk.StringVar(value="")
-        ttk.Button(toolbar, text="Previous", command=lambda: change_piece(-1), **self.button_icon("chevron_left")).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Next", command=lambda: change_piece(1), **self.button_icon("chevron_right")).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Save Edits", command=lambda: save_review_edits(), **self.button_icon("save")).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Process DXF", command=lambda: process_review_order(), **self.button_icon("play")).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Add Indicator", command=lambda: add_indicator_mark(), **self.button_icon("indicator")).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Flip Sides", command=lambda: flip_indicator_sides(), **self.button_icon("flip")).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Add Text Box", command=lambda: add_text_box(), **self.button_icon("text")).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(toolbar, text="Add X", command=lambda: add_x_mark(), **self.button_icon("x")).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Rotate Left", command=lambda: rotate_view(-90), **self.button_icon("rotate_left")).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Rotate Right", command=lambda: rotate_view(90), **self.button_icon("rotate_right")).pack(side=tk.LEFT, padx=(6, 12))
-        file_actions = ttk.Frame(toolbar)
+        self.make_tool_button(toolbar_inner, "Previous", "chevron_left", lambda: change_piece(-1), width=105).pack(side=tk.LEFT)
+        self.make_tool_button(toolbar_inner, "Next", "chevron_right", lambda: change_piece(1), width=90).pack(side=tk.LEFT, padx=(6, 12))
+        self.make_tool_button(toolbar_inner, "Save Edits", "save", lambda: save_review_edits(), width=118).pack(side=tk.LEFT)
+        self.make_tool_button(toolbar_inner, "Process DXF", "play", lambda: process_review_order(), width=124).pack(side=tk.LEFT, padx=(6, 12))
+        self.make_tool_button(toolbar_inner, "Add Indicator", "indicator", lambda: add_indicator_mark(), width=130).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_tool_button(toolbar_inner, "Flip Sides", "flip", lambda: flip_indicator_sides(), width=112).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_tool_button(toolbar_inner, "Add Text Box", "text", lambda: add_text_box(), width=128).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_tool_button(toolbar_inner, "Add X", "x", lambda: add_x_mark(), width=86).pack(side=tk.LEFT, padx=(6, 12))
+        self.make_tool_button(toolbar_inner, "Rotate Left", "rotate_left", lambda: rotate_view(-90), width=122).pack(side=tk.LEFT)
+        self.make_tool_button(toolbar_inner, "Rotate Right", "rotate_right", lambda: rotate_view(90), width=130).pack(side=tk.LEFT, padx=(6, 12))
+        file_actions = ctk.CTkFrame(toolbar_inner, fg_color="transparent")
         file_actions.pack(side=tk.RIGHT)
-        ttk.Button(file_actions, text="Open Sketch PDF", command=lambda: os.startfile(sketch_path), **self.button_icon("pdf")).pack(side=tk.LEFT)
-        ttk.Button(file_actions, text="Open DXF", command=lambda: open_current_dxf(), **self.button_icon("dxf")).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Label(toolbar, textvariable=status, style="Muted.TLabel").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        self.make_tool_button(file_actions, "Open Sketch PDF", "pdf", lambda: os.startfile(sketch_path), width=150).pack(side=tk.LEFT)
+        self.make_tool_button(file_actions, "Open DXF", "dxf", lambda: open_current_dxf(), width=112).pack(side=tk.LEFT, padx=(6, 0))
+        ctk.CTkLabel(toolbar_inner, textvariable=status, font=("Segoe UI", 11), text_color=self.MUTED, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
-        info_strip = ttk.Frame(
+        info_strip = ctk.CTkFrame(
             dialog,
-            style="Card.TFrame",
-            padding=(12, 9),
-            borderwidth=1,
-            relief=tk.SOLID,
+            fg_color=self.CARD_BG,
+            corner_radius=8,
+            border_width=1,
+            border_color=self.BORDER,
         )
-        info_strip.pack(fill=tk.X, padx=12, pady=(0, 8))
-        self.icon_label(info_strip, "orders", size=18, style="Card.TLabel")
-        ttk.Label(info_strip, textvariable=review_info_var, style="InfoStrip.TLabel").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        info_strip.pack(fill=tk.X, padx=12, pady=(0, 10))
+        info_inner = ctk.CTkFrame(info_strip, fg_color="transparent")
+        info_inner.pack(fill=tk.X, padx=12, pady=9)
+        ctk.CTkLabel(info_inner, text="", image=self.ctk_button_icon("orders", 18, self.ACCENT_DARK).get("image"), width=22).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(info_inner, textvariable=review_info_var, font=("Segoe UI", 12), text_color="#2c3e56", anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
         panes.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        sketch_frame = ttk.Frame(panes, style="Card.TFrame", borderwidth=1, relief=tk.SOLID)
-        dxf_frame = ttk.Frame(panes, style="Card.TFrame", borderwidth=1, relief=tk.SOLID)
+        sketch_frame = ctk.CTkFrame(panes, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
+        dxf_frame = ctk.CTkFrame(panes, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
         panes.add(sketch_frame, weight=3)
         panes.add(dxf_frame, weight=2)
 
-        sketch_header = ttk.Frame(sketch_frame, style="PanelHeader.TFrame", padding=(12, 8))
+        sketch_header = ctk.CTkFrame(sketch_frame, fg_color=self.SOFT_CARD_BG, corner_radius=7)
         sketch_header.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self.icon_label(sketch_header, "pdf", size=17, style="PanelHeader.TLabel")
-        ttk.Label(sketch_header, text="Sketch / PDF", style="PanelHeader.TLabel").pack(side=tk.LEFT)
+        ctk.CTkLabel(sketch_header, text="", image=self.ctk_button_icon("pdf", 17, self.ACCENT_DARK).get("image"), width=22).pack(side=tk.LEFT, padx=(12, 8), pady=8)
+        ctk.CTkLabel(sketch_header, text="Sketch / PDF", font=("Segoe UI", 13, "bold"), text_color="#17365f").pack(side=tk.LEFT)
         sketch_canvas = tk.Canvas(sketch_frame, background="#e8edf3", highlightthickness=0)
         sketch_y_scroll = ttk.Scrollbar(sketch_frame, orient=tk.VERTICAL, command=sketch_canvas.yview)
         sketch_x_scroll = ttk.Scrollbar(sketch_frame, orient=tk.HORIZONTAL, command=sketch_canvas.xview)
@@ -2121,10 +2752,10 @@ a {{ color: #1f4e79; }}
         sketch_x_scroll.grid(row=2, column=0, sticky="ew")
         sketch_frame.columnconfigure(0, weight=1)
         sketch_frame.rowconfigure(1, weight=1)
-        dxf_header = ttk.Frame(dxf_frame, style="PanelHeader.TFrame", padding=(12, 8))
+        dxf_header = ctk.CTkFrame(dxf_frame, fg_color=self.SOFT_CARD_BG, corner_radius=7)
         dxf_header.grid(row=0, column=0, sticky="ew")
-        self.icon_label(dxf_header, "dxf", size=17, style="PanelHeader.TLabel")
-        ttk.Label(dxf_header, text="DXF Preview", style="PanelHeader.TLabel").pack(side=tk.LEFT)
+        ctk.CTkLabel(dxf_header, text="", image=self.ctk_button_icon("dxf", 17, self.ACCENT_DARK).get("image"), width=22).pack(side=tk.LEFT, padx=(12, 8), pady=8)
+        ctk.CTkLabel(dxf_header, text="DXF Preview", font=("Segoe UI", 13, "bold"), text_color="#17365f").pack(side=tk.LEFT)
         dxf_canvas = tk.Canvas(dxf_frame, background="#f8fafc", highlightthickness=0)
         dxf_canvas.grid(row=1, column=0, sticky="nsew")
         dxf_frame.columnconfigure(0, weight=1)
@@ -2140,10 +2771,17 @@ a {{ color: #1f4e79; }}
             "last_y": 0.0,
             "page_images": [],
             "render_cache": {},
+            "overlay_cache": {},
+            "dxf_preview_cache": {},
             "render_temp_dir": tempfile.mkdtemp(prefix="shower_order_review_"),
+            "render_root": dialog,
+            "output_dir": output_dir,
+            "pdf_page_count": len(source_reader.pages),
+            "raster_rendering": set(),
             "current_item": job.panels[0].item,
             "pending_items": set(),
             "needs_output_save": False,
+            "redraw_after_id": None,
         }
 
         def selected_panel() -> programmer.Panel:
@@ -2322,6 +2960,7 @@ a {{ color: #1f4e79; }}
                 config = refreshed_config
                 state.get("pending_items", set()).clear()
                 state["needs_output_save"] = False
+                self.clear_review_context_cache(process_order.aw_order)
                 return True
             except Exception as exc:
                 messagebox.showerror("Save sketch failed", str(exc), parent=dialog)
@@ -2374,6 +3013,7 @@ a {{ color: #1f4e79; }}
                 config = refreshed_config
                 sketch_reader = PdfReader(str(sketch_path))
                 self.insert_or_update_result(result)
+                self.clear_review_context_cache(process_order.aw_order)
                 status.set(f"Processed {job.aw_order}; DXF preview refreshed.")
                 redraw()
             except Exception as exc:
@@ -2389,8 +3029,9 @@ a {{ color: #1f4e79; }}
                 report_dir,
                 config,
                 process_order,
-                remake_items=self.editor_remake_items(process_order.aw_order),
+                remake_items=self.editor_remake_items(process_order.aw_order, output_dir),
             )
+            self.clear_review_context_cache(process_order.aw_order)
 
         def delete_selected_mark() -> None:
             key = state.get("selected_key")
@@ -2548,6 +3189,13 @@ a {{ color: #1f4e79; }}
             return "break"
 
         def redraw() -> None:
+            after_id = state.get("redraw_after_id")
+            if after_id is not None:
+                try:
+                    dialog.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            state["redraw_after_id"] = None
             panel = selected_panel()
             ordered_items = [current.item for current in sorted(job.panels, key=lambda current: current.item)]
             if panel.item in ordered_items:
@@ -2576,7 +3224,7 @@ a {{ color: #1f4e79; }}
                 sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Sketch preview failed: {exc}", fill="#b42318")
             dxf_path = panel.output_dxf if panel.output_dxf and panel.output_dxf.exists() else panel.source_dxf
             try:
-                self.draw_order_review_dxf(dxf_canvas, dxf_path, panel)
+                self.draw_order_review_dxf(dxf_canvas, dxf_path, panel, state)
             except Exception as exc:
                 dxf_canvas.delete("all")
                 dxf_canvas.create_rectangle(0, 0, dxf_canvas.winfo_width(), dxf_canvas.winfo_height(), fill="#f8fafc", outline="")
@@ -2602,6 +3250,17 @@ a {{ color: #1f4e79; }}
                 + (f"  |  {issue_text}" if issue_text else "")
             )
 
+        def schedule_redraw(delay: int = 90) -> None:
+            after_id = state.get("redraw_after_id")
+            if after_id is not None:
+                try:
+                    dialog.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+            state["redraw_after_id"] = dialog.after(delay, redraw)
+
+        state["render_callback"] = lambda: schedule_redraw(1)
+
         def cleanup_render_temp(_event: tk.Event | None = None) -> None:
             temp_dir = state.get("render_temp_dir")
             if _event is not None and _event.widget is not dialog:
@@ -2616,8 +3275,8 @@ a {{ color: #1f4e79; }}
 
         item_box.bind("<<ComboboxSelected>>", lambda _event: set_piece(item_var.get()))
         item_box.bind("<MouseWheel>", piece_wheel)
-        sketch_canvas.bind("<Configure>", lambda _event: redraw())
-        dxf_canvas.bind("<Configure>", lambda _event: redraw())
+        sketch_canvas.bind("<Configure>", lambda _event: schedule_redraw())
+        dxf_canvas.bind("<Configure>", lambda _event: schedule_redraw())
         sketch_canvas.bind("<B1-Motion>", drag)
         sketch_canvas.bind("<ButtonRelease-1>", release)
         sketch_canvas.bind("<MouseWheel>", lambda event: self.scroll_editor_canvas(sketch_canvas, event))
@@ -2650,7 +3309,7 @@ a {{ color: #1f4e79; }}
         view_width = page_height if rotation_degrees % 180 else page_width
         view_height = page_width if rotation_degrees % 180 else page_height
         available_width = max(200, canvas.winfo_width() - 24)
-        scale = min(1.2, max(0.7, available_width / view_width))
+        scale = round(min(1.2, max(0.7, available_width / view_width)), 2)
         image = self.editor_page_image(
             sketch_path,
             panel.page_index,
@@ -2662,13 +3321,20 @@ a {{ color: #1f4e79; }}
         )
         canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill="#e8edf3", outline="")
         if image is None:
-            canvas.create_text(16, 16, anchor=tk.NW, text="Could not render sketch preview.", fill="#334155")
+            message = "Rendering sketch preview..." if state.get("raster_rendering") else "Could not render sketch preview."
+            canvas.create_text(16, 16, anchor=tk.NW, text=message, fill="#334155")
             return
         state["page_images"].append(image)
         x = 16.0
         y = 16.0
         canvas.create_image(x, y, image=image, anchor=tk.NW)
-        objects = self.editor_overlay_objects(reader, job, panel, config)
+        objects = self.editor_overlay_objects(
+            reader,
+            job,
+            panel,
+            config,
+            state.setdefault("overlay_cache", {}),
+        )
         for obj in objects:
             obj["item"] = panel.item
             obj["scale"] = scale
@@ -2694,7 +3360,13 @@ a {{ color: #1f4e79; }}
             )
         canvas.configure(scrollregion=(0, 0, image.width() + 32, image.height() + 32))
 
-    def draw_order_review_dxf(self, canvas: tk.Canvas, path: Path | None, panel: programmer.Panel) -> None:
+    def draw_order_review_dxf(
+        self,
+        canvas: tk.Canvas,
+        path: Path | None,
+        panel: programmer.Panel,
+        state: dict[str, Any] | None = None,
+    ) -> None:
         canvas.delete("all")
         canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill="#f8fafc", outline="")
         canvas_width = max(520, canvas.winfo_width())
@@ -2730,12 +3402,13 @@ a {{ color: #1f4e79; }}
             canvas.create_text(col_1, 38, anchor=tk.NW, text="No DXF for this piece.", fill="#334155", font=("Segoe UI", 10))
             return
         try:
-            segments = programmer.collect_dxf_preview_segments(path)
+            preview_data = self.order_review_dxf_preview_data(path, state)
+            segments = preview_data["segments"]
+            unit_label = preview_data["unit_label"]
+            inches_per_unit = preview_data["inches_per_unit"]
         except Exception as exc:
             canvas.create_text(col_1, 38, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill="#b42318", font=("Segoe UI", 10))
             return
-        unit_label = self.dxf_unit_label(path)
-        inches_per_unit = self.dxf_inches_per_unit(path)
         canvas.create_text(
             col_1,
             38,
@@ -2823,6 +3496,42 @@ a {{ color: #1f4e79; }}
             fill="#536471",
             font=("Segoe UI", 9),
         )
+
+    def order_review_dxf_preview_data(self, path: Path, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        cache: dict[Any, dict[str, Any]] | None = None
+        if state is not None:
+            cache = state.setdefault("dxf_preview_cache", {})
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        if cache is not None and key in cache:
+            return cache[key]
+
+        segments = programmer.collect_dxf_preview_segments(path)
+        insunits = self.dxf_insunits(path)
+        inches_per_unit = {
+            "1": 1.0,
+            "2": 12.0,
+            "4": 1.0 / 25.4,
+            "5": 1.0 / 2.54,
+            "6": 39.37007874015748,
+        }.get(insunits, 1.0)
+        unit_label = {
+            "1": "in",
+            "2": "ft",
+            "4": "mm",
+            "5": "cm",
+            "6": "m",
+        }.get(insunits, "units")
+        data = {
+            "segments": segments,
+            "unit_label": unit_label,
+            "inches_per_unit": inches_per_unit,
+        }
+        if cache is not None:
+            if len(cache) > 80:
+                cache.clear()
+            cache[key] = data
+        return data
 
     @classmethod
     def out_of_square_preview_segments(
@@ -3816,23 +4525,25 @@ try {{
         order_folder: Path,
         process_list_path: Path,
     ) -> None:
-        dialog = tk.Toplevel(self.root)
+        dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
         dialog.title("Review / Send Output")
         self.position_child_window(dialog, 1120, 680)
         dialog.minsize(860, 520)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
-        dialog.configure(bg="#f4f7fb")
+        dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
         dialog.after(0, lambda: self.maximize_window(dialog))
         self.send_review_window = dialog
 
-        heading = ttk.Frame(dialog, padding=(18, 14, 18, 8))
-        heading.pack(fill=tk.X)
-        title_group = ttk.Frame(heading)
+        self.make_app_header(dialog, "Shower Programmer", padx=18)
+
+        heading = ctk.CTkFrame(dialog, fg_color="transparent")
+        heading.pack(fill=tk.X, padx=18, pady=(0, 8))
+        title_group = ctk.CTkFrame(heading, fg_color="transparent")
         title_group.pack(side=tk.LEFT)
-        self.icon_label(title_group, "send", size=22, style="Title.TLabel")
-        ttk.Label(title_group, text="Review / Send Output", style="Title.TLabel").pack(side=tk.LEFT)
-        summary_cards = ttk.Frame(heading)
+        ctk.CTkLabel(title_group, text="", image=self.ctk_button_icon("send", 22, self.ACCENT_DARK).get("image"), width=26).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(title_group, text="Review / Send Output", font=("Segoe UI", 20, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        summary_cards = ctk.CTkFrame(heading, fg_color="transparent")
         summary_cards.pack(side=tk.RIGHT)
         ready_count_var = tk.StringVar(value="0")
         blocked_count_var = tk.StringVar(value="0")
@@ -3841,8 +4552,10 @@ try {{
         self.add_count_card(summary_cards, blocked_count_var, "Blocked", "minus_circle", "#c92a2a")
         self.add_count_card(summary_cards, other_count_var, "Other", "minus_circle", "#3f6aa3")
 
-        body = ttk.Frame(dialog, padding=(12, 4, 12, 8))
-        body.pack(fill=tk.BOTH, expand=True)
+        body_card = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
+        body_card.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 10))
+        body = ctk.CTkFrame(body_card, fg_color="transparent")
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         columns = ("status", "source", "destination", "note")
         tree = ttk.Treeview(body, columns=columns, show="tree headings", selectmode="browse")
         tree.heading("#0", text="Order / Action")
@@ -3963,15 +4676,15 @@ try {{
         other_count_var.set(str(warning_count))
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
-        footer = ttk.Frame(dialog, padding=(12, 0, 12, 12))
-        footer.pack(fill=tk.X)
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.pack(fill=tk.X, padx=18, pady=(0, 14))
         self.send_review_status_var = tk.StringVar(
             value="Review the send list. Unchecked orders are blocked and will not send."
         )
         self.send_review_progress = ttk.Progressbar(footer, mode="determinate", maximum=100, value=0)
         self.send_review_progress.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        ttk.Label(footer, textvariable=self.send_review_status_var, style="Muted.TLabel", width=54).pack(side=tk.LEFT, padx=(10, 0))
-        buttons = ttk.Frame(footer)
+        ctk.CTkLabel(footer, textvariable=self.send_review_status_var, font=("Segoe UI", 12), text_color=self.MUTED, anchor="w", width=420).pack(side=tk.LEFT, padx=(10, 0))
+        buttons = ctk.CTkFrame(footer, fg_color="transparent")
         buttons.pack(side=tk.RIGHT, padx=(10, 0))
 
         def close_dialog() -> None:
@@ -3981,7 +4694,7 @@ try {{
                 self.send_review_status_var = None
             dialog.destroy()
 
-        send_action_buttons: list[ttk.Button] = []
+        send_action_buttons: list[Any] = []
 
         def begin_send(send_sketches: bool, send_programs: bool, do_archive: bool) -> None:
             if not checked_orders:
@@ -4017,28 +4730,36 @@ try {{
                 process_list_path,
             )
 
-        cancel_button = ttk.Button(buttons, text="Cancel", command=close_dialog, **self.button_icon("x"))
+        cancel_button = self.make_tool_button(buttons, "Cancel", "x", close_dialog, width=120)
         cancel_button.pack(side=tk.RIGHT)
-        send_all_button = ttk.Button(
+        send_all_button = ctk.CTkButton(
             buttons,
             text="Send All Checked Orders",
-            style="Accent.TButton",
             command=lambda: begin_send(True, True, archive_inputs),
-            **self.button_icon("send", 16, "#ffffff"),
+            width=220,
+            height=36,
+            corner_radius=7,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 12, "bold"),
+            **self.ctk_button_icon("send", 16, "#ffffff", "left"),
         )
         send_all_button.pack(side=tk.RIGHT, padx=(0, 8))
-        send_programs_button = ttk.Button(
+        send_programs_button = self.make_tool_button(
             buttons,
             text="Send Programs",
+            icon_name="program",
             command=lambda: begin_send(False, True, False),
-            **self.button_icon("program"),
+            width=165,
         )
         send_programs_button.pack(side=tk.RIGHT, padx=(0, 8))
-        send_sketches_button = ttk.Button(
+        send_sketches_button = self.make_tool_button(
             buttons,
             text="Send Sketches",
+            icon_name="image",
             command=lambda: begin_send(True, False, False),
-            **self.button_icon("image"),
+            width=165,
         )
         send_sketches_button.pack(side=tk.RIGHT, padx=(0, 8))
         send_action_buttons.extend([send_sketches_button, send_programs_button, send_all_button])
@@ -5177,8 +5898,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         dialog.bind("<Destroy>", cleanup_render_temp, add="+")
         dialog.after(100, redraw)
 
-    def editor_remake_items(self, aw_order: str) -> set[int] | None:
-        history = self.history_for_order(aw_order)
+    def editor_remake_items(self, aw_order: str, output_dir: Path | None = None) -> set[int] | None:
+        history = self.history_for_order_from_output(aw_order, output_dir) if output_dir is not None else self.history_for_order(aw_order)
         value = history.get("remake_items")
         if isinstance(value, list):
             return {int(item) for item in value if str(item).strip().isdigit()}
@@ -5340,29 +6061,71 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         key = (str(pdf_path), page_index, round(scale, 4), normalized_rotation)
         if isinstance(cache, dict) and key in cache:
             return cache[key]
-        ghostscript = self.ghostscript_executable()
-        if ghostscript is None:
-            return None
-        temp_dir = Path(str(state.get("render_temp_dir") or tempfile.gettempdir()))
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        output_path = temp_dir / f"page_{page_index + 1}_{abs(hash(key))}.png"
-        render_dpi = 144
-        command = [
-            str(ghostscript),
-            "-q",
-            "-dSAFER",
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-sDEVICE=png16m",
-            f"-r{render_dpi}",
-            f"-dFirstPage={page_index + 1}",
-            f"-dLastPage={page_index + 1}",
-            f"-sOutputFile={output_path}",
-            str(pdf_path),
-        ]
+
+        output_dir = state.get("output_dir")
+        page_count = int(state.get("pdf_page_count") or 0)
+        render_dpi = self.REVIEW_RENDER_DPI
+        cached_page_path: Path | None = None
+        if isinstance(output_dir, Path):
+            cached_page_path = self.review_raster_page_path(output_dir, pdf_path, render_dpi, page_index)
+            cache_dir = self.review_raster_cache_dir(output_dir, pdf_path, render_dpi)
+            all_pages_cached = page_count > 0 and all(
+                (cache_dir / f"page_{idx + 1:03d}.png").exists()
+                for idx in range(page_count)
+            )
+            if not cached_page_path.exists() and page_count > 0:
+                self.render_pdfium_single_page_to_file(pdf_path, page_index, cached_page_path, render_dpi)
+                all_pages_cached = page_count > 0 and all(
+                    (cache_dir / f"page_{idx + 1:03d}.png").exists()
+                    for idx in range(page_count)
+                )
+            if cached_page_path.exists() and page_count > 1 and not all_pages_cached:
+                callback = state.get("render_callback")
+                self.start_async_review_raster_render(
+                    pdf_path,
+                    page_count,
+                    output_dir,
+                    state,
+                    callback if callable(callback) else None,
+                )
+            if not cached_page_path.exists() and page_count > 0:
+                callback = state.get("render_callback")
+                self.start_async_review_raster_render(
+                    pdf_path,
+                    page_count,
+                    output_dir,
+                    state,
+                    callback if callable(callback) else None,
+                )
+                return None
+            output_path = cached_page_path
+        else:
+            temp_dir = Path(str(state.get("render_temp_dir") or tempfile.gettempdir()))
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            output_path = temp_dir / f"page_{page_index + 1}_{abs(hash(key))}.png"
+            if not self.render_pdfium_single_page_to_file(pdf_path, page_index, output_path, render_dpi):
+                ghostscript = self.ghostscript_executable()
+                if ghostscript is None:
+                    return None
+                command = [
+                    str(ghostscript),
+                    "-q",
+                    "-dSAFER",
+                    "-dBATCH",
+                    "-dNOPAUSE",
+                    "-sDEVICE=png16m",
+                    f"-r{render_dpi}",
+                    f"-dFirstPage={page_index + 1}",
+                    f"-dLastPage={page_index + 1}",
+                    f"-sOutputFile={output_path}",
+                    str(pdf_path),
+                ]
+                try:
+                    subprocess.run(command, check=True, capture_output=True, timeout=30)
+                except Exception:
+                    return None
         try:
-            subprocess.run(command, check=True, capture_output=True, timeout=30)
-            image = Image.open(output_path)
+            image = Image.open(output_path).convert("RGB")
             if normalized_rotation:
                 image = image.rotate(-normalized_rotation, expand=True)
             if normalized_rotation % 180:
@@ -5375,10 +6138,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except Exception:
             return None
         finally:
-            try:
-                output_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if cached_page_path is None:
+                try:
+                    output_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
         if isinstance(cache, dict):
             cache[key] = photo
         return photo
@@ -5450,15 +6214,33 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         job: programmer.Job,
         panel: programmer.Panel,
         config: dict[str, object],
+        geometry_cache: dict[Any, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         page = reader.pages[panel.page_index]
-        width = float(page.mediabox.width)
-        height = float(page.mediabox.height)
+        cache_key = (id(reader), panel.page_index, round(float(panel.width), 4), round(float(panel.height), 4))
+        cached_geometry = geometry_cache.get(cache_key) if geometry_cache is not None else None
         pdf_cfg = config.get("pdf", {})
-        bbox = programmer.estimate_panel_bbox(reader, panel.page_index)
-        indicator_bbox = programmer.estimate_panel_bbox(reader, panel.page_index, use_outer_edges=True)
-        marker_bbox = programmer.estimate_panel_outline_bbox(reader, panel.page_index, panel.width, panel.height)
-        obstacles = programmer.collect_page_obstacles(reader, panel.page_index)
+        if cached_geometry is None:
+            width = float(page.mediabox.width)
+            height = float(page.mediabox.height)
+            cached_geometry = {
+                "width": width,
+                "height": height,
+                "bbox": programmer.estimate_panel_bbox(reader, panel.page_index),
+                "indicator_bbox": programmer.estimate_panel_bbox(reader, panel.page_index, use_outer_edges=True),
+                "marker_bbox": programmer.estimate_panel_outline_bbox(reader, panel.page_index, panel.width, panel.height),
+                "obstacles": programmer.collect_page_obstacles(reader, panel.page_index),
+            }
+            if geometry_cache is not None:
+                if len(geometry_cache) > 80:
+                    geometry_cache.clear()
+                geometry_cache[cache_key] = cached_geometry
+        width = float(cached_geometry["width"])
+        height = float(cached_geometry["height"])
+        bbox = cached_geometry["bbox"]
+        indicator_bbox = cached_geometry["indicator_bbox"]
+        marker_bbox = cached_geometry["marker_bbox"]
+        obstacles = cached_geometry["obstacles"]
         label_bbox = marker_bbox or bbox
         active_marker_bbox = marker_bbox or (indicator_bbox if panel.machine == "WJ" and indicator_bbox is not None else bbox)
 
@@ -5780,7 +6562,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
 
 def main() -> None:
-    root = tk.Tk()
+    root = ctk.CTk() if ctk is not None else tk.Tk()
     app = ShowerProgrammerApp(root)
     root.mainloop()
 
