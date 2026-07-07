@@ -67,17 +67,117 @@ except Exception:
     ImageTk = None
 
 
+class ModernProgressBar:
+    """Small CustomTkinter progress wrapper with the ttk Progressbar methods this app uses."""
+
+    def __init__(self, parent: Any, app: "ShowerProgrammerApp", height: int = 12) -> None:
+        self.app = app
+        self.maximum = 100.0
+        self.value = 0.0
+        self.mode = "determinate"
+        self.widget = ctk.CTkProgressBar(
+            parent,
+            mode="determinate",
+            height=height,
+            corner_radius=max(6, height // 2),
+            border_width=0,
+            fg_color=app.PROGRESS_TRACK,
+            progress_color=app.PROGRESS_FILL,
+        )
+        self.widget.set(0.0)
+
+    def configure(self, **kwargs: Any) -> None:
+        if "maximum" in kwargs:
+            try:
+                self.maximum = max(float(kwargs.pop("maximum")), 1.0)
+            except (TypeError, ValueError):
+                self.maximum = 100.0
+        if "mode" in kwargs:
+            self.mode = str(kwargs.pop("mode") or "determinate")
+            try:
+                self.widget.configure(mode=self.mode)
+            except tk.TclError:
+                pass
+        if "value" in kwargs:
+            try:
+                self.value = float(kwargs.pop("value"))
+            except (TypeError, ValueError):
+                self.value = 0.0
+            self._sync_value()
+        if "progress_color" not in kwargs:
+            kwargs["progress_color"] = self.app.PROGRESS_FILL
+        if "fg_color" not in kwargs:
+            kwargs["fg_color"] = self.app.PROGRESS_TRACK
+        try:
+            self.widget.configure(**kwargs)
+        except tk.TclError:
+            pass
+
+    config = configure
+
+    def _sync_value(self) -> None:
+        ratio = max(0.0, min(1.0, self.value / max(self.maximum, 1.0)))
+        try:
+            self.widget.set(ratio)
+        except tk.TclError:
+            pass
+
+    def step(self, amount: float = 1.0) -> None:
+        try:
+            self.value += float(amount)
+        except (TypeError, ValueError):
+            self.value += 1.0
+        self._sync_value()
+
+    def start(self, *_args: Any) -> None:
+        try:
+            self.widget.configure(mode="indeterminate")
+            self.widget.start()
+        except tk.TclError:
+            pass
+
+    def stop(self) -> None:
+        try:
+            self.widget.stop()
+            self.widget.configure(mode=self.mode)
+        except tk.TclError:
+            pass
+
+    def grid(self, *args: Any, **kwargs: Any) -> Any:
+        return self.widget.grid(*args, **kwargs)
+
+    def pack(self, *args: Any, **kwargs: Any) -> Any:
+        return self.widget.pack(*args, **kwargs)
+
+    def place(self, *args: Any, **kwargs: Any) -> Any:
+        return self.widget.place(*args, **kwargs)
+
+    def destroy(self) -> None:
+        self.widget.destroy()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.widget, name)
+
+
 class ShowerProgrammerApp:
-    APP_BG = "#f5f8fc"
+    APP_BG = "#f3f6fb"
     CARD_BG = "#ffffff"
     SOFT_CARD_BG = "#f8fbff"
-    PANEL_BG = "#fbfdff"
-    BORDER = "#d7e3ef"
-    ACCENT = "#2b73c6"
-    ACCENT_DARK = "#1f5fa8"
-    ACCENT_LIGHT = "#eaf4ff"
-    TEXT = "#172033"
-    MUTED = "#516176"
+    PANEL_BG = "#f6f9fd"
+    BORDER = "#d8e1ec"
+    ACCENT = "#2563eb"
+    ACCENT_DARK = "#1d4ed8"
+    ACCENT_LIGHT = "#eaf2ff"
+    TEXT = "#111827"
+    MUTED = "#667085"
+    SUCCESS = "#12b76a"
+    WARNING = "#f79009"
+    DANGER = "#d92d20"
+    SIDEBAR_BG = "#101828"
+    SIDEBAR_CARD_BG = "#182230"
+    SIDEBAR_TEXT = "#f9fafb"
+    SIDEBAR_MUTED = "#98a2b3"
+    SIDEBAR_BORDER = "#344054"
     REVIEW_RENDER_DPI = 96
     GITHUB_UPDATE_OWNER = "Brandon-m-Smith4439"
     GITHUB_UPDATE_REPO = "Showers-Programmer"
@@ -92,6 +192,7 @@ class ShowerProgrammerApp:
     PROCESS_LIST_FILE_EXTENSIONS = shower_batch.PROCESS_LIST_EXTENSIONS
     INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
     HARDWARE_LIST_PREFIX = "hardware list"
+    UI_SETTINGS_FILE_NAME = "shower_programmer_ui_settings.json"
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -99,11 +200,13 @@ class ShowerProgrammerApp:
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
         self.set_window_icon(self.root)
-        self.root.after(0, lambda: self.maximize_window(self.root))
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.folder_var = tk.StringVar(value=str(programmer.default_orders_dir()))
         self.import_source_var = tk.StringVar(value=str(self.EDI_IMPORT_ORDERS_DIR))
         self.process_list_var = tk.StringVar(value=str(programmer.default_process_list_path()))
         self.output_dir_var = tk.StringVar(value=str(programmer.default_output_dir()))
+        self.ui_settings = self.load_ui_settings()
+        self.dark_mode_var = tk.BooleanVar(value=bool(self.ui_settings.get("dark_mode", False)))
         self.force_var = tk.BooleanVar(value=False)
         self.skip_dxf_var = tk.BooleanVar(value=False)
         self.remake_var = tk.BooleanVar(value=False)
@@ -136,11 +239,30 @@ class ShowerProgrammerApp:
         self.review_context_cache_lock = threading.Lock()
         self.review_cache_generation = 0
         self.review_cache_worker_active = False
+        self.active_themed_context_popup: tk.Toplevel | None = None
+        self.active_themed_context_binding: tuple[tk.Widget, str, str] | None = None
 
         self.configure_styles()
         self.build_ui()
+        self.force_main_window_maximized()
         self.root.after(75, self.drain_worker_queue)
         self.root.after_idle(lambda: self.root.after(850, self.scan_orders))
+
+    def force_main_window_maximized(self) -> None:
+        """Keep the main application maximized after theme/startup rebuilds."""
+        def maximize() -> None:
+            try:
+                self.root.update_idletasks()
+                self.maximize_window(self.root)
+            except tk.TclError:
+                pass
+
+        maximize()
+        for delay in (50, 200, 650):
+            try:
+                self.root.after(delay, maximize)
+            except tk.TclError:
+                pass
 
     @staticmethod
     def set_window_icon(window: Any) -> None:
@@ -204,294 +326,940 @@ class ShowerProgrammerApp:
         except tk.TclError:
             window.geometry(f"{width}x{height}")
 
-    def configure_styles(self) -> None:
-        bg = self.APP_BG
-        card = self.CARD_BG
-        border = self.BORDER
-        blue = self.ACCENT
-        blue_dark = self.ACCENT_DARK
-        text = self.TEXT
-        muted = self.MUTED
+    def bring_window_to_front(self, window: tk.Toplevel, make_transient: bool = True) -> None:
+        def apply_focus() -> None:
+            try:
+                window.deiconify()
+            except tk.TclError:
+                pass
+            if make_transient:
+                try:
+                    window.transient(self.root)
+                except tk.TclError:
+                    pass
+            try:
+                window.lift()
+                window.focus_force()
+            except tk.TclError:
+                pass
+            try:
+                window.attributes("-topmost", True)
+                window.after(350, lambda: window.attributes("-topmost", False))
+            except tk.TclError:
+                pass
 
+        try:
+            window.after(75, apply_focus)
+        except tk.TclError:
+            pass
+
+
+    def close_active_themed_context_menu(self) -> None:
+        binding = self.active_themed_context_binding
+        if binding is not None:
+            widget, sequence, funcid = binding
+            try:
+                widget.unbind(sequence, funcid)
+            except tk.TclError:
+                pass
+            self.active_themed_context_binding = None
+
+        popup = self.active_themed_context_popup
+        self.active_themed_context_popup = None
+        if popup is not None:
+            try:
+                if popup.winfo_exists():
+                    popup.destroy()
+            except tk.TclError:
+                pass
+
+    def show_themed_context_menu(
+        self,
+        parent: tk.Widget,
+        x_root: int,
+        y_root: int,
+        title: str,
+        subtitle: str,
+        actions: list[dict[str, object]],
+    ) -> None:
+        self.close_active_themed_context_menu()
+        if ctk is None:
+            menu = tk.Menu(parent, tearoff=False)
+            for action in actions:
+                if action.get("separator"):
+                    menu.add_separator()
+                    continue
+                command = action.get("command")
+                menu.add_command(label=str(action.get("text", "")), command=command if callable(command) else None)
+            try:
+                menu.tk_popup(x_root, y_root)
+            finally:
+                menu.grab_release()
+            return
+
+        popup = ctk.CTkToplevel(parent)
+        self.active_themed_context_popup = popup
+        popup.withdraw()
+        popup.overrideredirect(True)
+        popup.configure(fg_color=self.CARD_BG)
+        try:
+            popup.transient(parent.winfo_toplevel())
+        except tk.TclError:
+            pass
+        try:
+            popup.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            popup,
+            fg_color=self.CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True)
+
+        header = ctk.CTkFrame(shell, fg_color=self.SOFT_CARD_BG, corner_radius=10)
+        header.pack(fill=tk.X, padx=8, pady=(8, 6))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text=title,
+            font=("Segoe UI", 13, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(8, 0))
+        ctk.CTkLabel(
+            header,
+            text=subtitle,
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 8))
+        ctk.CTkButton(
+            header,
+            text="",
+            command=popup.destroy,
+            width=28,
+            height=28,
+            corner_radius=8,
+            fg_color="transparent",
+            hover_color=self.ACCENT_LIGHT,
+            text_color=self.MUTED,
+            **self.ctk_button_icon("close", 13, self.MUTED, "left"),
+        ).grid(row=0, column=1, rowspan=2, sticky="ne", padx=(0, 8), pady=8)
+
+        body = ctk.CTkFrame(shell, fg_color="transparent")
+        body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        def run_and_close(command: object) -> None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+            if callable(command):
+                try:
+                    parent.after(20, command)
+                except tk.TclError:
+                    command()
+
+        for action in actions:
+            if action.get("separator"):
+                ctk.CTkFrame(body, fg_color=self.DIVIDER, height=1, corner_radius=0).pack(fill=tk.X, padx=6, pady=6)
+                continue
+            destructive = bool(action.get("destructive"))
+            icon_color = self.DANGER if destructive else self.ACCENT_DARK
+            text_color = self.DANGER if destructive else self.TEXT
+            hover_color = "#fee4e2" if destructive and not self.dark_mode_var.get() else ("#3b1f24" if destructive else self.ACCENT_LIGHT)
+            ctk.CTkButton(
+                body,
+                text=str(action.get("text", "")),
+                command=lambda command=action.get("command"): run_and_close(command),
+                height=36,
+                corner_radius=8,
+                fg_color="transparent",
+                hover_color=hover_color,
+                text_color=text_color,
+                font=("Segoe UI", 11, "bold"),
+                anchor="w",
+                **self.ctk_button_icon(str(action.get("icon", "info")), 16, icon_color, "left"),
+            ).pack(fill=tk.X, pady=1)
+
+        def cleanup_menu_state(_event: tk.Event | None = None) -> None:
+            if self.active_themed_context_popup is popup:
+                self.active_themed_context_popup = None
+            binding = self.active_themed_context_binding
+            if binding is not None:
+                widget, sequence, funcid = binding
+                try:
+                    widget.unbind(sequence, funcid)
+                except tk.TclError:
+                    pass
+                if self.active_themed_context_binding == binding:
+                    self.active_themed_context_binding = None
+
+        popup.bind("<Destroy>", cleanup_menu_state, add="+")
+
+        popup.update_idletasks()
+        screen_w = popup.winfo_screenwidth()
+        screen_h = popup.winfo_screenheight()
+        width = popup.winfo_reqwidth()
+        height = popup.winfo_reqheight()
+        x = max(8, min(int(x_root), screen_w - width - 12))
+        y = max(8, min(int(y_root), screen_h - height - 48))
+        popup.geometry(f"{width}x{height}+{x}+{y}")
+        popup.deiconify()
+        try:
+            popup.focus_force()
+        except tk.TclError:
+            pass
+
+        def close_menu(_event: tk.Event | None = None) -> str:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+            return "break"
+
+        # Do not close this popup on FocusOut. On initial review-window open,
+        # Windows/Tk can fire FocusOut immediately after an overrideredirect
+        # popup is shown. Instead, install a delayed outside-click handler.
+        # The delay keeps the original right-click that opened the menu from
+        # immediately closing it again, while still letting a normal click away
+        # close the menu and letting a second right-click replace it.
+        popup.bind("<Escape>", close_menu)
+
+        def install_outside_click_close() -> None:
+            try:
+                owner = parent.winfo_toplevel()
+            except tk.TclError:
+                return
+            if self.active_themed_context_popup is not popup:
+                return
+
+            def close_if_clicked_outside(_event: tk.Event) -> None:
+                if self.active_themed_context_popup is popup:
+                    self.close_active_themed_context_menu()
+
+            try:
+                funcid = owner.bind("<ButtonPress>", close_if_clicked_outside, add="+")
+                self.active_themed_context_binding = (owner, "<ButtonPress>", funcid)
+            except tk.TclError:
+                pass
+
+        try:
+            popup.after(125, install_outside_click_close)
+        except tk.TclError:
+            pass
+
+    def ask_themed_text(
+        self,
+        parent: tk.Widget,
+        title: str,
+        message: str,
+        initialvalue: str = "",
+    ) -> str | None:
+        if ctk is None:
+            return simpledialog.askstring(title, message, initialvalue=initialvalue, parent=parent)
+
+        result: dict[str, str | None] = {"value": None}
+        prompt = ctk.CTkToplevel(parent)
+        prompt.title(title)
+        prompt.configure(fg_color=self.APP_BG)
+        prompt.resizable(False, False)
+        self.set_window_icon(prompt)
+        try:
+            prompt.transient(parent.winfo_toplevel())
+            prompt.grab_set()
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            prompt,
+            fg_color=self.CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+        shell.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            shell,
+            text=title,
+            font=("Segoe UI", 17, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 2))
+        ctk.CTkLabel(
+            shell,
+            text=message,
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
+
+        text_box = ctk.CTkTextbox(
+            shell,
+            width=430,
+            height=110,
+            corner_radius=9,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            font=("Segoe UI", 12),
+        )
+        text_box.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 12))
+        text_box.insert("1.0", str(initialvalue).replace("\\n", "\n"))
+
+        button_row = ctk.CTkFrame(shell, fg_color="transparent")
+        button_row.grid(row=3, column=0, sticky="e", padx=16, pady=(0, 14))
+
+        def cancel() -> None:
+            result["value"] = None
+            prompt.destroy()
+
+        def save() -> None:
+            result["value"] = text_box.get("1.0", "end-1c").strip()
+            prompt.destroy()
+
+        ctk.CTkButton(
+            button_row,
+            text="Cancel",
+            command=cancel,
+            width=96,
+            height=36,
+            corner_radius=8,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(
+            button_row,
+            text="Save Text",
+            command=save,
+            width=116,
+            height=36,
+            corner_radius=8,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("check", 15, "#ffffff", "left"),
+        ).pack(side=tk.LEFT)
+
+        prompt.update_idletasks()
+        owner = parent.winfo_toplevel()
+        try:
+            x = owner.winfo_rootx() + max(40, (owner.winfo_width() - prompt.winfo_reqwidth()) // 2)
+            y = owner.winfo_rooty() + max(40, (owner.winfo_height() - prompt.winfo_reqheight()) // 3)
+            prompt.geometry(f"{prompt.winfo_reqwidth()}x{prompt.winfo_reqheight()}+{x}+{y}")
+        except tk.TclError:
+            pass
+
+        def keep_text_prompt_in_front() -> None:
+            try:
+                owner.deiconify()
+                owner.lift()
+            except tk.TclError:
+                pass
+            try:
+                prompt.deiconify()
+                prompt.lift(owner)
+                prompt.focus_force()
+            except tk.TclError:
+                pass
+            try:
+                prompt.attributes("-topmost", True)
+                prompt.after(350, lambda: prompt.attributes("-topmost", False))
+            except tk.TclError:
+                pass
+            try:
+                text_box.focus_set()
+            except tk.TclError:
+                pass
+
+        keep_text_prompt_in_front()
+        prompt.after(100, keep_text_prompt_in_front)
+        prompt.protocol("WM_DELETE_WINDOW", cancel)
+        prompt.bind("<Escape>", lambda _event: cancel())
+        prompt.wait_window()
+        try:
+            owner.deiconify()
+            owner.lift()
+            owner.focus_force()
+        except tk.TclError:
+            pass
+        return result["value"]
+
+
+    @classmethod
+    def preferred_ui_settings_path(cls) -> Path:
+        project_path = programmer.project_root() / cls.UI_SETTINGS_FILE_NAME
+        try:
+            project_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", delete=True, dir=str(project_path.parent), encoding="utf-8"):
+                pass
+            return project_path
+        except Exception:
+            appdata = os.environ.get("APPDATA")
+            base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+            return base / "Shower Programmer" / cls.UI_SETTINGS_FILE_NAME
+
+    def load_ui_settings(self) -> dict[str, object]:
+        path = self.preferred_ui_settings_path()
+        try:
+            if path.exists():
+                with path.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+        return {}
+
+    def save_ui_settings(self) -> None:
+        path = self.preferred_ui_settings_path()
+        data = {
+            "dark_mode": bool(self.dark_mode_var.get()),
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, sort_keys=True)
+            self.ui_settings = data
+        except Exception:
+            pass
+
+    def on_close(self) -> None:
+        self.save_ui_settings()
+        self.root.destroy()
+
+    def apply_ui_mode_palette(self) -> None:
+        dark = bool(getattr(self, "dark_mode_var", tk.BooleanVar(value=False)).get())
+        self.is_dark_mode = dark
+        if dark:
+            self.APP_BG = "#111827"
+            self.CARD_BG = "#1f2937"
+            self.SOFT_CARD_BG = "#243145"
+            self.PANEL_BG = "#182230"
+            self.BORDER = "#344054"
+            self.ACCENT = "#3b82f6"
+            self.ACCENT_DARK = "#60a5fa"
+            self.ACCENT_LIGHT = "#1e3a5f"
+            self.TEXT = "#f9fafb"
+            self.MUTED = "#98a2b3"
+            self.SUCCESS = "#32d583"
+            self.WARNING = "#fdb022"
+            self.DANGER = "#f97066"
+            self.SIDEBAR_BG = "#030712"
+            self.SIDEBAR_CARD_BG = "#111827"
+            self.SIDEBAR_TEXT = "#f9fafb"
+            self.SIDEBAR_MUTED = "#98a2b3"
+            self.SIDEBAR_BORDER = "#374151"
+            self.ENTRY_BG = "#111827"
+            self.BUTTON_BG = "#243145"
+            self.BUTTON_HOVER = "#2f3f56"
+            self.BUTTON_TEXT = "#f9fafb"
+            self.TREE_BG = "#111827"
+            self.TREE_HEADER_BG = "#1f2937"
+            self.TREE_HEADER_TEXT = "#d0d5dd"
+            self.TREE_SELECTED_BG = "#1d4ed8"
+            self.TREE_SELECTED_TEXT = "#ffffff"
+            self.PREVIEW_BG = "#0f172a"
+            self.PREVIEW_CARD_BG = "#111827"
+            self.DIVIDER = "#344054"
+            self.METRIC_ICON_BG = "#0f172a"
+            self.PROGRESS_TRACK = "#0b1220"
+            self.PROGRESS_FILL = "#3b82f6"
+            self.SCROLL_TRACK = "#111827"
+            self.SCROLL_THUMB = "#475467"
+            self.SCROLL_ACTIVE = "#667085"
+        else:
+            self.APP_BG = "#e7edf5"
+            self.CARD_BG = "#ffffff"
+            self.SOFT_CARD_BG = "#f3f7fc"
+            self.PANEL_BG = "#f6f9fd"
+            self.BORDER = "#cbd6e2"
+            self.ACCENT = "#2563eb"
+            self.ACCENT_DARK = "#1d4ed8"
+            self.ACCENT_LIGHT = "#eaf2ff"
+            self.TEXT = "#111827"
+            self.MUTED = "#667085"
+            self.SUCCESS = "#12b76a"
+            self.WARNING = "#f79009"
+            self.DANGER = "#d92d20"
+            self.SIDEBAR_BG = "#ffffff"
+            self.SIDEBAR_CARD_BG = "#f8fbff"
+            self.SIDEBAR_TEXT = self.TEXT
+            self.SIDEBAR_MUTED = self.MUTED
+            self.SIDEBAR_BORDER = self.BORDER
+            self.ENTRY_BG = "#ffffff"
+            self.BUTTON_BG = "#ffffff"
+            self.BUTTON_HOVER = "#eaf2ff"
+            self.BUTTON_TEXT = "#344054"
+            self.TREE_BG = "#ffffff"
+            self.TREE_HEADER_BG = "#f1f5fb"
+            self.TREE_HEADER_TEXT = "#344054"
+            self.TREE_SELECTED_BG = "#dbeafe"
+            self.TREE_SELECTED_TEXT = "#111827"
+            self.PREVIEW_BG = "#eef4fa"
+            self.PREVIEW_CARD_BG = "#fbfdff"
+            self.DIVIDER = "#eef2f7"
+            self.METRIC_ICON_BG = "#ffffff"
+            self.PROGRESS_TRACK = "#d7e2ee"
+            self.PROGRESS_FILL = "#2563eb"
+            self.SCROLL_TRACK = "#e2e8f0"
+            self.SCROLL_THUMB = "#98a2b3"
+            self.SCROLL_ACTIVE = "#667085"
+
+    def capture_tree_snapshot(self) -> tuple[list[tuple[tuple[str, ...], tuple[str, ...]]], list[str]]:
+        if not hasattr(self, "tree"):
+            return [], []
+        rows: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        selection_orders: list[str] = []
+        try:
+            selected_rows = set(self.tree.selection())
+            for row_id in self.tree.get_children():
+                values = tuple(str(value) for value in self.tree.item(row_id, "values"))
+                tags = tuple(str(tag) for tag in self.tree.item(row_id, "tags"))
+                rows.append((values, tags))
+                if row_id in selected_rows and len(values) >= 5:
+                    selection_orders.append(values[4])
+        except tk.TclError:
+            return [], []
+        return rows, selection_orders
+
+    def restore_tree_snapshot(
+        self,
+        rows: list[tuple[tuple[str, ...], tuple[str, ...]]],
+        selection_orders: list[str],
+    ) -> None:
+        if not hasattr(self, "tree"):
+            return
+        self.tree_rows.clear()
+        selected_row_ids: list[str] = []
+        for values, tags in rows:
+            row_id = self.tree.insert("", tk.END, values=values, tags=tags)
+            if len(values) >= 5:
+                aw_order = values[4]
+                self.tree_rows[aw_order] = row_id
+                if aw_order in selection_orders:
+                    selected_row_ids.append(row_id)
+        if selected_row_ids:
+            self.tree.selection_set(*selected_row_ids)
+        self.update_summary_strip()
+
+    def toggle_color_mode(self) -> None:
+        if self.is_busy:
+            self.dark_mode_var.set(not self.dark_mode_var.get())
+            self.status_var.set("Finish the current task before changing the color mode.")
+            return
+        rows, selection_orders = self.capture_tree_snapshot()
+        for child in list(self.root.winfo_children()):
+            try:
+                child.destroy()
+            except tk.TclError:
+                pass
+        self.ui_icon_cache.clear()
+        self.ui_icon_pil_cache.clear()
+        self.ctk_icon_cache.clear()
+        self.configure_styles()
+        self.build_ui()
+        self.restore_tree_snapshot(rows, selection_orders)
+        self.force_main_window_maximized()
+        self.save_ui_settings()
+        mode_name = "Dark shop mode" if self.dark_mode_var.get() else "Light mode"
+        self.status_var.set(f"{mode_name} enabled.")
+
+    def configure_styles(self) -> None:
+        self.apply_ui_mode_palette()
         if ctk is not None:
-            ctk.set_appearance_mode("Light")
+            ctk.set_appearance_mode("Dark" if self.dark_mode_var.get() else "Light")
             ctk.set_default_color_theme("blue")
-        self.root.configure(bg=bg)
+
+        self.root.configure(bg=self.APP_BG)
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
 
-        style.configure("TFrame", background=bg)
-        style.configure("AppHeader.TFrame", background=bg)
-
-        # Outer white cards only. Do not use this for every nested row.
-        style.configure("Card.TFrame", background=card)
-
-        # Inner content areas. No border, so sections look seamless.
-        style.configure("SectionBody.TFrame", background=card)
-        style.configure("Toolbar.TFrame", background=card)
-
+        style.configure("TFrame", background=self.APP_BG)
+        style.configure("Card.TFrame", background=self.CARD_BG)
+        style.configure("SectionBody.TFrame", background=self.CARD_BG)
+        style.configure("Toolbar.TFrame", background=self.CARD_BG)
         style.configure("Metric.TFrame", background=self.SOFT_CARD_BG)
-        style.configure("TLabel", background=bg, foreground=text)
-        style.configure("Card.TLabel", background=card, foreground=text)
-        style.configure("Metric.TLabel", background="#f8fbff", foreground=text)
-        style.configure(
-            "PanelHeader.TFrame",
-            background=self.SOFT_CARD_BG,
-        )
-        style.configure(
-            "PanelHeader.TLabel",
-            background=self.SOFT_CARD_BG,
-            foreground="#17365f",
-            font=("Segoe UI", 10, "bold"),
-        )
-        style.configure(
-            "InfoStrip.TLabel",
-            background=self.SOFT_CARD_BG,
-            foreground="#2c3e56",
-            font=("Segoe UI", 9),
-        )
-        style.configure(
-            "Section.TLabel",
-            font=("Segoe UI", 9, "bold"),
-            foreground="#1f4e86",
-            background=card,
-        )
-        style.configure("Muted.TLabel", foreground=muted, background=bg)
-        style.configure("Status.TLabel", foreground=muted, background=bg)
-        style.configure("Summary.TLabel", foreground=muted, background=bg)
 
-        style.configure(
-            "Title.TLabel",
-            font=("Segoe UI", 18, "bold"),
-            foreground="#0f172a",
-            background=bg,
-        )
-
-        style.configure(
-            "MetricNumber.TLabel",
-            font=("Segoe UI", 15, "bold"),
-            foreground=blue,
-            background=self.SOFT_CARD_BG,
-        )
-        style.configure(
-            "MetricCaption.TLabel",
-            font=("Segoe UI", 8, "bold"),
-            foreground="#315f9f",
-            background=self.SOFT_CARD_BG,
-        )
+        style.configure("TLabel", background=self.APP_BG, foreground=self.TEXT, font=("Segoe UI", 10))
+        style.configure("Card.TLabel", background=self.CARD_BG, foreground=self.TEXT, font=("Segoe UI", 10))
+        style.configure("Metric.TLabel", background=self.SOFT_CARD_BG, foreground=self.TEXT, font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background=self.APP_BG, foreground=self.MUTED, font=("Segoe UI", 9))
+        style.configure("Status.TLabel", background=self.CARD_BG, foreground=self.MUTED, font=("Segoe UI", 10))
+        style.configure("Summary.TLabel", background=self.CARD_BG, foreground=self.MUTED, font=("Segoe UI", 10, "bold"))
+        style.configure("Title.TLabel", background=self.APP_BG, foreground=self.TEXT, font=("Segoe UI", 20, "bold"))
+        style.configure("Section.TLabel", background=self.CARD_BG, foreground=self.TEXT, font=("Segoe UI", 10, "bold"))
+        style.configure("PanelHeader.TFrame", background=self.SOFT_CARD_BG)
+        style.configure("PanelHeader.TLabel", background=self.SOFT_CARD_BG, foreground=self.TEXT, font=("Segoe UI", 10, "bold"))
+        style.configure("InfoStrip.TLabel", background=self.SOFT_CARD_BG, foreground=self.MUTED, font=("Segoe UI", 9))
 
         style.configure(
             "TEntry",
-            padding=(7, 4),
-            fieldbackground="#ffffff",
-            bordercolor="#cbd6e2",
-            lightcolor="#dce6f2",
-            darkcolor="#cbd6e2",
+            padding=(8, 6),
+            fieldbackground=self.ENTRY_BG,
+            foreground=self.TEXT,
+            bordercolor="#cfd8e3",
+            lightcolor="#e4eaf1",
+            darkcolor="#cfd8e3",
+            insertcolor=self.TEXT,
         )
 
-        style.configure("TButton", padding=(11, 6), font=("Segoe UI", 9))
+        style.configure("TButton", padding=(12, 7), font=("Segoe UI", 9, "bold"))
         style.configure(
             "Accent.TButton",
             padding=(16, 8),
             font=("Segoe UI", 9, "bold"),
-            background=blue,
+            background=self.ACCENT,
             foreground="#ffffff",
         )
         style.map(
             "Accent.TButton",
-            background=[
-                ("active", blue_dark),
-                ("pressed", "#184f94"),
-                ("disabled", "#9dbce0"),
-            ],
+            background=[("active", self.ACCENT_DARK), ("pressed", "#1e40af"), ("disabled", "#9db7e9")],
             foreground=[("disabled", "#f3f8ff")],
         )
-
         style.configure(
             "Action.TButton",
             padding=(13, 8),
             font=("Segoe UI", 9, "bold"),
-            background="#f7fbff",
-            foreground="#1f3555",
+            background=self.BUTTON_BG,
+            foreground=self.BUTTON_TEXT,
         )
-        style.map(
-            "Action.TButton",
-            background=[("active", "#eaf4ff"), ("pressed", "#d8ebff")],
-        )
-
+        style.map("Action.TButton", background=[("active", self.ACCENT_LIGHT), ("pressed", self.BUTTON_HOVER)])
         style.configure(
             "Primary.Action.TButton",
             padding=(13, 8),
             font=("Segoe UI", 9, "bold"),
-            background=blue,
+            background=self.ACCENT,
             foreground="#ffffff",
         )
         style.map(
             "Primary.Action.TButton",
-            background=[("active", blue_dark), ("pressed", "#184f94")],
-            foreground=[("disabled", "#eaf2fb")],
+            background=[("active", self.ACCENT_DARK), ("pressed", "#1e40af")],
+            foreground=[("disabled", "#eaf2ff")],
         )
 
-        style.configure("TCheckbutton", background=card, foreground="#1f2933")
-
+        style.configure("TCheckbutton", background=self.CARD_BG, foreground=self.TEXT, font=("Segoe UI", 10))
         style.configure(
             "Horizontal.TProgressbar",
-            troughcolor="#dbe5ef",
-            background="#22c55e",
-            bordercolor="#cbd5e1",
-            lightcolor="#22c55e",
-            darkcolor="#15803d",
+            troughcolor=self.PROGRESS_TRACK,
+            background=self.PROGRESS_FILL,
+            bordercolor=self.PROGRESS_TRACK,
+            lightcolor=self.PROGRESS_FILL,
+            darkcolor=self.PROGRESS_FILL,
+            thickness=12,
         )
+        style.configure(
+            "Vertical.TScrollbar",
+            gripcount=0,
+            background=self.SCROLL_THUMB,
+            darkcolor=self.SCROLL_THUMB,
+            lightcolor=self.SCROLL_THUMB,
+            troughcolor=self.SCROLL_TRACK,
+            bordercolor=self.SCROLL_TRACK,
+            arrowcolor=self.MUTED,
+            relief="flat",
+            width=14,
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            gripcount=0,
+            background=self.SCROLL_THUMB,
+            darkcolor=self.SCROLL_THUMB,
+            lightcolor=self.SCROLL_THUMB,
+            troughcolor=self.SCROLL_TRACK,
+            bordercolor=self.SCROLL_TRACK,
+            arrowcolor=self.MUTED,
+            relief="flat",
+            width=14,
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[("active", self.SCROLL_ACTIVE), ("pressed", self.SCROLL_ACTIVE)],
+            arrowcolor=[("active", self.TEXT)],
+        )
+        style.map(
+            "Horizontal.TScrollbar",
+            background=[("active", self.SCROLL_ACTIVE), ("pressed", self.SCROLL_ACTIVE)],
+            arrowcolor=[("active", self.TEXT)],
+        )
+        try:
+            style.layout(
+                "Vertical.TScrollbar",
+                [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})],
+            )
+            style.layout(
+                "Horizontal.TScrollbar",
+                [("Horizontal.Scrollbar.trough", {"sticky": "ew", "children": [("Horizontal.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})],
+            )
+        except tk.TclError:
+            pass
 
         style.configure(
             "Treeview",
-            rowheight=28,
-            fieldbackground="#ffffff",
-            background="#ffffff",
-            foreground=text,
-            bordercolor=border,
+            rowheight=34,
+            fieldbackground=self.TREE_BG,
+            background=self.TREE_BG,
+            foreground=self.TEXT,
+            bordercolor=self.BORDER,
+            borderwidth=0,
+            font=("Segoe UI", 9),
         )
         style.configure(
             "Treeview.Heading",
             font=("Segoe UI", 9, "bold"),
-            background="#eaf3fd",
-            foreground="#235ea4",
+            background=self.TREE_HEADER_BG,
+            foreground=self.TREE_HEADER_TEXT,
             relief="flat",
+            padding=(10, 9),
         )
         style.map(
             "Treeview",
-            background=[("selected", "#d7eaff")],
-            foreground=[("selected", "#102033")],
+            background=[("selected", self.TREE_SELECTED_BG)],
+            foreground=[("selected", self.TREE_SELECTED_TEXT)],
         )
-
+        style.configure(
+            "TCombobox",
+            fieldbackground=self.ENTRY_BG,
+            background=self.BUTTON_BG,
+            foreground=self.TEXT,
+            arrowcolor=self.TEXT,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            insertcolor=self.TEXT,
+            selectbackground=self.ENTRY_BG,
+            selectforeground=self.TEXT,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", self.ENTRY_BG), ("disabled", self.PANEL_BG)],
+            background=[("readonly", self.BUTTON_BG), ("active", self.BUTTON_HOVER)],
+            foreground=[("readonly", self.TEXT), ("disabled", self.MUTED)],
+            selectbackground=[("readonly", self.ENTRY_BG)],
+            selectforeground=[("readonly", self.TEXT)],
+            arrowcolor=[("readonly", self.TEXT), ("disabled", self.MUTED)],
+        )
+        style.configure(
+            "Review.TCombobox",
+            fieldbackground=self.ENTRY_BG,
+            background=self.BUTTON_BG,
+            foreground=self.TEXT,
+            arrowcolor=self.TEXT,
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            selectbackground=self.ENTRY_BG,
+            selectforeground=self.TEXT,
+            padding=(8, 6),
+        )
+        style.map(
+            "Review.TCombobox",
+            fieldbackground=[("readonly", self.ENTRY_BG), ("disabled", self.PANEL_BG)],
+            background=[("readonly", self.BUTTON_BG), ("active", self.BUTTON_HOVER)],
+            foreground=[("readonly", self.TEXT), ("disabled", self.MUTED)],
+            selectbackground=[("readonly", self.ENTRY_BG)],
+            selectforeground=[("readonly", self.TEXT)],
+            arrowcolor=[("readonly", self.TEXT), ("disabled", self.MUTED)],
+        )
+        try:
+            self.root.option_add("*TCombobox*Listbox.background", self.ENTRY_BG)
+            self.root.option_add("*TCombobox*Listbox.foreground", self.TEXT)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
+            self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        except tk.TclError:
+            pass
+        try:
+            style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        except tk.TclError:
+            pass
     def ui_icon(self, name: str, size: int = 18, color: str = "#1f5fa8") -> tk.PhotoImage | None:
-        key = (name, size, color)
+        legacy_key = (name, size, color)
+        key = (name, size, color, "modern_v2")
         cached = self.ui_icon_cache.get(key)
+        if cached is None:
+            cached = self.ui_icon_cache.get(legacy_key)
         if cached is not None:
             return cached
         if Image is None or ImageDraw is None or ImageTk is None:
             return None
 
-        scale = 4
+        scale = 5
         canvas_size = max(1, size * scale)
         image = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
         draw = ImageDraw.Draw(image)
-        stroke = max(2, int(round(size * scale / 9)))
+        stroke = max(2, int(round(size * scale / 12)))
+        thin = max(1, int(round(stroke * 0.72)))
+        view = 24.0
+        unit = canvas_size / view
 
-        def p(*values: float) -> tuple[int, ...]:
-            return tuple(int(round(value * scale)) for value in values)
+        def xy(x: float, y: float) -> tuple[int, int]:
+            return int(round(x * unit)), int(round(y * unit))
 
-        def line(points: list[tuple[float, float]], width: float = 2.0) -> None:
-            draw.line([(p(x, y)[0], p(x, y)[1]) for x, y in points], fill=color, width=max(1, int(round(width * scale))))
+        def box(x1: float, y1: float, x2: float, y2: float) -> tuple[int, int, int, int]:
+            return (*xy(x1, y1), *xy(x2, y2))
+
+        def line(points: list[tuple[float, float]], width: int | None = None) -> None:
+            draw.line([xy(x, y) for x, y in points], fill=color, width=width or stroke, joint="curve")
+
+        def rect(x1: float, y1: float, x2: float, y2: float, radius: float = 3.0, width: int | None = None, fill: str | None = None) -> None:
+            draw.rounded_rectangle(box(x1, y1, x2, y2), radius=int(round(radius * unit)), outline=color, width=width or stroke, fill=fill)
+
+        def circle(cx: float, cy: float, r: float, width: int | None = None, fill: str | None = None) -> None:
+            draw.ellipse(box(cx - r, cy - r, cx + r, cy + r), outline=color, width=width or stroke, fill=fill)
+
+        def poly(points: list[tuple[float, float]], fill: str | None = None, outline: str | None = None, width: int | None = None) -> None:
+            scaled = [xy(x, y) for x, y in points]
+            draw.polygon(scaled, fill=fill, outline=outline)
+            if outline and width:
+                draw.line(scaled + [scaled[0]], fill=outline, width=width, joint="curve")
+
+        def arc(x1: float, y1: float, x2: float, y2: float, start: float, end: float, width: int | None = None) -> None:
+            draw.arc(box(x1, y1, x2, y2), start=start, end=end, fill=color, width=width or stroke)
+
+        def document_icon(label: str | None = None) -> None:
+            line([(7, 3), (14, 3), (18, 7), (18, 21), (6, 21), (6, 3), (7, 3)])
+            line([(14, 3.2), (14, 7.2), (18, 7.2)], thin)
+            if label == "dxf":
+                line([(8.6, 14.8), (11.0, 12.0), (13.0, 15.0), (15.5, 11.0)], thin)
+                circle(8.6, 14.8, 0.75, fill=color, width=thin)
+                circle(15.5, 11.0, 0.75, fill=color, width=thin)
+            elif label == "orders":
+                line([(9, 10), (15, 10)], thin)
+                line([(9, 13), (15, 13)], thin)
+                line([(9, 16), (14, 16)], thin)
+                circle(7.6, 10, 0.35, fill=color, width=thin)
+                circle(7.6, 13, 0.35, fill=color, width=thin)
+                circle(7.6, 16, 0.35, fill=color, width=thin)
+            else:
+                line([(8.7, 11), (15.3, 11)], thin)
+                line([(8.7, 14), (15.3, 14)], thin)
+                line([(8.7, 17), (13.8, 17)], thin)
 
         icon = name.lower().replace("-", "_")
         if icon in {"folder", "open_folder"}:
-            draw.rounded_rectangle(p(2, 5, 16, 15), radius=p(2)[0], outline=color, width=stroke)
-            line([(3.5, 6), (7.2, 6), (8.2, 8), (15, 8)], width=2)
+            rect(3, 7.5, 21, 19, radius=2.6)
+            line([(4.5, 8), (8.7, 8), (10.1, 10.3), (19.5, 10.3)], thin)
         elif icon in {"scan", "search"}:
-            draw.ellipse(p(3, 3, 11.5, 11.5), outline=color, width=stroke)
-            line([(10.2, 10.2), (15, 15)], width=2.2)
+            circle(10.5, 10.5, 5.8)
+            line([(15.0, 15.0), (20.0, 20.0)], stroke)
+            circle(10.5, 10.5, 2.0, width=thin)
         elif icon in {"check", "check_circle", "ready", "checked"}:
-            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
-            line([(5.8, 9.3), (8.0, 11.5), (12.7, 6.5)], width=2.1)
+            circle(12, 12, 8.3)
+            line([(7.7, 12.2), (10.5, 15.0), (16.7, 8.7)], stroke)
         elif icon == "play":
-            draw.polygon([p(6, 4), p(14, 9), p(6, 14)], fill=color)
+            circle(12, 12, 8.5, width=thin)
+            poly([(10, 8), (16.2, 12), (10, 16)], fill=color)
         elif icon == "eye":
-            draw.ellipse(p(2, 5.2, 16, 12.8), outline=color, width=stroke)
-            draw.ellipse(p(7.2, 7.2, 10.8, 10.8), fill=color)
+            line([(3.8, 12), (6.8, 8.3), (12, 6.8), (17.2, 8.3), (20.2, 12), (17.2, 15.7), (12, 17.2), (6.8, 15.7), (3.8, 12)], thin)
+            circle(12, 12, 2.7, fill=color, width=thin)
         elif icon == "trash":
-            line([(4, 5), (14, 5)], width=2)
-            line([(7, 3), (11, 3)], width=2)
-            draw.rounded_rectangle(p(5, 6, 13, 15), radius=p(1.5)[0], outline=color, width=stroke)
-            line([(7.5, 8), (7.5, 13)], width=1.6)
-            line([(10.5, 8), (10.5, 13)], width=1.6)
+            line([(5.5, 7), (18.5, 7)], stroke)
+            line([(9, 4.7), (15, 4.7)], thin)
+            rect(7, 7.5, 17, 20, radius=2.0, width=thin)
+            line([(10, 10.2), (10, 17.2)], thin)
+            line([(14, 10.2), (14, 17.2)], thin)
         elif icon == "refresh":
-            draw.arc(p(3, 3, 15, 15), 35, 315, fill=color, width=stroke)
-            draw.polygon([p(13.2, 2.8), p(15.6, 4.0), p(13.8, 6.1)], fill=color)
+            arc(4.7, 5.0, 19.3, 19.6, 35, 305)
+            poly([(17.8, 5.3), (20.8, 5.5), (19.2, 8.2)], fill=color)
         elif icon == "rotate_left":
-            draw.arc(p(3, 3, 15, 15), 70, 340, fill=color, width=stroke)
-            draw.polygon([p(4.6, 4.0), p(3.0, 7.0), p(6.5, 6.4)], fill=color)
+            arc(5, 5, 19, 19, 70, 340)
+            poly([(6.9, 4.9), (4.3, 8.1), (8.4, 8.0)], fill=color)
         elif icon == "rotate_right":
-            draw.arc(p(3, 3, 15, 15), 200, 110, fill=color, width=stroke)
-            draw.polygon([p(13.4, 4.0), p(15.0, 7.0), p(11.5, 6.4)], fill=color)
+            arc(5, 5, 19, 19, 200, 110)
+            poly([(17.1, 4.9), (19.7, 8.1), (15.6, 8.0)], fill=color)
         elif icon == "link":
-            draw.rounded_rectangle(p(2, 7, 10, 12), radius=p(2.5)[0], outline=color, width=stroke)
-            draw.rounded_rectangle(p(8, 6, 16, 11), radius=p(2.5)[0], outline=color, width=stroke)
-            line([(6.4, 9.5), (11.6, 8.5)], width=1.6)
+            rect(3.8, 9.4, 12.6, 15.2, radius=2.8, width=thin)
+            rect(11.4, 8.8, 20.2, 14.6, radius=2.8, width=thin)
+            line([(9.0, 12.3), (15.0, 11.7)], thin)
         elif icon == "clock":
-            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
-            line([(9, 5.4), (9, 9.2), (12, 10.8)], width=1.8)
-        elif icon in {"file", "pdf", "dxf", "orders"}:
-            draw.line([p(5, 2), p(11.5, 2), p(14, 4.5), p(14, 16), p(4, 16), p(4, 2), p(5, 2)], fill=color, width=stroke)
-            line([(11.5, 2.2), (11.5, 5), (14, 5)], width=1.7)
-            line([(6.5, 8), (11.5, 8)], width=1.4)
-            line([(6.5, 11), (11.5, 11)], width=1.4)
+            circle(12, 12, 8.5)
+            line([(12, 7.3), (12, 12.3), (15.7, 14.2)], thin)
+        elif icon in {"file", "pdf"}:
+            document_icon("pdf")
+        elif icon in {"dxf", "program"}:
+            document_icon("dxf")
+        elif icon == "orders":
+            document_icon("orders")
         elif icon == "save":
-            draw.rounded_rectangle(p(3, 3, 15, 15), radius=p(1.5)[0], outline=color, width=stroke)
-            draw.rectangle(p(6, 4, 12.5, 7.5), outline=color, width=max(1, stroke - 1))
-            line([(6, 13), (12, 13)], width=1.8)
+            rect(4.5, 4.5, 19.5, 19.5, radius=2.5)
+            rect(7.4, 5.7, 16.4, 10.0, radius=1.0, width=thin)
+            line([(8, 17), (16, 17)], thin)
+            line([(16.5, 4.8), (19.1, 7.4)], thin)
         elif icon == "indicator":
-            draw.ellipse(p(5, 5, 13, 13), fill=color)
-            line([(3, 9), (5, 9)], width=1.4)
-            line([(13, 9), (15, 9)], width=1.4)
-            line([(9, 3), (9, 5)], width=1.4)
-            line([(9, 13), (9, 15)], width=1.4)
+            circle(12, 12, 4.4, fill=color)
+            line([(12, 3.8), (12, 7.0)], thin)
+            line([(12, 17.0), (12, 20.2)], thin)
+            line([(3.8, 12), (7.0, 12)], thin)
+            line([(17.0, 12), (20.2, 12)], thin)
         elif icon == "flip":
-            line([(4, 6), (13.5, 6)], width=1.9)
-            draw.polygon([p(13.5, 3.7), p(16, 6), p(13.5, 8.3)], fill=color)
-            line([(14, 12), (4.5, 12)], width=1.9)
-            draw.polygon([p(4.5, 9.7), p(2, 12), p(4.5, 14.3)], fill=color)
+            line([(5, 8), (18, 8)], stroke)
+            poly([(18, 5.2), (21, 8), (18, 10.8)], fill=color)
+            line([(19, 16), (6, 16)], stroke)
+            poly([(6, 13.2), (3, 16), (6, 18.8)], fill=color)
         elif icon == "text":
-            line([(4, 4), (14, 4)], width=2)
-            line([(9, 4), (9, 14)], width=2)
-            line([(6.5, 14), (11.5, 14)], width=2)
+            line([(5, 6), (19, 6)], stroke)
+            line([(12, 6), (12, 18)], stroke)
+            line([(8.4, 18), (15.6, 18)], stroke)
         elif icon in {"x", "close"}:
-            line([(5, 5), (13, 13)], width=2.2)
-            line([(13, 5), (5, 13)], width=2.2)
+            circle(12, 12, 8.5, width=thin)
+            line([(8.5, 8.5), (15.5, 15.5)], stroke)
+            line([(15.5, 8.5), (8.5, 15.5)], stroke)
         elif icon == "chevron_left":
-            line([(11.5, 4), (6.5, 9), (11.5, 14)], width=2.4)
+            line([(14.7, 6.2), (8.7, 12), (14.7, 17.8)], stroke)
         elif icon == "chevron_right":
-            line([(6.5, 4), (11.5, 9), (6.5, 14)], width=2.4)
+            line([(9.3, 6.2), (15.3, 12), (9.3, 17.8)], stroke)
         elif icon == "chevron_up":
-            line([(4, 11.5), (9, 6.5), (14, 11.5)], width=2.4)
+            line([(6.2, 14.7), (12, 8.7), (17.8, 14.7)], stroke)
         elif icon == "chevron_down":
-            line([(4, 6.5), (9, 11.5), (14, 6.5)], width=2.4)
+            line([(6.2, 9.3), (12, 15.3), (17.8, 9.3)], stroke)
         elif icon in {"send", "paper_plane"}:
-            draw.polygon([p(2.5, 4.5), p(16, 2.5), p(10.8, 15.5), p(8.4, 10.1)], outline=color)
-            line([(8.4, 10.1), (16, 2.5)], width=1.4)
+            poly([(3.8, 5.2), (21, 3.2), (14.9, 20.8), (11.5, 13.3)], outline=color, width=thin)
+            line([(11.5, 13.3), (21, 3.2)], thin)
         elif icon == "image":
-            draw.rounded_rectangle(p(3, 4, 15, 14), radius=p(1.5)[0], outline=color, width=stroke)
-            draw.ellipse(p(5, 6, 7.5, 8.5), fill=color)
-            line([(4.5, 13), (8, 9.5), (10, 11.4), (12.2, 8.6), (14.5, 13)], width=1.6)
-        elif icon == "program":
-            draw.line([p(5, 2), p(11.5, 2), p(14, 4.5), p(14, 16), p(4, 16), p(4, 2), p(5, 2)], fill=color, width=stroke)
-            line([(7.2, 8), (5.6, 9.7), (7.2, 11.4)], width=1.5)
-            line([(10.8, 8), (12.4, 9.7), (10.8, 11.4)], width=1.5)
+            rect(4, 5, 20, 19, radius=2.2)
+            circle(8, 9, 1.3, fill=color, width=thin)
+            line([(5.8, 17), (10, 12.7), (12.4, 15.0), (15.8, 11.2), (19, 17)], thin)
         elif icon == "info":
-            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
-            draw.ellipse(p(8.2, 5, 9.8, 6.6), fill=color)
-            line([(9, 8), (9, 12.7)], width=2)
+            circle(12, 12, 8.5)
+            circle(12, 8.1, 0.9, fill=color, width=thin)
+            line([(12, 11), (12, 16.4)], stroke)
         elif icon == "warning":
-            draw.polygon([p(9, 2.5), p(16, 15), p(2, 15)], outline=color)
-            line([(9, 6), (9, 10.5)], width=2)
-            draw.ellipse(p(8.2, 12, 9.8, 13.6), fill=color)
+            poly([(12, 3.7), (21, 20), (3, 20)], outline=color, width=stroke)
+            line([(12, 9), (12, 14.4)], stroke)
+            circle(12, 17.0, 0.85, fill=color, width=thin)
         elif icon == "minus_circle":
-            draw.ellipse(p(2.5, 2.5, 15.5, 15.5), outline=color, width=stroke)
-            line([(5.8, 9), (12.2, 9)], width=2.2)
+            circle(12, 12, 8.5)
+            line([(8, 12), (16, 12)], stroke)
         elif icon == "plus":
-            line([(9, 4), (9, 14)], width=2.2)
-            line([(4, 9), (14, 9)], width=2.2)
+            circle(12, 12, 8.5, width=thin)
+            line([(12, 7.5), (12, 16.5)], stroke)
+            line([(7.5, 12), (16.5, 12)], stroke)
         else:
-            draw.line([p(5, 2), p(11.5, 2), p(14, 4.5), p(14, 16), p(4, 16), p(4, 2), p(5, 2)], fill=color, width=stroke)
+            document_icon(None)
 
         resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
         image = image.resize((size, size), resampling)
         self.ui_icon_pil_cache[key] = image.copy()
+        self.ui_icon_pil_cache[legacy_key] = image.copy()
         photo = ImageTk.PhotoImage(image)
         self.ui_icon_cache[key] = photo
+        self.ui_icon_cache[legacy_key] = photo
         return photo
 
     def ctk_button_icon(self, name: str, size: int = 16, color: str = "#1f5fa8", compound: str = "left") -> dict[str, object]:
@@ -516,6 +1284,8 @@ class ShowerProgrammerApp:
 
     def app_logo_image(self, size: int = 24) -> Any:
         if ctk is None or Image is None:
+            return self.ctk_button_icon("dxf", size, self.ACCENT_DARK).get("image")
+        if bool(getattr(self, "dark_mode_var", tk.BooleanVar(value=False)).get()):
             return self.ctk_button_icon("dxf", size, self.ACCENT_DARK).get("image")
         key = ("app_logo", size, "native")
         cached = self.ctk_icon_cache.get(key)
@@ -543,35 +1313,43 @@ class ShowerProgrammerApp:
 
     def make_app_header(self, parent: Any, title: str, padx: int = 0) -> Any:
         header = ctk.CTkFrame(parent, fg_color="transparent")
-        header.pack(fill=tk.X, padx=padx, pady=(0, 8))
+        header.pack(fill=tk.X, padx=padx, pady=(0, 12))
 
-        row = ctk.CTkFrame(header, fg_color="transparent", height=34)
+        row = ctk.CTkFrame(header, fg_color="transparent", height=48)
         row.pack(fill=tk.X)
         row.pack_propagate(False)
 
         icon_box = ctk.CTkFrame(
             row,
-            fg_color="#e9f3ff",
-            corner_radius=7,
+            fg_color=self.SOFT_CARD_BG if not self.dark_mode_var.get() else self.PANEL_BG,
+            corner_radius=12,
             border_width=1,
-            border_color="#c7d9ec",
-            width=30,
-            height=30,
+            border_color=self.BORDER,
+            width=42,
+            height=42,
         )
-        icon_box.pack(side=tk.LEFT, pady=2)
+        icon_box.pack(side=tk.LEFT, pady=3)
         icon_box.pack_propagate(False)
-        logo = self.app_logo_image(22)
-        ctk.CTkLabel(icon_box, text="", image=logo, width=24, height=24).pack(expand=True)
-        ctk.CTkLabel(
-            row,
-            text=title,
-            font=("Segoe UI", 18, "bold"),
-            text_color="#101828",
-            anchor="w",
-        ).pack(side=tk.LEFT, padx=(10, 0))
-        ctk.CTkFrame(header, fg_color=self.BORDER, height=1, corner_radius=0).pack(fill=tk.X, pady=(7, 0))
-        return header
+        logo = self.app_logo_image(30)
+        ctk.CTkLabel(icon_box, text="", image=logo, width=34, height=34).pack(expand=True)
 
+        title_stack = ctk.CTkFrame(row, fg_color="transparent")
+        title_stack.pack(side=tk.LEFT, fill=tk.Y, expand=True, padx=(12, 0))
+        ctk.CTkLabel(
+            title_stack,
+            text=title,
+            font=("Segoe UI", 22, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            title_stack,
+            text="Production-ready shower sketch and DXF workflow",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(anchor=tk.W, pady=(0, 2))
+        return header
     def icon_label(self, parent: ttk.Frame, icon_name: str, size: int = 18, color: str = "#1f5fa8", style: str = "Card.TLabel") -> None:
         icon = self.ui_icon(icon_name, size=size, color=color)
         if icon is not None:
@@ -582,177 +1360,234 @@ class ShowerProgrammerApp:
             raise RuntimeError("CustomTkinter is required for the modern Shower Programmer GUI.")
 
         outer = ctk.CTkFrame(self.root, fg_color=self.APP_BG, corner_radius=0)
-        outer.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 10))
-        self.make_app_header(outer, "Shower Programmer")
+        outer.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+        outer.grid_columnconfigure(0, weight=0)
+        outer.grid_columnconfigure(1, weight=1)
+        outer.grid_rowconfigure(0, weight=1)
 
-        paths, paths_body = self.make_collapsible_section(outer, "FOLDERS", "folder", expanded=True)
-        paths.pack(fill=tk.X, pady=(0, 8))
+        sidebar = ctk.CTkFrame(
+            outer,
+            fg_color=self.SIDEBAR_BG,
+            corner_radius=18,
+            border_width=1,
+            border_color=self.SIDEBAR_BORDER,
+            width=268,
+        )
+        sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 14))
+        sidebar.grid_propagate(False)
+        sidebar.grid_rowconfigure(1, weight=1)
+        sidebar.grid_rowconfigure(7, weight=1)
+
+        brand = ctk.CTkFrame(sidebar, fg_color="transparent")
+        brand.grid(row=0, column=0, sticky="ew", padx=16, pady=(18, 14))
+        brand.grid_columnconfigure(1, weight=1)
+
+        logo_box = ctk.CTkFrame(
+            brand,
+            fg_color="#eaf2ff" if not self.dark_mode_var.get() else self.SIDEBAR_CARD_BG,
+            corner_radius=12,
+            width=44,
+            height=44,
+        )
+        logo_box.grid(row=0, column=0, rowspan=2, sticky="w")
+        logo_box.grid_propagate(False)
+        ctk.CTkLabel(logo_box, text="", image=self.app_logo_image(32)).pack(expand=True)
+        ctk.CTkLabel(
+            brand,
+            text="Shower Programmer",
+            font=("Segoe UI", 16, "bold"),
+            text_color=self.SIDEBAR_TEXT,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew", padx=(12, 0))
+        ctk.CTkLabel(
+            brand,
+            text="CNC batch control",
+            font=("Segoe UI", 11),
+            text_color=self.SIDEBAR_MUTED,
+            anchor="w",
+        ).grid(row=1, column=1, sticky="ew", padx=(12, 0))
+
+        center_stack = ctk.CTkFrame(sidebar, fg_color="transparent")
+        center_stack.grid(row=2, column=0, sticky="ew")
+        center_stack.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            center_stack,
+            text="WORKFLOW",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.SIDEBAR_MUTED,
+            anchor="center",
+        ).pack(fill=tk.X, padx=18, pady=(0, 7))
+
+        workflow = ctk.CTkFrame(center_stack, fg_color="transparent")
+        workflow.pack(fill=tk.X, padx=12)
+        self.make_sidebar_button(workflow, "Scan Orders", "scan", self.scan_orders, primary=True).pack(fill=tk.X, pady=(0, 8))
+        self.make_sidebar_button(workflow, "Process Selected", "check_circle", self.process_selected).pack(fill=tk.X, pady=(0, 8))
+        self.make_sidebar_button(workflow, "Process All", "play", self.process_all_orders).pack(fill=tk.X, pady=(0, 8))
+        self.make_sidebar_button(workflow, "Review Order", "eye", self.open_order_review).pack(fill=tk.X, pady=(0, 8))
+        self.make_sidebar_button(workflow, "Mark Checked", "check", self.mark_selected_orders_checked).pack(fill=tk.X)
+
+        options_card = ctk.CTkFrame(
+            center_stack,
+            fg_color=self.SIDEBAR_CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=self.SIDEBAR_BORDER,
+        )
+        options_card.pack(fill=tk.X, padx=12, pady=(18, 0))
+        ctk.CTkLabel(
+            options_card,
+            text="Run Options",
+            font=("Segoe UI", 12, "bold"),
+            text_color=self.SIDEBAR_TEXT,
+            anchor="w",
+        ).pack(fill=tk.X, padx=14, pady=(12, 8))
+        self.make_option_switch(options_card, "Overwrite outputs", self.force_var).pack(fill=tk.X, padx=14, pady=(0, 8))
+        self.make_option_switch(options_card, "Skip DXF output", self.skip_dxf_var).pack(fill=tk.X, padx=14, pady=(0, 8))
+        self.make_option_switch(options_card, "REMAKE batch", self.remake_var).pack(fill=tk.X, padx=14, pady=(0, 14))
+
+        ctk.CTkLabel(
+            center_stack,
+            text="TOOLS",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.SIDEBAR_MUTED,
+            anchor="center",
+        ).pack(fill=tk.X, padx=18, pady=(18, 7))
+
+        tools = ctk.CTkFrame(center_stack, fg_color="transparent")
+        tools.pack(fill=tk.X, padx=12)
+        self.make_sidebar_button(tools, "Clear Sketch Memory", "trash", self.clear_sketch_memory, compact=True).pack(fill=tk.X, pady=(0, 8))
+        self.make_sidebar_button(tools, "Check for Updates", "refresh", self.check_for_updates, compact=True).pack(fill=tk.X, pady=(0, 8))
+        self.make_sidebar_button(tools, "Install Shortcut", "link", self.install_shortcut, compact=True).pack(fill=tk.X)
+
+        send_card = ctk.CTkFrame(
+            sidebar,
+            fg_color="#0b5ed7",
+            corner_radius=14,
+            border_width=1,
+            border_color="#2e90fa",
+        )
+        send_card.grid(row=8, column=0, sticky="ew", padx=12, pady=(14, 16))
+        ctk.CTkLabel(
+            send_card,
+            text="Ready for shop?",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#ffffff",
+            anchor="w",
+        ).pack(fill=tk.X, padx=14, pady=(12, 2))
+        ctk.CTkLabel(
+            send_card,
+            text="Review generated sketches and send the selected batch.",
+            font=("Segoe UI", 10),
+            text_color="#dbeafe",
+            justify="left",
+            anchor="w",
+            wraplength=210,
+        ).pack(fill=tk.X, padx=14, pady=(0, 10))
+        ctk.CTkButton(
+            send_card,
+            text="Select All Orders",
+            command=lambda: self.select_all_orders(),
+            height=36,
+            corner_radius=10,
+            fg_color="transparent",
+            hover_color="#1d4ed8",
+            border_width=1,
+            border_color="#93c5fd",
+            text_color="#ffffff",
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+            **self.ctk_button_icon("check_circle", 16, "#ffffff", "left"),
+        ).pack(fill=tk.X, padx=14, pady=(0, 8))
+        ctk.CTkButton(
+            send_card,
+            text="Review / Send",
+            command=self.send_all_to_shop,
+            height=42,
+            corner_radius=10,
+            fg_color="#ffffff" if not self.dark_mode_var.get() else self.ACCENT,
+            hover_color="#eaf2ff" if not self.dark_mode_var.get() else self.ACCENT_DARK,
+            text_color="#1849a9" if not self.dark_mode_var.get() else "#ffffff",
+            font=("Segoe UI", 13, "bold"),
+            anchor="w",
+            **self.ctk_button_icon("send", 17, "#1849a9" if not self.dark_mode_var.get() else "#ffffff", "left"),
+        ).pack(fill=tk.X, padx=14, pady=(0, 14))
+
+        content = ctk.CTkFrame(outer, fg_color="transparent")
+        content.grid(row=0, column=1, sticky="nsew")
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(4, weight=1)
+
+        top_bar = ctk.CTkFrame(content, fg_color="transparent")
+        top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        top_bar.grid_columnconfigure(0, weight=1)
+
+        title_stack = ctk.CTkFrame(top_bar, fg_color="transparent")
+        title_stack.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            title_stack,
+            text="Production Dashboard",
+            font=("Segoe UI", 25, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            title_stack,
+            text="Import orders, process CNC files, review output, and send to the shop from one screen.",
+            font=("Segoe UI", 12),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(anchor=tk.W, pady=(1, 0))
+
+        header_actions = ctk.CTkFrame(top_bar, fg_color="transparent")
+        header_actions.grid(row=0, column=1, sticky="e")
+        ctk.CTkSwitch(
+            header_actions,
+            text="Dark mode",
+            variable=self.dark_mode_var,
+            command=self.toggle_color_mode,
+            progress_color=self.ACCENT,
+            button_color="#ffffff",
+            button_hover_color="#f2f4f7",
+            fg_color="#98a2b3" if not self.dark_mode_var.get() else "#475467",
+            text_color=self.TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        self.make_tool_button(header_actions, "Open Input", "folder", self.open_input_folder, width=140).pack(side=tk.LEFT, padx=(0, 8))
+        self.make_tool_button(header_actions, "Latest Batch", "clock", self.open_latest_batch, width=145).pack(side=tk.LEFT)
+
+        metrics = ctk.CTkFrame(content, fg_color="transparent")
+        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.add_metric_card(metrics, "orders", "Orders", "orders", self.ACCENT_DARK)
+        self.add_metric_card(metrics, "ready", "Ready", "check_circle", self.SUCCESS)
+        self.add_metric_card(metrics, "issues", "Issues", "warning", self.WARNING)
+        self.add_metric_card(metrics, "processed", "Processed", "refresh", "#7c3aed")
+        self.add_metric_card(metrics, "checked", "Checked", "checked", self.ACCENT_DARK)
+
+        paths, paths_body = self.make_collapsible_section(content, "Folder Setup", "folder", expanded=False)
+        paths.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         self.add_path_row(paths_body, 0, "Orders", self.folder_var, self.choose_folder)
         self.add_path_row(paths_body, 1, "Import From", self.import_source_var, self.choose_import_source)
         self.add_path_row(paths_body, 2, "Process Lists", self.process_list_var, self.choose_process_list)
         self.add_path_row(paths_body, 3, "Output", self.output_dir_var, self.choose_output_dir)
 
-        action_row = ctk.CTkFrame(outer, fg_color="transparent")
-        action_row.pack(fill=tk.X, pady=(0, 8))
-        action_row.columnconfigure(0, weight=1)
-        action_row.columnconfigure(1, weight=0)
+        table_outer = self.make_section(content, "Orders", "orders")
+        table_outer.grid(row=4, column=0, sticky="nsew")
+        table_outer.grid_columnconfigure(0, weight=1)
+        table_outer.grid_rowconfigure(1, weight=1)
 
-        actions = self.make_section(action_row, "MAIN ACTIONS", "play")
-        actions.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-
-        action_body = ctk.CTkFrame(actions, fg_color="transparent")
-        action_body.pack(fill=tk.X)
-
-        action_buttons = ctk.CTkFrame(action_body, fg_color="transparent")
-        action_buttons.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.make_main_action_button(
-            action_buttons,
-            text="Scan Orders",
-            icon_name="scan",
-            command=self.scan_orders,
-            primary=True,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-
-        self.make_main_action_button(
-            action_buttons,
-            text="Process Selected",
-            icon_name="check_circle",
-            command=self.process_selected,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-
-        self.make_main_action_button(
-            action_buttons,
-            text="Process All",
-            icon_name="play",
-            command=self.process_all_orders,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-
-        self.make_main_action_button(
-            action_buttons,
-            text="Review Order",
-            icon_name="eye",
-            command=self.open_order_review,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-
-        self.make_main_action_button(
-            action_buttons,
-            text="Mark Checked",
-            icon_name="check",
-            command=self.mark_selected_orders_checked,
-        ).pack(side=tk.LEFT)
-
-        options = ctk.CTkFrame(action_body, fg_color="transparent")
-        options.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0))
-
-        ctk.CTkCheckBox(
-            options,
-            text="Overwrite existing outputs",
-            variable=self.force_var,
-            font=("Segoe UI", 12),
-            text_color=self.TEXT,
-            fg_color=self.ACCENT,
-            hover_color=self.ACCENT_DARK,
-            border_color="#b7c6d6",
-        ).pack(anchor=tk.W, pady=(2, 5))
-
-        ctk.CTkCheckBox(
-            options,
-            text="Skip DXF output",
-            variable=self.skip_dxf_var,
-            font=("Segoe UI", 12),
-            text_color=self.TEXT,
-            fg_color=self.ACCENT,
-            hover_color=self.ACCENT_DARK,
-            border_color="#b7c6d6",
-        ).pack(anchor=tk.W, pady=5)
-
-        ctk.CTkCheckBox(
-            options,
-            text="REMAKE",
-            variable=self.remake_var,
-            font=("Segoe UI", 12),
-            text_color=self.TEXT,
-            fg_color=self.ACCENT,
-            hover_color=self.ACCENT_DARK,
-            border_color="#b7c6d6",
-        ).pack(anchor=tk.W, pady=(5, 0))
-
-        summary = self.make_section(action_row, "SUMMARY", "orders")
-        summary.grid(row=0, column=1, sticky="nsew")
-
-        metric_row = ctk.CTkFrame(summary, fg_color="transparent")
-        metric_row.pack(fill=tk.X)
-
-        self.add_metric_card(metric_row, "orders", "Orders", "orders", self.ACCENT_DARK)
-        self.add_metric_card(metric_row, "ready", "Ready", "check_circle", "#15945b")
-        self.add_metric_card(metric_row, "issues", "Issues", "warning", "#d97706")
-        self.add_metric_card(metric_row, "processed", "Processed", "refresh", "#6b4bb5")
-        self.add_metric_card(metric_row, "checked", "Checked", "checked", self.ACCENT_DARK)
-
-        maintenance = self.make_section(outer, "MAINTENANCE / TOOLS", "refresh")
-        maintenance.pack(fill=tk.X, pady=(0, 8))
-
-        maintenance_body = ctk.CTkFrame(maintenance, fg_color="transparent")
-        maintenance_body.pack(fill=tk.X)
-
-        tool_buttons = ctk.CTkFrame(maintenance_body, fg_color="transparent")
-        tool_buttons.pack(side=tk.LEFT)
-
-        self.make_tool_button(
-            tool_buttons,
-            text="Clear Sketch Memory",
-            icon_name="trash",
-            command=self.clear_sketch_memory,
-            width=210,
-        ).pack(side=tk.LEFT, padx=(0, 12))
-
-        self.make_tool_button(
-            tool_buttons,
-            text="Check for Updates",
-            icon_name="refresh",
-            command=self.check_for_updates,
-            width=210,
-        ).pack(side=tk.LEFT, padx=(0, 12))
-
-        self.make_tool_button(
-            tool_buttons,
-            text="Install Shortcut",
-            icon_name="link",
-            command=self.install_shortcut,
-            width=190,
-        ).pack(side=tk.LEFT)
-
-        file_actions = ctk.CTkFrame(maintenance_body, fg_color="transparent")
-        file_actions.pack(side=tk.RIGHT)
-
-        self.make_tool_button(
-            file_actions,
-            text="Open Input Folder",
-            icon_name="folder",
-            command=self.open_input_folder,
-            width=210,
-        ).pack(side=tk.LEFT, padx=(0, 12))
-
-        self.make_tool_button(
-            file_actions,
-            text="Open Latest Batch",
-            icon_name="clock",
-            command=self.open_latest_batch,
-            width=210,
-        ).pack(side=tk.LEFT)
-
-        table_outer = self.make_section(outer, "ORDERS", "orders")
-        table_outer.pack(fill=tk.BOTH, expand=True)
         table_frame = ctk.CTkFrame(table_outer, fg_color="transparent")
-        table_frame.pack(fill=tk.BOTH, expand=True)
+        table_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
         columns = ("status", "processed", "last_processed", "delivery", "order", "job", "customer", "items", "review", "pdf", "issues")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
         headings = {
             "status": "Status",
             "processed": "Processed",
             "last_processed": "Last Processed",
-            "delivery": "Delivery Date",
+            "delivery": "Delivery",
             "order": "A&W",
             "job": "Job",
             "customer": "Customer",
@@ -762,28 +1597,29 @@ class ShowerProgrammerApp:
             "issues": "Issues",
         }
         widths = {
-            "status": 74,
-            "processed": 78,
-            "last_processed": 132,
+            "status": 88,
+            "processed": 92,
+            "last_processed": 142,
             "delivery": 102,
-            "order": 82,
-            "job": 250,
-            "customer": 190,
-            "items": 104,
-            "review": 126,
-            "pdf": 220,
-            "issues": 360,
+            "order": 88,
+            "job": 260,
+            "customer": 210,
+            "items": 110,
+            "review": 134,
+            "pdf": 230,
+            "issues": 380,
         }
         for col in columns:
             self.tree.heading(col, text=headings[col])
-            min_width = 54 if col in {"status", "processed"} else 70
+            min_width = 62 if col in {"status", "processed"} else 74
             stretch = col in {"job", "customer", "pdf", "issues"}
             self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=stretch)
-        self.tree.tag_configure("OK", foreground="#0f7a3b")
-        self.tree.tag_configure("READY", foreground="#1f4e79")
-        self.tree.tag_configure("ISSUES", foreground="#9a5b00")
-        self.tree.tag_configure("FAILED", foreground="#b42318")
-        self.tree.tag_configure("SKIPPED", foreground="#b42318")
+
+        self.tree.tag_configure("OK", foreground=self.SUCCESS)
+        self.tree.tag_configure("READY", foreground=self.ACCENT_DARK)
+        self.tree.tag_configure("ISSUES", foreground=self.WARNING)
+        self.tree.tag_configure("FAILED", foreground=self.DANGER)
+        self.tree.tag_configure("SKIPPED", foreground=self.DANGER)
         self.tree.bind("<Double-1>", self.open_order_review)
         self.tree.bind("<Control-a>", self.select_all_orders)
         self.tree.bind("<Control-A>", self.select_all_orders)
@@ -794,16 +1630,19 @@ class ShowerProgrammerApp:
         self.tree.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
         x_scroll.grid(row=1, column=0, sticky="ew")
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
 
-        bottom = ctk.CTkFrame(outer, fg_color="transparent")
-        bottom.pack(fill=tk.X, pady=(8, 0))
+        bottom = ctk.CTkFrame(
+            content,
+            fg_color=self.CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        bottom.grid(row=5, column=0, sticky="ew", pady=(12, 0))
         bottom.columnconfigure(0, weight=1)
         bottom.columnconfigure(1, weight=0)
-        bottom.columnconfigure(2, weight=0)
-        self.progress = ttk.Progressbar(bottom, mode="determinate")
-        self.progress.grid(row=0, column=0, sticky="ew", ipady=2)
+        self.progress = ModernProgressBar(bottom, self, height=14)
+        self.progress.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 0), ipady=2)
         self.status_label = ctk.CTkLabel(
             bottom,
             textvariable=self.status_var,
@@ -812,29 +1651,46 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 12),
             width=520,
         )
-        self.status_label.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        send_buttons = ctk.CTkFrame(bottom, fg_color="transparent")
-        send_buttons.grid(row=0, column=2, sticky=tk.E, padx=(10, 0))
-        self.make_tool_button(
-            send_buttons,
-            text="Select All",
-            icon_name="check_circle",
-            command=self.select_all_orders,
-            width=140,
-        ).pack(side=tk.LEFT)
-        ctk.CTkButton(
-            send_buttons,
-            text="Review / Send",
-            command=self.send_all_to_shop,
-            width=170,
-            height=42,
-            corner_radius=7,
-            fg_color=self.ACCENT,
-            hover_color=self.ACCENT_DARK,
-            text_color="#ffffff",
-            font=("Segoe UI", 13, "bold"),
-            **self.ctk_button_icon("send", 17, "#ffffff", "left"),
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        self.status_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(9, 12))
+    def make_sidebar_button(
+        self,
+        parent: Any,
+        text: str,
+        icon_name: str,
+        command: Callable[..., object],
+        primary: bool = False,
+        compact: bool = False,
+    ) -> Any:
+        dark = bool(self.dark_mode_var.get())
+        return ctk.CTkButton(
+            parent,
+            text=text,
+            command=command,
+            height=42 if compact else 48,
+            corner_radius=11,
+            fg_color=self.ACCENT if primary else "transparent",
+            hover_color=self.ACCENT_DARK if primary else ("#263445" if dark else self.ACCENT_LIGHT),
+            border_width=0 if primary else 1,
+            border_color=self.SIDEBAR_BORDER,
+            text_color="#ffffff" if primary else self.SIDEBAR_TEXT,
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+            **self.ctk_button_icon(icon_name, 17, "#ffffff" if primary else ("#d0d5dd" if dark else self.ACCENT_DARK), "left"),
+        )
+
+    def make_option_switch(self, parent: Any, text: str, variable: tk.BooleanVar) -> Any:
+        dark = bool(self.dark_mode_var.get())
+        return ctk.CTkSwitch(
+            parent,
+            text=text,
+            variable=variable,
+            progress_color=self.ACCENT if dark else "#1d4ed8",
+            button_color="#f9fafb" if dark else "#ffffff",
+            button_hover_color="#e5e7eb" if dark else "#eff6ff",
+            fg_color="#344054" if dark else "#b7c6d8",
+            text_color=self.SIDEBAR_TEXT if dark else "#1f2937",
+            font=("Segoe UI", 11, "bold"),
+        )
 
     def make_main_action_button(
         self,
@@ -848,16 +1704,16 @@ class ShowerProgrammerApp:
             parent,
             text=text,
             command=command,
-            width=92,
-            height=62,
-            corner_radius=7,
-            fg_color=self.ACCENT if primary else self.PANEL_BG,
-            hover_color=self.ACCENT_DARK if primary else self.ACCENT_LIGHT,
+            width=124,
+            height=72,
+            corner_radius=13,
+            fg_color=self.ACCENT if primary else self.BUTTON_BG,
+            hover_color=self.ACCENT_DARK if primary else self.BUTTON_HOVER,
             border_width=0 if primary else 1,
-            border_color="#ccd9e8",
-            text_color="#ffffff" if primary else "#1f3555",
-            font=("Segoe UI", 10, "bold"),
-            **self.ctk_button_icon(icon_name, 23, "#ffffff" if primary else self.ACCENT_DARK, "top"),
+            border_color=self.BORDER,
+            text_color="#ffffff" if primary else self.BUTTON_TEXT,
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon(icon_name, 24, "#ffffff" if primary else self.ACCENT_DARK, "top"),
         )
 
     def make_tool_button(
@@ -873,13 +1729,13 @@ class ShowerProgrammerApp:
             text=text,
             command=command,
             width=width,
-            height=32,
-            corner_radius=7,
-            fg_color=self.PANEL_BG,
-            hover_color=self.ACCENT_LIGHT,
+            height=36,
+            corner_radius=10,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
             border_width=1,
-            border_color="#ccd9e8",
-            text_color="#1f3555",
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
             font=("Segoe UI", 11, "bold"),
             **self.ctk_button_icon(icon_name, 15, self.ACCENT_DARK, "left"),
         )
@@ -888,21 +1744,33 @@ class ShowerProgrammerApp:
         frame = ctk.CTkFrame(
             parent,
             fg_color=self.CARD_BG,
-            corner_radius=8,
+            corner_radius=16,
             border_width=1,
             border_color=self.BORDER,
         )
-        header = ctk.CTkFrame(frame, fg_color="transparent")
-        header.pack(fill=tk.X, padx=14, pady=(8, 7))
+        frame.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(frame, fg_color="transparent", height=48)
+        header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        header.grid_propagate(False)
+
+        title_cluster = ctk.CTkFrame(header, fg_color="transparent")
+        title_cluster.pack(side=tk.LEFT, fill=tk.Y)
         if icon_name:
-            ctk.CTkLabel(header, text="", image=self.ctk_button_icon(icon_name, 16, self.ACCENT_DARK).get("image"), width=18).pack(side=tk.LEFT, padx=(0, 8))
+            ctk.CTkLabel(
+                title_cluster,
+                text="",
+                image=self.ctk_button_icon(icon_name, 17, self.ACCENT_DARK).get("image"),
+                width=24,
+            ).pack(side=tk.LEFT, padx=(0, 8))
         ctk.CTkLabel(
-            header,
+            title_cluster,
             text=title,
-            font=("Segoe UI", 12, "bold"),
-            text_color="#1f4e86",
+            font=("Segoe UI", 14, "bold"),
+            text_color=self.TEXT,
             anchor="w",
         ).pack(side=tk.LEFT)
+        ctk.CTkFrame(frame, fg_color=self.DIVIDER, height=1, corner_radius=0).grid(row=0, column=0, sticky="sew", padx=14)
         return frame
 
     def make_collapsible_section(
@@ -915,19 +1783,27 @@ class ShowerProgrammerApp:
         frame = ctk.CTkFrame(
             parent,
             fg_color=self.CARD_BG,
-            corner_radius=8,
+            corner_radius=16,
             border_width=1,
             border_color=self.BORDER,
         )
-        header = ctk.CTkFrame(frame, fg_color="transparent")
-        header.pack(fill=tk.X, padx=14, pady=(8, 7))
+        frame.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(frame, fg_color="transparent", height=48)
+        header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        header.grid_propagate(False)
         if icon_name:
-            ctk.CTkLabel(header, text="", image=self.ctk_button_icon(icon_name, 16, self.ACCENT_DARK).get("image"), width=18).pack(side=tk.LEFT, padx=(0, 8))
+            ctk.CTkLabel(
+                header,
+                text="",
+                image=self.ctk_button_icon(icon_name, 17, self.ACCENT_DARK).get("image"),
+                width=24,
+            ).pack(side=tk.LEFT, padx=(0, 8))
         ctk.CTkLabel(
             header,
             text=title,
-            font=("Segoe UI", 12, "bold"),
-            text_color="#1f4e86",
+            font=("Segoe UI", 14, "bold"),
+            text_color=self.TEXT,
             anchor="w",
         ).pack(side=tk.LEFT)
 
@@ -936,11 +1812,11 @@ class ShowerProgrammerApp:
 
         def toggle() -> None:
             if collapsed.get():
-                body.pack(fill=tk.X, padx=14, pady=(0, 12))
+                body.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
                 toggle_button.configure(text="Hide", **self.ctk_button_icon("chevron_up", 14, self.ACCENT_DARK, "left"))
                 collapsed.set(False)
             else:
-                body.pack_forget()
+                body.grid_forget()
                 toggle_button.configure(text="Show", **self.ctk_button_icon("chevron_down", 14, self.ACCENT_DARK, "left"))
                 collapsed.set(True)
 
@@ -948,20 +1824,22 @@ class ShowerProgrammerApp:
             header,
             text="Show",
             command=toggle,
-            width=82,
-            height=28,
-            corner_radius=7,
-            fg_color=self.PANEL_BG,
-            hover_color=self.ACCENT_LIGHT,
+            width=86,
+            height=30,
+            corner_radius=10,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
             border_width=1,
-            border_color="#ccd9e8",
-            text_color="#1f3555",
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
             font=("Segoe UI", 11, "bold"),
             **self.ctk_button_icon("chevron_down", 14, self.ACCENT_DARK, "left"),
         )
         toggle_button.pack(side=tk.RIGHT)
+        ctk.CTkFrame(frame, fg_color=self.DIVIDER, height=1, corner_radius=0).grid(row=0, column=0, sticky="sew", padx=14)
+
         if expanded:
-            body.pack(fill=tk.X, padx=14, pady=(0, 10))
+            body.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
             toggle_button.configure(text="Hide", **self.ctk_button_icon("chevron_up", 14, self.ACCENT_DARK, "left"))
         return frame, body
 
@@ -975,6 +1853,28 @@ class ShowerProgrammerApp:
     ) -> None:
         self.add_count_card(parent, self.summary_count_vars[key], caption, icon_name, icon_color)
 
+    def metric_tint(self, icon_color: str) -> tuple[str, str]:
+        color = icon_color.lower()
+        if self.dark_mode_var.get():
+            if color in {"#32d583", "#12b76a", "#15945b", "#14915a"}:
+                return "#102a23", "#1d6b4f"
+            if color in {"#fdb022", "#f79009", "#d97706", "#f08c00"}:
+                return "#2f2410", "#8a5a0a"
+            if color in {"#f97066", "#d92d20", "#c92a2a", "#b42318"}:
+                return "#331714", "#8a2a22"
+            if color in {"#7c3aed", "#6b4bb5"}:
+                return "#201a3d", "#51459b"
+            return "#13233f", "#285592"
+        if color in {"#12b76a", "#15945b", "#14915a"}:
+            return "#ecfdf3", "#abefc6"
+        if color in {"#f79009", "#d97706", "#f08c00"}:
+            return "#fffaeb", "#fedf89"
+        if color in {"#d92d20", "#c92a2a", "#b42318"}:
+            return "#fef3f2", "#fecdca"
+        if color in {"#7c3aed", "#6b4bb5"}:
+            return "#f4f3ff", "#d9d6fe"
+        return "#eff6ff", "#bfdbfe"
+
     def add_count_card(
         self,
         parent: Any,
@@ -983,70 +1883,74 @@ class ShowerProgrammerApp:
         icon_name: str | None = None,
         icon_color: str = "#1f5fa8",
     ) -> Any:
+        tint, border = self.metric_tint(icon_color)
         card = ctk.CTkFrame(
             parent,
-            fg_color=self.SOFT_CARD_BG,
-            corner_radius=8,
+            fg_color=tint,
+            corner_radius=14,
             border_width=1,
-            border_color="#d5e4f2",
-            width=124,
-            height=50,
+            border_color=border,
+            height=76,
         )
-        card.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+        card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         card.pack_propagate(False)
 
         if icon_name:
-            ctk.CTkLabel(card, text="", image=self.ctk_button_icon(icon_name, 24, icon_color).get("image"), width=30).pack(side=tk.LEFT, padx=(10, 6))
+            icon_box = ctk.CTkFrame(card, fg_color=self.METRIC_ICON_BG, corner_radius=11, width=42, height=42)
+            icon_box.pack(side=tk.LEFT, padx=(14, 10), pady=16)
+            icon_box.pack_propagate(False)
+            ctk.CTkLabel(icon_box, text="", image=self.ctk_button_icon(icon_name, 23, icon_color).get("image")).pack(expand=True)
+
         text_stack = ctk.CTkFrame(card, fg_color="transparent")
-        text_stack.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=6)
+        text_stack.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, pady=13)
         ctk.CTkLabel(
             text_stack,
             textvariable=number_var,
-            font=("Segoe UI", 14, "bold"),
+            font=("Segoe UI", 20, "bold"),
             text_color=icon_color,
             anchor="w",
         ).pack(anchor=tk.W)
         ctk.CTkLabel(
             text_stack,
             text=caption,
-            font=("Segoe UI", 8, "bold"),
-            text_color="#315f9f",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.MUTED if not self.dark_mode_var.get() else "#d0d5dd",
             anchor="w",
         ).pack(anchor=tk.W)
         return card
 
     def add_path_row(self, parent: Any, row: int, label: str, var: tk.StringVar, command) -> None:
         row_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        row_frame.pack(fill=tk.X, pady=(0, 5))
+        row_frame.pack(fill=tk.X, pady=(0, 7))
         row_frame.columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             row_frame,
             text=label,
-            width=115,
-            text_color="#203047",
-            font=("Segoe UI", 11),
+            width=118,
+            text_color=self.TEXT,
+            font=("Segoe UI", 11, "bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 8))
+        ).grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
 
         ctk.CTkEntry(
             row_frame,
             textvariable=var,
-            height=28,
-            corner_radius=7,
-            border_color="#ccd9e8",
-            fg_color="#ffffff",
+            height=36,
+            corner_radius=10,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
             text_color=self.TEXT,
-        ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+            font=("Segoe UI", 11),
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 10))
 
         self.make_tool_button(
             row_frame,
             text="Browse",
             icon_name="folder",
             command=command,
-            width=100,
+            width=104,
         ).grid(row=0, column=2, sticky=tk.E)
-
     def choose_folder(self) -> None:
         path = filedialog.askdirectory(initialdir=self.folder_var.get())
         if path:
@@ -2682,84 +3586,254 @@ a {{ color: #1f4e79; }}
         dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
         dialog.after(0, lambda: self.maximize_window(dialog))
 
-        self.make_app_header(dialog, "Review Order", padx=12)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
 
-        toolbar = ctk.CTkFrame(dialog, fg_color="transparent", corner_radius=0)
-        toolbar.pack(fill=tk.X, padx=12, pady=(0, 8))
-        toolbar_inner = ctk.CTkFrame(toolbar, fg_color="transparent")
-        toolbar_inner.pack(fill=tk.X)
-        ctk.CTkLabel(toolbar_inner, text="Piece", font=("Segoe UI", 12), text_color=self.TEXT).pack(side=tk.LEFT)
+        rotation_var = tk.IntVar(value=0)
         item_var = tk.StringVar(value=f"P{job.panels[0].item}")
+        page_count_var = tk.StringVar(value=f"1/{len(job.panels)}")
+        status = tk.StringVar(value="Start at Review Sketch, make only needed edits, then save/process before marking checked.")
+        review_info_var = tk.StringVar(value="")
+
+        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 10))
+        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=0)
+
+        title_group = ctk.CTkFrame(header, fg_color="transparent")
+        title_group.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            title_group,
+            text=f"Review Order {process_order.aw_order}",
+            font=("Segoe UI", 24, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            title_group,
+            text=f"{process_order.job_name or 'No job name'}  -  {process_order.customer or 'No customer'}",
+            font=("Segoe UI", 12),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        header_actions = ctk.CTkFrame(header, fg_color="transparent")
+        header_actions.grid(row=0, column=1, sticky="e")
+        ctk.CTkLabel(
+            header_actions,
+            text="Fit-to-window review",
+            font=("Segoe UI", 11, "bold"),
+            text_color=self.ACCENT_DARK,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=999,
+            padx=12,
+            pady=7,
+        ).pack(side=tk.RIGHT)
+
+        workspace = ctk.CTkFrame(dialog, fg_color="transparent")
+        workspace.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+        workspace.grid_columnconfigure(0, weight=0, minsize=286)
+        workspace.grid_columnconfigure(1, weight=9)
+        workspace.grid_columnconfigure(2, weight=3)
+        workspace.grid_rowconfigure(0, weight=1)
+
+        control_panel = ctk.CTkFrame(
+            workspace,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER,
+            width=286,
+        )
+        control_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        control_panel.grid_propagate(False)
+        control_panel.grid_columnconfigure(0, weight=1)
+        control_panel.grid_rowconfigure(7, weight=1)
+
+        def control_section(parent: Any, row: int, title: str) -> Any:
+            section = ctk.CTkFrame(parent, fg_color="transparent")
+            section.grid(row=row, column=0, sticky="ew", padx=14, pady=(0, 14))
+            section.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                section,
+                text=title,
+                font=("Segoe UI", 10, "bold"),
+                text_color=self.MUTED,
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew", pady=(0, 7))
+            return section
+
+        step_header = ctk.CTkFrame(control_panel, fg_color="transparent")
+        step_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
+        step_header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            step_header,
+            text="Review workflow",
+            font=("Segoe UI", 16, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            step_header,
+            text="1 Review  -  2 Adjust  -  3 Save  -  4 Process",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        piece_section = control_section(control_panel, 1, "PIECE NAVIGATION")
+        piece_card = ctk.CTkFrame(piece_section, fg_color=self.SOFT_CARD_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+        piece_card.grid(row=1, column=0, sticky="ew")
+        piece_card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(piece_card, text="Piece", font=("Segoe UI", 11, "bold"), text_color=self.TEXT).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 6))
         item_box = ttk.Combobox(
-            toolbar_inner,
+            piece_card,
             textvariable=item_var,
             values=[f"P{panel.item}" for panel in job.panels],
             state="readonly",
             width=8,
+            style="Review.TCombobox",
         )
-        item_box.pack(side=tk.LEFT, padx=(6, 12))
-        page_count_var = tk.StringVar(value=f"1/{len(job.panels)}")
-        ctk.CTkLabel(toolbar_inner, textvariable=page_count_var, font=("Segoe UI", 12), text_color=self.TEXT).pack(side=tk.LEFT, padx=(0, 12))
-        rotation_var = tk.IntVar(value=0)
-        status = tk.StringVar(value="Double-check the sketch and matching DXF together.")
-        review_info_var = tk.StringVar(value="")
-        self.make_tool_button(toolbar_inner, "Previous", "chevron_left", lambda: change_piece(-1), width=105).pack(side=tk.LEFT)
-        self.make_tool_button(toolbar_inner, "Next", "chevron_right", lambda: change_piece(1), width=90).pack(side=tk.LEFT, padx=(6, 12))
-        self.make_tool_button(toolbar_inner, "Save Edits", "save", lambda: save_review_edits(), width=118).pack(side=tk.LEFT)
-        self.make_tool_button(toolbar_inner, "Process DXF", "play", lambda: process_review_order(), width=124).pack(side=tk.LEFT, padx=(6, 12))
-        self.make_tool_button(toolbar_inner, "Add Indicator", "indicator", lambda: add_indicator_mark(), width=130).pack(side=tk.LEFT, padx=(6, 0))
-        self.make_tool_button(toolbar_inner, "Flip Sides", "flip", lambda: flip_indicator_sides(), width=112).pack(side=tk.LEFT, padx=(6, 0))
-        self.make_tool_button(toolbar_inner, "Add Text Box", "text", lambda: add_text_box(), width=128).pack(side=tk.LEFT, padx=(6, 0))
-        self.make_tool_button(toolbar_inner, "Add X", "x", lambda: add_x_mark(), width=86).pack(side=tk.LEFT, padx=(6, 12))
-        self.make_tool_button(toolbar_inner, "Rotate Left", "rotate_left", lambda: rotate_view(-90), width=122).pack(side=tk.LEFT)
-        self.make_tool_button(toolbar_inner, "Rotate Right", "rotate_right", lambda: rotate_view(90), width=130).pack(side=tk.LEFT, padx=(6, 12))
-        file_actions = ctk.CTkFrame(toolbar_inner, fg_color="transparent")
-        file_actions.pack(side=tk.RIGHT)
-        self.make_tool_button(file_actions, "Open Sketch PDF", "pdf", lambda: os.startfile(sketch_path), width=150).pack(side=tk.LEFT)
-        self.make_tool_button(file_actions, "Open DXF", "dxf", lambda: open_current_dxf(), width=112).pack(side=tk.LEFT, padx=(6, 0))
-        ctk.CTkLabel(toolbar_inner, textvariable=status, font=("Segoe UI", 11), text_color=self.MUTED, anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        item_box.grid(row=0, column=1, sticky="ew", padx=(6, 12), pady=(12, 6))
+        ctk.CTkLabel(piece_card, text="Position", font=("Segoe UI", 10), text_color=self.MUTED).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 12))
+        ctk.CTkLabel(piece_card, textvariable=page_count_var, font=("Segoe UI", 14, "bold"), text_color=self.ACCENT_DARK).grid(row=1, column=1, sticky="w", padx=(6, 12), pady=(0, 12))
+        nav_buttons = ctk.CTkFrame(piece_card, fg_color="transparent")
+        nav_buttons.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+        nav_buttons.grid_columnconfigure((0, 1), weight=1)
+        self.make_tool_button(nav_buttons, "Previous", "chevron_left", lambda: change_piece(-1), width=112).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.make_tool_button(nav_buttons, "Next", "chevron_right", lambda: change_piece(1), width=92).grid(row=0, column=1, sticky="ew")
 
-        info_strip = ctk.CTkFrame(
-            dialog,
-            fg_color=self.CARD_BG,
-            corner_radius=8,
-            border_width=1,
-            border_color=self.BORDER,
-        )
-        info_strip.pack(fill=tk.X, padx=12, pady=(0, 10))
-        info_inner = ctk.CTkFrame(info_strip, fg_color="transparent")
-        info_inner.pack(fill=tk.X, padx=12, pady=9)
-        ctk.CTkLabel(info_inner, text="", image=self.ctk_button_icon("orders", 18, self.ACCENT_DARK).get("image"), width=22).pack(side=tk.LEFT, padx=(0, 8))
-        ctk.CTkLabel(info_inner, textvariable=review_info_var, font=("Segoe UI", 12), text_color="#2c3e56", anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        primary_section = control_section(control_panel, 2, "PRIMARY ACTIONS")
+        primary_grid = ctk.CTkFrame(primary_section, fg_color="transparent")
+        primary_grid.grid(row=1, column=0, sticky="ew")
+        primary_grid.grid_columnconfigure(0, weight=1)
+        ctk.CTkButton(
+            primary_grid,
+            text="Save Sketch Edits",
+            command=lambda: save_review_edits(),
+            height=42,
+            corner_radius=10,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 12, "bold"),
+            **self.ctk_button_icon("save", 16, "#ffffff", "left"),
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.make_tool_button(primary_grid, "Process DXF Again", "play", lambda: process_review_order(), width=250).grid(row=1, column=0, sticky="ew")
 
-        panes = ttk.PanedWindow(dialog, orient=tk.HORIZONTAL)
-        panes.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
-        sketch_frame = ctk.CTkFrame(panes, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
-        dxf_frame = ctk.CTkFrame(panes, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
-        panes.add(sketch_frame, weight=3)
-        panes.add(dxf_frame, weight=2)
+        edit_section = control_section(control_panel, 3, "MARKUP TOOLS")
+        edit_grid = ctk.CTkFrame(edit_section, fg_color="transparent")
+        edit_grid.grid(row=1, column=0, sticky="ew")
+        edit_grid.grid_columnconfigure((0, 1), weight=1)
+        self.make_tool_button(edit_grid, "Indicator", "indicator", lambda: add_indicator_mark(), width=120).grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=(0, 7))
+        self.make_tool_button(edit_grid, "Flip", "flip", lambda: flip_indicator_sides(), width=120).grid(row=0, column=1, sticky="ew", pady=(0, 7))
+        self.make_tool_button(edit_grid, "Text Box", "text", lambda: add_text_box(), width=120).grid(row=1, column=0, sticky="ew", padx=(0, 6))
+        self.make_tool_button(edit_grid, "Add X", "x", lambda: add_x_mark(), width=120).grid(row=1, column=1, sticky="ew")
 
-        sketch_header = ctk.CTkFrame(sketch_frame, fg_color=self.SOFT_CARD_BG, corner_radius=7)
-        sketch_header.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ctk.CTkLabel(sketch_header, text="", image=self.ctk_button_icon("pdf", 17, self.ACCENT_DARK).get("image"), width=22).pack(side=tk.LEFT, padx=(12, 8), pady=8)
-        ctk.CTkLabel(sketch_header, text="Sketch / PDF", font=("Segoe UI", 13, "bold"), text_color="#17365f").pack(side=tk.LEFT)
-        sketch_canvas = tk.Canvas(sketch_frame, background="#e8edf3", highlightthickness=0)
-        sketch_y_scroll = ttk.Scrollbar(sketch_frame, orient=tk.VERTICAL, command=sketch_canvas.yview)
-        sketch_x_scroll = ttk.Scrollbar(sketch_frame, orient=tk.HORIZONTAL, command=sketch_canvas.xview)
-        sketch_canvas.configure(yscrollcommand=sketch_y_scroll.set, xscrollcommand=sketch_x_scroll.set)
-        sketch_canvas.grid(row=1, column=0, sticky="nsew")
-        sketch_y_scroll.grid(row=1, column=1, sticky="ns")
-        sketch_x_scroll.grid(row=2, column=0, sticky="ew")
-        sketch_frame.columnconfigure(0, weight=1)
-        sketch_frame.rowconfigure(1, weight=1)
-        dxf_header = ctk.CTkFrame(dxf_frame, fg_color=self.SOFT_CARD_BG, corner_radius=7)
-        dxf_header.grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(dxf_header, text="", image=self.ctk_button_icon("dxf", 17, self.ACCENT_DARK).get("image"), width=22).pack(side=tk.LEFT, padx=(12, 8), pady=8)
-        ctk.CTkLabel(dxf_header, text="DXF Preview", font=("Segoe UI", 13, "bold"), text_color="#17365f").pack(side=tk.LEFT)
-        dxf_canvas = tk.Canvas(dxf_frame, background="#f8fafc", highlightthickness=0)
-        dxf_canvas.grid(row=1, column=0, sticky="nsew")
-        dxf_frame.columnconfigure(0, weight=1)
-        dxf_frame.rowconfigure(1, weight=1)
+        view_section = control_section(control_panel, 4, "VIEW")
+        view_grid = ctk.CTkFrame(view_section, fg_color="transparent")
+        view_grid.grid(row=1, column=0, sticky="ew")
+        view_grid.grid_columnconfigure((0, 1), weight=1)
+        self.make_tool_button(view_grid, "Rotate Left", "rotate_left", lambda: rotate_view(-90), width=120).grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=(0, 7))
+        self.make_tool_button(view_grid, "Rotate Right", "rotate_right", lambda: rotate_view(90), width=120).grid(row=0, column=1, sticky="ew", pady=(0, 7))
+        self.make_tool_button(view_grid, "Open Sketch", "pdf", lambda: os.startfile(sketch_path), width=120).grid(row=1, column=0, sticky="ew", padx=(0, 6))
+        self.make_tool_button(view_grid, "Open DXF", "dxf", lambda: open_current_dxf(), width=120).grid(row=1, column=1, sticky="ew")
+
+        status_card = ctk.CTkFrame(control_panel, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+        status_card.grid(row=8, column=0, sticky="ew", padx=14, pady=(0, 14))
+        ctk.CTkLabel(
+            status_card,
+            text="Current status",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(fill=tk.X, padx=12, pady=(10, 3))
+        ctk.CTkLabel(
+            status_card,
+            textvariable=status,
+            font=("Segoe UI", 11),
+            text_color=self.TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=238,
+        ).pack(fill=tk.X, padx=12, pady=(0, 12))
+
+        complete_card = ctk.CTkFrame(control_panel, fg_color=self.CARD_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+        complete_card.grid(row=9, column=0, sticky="ew", padx=14, pady=(0, 14))
+        ctk.CTkLabel(
+            complete_card,
+            text="Complete this order",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(fill=tk.X, padx=12, pady=(10, 6))
+        ctk.CTkButton(
+            complete_card,
+            text="Mark Order Checked & Close",
+            command=lambda: complete_order_review(),
+            height=44,
+            corner_radius=10,
+            fg_color=self.SUCCESS,
+            hover_color="#039855" if not self.dark_mode_var.get() else "#12b76a",
+            text_color="#ffffff",
+            font=("Segoe UI", 12, "bold"),
+            **self.ctk_button_icon("check", 17, "#ffffff", "left"),
+        ).pack(fill=tk.X, padx=12, pady=(0, 12))
+
+        sketch_frame = ctk.CTkFrame(workspace, fg_color=self.CARD_BG, corner_radius=16, border_width=1, border_color=self.BORDER)
+        sketch_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 12))
+        sketch_frame.grid_columnconfigure(0, weight=1)
+        sketch_frame.grid_rowconfigure(1, weight=1)
+
+        sketch_header = ctk.CTkFrame(sketch_frame, fg_color="transparent", height=48)
+        sketch_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        sketch_header.grid_propagate(False)
+        ctk.CTkLabel(sketch_header, text="", image=self.ctk_button_icon("pdf", 18, self.ACCENT_DARK).get("image"), width=24).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(sketch_header, text="Sketch Preview", font=("Segoe UI", 15, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            sketch_header,
+            text="No scrollbars - preview auto-fits the available space",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+        ).pack(side=tk.RIGHT)
+        sketch_canvas = tk.Canvas(sketch_frame, background=self.PREVIEW_BG, highlightthickness=0, bd=0)
+        sketch_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
+
+        reference_panel = ctk.CTkFrame(workspace, fg_color="transparent")
+        reference_panel.grid(row=0, column=2, sticky="nsew")
+        reference_panel.grid_columnconfigure(0, weight=1)
+        reference_panel.grid_rowconfigure(1, weight=1)
+
+        details_card = ctk.CTkFrame(reference_panel, fg_color=self.CARD_BG, corner_radius=16, border_width=1, border_color=self.BORDER)
+        details_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        ctk.CTkLabel(
+            details_card,
+            text="Piece Details",
+            font=("Segoe UI", 14, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(fill=tk.X, padx=14, pady=(12, 4))
+        ctk.CTkLabel(
+            details_card,
+            textvariable=review_info_var,
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=310,
+        ).pack(fill=tk.X, padx=14, pady=(0, 14))
+
+        dxf_frame = ctk.CTkFrame(reference_panel, fg_color=self.CARD_BG, corner_radius=16, border_width=1, border_color=self.BORDER)
+        dxf_frame.grid(row=1, column=0, sticky="nsew")
+        dxf_frame.grid_columnconfigure(0, weight=1)
+        dxf_frame.grid_rowconfigure(1, weight=1)
+        dxf_header = ctk.CTkFrame(dxf_frame, fg_color="transparent", height=48)
+        dxf_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        dxf_header.grid_propagate(False)
+        ctk.CTkLabel(dxf_header, text="", image=self.ctk_button_icon("dxf", 18, self.ACCENT_DARK).get("image"), width=24).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkLabel(dxf_header, text="DXF Reference", font=("Segoe UI", 15, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        dxf_canvas = tk.Canvas(dxf_frame, background=self.PREVIEW_CARD_BG, highlightthickness=0, bd=0)
+        dxf_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
 
         state: dict[str, Any] = {
             "objects": {},
@@ -2779,6 +3853,7 @@ a {{ color: #1f4e79; }}
             "pdf_page_count": len(source_reader.pages),
             "raster_rendering": set(),
             "current_item": job.panels[0].item,
+            "viewed_items": {job.panels[0].item},
             "pending_items": set(),
             "needs_output_save": False,
             "redraw_after_id": None,
@@ -2837,6 +3912,7 @@ a {{ color: #1f4e79; }}
                 item_var.set(f"P{current_item}")
                 return False
             state["current_item"] = next_item
+            state.setdefault("viewed_items", set()).add(next_item)
             item_var.set(f"P{next_item}")
             rotation_var.set(0)
             redraw()
@@ -3096,11 +4172,11 @@ a {{ color: #1f4e79; }}
         def add_text_box() -> None:
             panel = selected_panel()
             initial = panel.label_text or f"{job.aw_order}.{panel.item}\n{panel.machine or ''}".strip()
-            value = simpledialog.askstring(
+            value = self.ask_themed_text(
+                dialog,
                 "Add Text Box",
-                "Enter sketch text. Use \\n for a line break.",
+                "Enter sketch text. Put each line on its own row.",
                 initialvalue=initial,
-                parent=dialog,
             )
             if value is None:
                 return
@@ -3150,11 +4226,11 @@ a {{ color: #1f4e79; }}
             mark_key = str(obj.get("key", "")).strip()
             item_number = int(obj.get("item", selected_panel().item))
             current = "\\n".join(str(line) for line in obj.get("lines", []))
-            value = simpledialog.askstring(
+            value = self.ask_themed_text(
+                dialog,
                 "Edit Text",
-                "Edit generated text. Use \\n for a line break.",
+                "Edit generated text. Put each line on its own row.",
                 initialvalue=current,
-                parent=dialog,
             )
             if value is None:
                 return
@@ -3170,22 +4246,43 @@ a {{ color: #1f4e79; }}
                 return "break"
             state["selected_key"] = key
             obj = state["objects"][key]
-            menu = tk.Menu(dialog, tearoff=False)
-            if obj.get("kind") != "x":
-                menu.add_command(label="Increase Size", command=lambda key=key: (state.__setitem__("selected_key", key), resize_selected_mark(1)))
-                menu.add_command(label="Decrease Size", command=lambda key=key: (state.__setitem__("selected_key", key), resize_selected_mark(-1)))
-            if obj.get("kind") == "text":
-                menu.add_command(label="Edit Text", command=lambda key=key: (state.__setitem__("selected_key", key), edit_selected_text()))
+            kind = str(obj.get("kind", "mark")).strip().lower()
+            mark_name = str(obj.get("name") or obj.get("key") or "Sketch Mark")
+            item_number = int(obj.get("item", selected_panel().item))
+            title = f"P{item_number} - {mark_name}"
+            subtitle = "Choose an action for this sketch mark."
+
+            def select_then(command: Callable[[], object]) -> Callable[[], object]:
+                def wrapper() -> object:
+                    state["selected_key"] = key
+                    return command()
+                return wrapper
+
+            actions: list[dict[str, object]] = []
+            if kind != "x":
+                actions.extend(
+                    [
+                        {"text": "Increase Size", "icon": "plus", "command": select_then(lambda: resize_selected_mark(1))},
+                        {"text": "Decrease Size", "icon": "minus_circle", "command": select_then(lambda: resize_selected_mark(-1))},
+                    ]
+                )
+            if kind == "text":
+                actions.append({"text": "Edit Text", "icon": "text", "command": select_then(edit_selected_text)})
             if obj.get("key") == "indicator":
-                menu.add_separator()
-                menu.add_command(label="Make WJ", command=lambda: set_current_indicator_machine("WJ"))
-                menu.add_command(label="Make Denver", command=lambda: set_current_indicator_machine("DENVER"))
-            menu.add_separator()
-            menu.add_command(label="Delete", command=lambda key=key: (state.__setitem__("selected_key", key), delete_selected_mark()))
-            try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
+                actions.extend(
+                    [
+                        {"separator": True},
+                        {"text": "Make Water Jet", "icon": "indicator", "command": lambda: set_current_indicator_machine("WJ")},
+                        {"text": "Make Denver", "icon": "program", "command": lambda: set_current_indicator_machine("DENVER")},
+                    ]
+                )
+            actions.extend(
+                [
+                    {"separator": True},
+                    {"text": "Delete Mark", "icon": "trash", "destructive": True, "command": select_then(delete_selected_mark)},
+                ]
+            )
+            self.show_themed_context_menu(dialog, event.x_root, event.y_root, title, subtitle, actions)
             return "break"
 
         def redraw() -> None:
@@ -3197,6 +4294,7 @@ a {{ color: #1f4e79; }}
                     pass
             state["redraw_after_id"] = None
             panel = selected_panel()
+            state.setdefault("viewed_items", set()).add(panel.item)
             ordered_items = [current.item for current in sorted(job.panels, key=lambda current: current.item)]
             if panel.item in ordered_items:
                 page_count_var.set(f"{ordered_items.index(panel.item) + 1}/{len(ordered_items)}")
@@ -3218,29 +4316,28 @@ a {{ color: #1f4e79; }}
                     0,
                     sketch_canvas.winfo_width(),
                     sketch_canvas.winfo_height(),
-                    fill="#e8edf3",
+                    fill=self.PREVIEW_BG,
                     outline="",
                 )
-                sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Sketch preview failed: {exc}", fill="#b42318")
+                sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Sketch preview failed: {exc}", fill=self.DANGER)
             dxf_path = panel.output_dxf if panel.output_dxf and panel.output_dxf.exists() else panel.source_dxf
             try:
                 self.draw_order_review_dxf(dxf_canvas, dxf_path, panel, state)
             except Exception as exc:
                 dxf_canvas.delete("all")
-                dxf_canvas.create_rectangle(0, 0, dxf_canvas.winfo_width(), dxf_canvas.winfo_height(), fill="#f8fafc", outline="")
-                dxf_canvas.create_text(16, 16, anchor=tk.NW, text=f"DXF preview failed: {exc}", fill="#b42318")
+                dxf_canvas.create_rectangle(0, 0, dxf_canvas.winfo_width(), dxf_canvas.winfo_height(), fill=self.PREVIEW_CARD_BG, outline="")
+                dxf_canvas.create_text(16, 16, anchor=tk.NW, text=f"DXF preview failed: {exc}", fill=self.DANGER)
             issue_text = "; ".join(issues[:2]) if issues else ""
             rotation_text = self.panel_rotation_summary(panel)
             review_info_var.set(
-                "  -  ".join(
+                "\n".join(
                     [
-                        f"Order {job.aw_order}",
-                        f"Piece P{panel.item}",
+                        f"Order: {job.aw_order}",
+                        f"Piece: P{panel.item}",
+                        f"Machine: {panel.machine or 'Label Only'}",
+                        f"DXF rotation: {rotation_text}",
                         f"Job: {process_order.job_name or '-'}",
                         f"Customer: {process_order.customer or '-'}",
-                        f"Marks: P{panel.item}",
-                        f"Machine: {panel.machine or 'Label Only'}",
-                        f"DXF Rotation: {rotation_text}",
                     ]
                 )
             )
@@ -3261,6 +4358,45 @@ a {{ color: #1f4e79; }}
 
         state["render_callback"] = lambda: schedule_redraw(1)
 
+        def complete_order_review() -> None:
+            if not confirm_save_before_leaving(None):
+                return
+            all_items = {panel.item for panel in job.panels}
+            viewed_items = set(state.get("viewed_items", set()))
+            unviewed_items = sorted(all_items - viewed_items)
+            if unviewed_items:
+                unviewed_text = ", ".join(f"P{item}" for item in unviewed_items)
+                if not messagebox.askyesno(
+                    "Unviewed pieces",
+                    "Are you sure you want to mark this order checked?\n\n"
+                    f"You have not viewed: {unviewed_text}",
+                    parent=dialog,
+                ):
+                    return
+
+            data = self.load_manual_overrides()
+            item_overrides = data.setdefault("item_overrides", {})
+            if not isinstance(item_overrides, dict):
+                item_overrides = {}
+                data["item_overrides"] = item_overrides
+            order_overrides = item_overrides.setdefault(process_order.aw_order, {})
+            if not isinstance(order_overrides, dict):
+                order_overrides = {}
+                item_overrides[process_order.aw_order] = order_overrides
+            order_overrides["_order_checked"] = True
+            self.save_manual_overrides(data)
+
+            row_id = self.tree_rows.get(process_order.aw_order)
+            if row_id:
+                values = list(self.tree.item(row_id, "values"))
+                if len(values) >= 9:
+                    values[8] = "Order checked"
+                    self.tree.item(row_id, values=values)
+            self.update_summary_strip()
+            self.status_var.set(f"Marked order {process_order.aw_order} checked.")
+            cleanup_render_temp()
+            dialog.destroy()
+
         def cleanup_render_temp(_event: tk.Event | None = None) -> None:
             temp_dir = state.get("render_temp_dir")
             if _event is not None and _event.widget is not dialog:
@@ -3279,10 +4415,10 @@ a {{ color: #1f4e79; }}
         dxf_canvas.bind("<Configure>", lambda _event: schedule_redraw())
         sketch_canvas.bind("<B1-Motion>", drag)
         sketch_canvas.bind("<ButtonRelease-1>", release)
-        sketch_canvas.bind("<MouseWheel>", lambda event: self.scroll_editor_canvas(sketch_canvas, event))
-        sketch_canvas.bind("<Shift-MouseWheel>", lambda event: self.scroll_editor_canvas(sketch_canvas, event, horizontal=True))
+        sketch_canvas.bind("<MouseWheel>", lambda event: "break")
+        sketch_canvas.bind("<Shift-MouseWheel>", lambda event: "break")
         dialog.bind("<Control-MouseWheel>", piece_wheel)
-        dialog.bind("<MouseWheel>", lambda event: self.scroll_editor_canvas(sketch_canvas, event))
+        dialog.bind("<MouseWheel>", lambda event: "break")
         state["start_drag"] = start_drag
         state["show_mark_menu"] = show_mark_menu
         dialog.protocol("WM_DELETE_WINDOW", request_close)
@@ -3308,8 +4444,10 @@ a {{ color: #1f4e79; }}
         page_height = float(page.mediabox.height)
         view_width = page_height if rotation_degrees % 180 else page_width
         view_height = page_width if rotation_degrees % 180 else page_height
-        available_width = max(200, canvas.winfo_width() - 24)
-        scale = round(min(1.2, max(0.7, available_width / view_width)), 2)
+        available_width = max(200, canvas.winfo_width() - 16)
+        available_height = max(200, canvas.winfo_height() - 16)
+        fit_scale = min(available_width / max(view_width, 1), available_height / max(view_height, 1))
+        scale = round(min(2.0, max(0.18, fit_scale)), 3)
         image = self.editor_page_image(
             sketch_path,
             panel.page_index,
@@ -3319,14 +4457,14 @@ a {{ color: #1f4e79; }}
             state,
             rotation_degrees=rotation_degrees,
         )
-        canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill="#e8edf3", outline="")
+        canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill=self.PREVIEW_BG, outline="")
         if image is None:
             message = "Rendering sketch preview..." if state.get("raster_rendering") else "Could not render sketch preview."
-            canvas.create_text(16, 16, anchor=tk.NW, text=message, fill="#334155")
+            canvas.create_text(16, 16, anchor=tk.NW, text=message, fill=self.MUTED)
             return
         state["page_images"].append(image)
-        x = 16.0
-        y = 16.0
+        x = max(8.0, (canvas.winfo_width() - image.width()) / 2)
+        y = max(8.0, (canvas.winfo_height() - image.height()) / 2)
         canvas.create_image(x, y, image=image, anchor=tk.NW)
         objects = self.editor_overlay_objects(
             reader,
@@ -3355,10 +4493,10 @@ a {{ color: #1f4e79; }}
                 y + 8,
                 anchor=tk.NW,
                 text="Rotated view is visual only. Return to 0 deg to drag marks.",
-                fill="#9a5b00",
+                fill=self.WARNING,
                 font=("Arial", 10, "bold"),
             )
-        canvas.configure(scrollregion=(0, 0, image.width() + 32, image.height() + 32))
+        canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), canvas.winfo_height()))
 
     def draw_order_review_dxf(
         self,
@@ -3368,7 +4506,7 @@ a {{ color: #1f4e79; }}
         state: dict[str, Any] | None = None,
     ) -> None:
         canvas.delete("all")
-        canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill="#f8fafc", outline="")
+        canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill=self.PREVIEW_CARD_BG, outline="")
         canvas_width = max(520, canvas.winfo_width())
         rotation_text = self.panel_rotation_summary(panel)
         col_1 = 18
@@ -3379,7 +4517,7 @@ a {{ color: #1f4e79; }}
             16,
             anchor=tk.NW,
             text="DXF File",
-            fill="#64748b",
+            fill=self.MUTED,
             font=("Segoe UI", 9, "bold"),
         )
         canvas.create_text(
@@ -3387,7 +4525,7 @@ a {{ color: #1f4e79; }}
             16,
             anchor=tk.NW,
             text="DXF Rotation",
-            fill="#64748b",
+            fill=self.MUTED,
             font=("Segoe UI", 9, "bold"),
         )
         canvas.create_text(
@@ -3395,11 +4533,11 @@ a {{ color: #1f4e79; }}
             38,
             anchor=tk.NW,
             text=rotation_text,
-            fill="#1f5fa8",
+            fill=self.ACCENT_DARK,
             font=("Segoe UI", 10, "bold"),
         )
         if path is None or not path.exists():
-            canvas.create_text(col_1, 38, anchor=tk.NW, text="No DXF for this piece.", fill="#334155", font=("Segoe UI", 10))
+            canvas.create_text(col_1, 38, anchor=tk.NW, text="No DXF for this piece.", fill=self.TEXT, font=("Segoe UI", 10))
             return
         try:
             preview_data = self.order_review_dxf_preview_data(path, state)
@@ -3407,14 +4545,14 @@ a {{ color: #1f4e79; }}
             unit_label = preview_data["unit_label"]
             inches_per_unit = preview_data["inches_per_unit"]
         except Exception as exc:
-            canvas.create_text(col_1, 38, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill="#b42318", font=("Segoe UI", 10))
+            canvas.create_text(col_1, 38, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill=self.DANGER, font=("Segoe UI", 10))
             return
         canvas.create_text(
             col_1,
             38,
             anchor=tk.NW,
             text=path.name,
-            fill="#17365f",
+            fill=self.TEXT,
             font=("Segoe UI", 10),
         )
         canvas.create_text(
@@ -3422,7 +4560,7 @@ a {{ color: #1f4e79; }}
             16,
             anchor=tk.NW,
             text="DXF Units",
-            fill="#64748b",
+            fill=self.MUTED,
             font=("Segoe UI", 9, "bold"),
         )
         canvas.create_text(
@@ -3430,11 +4568,11 @@ a {{ color: #1f4e79; }}
             38,
             anchor=tk.NW,
             text=self.dxf_units_text(unit_label, inches_per_unit),
-            fill="#17365f",
+            fill=self.TEXT,
             font=("Segoe UI", 10),
         )
         if not segments:
-            canvas.create_text(col_1, 76, anchor=tk.NW, text="No drawable DXF entities found.", fill="#334155", font=("Segoe UI", 10))
+            canvas.create_text(col_1, 76, anchor=tk.NW, text="No drawable DXF entities found.", fill=self.TEXT, font=("Segoe UI", 10))
             return
         points = [point for segment in segments for point in segment]
         min_x = min(x for x, _ in points)
@@ -3465,7 +4603,7 @@ a {{ color: #1f4e79; }}
                 y1,
                 x2,
                 y2,
-                fill="#d97706" if highlight else "#1f4e79",
+                fill=self.WARNING if highlight else self.ACCENT_DARK,
                 width=4 if highlight else 2,
             )
             if highlight:
@@ -3476,7 +4614,7 @@ a {{ color: #1f4e79; }}
                     my - 12,
                     anchor=tk.CENTER,
                     text=self.out_of_square_segment_label(start, end, inches_per_unit),
-                    fill="#9a5b00",
+                    fill=self.WARNING,
                     font=("Arial", 9, "bold"),
                 )
         if highlight_segments:
@@ -3485,7 +4623,7 @@ a {{ color: #1f4e79; }}
                 76,
                 anchor=tk.NW,
                 text="Orange = angled/out-of-square side",
-                fill="#9a5b00",
+                fill=self.WARNING,
                 font=("Segoe UI", 9, "bold"),
             )
         canvas.create_text(
@@ -3493,7 +4631,7 @@ a {{ color: #1f4e79; }}
             canvas.winfo_height() - 18,
             anchor=tk.SW,
             text=f"{self.dxf_dimension_text(width, height, unit_label, inches_per_unit)} | {len(segments)} segment(s)",
-            fill="#536471",
+            fill=self.MUTED,
             font=("Segoe UI", 9),
         )
 
@@ -4403,10 +5541,22 @@ try {{
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
+        try:
+            row_ids = self.tree.get_children()
+            if row_ids and not self.tree.selection():
+                self.tree.selection_set(*row_ids)
+                self.tree.focus(row_ids[0])
+                self.tree.see(row_ids[0])
+                self.status_var.set(f"No orders were selected, so Review / Send is using all {len(row_ids)} visible order(s).")
+            elif self.tree.selection():
+                self.status_var.set(f"Preparing Review / Send for {len(self.tree.selection())} selected order(s)...")
+        except tk.TclError:
+            pass
         self.progress.stop()
         self.progress.configure(mode="indeterminate", maximum=100, value=0)
         self.progress.start(12)
-        self.status_var.set("Preparing Review / Send...")
+        if not self.status_var.get().startswith("Preparing Review / Send") and "Review / Send" not in self.status_var.get():
+            self.status_var.set("Preparing Review / Send...")
         self.root.after(
             50,
             lambda: self.send_outputs_to_shop(
@@ -4527,58 +5677,163 @@ try {{
     ) -> None:
         dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
         dialog.title("Review / Send Output")
-        self.position_child_window(dialog, 1120, 680)
-        dialog.minsize(860, 520)
+        self.position_child_window(dialog, 1180, 760)
+        dialog.minsize(960, 560)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
         dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
         dialog.after(0, lambda: self.maximize_window(dialog))
         self.send_review_window = dialog
 
-        self.make_app_header(dialog, "Shower Programmer", padx=18)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
 
-        heading = ctk.CTkFrame(dialog, fg_color="transparent")
-        heading.pack(fill=tk.X, padx=18, pady=(0, 8))
-        title_group = ctk.CTkFrame(heading, fg_color="transparent")
-        title_group.pack(side=tk.LEFT)
-        ctk.CTkLabel(title_group, text="", image=self.ctk_button_icon("send", 22, self.ACCENT_DARK).get("image"), width=26).pack(side=tk.LEFT, padx=(0, 8))
-        ctk.CTkLabel(title_group, text="Review / Send Output", font=("Segoe UI", 20, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
-        summary_cards = ctk.CTkFrame(heading, fg_color="transparent")
-        summary_cards.pack(side=tk.RIGHT)
+        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 10))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Review / Send Batch",
+            font=("Segoe UI", 24, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            header,
+            text="Confirm checked orders, generated sketches, DXF programs, and archive actions before sending to the shop folders.",
+            font=("Segoe UI", 12),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        # Use the native Windows title-bar controls only.
+        # The extra in-window minimize/maximize/close buttons were removed to avoid duplicate controls.
+
+        workspace = ctk.CTkFrame(dialog, fg_color="transparent")
+        workspace.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        workspace.grid_columnconfigure(0, weight=0, minsize=308)
+        workspace.grid_columnconfigure(1, weight=1)
+        workspace.grid_rowconfigure(0, weight=1)
+
+        rail = ctk.CTkFrame(
+            workspace,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER,
+            width=308,
+        )
+        rail.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        rail.grid_propagate(False)
+        rail.grid_columnconfigure(0, weight=1)
+        rail.grid_rowconfigure(5, weight=1)
+
+        ctk.CTkLabel(
+            rail,
+            text="Send workflow",
+            font=("Segoe UI", 17, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 3))
+        ctk.CTkLabel(
+            rail,
+            text="1 Checked  -  2 Review files  -  3 Send  -  4 Archive",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 16))
+
+        summary_frame = ctk.CTkFrame(rail, fg_color="transparent")
+        summary_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 14))
+        summary_frame.grid_columnconfigure((0, 1), weight=1)
         ready_count_var = tk.StringVar(value="0")
         blocked_count_var = tk.StringVar(value="0")
-        other_count_var = tk.StringVar(value="0")
-        self.add_count_card(summary_cards, ready_count_var, "Ready", "check_circle", "#15945b")
-        self.add_count_card(summary_cards, blocked_count_var, "Blocked", "minus_circle", "#c92a2a")
-        self.add_count_card(summary_cards, other_count_var, "Other", "minus_circle", "#3f6aa3")
+        warning_count_var = tk.StringVar(value="0")
+        sketch_count_var = tk.StringVar(value=str(len(sketch_paths)))
+        program_count_var = tk.StringVar(value=str(len(dxf_paths)))
 
-        body_card = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
-        body_card.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 10))
-        body = ctk.CTkFrame(body_card, fg_color="transparent")
-        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        def mini_metric(row: int, column: int, number_var: tk.StringVar, label: str, color: str, icon: str) -> None:
+            card = ctk.CTkFrame(summary_frame, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+            card.grid(row=row, column=column, sticky="ew", padx=(0, 7) if column == 0 else (7, 0), pady=(0, 10))
+            card.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(card, text="", image=self.ctk_button_icon(icon, 18, color).get("image"), width=24).grid(row=0, column=0, rowspan=2, padx=(10, 7), pady=10)
+            ctk.CTkLabel(card, textvariable=number_var, font=("Segoe UI", 17, "bold"), text_color=color, anchor="w").grid(row=0, column=1, sticky="w", padx=(0, 10), pady=(8, 0))
+            ctk.CTkLabel(card, text=label, font=("Segoe UI", 9, "bold"), text_color=self.MUTED, anchor="w").grid(row=1, column=1, sticky="w", padx=(0, 10), pady=(0, 8))
+
+        mini_metric(0, 0, ready_count_var, "Ready", self.SUCCESS, "check_circle")
+        mini_metric(0, 1, blocked_count_var, "Blocked", self.DANGER, "minus_circle")
+        mini_metric(1, 0, warning_count_var, "Warnings", self.WARNING, "warning")
+        mini_metric(1, 1, sketch_count_var, "Sketches", self.ACCENT_DARK, "pdf")
+        mini_metric(2, 0, program_count_var, "Programs", "#7c3aed" if not self.dark_mode_var.get() else "#a78bfa", "program")
+
+        notes_card = ctk.CTkFrame(rail, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+        notes_card.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
+        ctk.CTkLabel(notes_card, text="Send rules", font=("Segoe UI", 11, "bold"), text_color=self.TEXT, anchor="w").pack(fill=tk.X, padx=12, pady=(10, 3))
+        ctk.CTkLabel(
+            notes_card,
+            text="Unchecked orders stay blocked. Checked orders with warnings can still send after confirmation. Archive runs only with the full checked-order send.",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=250,
+        ).pack(fill=tk.X, padx=12, pady=(0, 12))
+
+        action_panel = ctk.CTkFrame(rail, fg_color="transparent")
+        action_panel.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 16))
+        action_panel.grid_columnconfigure(0, weight=1)
+
+        main = ctk.CTkFrame(workspace, fg_color=self.CARD_BG, corner_radius=16, border_width=1, border_color=self.BORDER)
+        main.grid(row=0, column=1, sticky="nsew")
+        main.grid_columnconfigure(0, weight=1)
+        main.grid_rowconfigure(1, weight=1)
+
+        main_header = ctk.CTkFrame(main, fg_color="transparent", height=58)
+        main_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        main_header.grid_propagate(False)
+        ctk.CTkLabel(main_header, text="Send plan", font=("Segoe UI", 16, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            main_header,
+            text="Expand an order to see sketches, programs, archive files, and warnings.",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        tree_frame = ctk.CTkFrame(main, fg_color="transparent")
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
         columns = ("status", "source", "destination", "note")
-        tree = ttk.Treeview(body, columns=columns, show="tree headings", selectmode="browse")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="tree headings", selectmode="browse")
         tree.heading("#0", text="Order / Action")
         tree.heading("status", text="Status")
         tree.heading("source", text="Source")
         tree.heading("destination", text="Destination")
         tree.heading("note", text="Note")
-        tree.column("#0", width=230, minwidth=180, stretch=True)
-        tree.column("status", width=120, minwidth=90, stretch=False)
-        tree.column("source", width=280, minwidth=180, stretch=True)
-        tree.column("destination", width=260, minwidth=180, stretch=True)
-        tree.column("note", width=220, minwidth=140, stretch=True)
-        tree.tag_configure("ready", foreground="#0f7a3b")
-        tree.tag_configure("warning", foreground="#9a5b00")
-        tree.tag_configure("blocked", foreground="#b42318")
-        y_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
-        x_scroll = ttk.Scrollbar(body, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.column("#0", width=255, minwidth=190, stretch=True)
+        tree.column("status", width=118, minwidth=88, stretch=False)
+        tree.column("source", width=270, minwidth=180, stretch=True)
+        tree.column("destination", width=250, minwidth=180, stretch=True)
+        tree.column("note", width=250, minwidth=150, stretch=True)
+        tree.tag_configure("ready", foreground=self.SUCCESS)
+        tree.tag_configure("warning", foreground=self.WARNING)
+        tree.tag_configure("blocked", foreground=self.DANGER)
+        y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+        x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=tree.xview)
         tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         tree.grid(row=0, column=0, sticky="nsew")
         y_scroll.grid(row=0, column=1, sticky="ns")
         x_scroll.grid(row=1, column=0, sticky="ew")
-        body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
+
+        status_footer = ctk.CTkFrame(main, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+        status_footer.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 16))
+        status_footer.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(status_footer, text="Status", font=("Segoe UI", 10, "bold"), text_color=self.MUTED).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+        self.send_review_status_var = tk.StringVar(value="Review the send plan. Unchecked orders are blocked and will not send.")
+        ctk.CTkLabel(status_footer, textvariable=self.send_review_status_var, font=("Segoe UI", 11), text_color=self.TEXT, anchor="w").grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 8))
+        self.send_review_progress = ModernProgressBar(status_footer, self, height=12)
+        self.send_review_progress.configure(mode="determinate", maximum=100, value=0)
+        self.send_review_progress.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12), ipady=2)
 
         archive_candidates = (
             self.matching_order_files(order_folder, orders, root_only=True, inspect_pdf_text=False)
@@ -4615,39 +5870,35 @@ try {{
                 warning_count += 1
                 if checked:
                     checked_warning_count += 1
-            else:
-                checked_orders.append(order)
-                checked_aw_orders.append(order.aw_order)
-
-            if checked and warnings:
+            if checked:
                 checked_orders.append(order)
                 checked_aw_orders.append(order.aw_order)
 
             tag = "blocked" if not checked else "warning" if warnings else "ready"
-            status = "Blocked" if not checked else "Warnings" if warnings else "Ready"
+            status_text = "Blocked" if not checked else "Warnings" if warnings else "Ready"
             parent = tree.insert(
                 "",
                 tk.END,
                 text=f"{order.aw_order}  {remake_badge + '  ' if remake_badge else ''}{order.job_name}",
-                values=(status, "", "", "; ".join(warnings[:2])),
-                open=bool(warnings),
+                values=(status_text, "", "", "; ".join(warnings[:2])),
+                open=bool(warnings) or len(orders) <= 6,
                 tags=(tag,),
             )
             if not checked:
-                tree.insert(parent, tk.END, text="Skip", values=("Blocked", "", "", "Mark checked before sending."), tags=("blocked",))
+                tree.insert(parent, tk.END, text="Blocked", values=("Blocked", "", "", "Open the order review and mark it checked first."), tags=("blocked",))
                 continue
             if include_sketches:
                 if order_sketches:
                     for path in order_sketches:
-                        tree.insert(parent, tk.END, text="Send sketch", values=("Ready", path.name, str(self.SHOP_SKETCHES_DIR), ""), tags=("ready",))
+                        tree.insert(parent, tk.END, text="Sketch PDF", values=("Ready", path.name, str(self.SHOP_SKETCHES_DIR), ""), tags=("ready",))
                 else:
-                    tree.insert(parent, tk.END, text="Send sketch", values=("Missing", "", str(self.SHOP_SKETCHES_DIR), "No sketch PDF found."), tags=("warning",))
+                    tree.insert(parent, tk.END, text="Sketch PDF", values=("Missing", "", str(self.SHOP_SKETCHES_DIR), "No sketch PDF found."), tags=("warning",))
             if include_programs:
                 if order_dxfs:
                     for path in order_dxfs:
-                        tree.insert(parent, tk.END, text="Send DXF", values=("Ready", path.name, str(self.SHOP_PROGRAMS_DIR), ""), tags=("ready",))
+                        tree.insert(parent, tk.END, text="Program DXF", values=("Ready", path.name, str(self.SHOP_PROGRAMS_DIR), ""), tags=("ready",))
                 else:
-                    tree.insert(parent, tk.END, text="Send DXF", values=("Missing", "", str(self.SHOP_PROGRAMS_DIR), "No program DXF found."), tags=("warning",))
+                    tree.insert(parent, tk.END, text="Program DXF", values=("Missing", "", str(self.SHOP_PROGRAMS_DIR), "No program DXF found."), tags=("warning",))
             if archive_inputs:
                 if order_archive_files:
                     for path in order_archive_files:
@@ -4673,19 +5924,11 @@ try {{
 
         ready_count_var.set(str(len(checked_orders)))
         blocked_count_var.set(str(blocked_count))
-        other_count_var.set(str(warning_count))
+        warning_count_var.set(str(warning_count))
+        sketch_count_var.set(str(len(send_sketch_paths)))
+        program_count_var.set(str(len(send_dxf_paths)))
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
-        footer = ctk.CTkFrame(dialog, fg_color="transparent")
-        footer.pack(fill=tk.X, padx=18, pady=(0, 14))
-        self.send_review_status_var = tk.StringVar(
-            value="Review the send list. Unchecked orders are blocked and will not send."
-        )
-        self.send_review_progress = ttk.Progressbar(footer, mode="determinate", maximum=100, value=0)
-        self.send_review_progress.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        ctk.CTkLabel(footer, textvariable=self.send_review_status_var, font=("Segoe UI", 12), text_color=self.MUTED, anchor="w", width=420).pack(side=tk.LEFT, padx=(10, 0))
-        buttons = ctk.CTkFrame(footer, fg_color="transparent")
-        buttons.pack(side=tk.RIGHT, padx=(10, 0))
 
         def close_dialog() -> None:
             if self.send_review_window is dialog:
@@ -4698,12 +5941,12 @@ try {{
 
         def begin_send(send_sketches: bool, send_programs: bool, do_archive: bool) -> None:
             if not checked_orders:
-                messagebox.showinfo("Nothing ready", "No checked orders are ready to send.")
+                messagebox.showinfo("Nothing ready", "No checked orders are ready to send.", parent=dialog)
                 return
             chosen_sketches = send_sketch_paths if send_sketches else []
             chosen_dxfs = send_dxf_paths if send_programs else []
             if not chosen_sketches and not chosen_dxfs:
-                messagebox.showinfo("Nothing ready", "No generated files were found for the checked orders.")
+                messagebox.showinfo("Nothing ready", "No generated files were found for the checked orders.", parent=dialog)
                 return
             if checked_warning_count and not messagebox.askyesno(
                 "Warnings found",
@@ -4718,7 +5961,7 @@ try {{
                 chosen_missing.append("programs")
             for button in send_action_buttons:
                 button.configure(state=tk.DISABLED)
-            cancel_button.configure(text="Close")
+            close_button.configure(text="Close")
             self.send_review_status_var.set("Sending checked orders...")
             self.start_send_outputs_worker(
                 chosen_sketches,
@@ -4730,38 +5973,30 @@ try {{
                 process_list_path,
             )
 
-        cancel_button = self.make_tool_button(buttons, "Cancel", "x", close_dialog, width=120)
-        cancel_button.pack(side=tk.RIGHT)
-        send_all_button = ctk.CTkButton(
-            buttons,
+        ctk.CTkButton(
+            action_panel,
             text="Send All Checked Orders",
             command=lambda: begin_send(True, True, archive_inputs),
-            width=220,
-            height=36,
-            corner_radius=7,
+            height=46,
+            corner_radius=11,
             fg_color=self.ACCENT,
             hover_color=self.ACCENT_DARK,
             text_color="#ffffff",
-            font=("Segoe UI", 12, "bold"),
-            **self.ctk_button_icon("send", 16, "#ffffff", "left"),
-        )
-        send_all_button.pack(side=tk.RIGHT, padx=(0, 8))
-        send_programs_button = self.make_tool_button(
-            buttons,
-            text="Send Programs",
-            icon_name="program",
-            command=lambda: begin_send(False, True, False),
-            width=165,
-        )
-        send_programs_button.pack(side=tk.RIGHT, padx=(0, 8))
-        send_sketches_button = self.make_tool_button(
-            buttons,
-            text="Send Sketches",
-            icon_name="image",
-            command=lambda: begin_send(True, False, False),
-            width=165,
-        )
-        send_sketches_button.pack(side=tk.RIGHT, padx=(0, 8))
+            font=("Segoe UI", 13, "bold"),
+            **self.ctk_button_icon("send", 17, "#ffffff", "left"),
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 9))
+        send_all_button = action_panel.grid_slaves(row=0, column=0)[0]
+
+        two_col = ctk.CTkFrame(action_panel, fg_color="transparent")
+        two_col.grid(row=1, column=0, sticky="ew", pady=(0, 9))
+        two_col.grid_columnconfigure((0, 1), weight=1)
+        send_sketches_button = self.make_tool_button(two_col, "Sketches", "image", lambda: begin_send(True, False, False), width=120)
+        send_sketches_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        send_programs_button = self.make_tool_button(two_col, "Programs", "program", lambda: begin_send(False, True, False), width=120)
+        send_programs_button.grid(row=0, column=1, sticky="ew")
+        close_button = self.make_tool_button(action_panel, "Cancel", "x", close_dialog, width=250)
+        close_button.grid(row=2, column=0, sticky="ew")
+
         send_action_buttons.extend([send_sketches_button, send_programs_button, send_all_button])
         if not checked_orders:
             for button in send_action_buttons:
@@ -4772,7 +6007,9 @@ try {{
             send_programs_button.configure(state=tk.DISABLED)
         if not send_sketch_paths and not send_dxf_paths:
             send_all_button.configure(state=tk.DISABLED)
+
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        self.bring_window_to_front(dialog, make_transient=False)
 
     @staticmethod
     def paths_for_order(paths: list[Path], aw_order: str) -> list[Path]:

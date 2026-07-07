@@ -16,27 +16,39 @@
         "skip_dxf": false
       }
     },
+    "235596": {
+      "_order_checked": true
+    },
+    "235597": {
+      "1": {
+        "remake_x": 306.951,
+        "remake_y": 623.521
+      },
+      "_order_checked": true
+    },
     "235598": {
       "2": {
-        "indicator_corner": "top_left",
-        "indicator_x": 135.447,
-        "indicator_y": 623.989,
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0
-      }
+        "remake_x": 344.973,
+        "remake_y": 622.971
+      },
+      "_order_checked": true
     },
     "235599": {
       "1": {
-        "hinge_side": "left",
-        "hinges_up": false,
-        "indicator_corner": "bottom_left",
-        "indicator_x": 226.265,
-        "indicator_y": 158.417,
-        "label_font_size": 21.0,
-        "label_text": "235599.1\nDENVER 1",
         "machine": "DENVER 1",
-        "manual_indicator_corner": true,
-        "rotation_degrees": 90.0,
+        "skip_dxf": false
+      },
+      "_order_checked": true
+    },
+    "235600": {
+      "_order_checked": true
+    },
+    "235610": {
+      "2": {},
+      "_order_checked": true
+    },
+    "235613": {
+      "1": {
         "skip_dxf": false
       }
     }
