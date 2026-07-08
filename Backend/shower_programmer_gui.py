@@ -5436,8 +5436,32 @@ a {{ color: #1f4e79; }}
 
     def update_install_root(self) -> Path:
         if getattr(sys, "frozen", False):
-            return Path(sys.executable).resolve().parent
+            executable_dir = Path(sys.executable).resolve().parent
+            parent = executable_dir.parent
+            for candidate in (parent, executable_dir):
+                if (candidate / "Backend").exists() and (candidate / "Assets").exists():
+                    return candidate
+                if (candidate / "Input").exists() and (candidate / "Output").exists() and (candidate / "Assets").exists():
+                    return candidate
+            return executable_dir
         return programmer.project_root()
+
+    @staticmethod
+    def frozen_app_dir() -> Path | None:
+        if not getattr(sys, "frozen", False):
+            return None
+        return Path(sys.executable).resolve().parent
+
+    @staticmethod
+    def should_update_source_tree(repo: Path, app_dir: Path | None) -> bool:
+        if app_dir is None:
+            return True
+        try:
+            if repo.resolve() == app_dir.resolve():
+                return False
+        except OSError:
+            return False
+        return (repo / "Backend").exists() or (repo / "Assets").exists()
 
     def check_for_updates_without_git(self, repo: Path) -> None:
         owner, repo_name = self.github_update_repo(repo)
@@ -5481,7 +5505,7 @@ a {{ color: #1f4e79; }}
             )
             if messagebox.askyesno("Restart to finish update?", message + "\n\nClose and apply the update now?"):
                 try:
-                    subprocess.Popen([str(self.pending_update_script)], cwd=str(self.pending_update_script.parent), shell=True)
+                    subprocess.Popen(["cmd", "/c", str(self.pending_update_script)], cwd=str(self.pending_update_script.parent))
                     self.on_close()
                 except Exception as exc:
                     messagebox.showerror("Update restart failed", str(exc))
@@ -5534,11 +5558,7 @@ a {{ color: #1f4e79; }}
         return sha, latest_date
 
     def current_update_revision(self, repo: Path) -> str:
-        metadata_paths = [
-            repo / "Output" / "update_metadata.json",
-            repo / ".shower_update.json",
-        ]
-        for metadata_path in metadata_paths:
+        for metadata_path in self.update_metadata_paths(repo):
             if not metadata_path.exists():
                 continue
             try:
@@ -5549,6 +5569,17 @@ a {{ color: #1f4e79; }}
             except Exception:
                 pass
         return self.git_head_without_git(repo)
+
+    @staticmethod
+    def update_metadata_paths(repo: Path) -> list[Path]:
+        paths = [
+            repo / "Output" / "update_metadata.json",
+            repo / ".shower_update.json",
+        ]
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            paths.append(Path(appdata) / "Shower Programmer" / "update_metadata.json")
+        return paths
 
     @staticmethod
     def git_head_without_git(repo: Path) -> str:
@@ -5602,12 +5633,34 @@ a {{ color: #1f4e79; }}
         self.status_var.set("Installing update files...")
         if getattr(sys, "frozen", False):
             current_exe = Path(sys.executable).resolve()
+            app_dir = current_exe.parent
+            replacement_app_dir = self.find_replacement_app_bundle(source_root, current_exe.name)
+            if replacement_app_dir is not None:
+                self.pending_update_script = self.stage_app_bundle_replacement(app_dir, replacement_app_dir, current_exe.name, updates_dir)
+                self.pending_update_message = (
+                    "Downloaded a replacement Shower Programmer app folder. "
+                    "The app will close, replace the bundled EXE and _internal runtime folder, and reopen."
+                )
+                if self.should_update_source_tree(repo, app_dir):
+                    self.copy_update_tree(source_root, repo, backup_dir, skip_names={replacement_app_dir.name})
+                (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+                return
             replacement_exe = self.find_replacement_exe(source_root, current_exe.name)
             if replacement_exe is not None:
                 self.pending_update_script = self.stage_exe_replacement(current_exe, replacement_exe, updates_dir)
                 self.pending_update_message = (
                     f"Downloaded a replacement executable for {current_exe.name}. "
                     "The app will close, replace the EXE in this folder, and reopen."
+                )
+                if self.should_update_source_tree(repo, app_dir):
+                    self.copy_update_tree(source_root, repo, backup_dir, skip_names={app_dir.name})
+                (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+                return
+            if not self.should_update_source_tree(repo, app_dir):
+                raise RuntimeError(
+                    "The GitHub update was downloaded, but it did not contain a packaged "
+                    "'Shower Programmer' folder or replacement EXE. Rebuild and publish the "
+                    "folder EXE before using Check for Updates on packaged computers."
                 )
         self.copy_update_tree(source_root, repo, backup_dir)
         (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
@@ -5630,6 +5683,26 @@ a {{ color: #1f4e79; }}
         return fallback
 
     @staticmethod
+    def find_replacement_app_bundle(source_root: Path, current_exe_name: str) -> Path | None:
+        candidates: list[Path] = []
+        for path in source_root.rglob(current_exe_name):
+            if not path.is_file() or path.suffix.lower() != ".exe":
+                continue
+            parent = path.parent
+            if (parent / "_internal").is_dir():
+                candidates.append(parent)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda path: (
+                0 if path.name.lower() == "shower programmer" else 1,
+                0 if any(part.lower() in {"dist", "release"} for part in path.parts) else 1,
+                len(path.parts),
+            )
+        )
+        return candidates[0]
+
+    @staticmethod
     def find_replacement_exe(source_root: Path, current_exe_name: str) -> Path | None:
         exact = [
             path
@@ -5650,6 +5723,51 @@ a {{ color: #1f4e79; }}
         return None
 
     @staticmethod
+    def stage_app_bundle_replacement(app_dir: Path, replacement_app_dir: Path, current_exe_name: str, updates_dir: Path) -> Path:
+        staged_dir = updates_dir / "staged_app"
+        staged_app_dir = staged_dir / app_dir.name
+        if staged_app_dir.exists():
+            shutil.rmtree(staged_app_dir)
+        shutil.copytree(replacement_app_dir, staged_app_dir)
+        script_path = updates_dir / "apply_update.cmd"
+        backup_dir = updates_dir / "backup_app"
+        pid = os.getpid()
+        script = (
+            "@echo off\n"
+            "setlocal\n"
+            f"set \"APP_DIR={app_dir}\"\n"
+            f"set \"STAGED_APP={staged_app_dir}\"\n"
+            f"set \"EXE_NAME={current_exe_name}\"\n"
+            f"set \"BACKUP_DIR={backup_dir}\"\n"
+            f"set \"PID={pid}\"\n"
+            "\n"
+            ":wait_for_app\n"
+            "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul\n"
+            "if not errorlevel 1 (\n"
+            "    timeout /t 1 /nobreak >nul\n"
+            "    goto wait_for_app\n"
+            ")\n"
+            "\n"
+            "mkdir \"%BACKUP_DIR%\" >nul 2>nul\n"
+            "if exist \"%APP_DIR%\\%EXE_NAME%\" copy /Y \"%APP_DIR%\\%EXE_NAME%\" \"%BACKUP_DIR%\\%EXE_NAME%\" >nul\n"
+            "if exist \"%APP_DIR%\\_internal\" robocopy \"%APP_DIR%\\_internal\" \"%BACKUP_DIR%\\_internal\" /E /NFL /NDL /NJH /NJS /NP >nul\n"
+            "\n"
+            "if exist \"%APP_DIR%\\_internal\" rmdir /S /Q \"%APP_DIR%\\_internal\"\n"
+            "robocopy \"%STAGED_APP%\" \"%APP_DIR%\" /E /NFL /NDL /NJH /NJS /NP\n"
+            "if errorlevel 8 (\n"
+            "    echo Failed to copy the updated Shower Programmer folder.\n"
+            "    echo Backup files are in \"%BACKUP_DIR%\".\n"
+            "    pause\n"
+            "    exit /b 1\n"
+            ")\n"
+            "\n"
+            "start \"\" \"%APP_DIR%\\%EXE_NAME%\"\n"
+            "exit /b 0\n"
+        )
+        script_path.write_text(script, encoding="utf-8")
+        return script_path
+
+    @staticmethod
     def stage_exe_replacement(current_exe: Path, replacement_exe: Path, updates_dir: Path) -> Path:
         staged_dir = updates_dir / "staged_exe"
         staged_dir.mkdir(parents=True, exist_ok=True)
@@ -5660,9 +5778,9 @@ a {{ color: #1f4e79; }}
         script = (
             "@echo off\n"
             "setlocal\n"
-            f"set CURRENT_EXE={current_exe}\n"
-            f"set STAGED_EXE={staged_exe}\n"
-            f"set PID={pid}\n"
+            f"set \"CURRENT_EXE={current_exe}\"\n"
+            f"set \"STAGED_EXE={staged_exe}\"\n"
+            f"set \"PID={pid}\"\n"
             "\n"
             ":wait_for_app\n"
             "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul\n"
@@ -5776,8 +5894,10 @@ try {{
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PowerShell download failed.")
 
-    def copy_update_tree(self, source_root: Path, repo: Path, backup_dir: Path) -> None:
-        skip_root_names = {".git", ".github", ".agents", ".codex", "Input", "Output"}
+    def copy_update_tree(self, source_root: Path, repo: Path, backup_dir: Path, skip_names: set[str] | None = None) -> None:
+        skip_root_names = {".git", ".github", ".agents", ".codex", "Input", "Output", "build", "__pycache__"}
+        if skip_names:
+            skip_root_names.update(skip_names)
         for source in source_root.iterdir():
             if source.name in skip_root_names:
                 continue
@@ -5810,9 +5930,13 @@ try {{
             "method": method,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        metadata_path = repo / "Output" / "update_metadata.json"
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+        for metadata_path in ShowerProgrammerApp.update_metadata_paths(repo):
+            try:
+                metadata_path.parent.mkdir(parents=True, exist_ok=True)
+                metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+                return
+            except Exception:
+                continue
 
     def send_sketches_to_shop(self) -> None:
         self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True, review_before_send=True)
