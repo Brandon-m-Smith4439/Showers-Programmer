@@ -463,6 +463,7 @@ def analyze_panels(reader: PdfReader, config: dict[str, Any], aw_order: str) -> 
 def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel:
     rules = config.get("rules", {})
     upper = panel.text.upper()
+    fabrication_upper = strip_non_fabrication_edge_text(upper)
     door_keywords = upper_set(config, "rules", "door_keywords")
     hinge_label_keywords = upper_set(config, "rules", "hinge_label_keywords")
     waterjet_keywords = upper_set(config, "rules", "waterjet_keywords")
@@ -474,9 +475,9 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
 
     has_door = any(k in upper for k in door_keywords | hinge_label_keywords) or has_hinge_label_text(upper, config)
     has_strong_waterjet = has_pdf_waterjet_evidence(panel.text, config)
-    has_weak_waterjet = any(k in upper for k in weak_waterjet_keywords)
-    has_fabrication = any(k in upper for k in fabrication_keywords)
-    has_denver_fabrication = any(k in upper for k in denver_fabrication_keywords)
+    has_weak_waterjet = any(k in fabrication_upper for k in weak_waterjet_keywords)
+    has_fabrication = any(k in fabrication_upper for k in fabrication_keywords)
+    has_denver_fabrication = any(k in fabrication_upper for k in denver_fabrication_keywords)
     has_only_allowed_extra = any(k in upper for k in label_only_allow)
     panel.diamon_fusion = "DIAMON" in upper or "DIAMOND FUSION" in upper
 
@@ -531,7 +532,7 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
 
 
 def has_pdf_waterjet_evidence(text: str, config: dict[str, Any]) -> bool:
-    upper = text.upper()
+    upper = strip_non_fabrication_edge_text(text.upper())
     waterjet_keywords = upper_set(config, "rules", "waterjet_keywords")
     weak_waterjet_keywords = upper_set(config, "rules", "weak_waterjet_keywords")
     if any(keyword in upper for keyword in waterjet_keywords - weak_waterjet_keywords):
@@ -541,6 +542,18 @@ def has_pdf_waterjet_evidence(text: str, config: dict[str, Any]) -> bool:
     if count_fp_marks(upper) >= minimum_fp:
         return True
     return has_radius_text(upper)
+
+
+def strip_non_fabrication_edge_text(text: str) -> str:
+    """Mitred/mitered edge notes are edge-finish notes, not machine fabrication."""
+    upper = text.upper()
+    patterns = [
+        r"\b(?:BACK\s+)?MIT(?:ER|RE)(?:ED|D)?\s+EDGES?\b",
+        r"\b(?:BACK\s+)?MIT(?:ER|RE)(?:ED|D)?\b",
+    ]
+    for pattern in patterns:
+        upper = re.sub(pattern, " ", upper)
+    return re.sub(r"\s+", " ", upper)
 
 
 def count_fp_marks(text: str) -> int:

@@ -201,10 +201,11 @@ class ShowerProgrammerApp:
         self.root.minsize(980, 560)
         self.set_window_icon(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.folder_var = tk.StringVar(value=str(programmer.default_orders_dir()))
+        self.runtime_root = self.ensure_internal_runtime_folders()
+        self.folder_var = tk.StringVar(value=str(self.internal_orders_dir()))
         self.import_source_var = tk.StringVar(value=str(self.EDI_IMPORT_ORDERS_DIR))
-        self.process_list_var = tk.StringVar(value=str(programmer.default_process_list_path()))
-        self.output_dir_var = tk.StringVar(value=str(programmer.default_output_dir()))
+        self.process_list_var = tk.StringVar(value=str(self.internal_process_list_dir()))
+        self.output_dir_var = tk.StringVar(value=str(self.internal_output_dir()))
         self.ui_settings = self.load_ui_settings()
         self.dark_mode_var = tk.BooleanVar(value=bool(self.ui_settings.get("dark_mode", False)))
         self.force_var = tk.BooleanVar(value=False)
@@ -241,6 +242,8 @@ class ShowerProgrammerApp:
         self.review_cache_worker_active = False
         self.active_themed_context_popup: tk.Toplevel | None = None
         self.active_themed_context_binding: tuple[tk.Widget, str, str] | None = None
+        self.pending_update_script: Path | None = None
+        self.pending_update_message = ""
 
         self.configure_styles()
         self.build_ui()
@@ -263,6 +266,43 @@ class ShowerProgrammerApp:
                 self.root.after(delay, maximize)
             except tk.TclError:
                 pass
+
+    @classmethod
+    def preferred_runtime_root(cls) -> Path:
+        root = programmer.project_root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", delete=True, dir=str(root), encoding="utf-8"):
+                pass
+            return root
+        except Exception:
+            appdata = os.environ.get("APPDATA")
+            base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+            return base / "Shower Programmer"
+
+    def ensure_internal_runtime_folders(self) -> Path:
+        root = self.preferred_runtime_root()
+        folders = [
+            root / "Input" / "Orders",
+            root / "Input" / "Process List",
+            root / "Output",
+            root / "Output" / "Updates",
+        ]
+        for folder in folders:
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+        return root
+
+    def internal_orders_dir(self) -> Path:
+        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Input" / "Orders"
+
+    def internal_process_list_dir(self) -> Path:
+        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Input" / "Process List"
+
+    def internal_output_dir(self) -> Path:
+        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Output"
 
     @staticmethod
     def set_window_icon(window: Any) -> None:
@@ -502,12 +542,24 @@ class ShowerProgrammerApp:
         popup.bind("<Destroy>", cleanup_menu_state, add="+")
 
         popup.update_idletasks()
-        screen_w = popup.winfo_screenwidth()
-        screen_h = popup.winfo_screenheight()
+        try:
+            screen_x = popup.winfo_vrootx()
+            screen_y = popup.winfo_vrooty()
+            screen_w = popup.winfo_vrootwidth()
+            screen_h = popup.winfo_vrootheight()
+        except tk.TclError:
+            screen_x = 0
+            screen_y = 0
+            screen_w = popup.winfo_screenwidth()
+            screen_h = popup.winfo_screenheight()
         width = popup.winfo_reqwidth()
         height = popup.winfo_reqheight()
-        x = max(8, min(int(x_root), screen_w - width - 12))
-        y = max(8, min(int(y_root), screen_h - height - 48))
+        x_min = screen_x + 8
+        y_min = screen_y + 8
+        x_max = screen_x + screen_w - width - 12
+        y_max = screen_y + screen_h - height - 48
+        x = max(x_min, min(int(x_root), x_max))
+        y = max(y_min, min(int(y_root), y_max))
         popup.geometry(f"{width}x{height}+{x}+{y}")
         popup.deiconify()
         try:
@@ -1621,6 +1673,7 @@ class ShowerProgrammerApp:
         self.tree.tag_configure("FAILED", foreground=self.DANGER)
         self.tree.tag_configure("SKIPPED", foreground=self.DANGER)
         self.tree.bind("<Double-1>", self.open_order_review)
+        self.tree.bind("<Button-3>", self.open_orders_context_menu)
         self.tree.bind("<Control-a>", self.select_all_orders)
         self.tree.bind("<Control-A>", self.select_all_orders)
 
@@ -2818,6 +2871,118 @@ class ShowerProgrammerApp:
         self.save_manual_overrides(data)
         self.update_summary_strip()
         self.status_var.set(f"Marked {len(orders)} order(s) checked.")
+
+    def order_for_tree_row(self, row_id: str) -> shower_batch.ProcessOrder | None:
+        if not row_id:
+            return None
+        try:
+            values = self.tree.item(row_id, "values")
+        except tk.TclError:
+            return None
+        if len(values) < 5:
+            return None
+        return self.order_by_aw.get(str(values[4]))
+
+    def open_orders_context_menu(self, event: tk.Event) -> str:
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            self.close_active_themed_context_menu()
+            return "break"
+
+        if row_id not in self.tree.selection():
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+        order = self.order_for_tree_row(row_id)
+        if order is None:
+            return "break"
+
+        selected_count = len(self.selected_orders())
+        title = "Order Actions"
+        subtitle = f"{selected_count} selected order(s)" if selected_count > 1 else f"{order.aw_order}  {order.job_name}"
+        actions = [
+            {
+                "text": "Delete Local Input Files",
+                "icon": "trash",
+                "destructive": True,
+                "command": self.delete_selected_local_order_inputs,
+            },
+        ]
+        self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
+        return "break"
+
+    def delete_selected_local_order_inputs(self) -> None:
+        orders = self.selected_orders()
+        if not orders:
+            messagebox.showinfo("No selection", "Select one or more orders first.")
+            return
+        try:
+            local_order_folder = Path(self.folder_var.get()).resolve()
+        except Exception as exc:
+            messagebox.showerror("Invalid order folder", str(exc))
+            return
+
+        files = self.matching_order_files(
+            local_order_folder,
+            orders,
+            root_only=True,
+            inspect_pdf_text=True,
+        )
+        order_names = ", ".join(order.aw_order for order in orders[:8])
+        if len(orders) > 8:
+            order_names += f", +{len(orders) - 8} more"
+        if files:
+            file_preview = "\n".join(path.name for path in files[:12])
+            if len(files) > 12:
+                file_preview += f"\n...and {len(files) - 12} more"
+            message = (
+                "Delete the local copied order PDF/DXF files for these order(s)?\n\n"
+                f"Orders: {order_names}\n\n"
+                f"Local folder only:\n{local_order_folder}\n\n"
+                f"Files to delete:\n{file_preview}\n\n"
+                "This will not delete anything from the shared Showers Programmer Input folder."
+            )
+        else:
+            message = (
+                "No matching local PDF/DXF files were found for the selected order(s).\n\n"
+                f"Orders: {order_names}\n\n"
+                "Remove the selected order(s) from the current orders list anyway?"
+            )
+        if not messagebox.askyesno("Delete local order input", message):
+            return
+
+        deleted: list[Path] = []
+        warnings: list[str] = []
+        local_root = local_order_folder.resolve()
+        for path in files:
+            try:
+                resolved = path.resolve()
+                if resolved.parent != local_root:
+                    warnings.append(f"Skipped outside local order folder: {path.name}")
+                    continue
+                path.unlink()
+                deleted.append(path)
+            except OSError as exc:
+                warnings.append(f"Could not delete {path.name}: {exc}")
+
+        deleted_aw_orders = {order.aw_order for order in orders}
+        for aw_order in deleted_aw_orders:
+            row_id = self.tree_rows.pop(aw_order, None)
+            if row_id:
+                try:
+                    self.tree.delete(row_id)
+                except tk.TclError:
+                    pass
+            self.order_by_aw.pop(aw_order, None)
+        self.orders = [order for order in self.orders if order.aw_order not in deleted_aw_orders]
+        self.update_summary_strip()
+
+        detail = f"Deleted {len(deleted)} local file(s) and removed {len(deleted_aw_orders)} order(s) from the list."
+        if warnings:
+            detail += "\n\n" + "\n".join(warnings[:8])
+            if len(warnings) > 8:
+                detail += f"\n...and {len(warnings) - 8} more"
+        self.status_var.set(detail.split("\n", 1)[0])
+        messagebox.showinfo("Local order input deleted", detail)
 
     def selected_orders(self) -> list[shower_batch.ProcessOrder]:
         selected = []
@@ -5177,9 +5342,12 @@ a {{ color: #1f4e79; }}
         return new_size
 
     def check_for_updates(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
+        repo = self.update_install_root()
         git = shutil.which("git")
-        if not git:
+        # A PyInstaller executable cannot use the source checkout path inside the
+        # bundle. In frozen mode, update the executable folder with the GitHub zip
+        # updater instead of trying to pull a developer repository.
+        if getattr(sys, "frozen", False) or not git or not (repo / ".git").exists():
             self.check_for_updates_without_git(repo)
             return
         try:
@@ -5266,6 +5434,11 @@ a {{ color: #1f4e79; }}
             "This folder and GitHub main both have different changes. Update manually with Git.",
         )
 
+    def update_install_root(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return programmer.project_root()
+
     def check_for_updates_without_git(self, repo: Path) -> None:
         owner, repo_name = self.github_update_repo(repo)
         try:
@@ -5301,6 +5474,28 @@ a {{ color: #1f4e79; }}
             messagebox.showerror("Update failed", str(exc))
             return
         self.write_update_metadata(repo, latest_sha, "zip")
+        if self.pending_update_script is not None:
+            message = self.pending_update_message or (
+                "A replacement executable was downloaded. The updater needs to close this program, "
+                "replace the EXE, and reopen it."
+            )
+            if messagebox.askyesno("Restart to finish update?", message + "\n\nClose and apply the update now?"):
+                try:
+                    subprocess.Popen([str(self.pending_update_script)], cwd=str(self.pending_update_script.parent), shell=True)
+                    self.on_close()
+                except Exception as exc:
+                    messagebox.showerror("Update restart failed", str(exc))
+            else:
+                self.status_var.set("Update downloaded. Restart from the staged updater when ready.")
+            return
+        if getattr(sys, "frozen", False):
+            self.status_var.set("Support files were updated. A new EXE was not found in the update package.")
+            messagebox.showinfo(
+                "Update downloaded",
+                "The update package was installed into this program folder, but it did not contain a replacement EXE. "
+                "Bundled executable code changes only take effect when the GitHub update package includes a new EXE/release bundle."
+            )
+            return
         self.status_var.set("Program updated from GitHub main. Restart the GUI to use the new code.")
         messagebox.showinfo("Updated", "The program was updated. Close and reopen the GUI to use the new code.")
 
@@ -5388,12 +5583,14 @@ a {{ color: #1f4e79; }}
         return ""
 
     def install_update_zip(self, repo: Path, owner: str, repo_name: str, branch: str, latest_sha: str) -> None:
-        updates_dir = repo / "Output" / "Updates" / f"update_{datetime.now():%Y%m%d_%H%M%S}"
+        updates_dir = self.update_work_dir(repo) / f"update_{datetime.now():%Y%m%d_%H%M%S}"
         updates_dir.mkdir(parents=True, exist_ok=True)
         archive_path = updates_dir / "main.zip"
         extract_dir = updates_dir / "extract"
         backup_dir = updates_dir / "backup"
         zip_url = f"https://codeload.github.com/{owner}/{repo_name}/zip/refs/heads/{branch}"
+        self.pending_update_script = None
+        self.pending_update_message = ""
         self.status_var.set("Downloading update from GitHub...")
         self.download_file(zip_url, archive_path)
         with zipfile.ZipFile(archive_path) as archive:
@@ -5403,8 +5600,88 @@ a {{ color: #1f4e79; }}
             raise RuntimeError("Downloaded update package was empty.")
         source_root = roots[0]
         self.status_var.set("Installing update files...")
+        if getattr(sys, "frozen", False):
+            current_exe = Path(sys.executable).resolve()
+            replacement_exe = self.find_replacement_exe(source_root, current_exe.name)
+            if replacement_exe is not None:
+                self.pending_update_script = self.stage_exe_replacement(current_exe, replacement_exe, updates_dir)
+                self.pending_update_message = (
+                    f"Downloaded a replacement executable for {current_exe.name}. "
+                    "The app will close, replace the EXE in this folder, and reopen."
+                )
         self.copy_update_tree(source_root, repo, backup_dir)
         (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+
+    def update_work_dir(self, repo: Path) -> Path:
+        candidates = [repo / "Output" / "Updates", self.internal_output_dir() / "Updates"]
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "Shower Programmer" / "Updates")
+        for candidate in candidates:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile("w", delete=True, dir=str(candidate), encoding="utf-8"):
+                    pass
+                return candidate
+            except Exception:
+                continue
+        fallback = Path(tempfile.gettempdir()) / "Shower Programmer Updates"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+    @staticmethod
+    def find_replacement_exe(source_root: Path, current_exe_name: str) -> Path | None:
+        exact = [
+            path
+            for path in source_root.rglob("*.exe")
+            if path.is_file() and path.name.lower() == current_exe_name.lower()
+        ]
+        if exact:
+            exact.sort(key=lambda path: (0 if "dist" in [part.lower() for part in path.parts] else 1, len(path.parts)))
+            return exact[0]
+        shower_exes = [
+            path
+            for path in source_root.rglob("*.exe")
+            if path.is_file() and "shower" in path.name.lower() and "program" in path.name.lower()
+        ]
+        if shower_exes:
+            shower_exes.sort(key=lambda path: (0 if "dist" in [part.lower() for part in path.parts] else 1, len(path.parts)))
+            return shower_exes[0]
+        return None
+
+    @staticmethod
+    def stage_exe_replacement(current_exe: Path, replacement_exe: Path, updates_dir: Path) -> Path:
+        staged_dir = updates_dir / "staged_exe"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        staged_exe = staged_dir / current_exe.name
+        shutil.copy2(replacement_exe, staged_exe)
+        script_path = updates_dir / "apply_update.cmd"
+        pid = os.getpid()
+        script = (
+            "@echo off\n"
+            "setlocal\n"
+            f"set CURRENT_EXE={current_exe}\n"
+            f"set STAGED_EXE={staged_exe}\n"
+            f"set PID={pid}\n"
+            "\n"
+            ":wait_for_app\n"
+            "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul\n"
+            "if not errorlevel 1 (\n"
+            "    timeout /t 1 /nobreak >nul\n"
+            "    goto wait_for_app\n"
+            ")\n"
+            "\n"
+            "copy /Y \"%STAGED_EXE%\" \"%CURRENT_EXE%\"\n"
+            "if errorlevel 1 (\n"
+            "    echo Failed to replace \"%CURRENT_EXE%\".\n"
+            "    pause\n"
+            "    exit /b 1\n"
+            ")\n"
+            "start \"\" \"%CURRENT_EXE%\"\n"
+            "exit /b 0\n"
+        )
+        script_path.write_text(script, encoding="utf-8")
+        return script_path
 
     @staticmethod
     def download_file(url: str, destination: Path) -> None:
@@ -5509,6 +5786,12 @@ try {{
     def copy_update_item(self, source: Path, target: Path, backup: Path) -> None:
         if source.name == "__pycache__" or source.suffix.lower() in {".pyc", ".pyo"}:
             return
+        if getattr(sys, "frozen", False) and source.suffix.lower() == ".exe":
+            try:
+                if target.resolve() == Path(sys.executable).resolve():
+                    return
+            except OSError:
+                return
         if source.is_dir():
             target.mkdir(parents=True, exist_ok=True)
             for child in source.iterdir():
@@ -5643,6 +5926,11 @@ try {{
         self.progress.configure(mode="determinate", maximum=100, value=0)
         self.start_send_outputs_worker(sketch_paths, dxf_paths, missing, archive_inputs, orders, order_folder, process_list_path)
 
+    def orders_cover_all_scanned_orders(self, orders: list[shower_batch.ProcessOrder]) -> bool:
+        selected_aw_orders = {str(order.aw_order) for order in orders if str(order.aw_order)}
+        all_aw_orders = {str(aw_order) for aw_order in self.order_by_aw if str(aw_order)}
+        return bool(selected_aw_orders) and bool(all_aw_orders) and all_aw_orders.issubset(selected_aw_orders)
+
     def start_send_outputs_worker(
         self,
         sketch_paths: list[Path],
@@ -5654,10 +5942,11 @@ try {{
         process_list_path: Path,
     ) -> None:
         send_steps = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
+        archive_process_lists = self.orders_cover_all_scanned_orders(orders)
         self.start_background_activity("Sending generated files to shop folders...", maximum=send_steps)
         worker = threading.Thread(
             target=self.worker_send_outputs,
-            args=(sketch_paths, dxf_paths, missing, archive_inputs, orders, order_folder, process_list_path),
+            args=(sketch_paths, dxf_paths, missing, archive_inputs, archive_process_lists, orders, order_folder, process_list_path),
             daemon=True,
         )
         worker.start()
@@ -5908,7 +6197,8 @@ try {{
             for warning in warnings:
                 tree.insert(parent, tk.END, text="Warning", values=("Review", "", "", warning), tags=("warning",))
 
-        process_list_files = self.archive_process_list_files(process_list_path) if archive_inputs and checked_orders else []
+        show_process_list_archive = archive_inputs and checked_orders and self.orders_cover_all_scanned_orders(checked_orders)
+        process_list_files = self.archive_process_list_files(process_list_path) if show_process_list_archive else []
         if process_list_files:
             parent = tree.insert("", tk.END, text="Process Lists", values=("Ready", "", "dated process-list archive", ""), open=False, tags=("ready",))
             for path in process_list_files:
@@ -6066,6 +6356,7 @@ try {{
         dxf_paths: list[Path],
         missing: list[str],
         archive_inputs: bool,
+        archive_process_lists: bool,
         orders: list[shower_batch.ProcessOrder],
         order_folder: Path,
         process_list_path: Path,
@@ -6110,6 +6401,7 @@ try {{
                     orders,
                     order_folder,
                     process_list_path,
+                    include_process_lists=archive_process_lists,
                     progress_callback=archive_progress,
                 )
 
@@ -6118,6 +6410,8 @@ try {{
 
                 advance("Clearing Showers Programmer Input...", 1)
                 import_deleted, input_cleanup_warnings = self.clear_import_staging_folder(
+                    orders,
+                    include_process_lists=archive_process_lists,
                     progress_callback=cleanup_progress,
                 )
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
@@ -6205,6 +6499,7 @@ try {{
             orders,
             Path(self.folder_var.get()).resolve(),
             Path(self.process_list_var.get()).resolve(),
+            include_process_lists=self.orders_cover_all_scanned_orders(orders),
         )
 
     def archive_sent_input_files_for_orders(
@@ -6212,6 +6507,7 @@ try {{
         orders: list[shower_batch.ProcessOrder],
         order_folder: Path,
         process_list_path: Path,
+        include_process_lists: bool = True,
         progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
         if not orders:
@@ -6226,17 +6522,18 @@ try {{
         if not order_files:
             warnings.append("No root-level order PDF/DXF input files matched the sent orders.")
 
-        process_list_files = self.archive_process_list_files(process_list_path)
+        process_list_files = self.archive_process_list_files(process_list_path) if include_process_lists else []
 
         process_sources: list[Path] = []
-        if process_list_files:
-            process_archive_dir = self.process_list_archive_dir(process_list_path, dated_name)
-            for source in process_list_files:
-                if source.parent.resolve() == process_archive_dir.resolve():
-                    continue
-                process_sources.append(source)
-        else:
-            warnings.append("No process-list files were available to archive.")
+        if include_process_lists:
+            if process_list_files:
+                process_archive_dir = self.process_list_archive_dir(process_list_path, dated_name)
+                for source in process_list_files:
+                    if source.parent.resolve() == process_archive_dir.resolve():
+                        continue
+                    process_sources.append(source)
+            else:
+                warnings.append("No process-list files were available to archive.")
 
         total_sources = len(order_files) + len(process_sources)
         done = 0
@@ -6314,6 +6611,7 @@ try {{
     def clear_import_staging_folder(
         cls,
         orders: list[shower_batch.ProcessOrder] | None = None,
+        include_process_lists: bool = False,
         progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
@@ -6331,7 +6629,8 @@ try {{
                 path.resolve()
                 for path in cls.matching_order_files(source_dir, orders, root_only=True, inspect_pdf_text=True)
             }
-            target_paths.update(path.resolve() for path in cls.importable_process_list_files(source_dir))
+            if include_process_lists:
+                target_paths.update(path.resolve() for path in cls.importable_process_list_files(source_dir))
             entries = [path for path in sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower()) if path.resolve() in target_paths]
         else:
             entries = sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower())

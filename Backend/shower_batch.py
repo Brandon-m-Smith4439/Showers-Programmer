@@ -99,12 +99,13 @@ class ProcessItem:
         text = self.processing_text.upper()
         if not text:
             return ""
+        fabrication_text = programmer.strip_non_fabrication_edge_text(text)
         door_keywords = upper_config_list(config, "door_keywords", ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"])
         door_keywords.update(upper_config_list(config, "hinge_label_keywords", ["GEN037", "V1E037", "AV1E037"]))
         fabrication = process_list_fabrication_keywords(config)
         if any(keyword in text for keyword in door_keywords) or re.search(r"\b(?:A?V1E|A?GEN)\d{3}\b", text):
             return "DENVER 1"
-        if any(keyword in text for keyword in fabrication):
+        if any(keyword in fabrication_text for keyword in fabrication):
             return "DENVER 2"
         return ""
 
@@ -1258,10 +1259,6 @@ def process_list_fabrication_keywords(config: dict[str, object]) -> set[str]:
             "SCU",
             "SCU4",
             "MACRO",
-            "MITRE",
-            "MITER",
-            "BACK MITRE",
-            "BACK MITER",
             "CUT-IN",
             "CUT IN",
             "CUTIN",
