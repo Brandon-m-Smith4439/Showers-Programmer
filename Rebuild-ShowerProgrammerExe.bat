@@ -76,15 +76,43 @@ echo.
   --windowed ^
   --name "Shower Programmer" ^
   --icon "%ICON%" ^
-  --distpath "." ^
+  --distpath "build\release" ^
   --workpath "build\pyinstaller" ^
   --specpath "build\pyinstaller" ^
   --paths "Backend" ^
+  --add-data "%CD%\Backend\shower_programmer_config.json;Backend" ^
   --collect-all customtkinter ^
   --collect-all pypdfium2 ^
   "Backend\shower_programmer_gui.py"
 
 if errorlevel 1 goto failed
+
+if not exist "build\release\Shower Programmer\Shower Programmer.exe" (
+    echo ERROR: Build finished, but the staged EXE was not found.
+    goto failed
+)
+
+set "BUILD_SHA="
+set "EXE_SHA256="
+where git >NUL 2>NUL
+if not errorlevel 1 (
+    for /f "usebackq delims=" %%I in (`git rev-parse HEAD 2^>NUL`) do set "BUILD_SHA=%%I"
+)
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath 'build\release\Shower Programmer\Shower Programmer.exe').Hash.ToLowerInvariant()"`) do set "EXE_SHA256=%%I"
+if defined BUILD_SHA (
+    >"build\release\Shower Programmer\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","method":"build"}
+) else if defined EXE_SHA256 (
+    >"build\release\Shower Programmer\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","method":"build"}
+)
+
+if not exist "Shower Programmer" mkdir "Shower Programmer"
+if exist "Shower Programmer\_internal" rmdir /S /Q "Shower Programmer\_internal"
+if exist "Shower Programmer\Shower Programmer.exe" del /F /Q "Shower Programmer\Shower Programmer.exe"
+robocopy "build\release\Shower Programmer" "Shower Programmer" /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >NUL
+if errorlevel 8 (
+    echo ERROR: Could not copy the staged release into the Shower Programmer folder.
+    goto failed
+)
 
 if not exist "Shower Programmer\Shower Programmer.exe" (
     echo ERROR: Build finished, but the final EXE was not found.
@@ -94,6 +122,12 @@ if not exist "Shower Programmer\Shower Programmer.exe" (
 if not exist "Shower Programmer\_internal\pypdfium2_raw\pdfium.dll" (
     echo ERROR: Build finished, but pypdfium2/pdfium.dll was not included.
     echo The Review Order preview may be slow or fail without this file.
+    goto failed
+)
+
+if not exist "Shower Programmer\_internal\Backend\shower_programmer_config.json" (
+    echo ERROR: Build finished, but the programmer configuration was not included.
+    echo WJ and REMAKE marker sizing would fall back to old defaults without it.
     goto failed
 )
 

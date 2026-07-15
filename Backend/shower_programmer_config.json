@@ -103,7 +103,7 @@
     "_notes": {
       "denver_fabrication_keywords": "Fabrication words that are allowed on Denver panels, including K cuts.",
       "door_cut_in_keywords": "If a Denver 1 door has these words, hinge side is oriented upward instead of downward. Hinge labels such as V1E037 and AV1E037 identify the door but do not force hinges up by themselves.",
-      "auto_dxf_angle_correction": "When true, Denver 1 doors can learn the small out-of-square hinge correction from the matched source DXF edge after the hinge side is known.",
+      "auto_dxf_angle_correction": "When true, Denver pieces learn a small out-of-square correction from the matched source DXF edge that becomes the CNC bottom.",
       "auto_dxf_angle_min_degrees": "Smallest DXF hinge-side correction to apply automatically. Values below this are treated as CAD noise.",
       "auto_dxf_angle_max_degrees": "Largest DXF hinge-side correction to apply automatically. Larger values are left for manual review.",
       "auto_dxf_hinge_side_detection": "When true, clear cut-in/kink evidence in the matched Denver 1 DXF can correct the detected hinge side.",

@@ -148,10 +148,26 @@ def resolve_config_path(config_value: str | Path, folder: Path) -> Path:
     config_path = Path(config_value)
     if config_path.is_absolute():
         return config_path
-    folder_path = folder / config_path
-    if folder_path.exists():
-        return folder_path
-    return script_dir() / config_path
+
+    candidates = [
+        folder / config_path,
+        project_root() / "Backend" / config_path,
+        project_root() / config_path,
+    ]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.extend(
+            [
+                Path(bundle_root) / "Backend" / config_path,
+                Path(bundle_root) / config_path,
+            ]
+        )
+    candidates.append(script_dir() / config_path)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
 
 @dataclass
@@ -575,6 +591,7 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
     order_overrides = overrides.get(str(aw_order), {})
     override = order_overrides.get(str(panel.item), {})
     if not override:
+        enforce_pph_hinges_up(panel)
         return
     coerced_denver_indicator_override = False
     coerced_waterjet_indicator_override = False
@@ -709,6 +726,7 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.remake_x = parse_float(override["remake_x"], 0)
     if "remake_y" in override:
         panel.remake_y = parse_float(override["remake_y"], 0)
+    enforce_pph_hinges_up(panel)
     sanitize_denver_indicator_override(panel)
     sanitize_waterjet_indicator(panel)
 
@@ -787,6 +805,8 @@ def panel_is_landscape(panel: Panel | None) -> bool:
 
 
 def denver_allowed_indicator_corners(panel: Panel | None = None) -> set[str]:
+    if panel is not None and has_pph_hinge(panel):
+        return {"bottom_left", "top_right"}
     return {"top_left", "bottom_right"} if panel_is_landscape(panel) else {"bottom_left", "top_right"}
 
 
@@ -976,6 +996,37 @@ def has_pph_hinge(panel: Panel) -> bool:
     return bool(re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper) or "PPH" in compact)
 
 
+def enforce_pph_hinges_up(panel: Panel) -> None:
+    """Keep PPH doors hinges-up even when an older override says otherwise."""
+    if panel.machine != "DENVER 1" or not has_pph_hinge(panel):
+        return
+
+    original_corner = panel.indicator_corner
+    if original_corner == "bottom_left":
+        hinge_side = "right"
+    elif original_corner == "top_right":
+        hinge_side = "left"
+    elif original_corner == "top_left":
+        hinge_side = "left"
+    elif original_corner == "bottom_right":
+        hinge_side = "right"
+    elif panel.hinge_side in {"left", "right"}:
+        hinge_side = panel.hinge_side
+    else:
+        hinge_side = "right"
+
+    panel.hinge_side = hinge_side
+    panel.hinges_up = True
+    panel.rotation_degrees = door_rotation_for_hinge_side(hinge_side, True)
+    panel.indicator_corner = door_indicator_corner_for_hinge_side(hinge_side, True)
+    if original_corner and original_corner != panel.indicator_corner:
+        panel.indicator_x = None
+        panel.indicator_y = None
+    reason = f"PPH hinge rule: hinge side {hinge_side}; hinges up"
+    if reason not in panel.reasons:
+        panel.reasons.append(reason)
+
+
 def has_hinge_label_text(text: str, config: dict[str, Any]) -> bool:
     upper = text.upper()
     labels = upper_set(config, "rules", "hinge_label_keywords")
@@ -1154,6 +1205,7 @@ def apply_indicator_corner_override_with_options(
         if rotation is not None:
             panel.rotation_degrees = rotation
             panel.manual_rotation_override = True
+    enforce_pph_hinges_up(panel)
 
 
 def estimate_hinge_side_from_text(
@@ -1370,21 +1422,6 @@ def apply_dxf_angle_correction(panel: Panel, config: dict[str, Any]) -> None:
     if not bool(rules.get("auto_dxf_angle_correction", True)):
         return
     if panel.source_dxf is None or panel.rotation_degrees is None:
-        return
-    if needs_manual_review_for_fps_dxf_cut(panel, config):
-        if panel.angle_correction_degrees and panel.angle_correction_reason.startswith("auto "):
-            panel.angle_correction_degrees = 0.0
-            panel.angle_correction_reason = ""
-        return
-    if (
-        panel.machine.startswith("DENVER")
-        and not has_door_programming_evidence(panel, config)
-        and panel_is_landscape(panel)
-        and panel.indicator_corner in denver_allowed_indicator_corners(panel)
-    ):
-        if panel.angle_correction_degrees and panel.angle_correction_reason.startswith("auto "):
-            panel.angle_correction_degrees = 0.0
-            panel.angle_correction_reason = ""
         return
     if panel.angle_correction_degrees and not panel.angle_correction_reason.startswith("auto "):
         return
@@ -2270,6 +2307,189 @@ def collect_dxf_preview_segments(path: Path) -> list[tuple[tuple[float, float], 
     if active_polyline is not None:
         append_polyline(active_polyline, active_polyline_closed)
     return segments
+
+
+def collect_dxf_internal_cut_radius_samples(path: Path) -> list[tuple[float, float, float]]:
+    """Return ARC/polyline-bulge locations and radii in native DXF units.
+
+    Full CIRCLE entities are intentionally excluded because they represent holes,
+    not the internal corner radius of a cutout.
+    """
+    pairs = read_dxf_pairs(path)
+    samples: list[tuple[float, float, float]] = []
+    in_entities = False
+    current_type: str | None = None
+    current: list[tuple[str, str]] = []
+    active_polyline: dict[str, Any] | None = None
+
+    def first_float(entity_pairs: list[tuple[str, str]], wanted: str) -> float | None:
+        for code, value in entity_pairs:
+            if code != wanted:
+                continue
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return None
+
+    def is_closed(entity_pairs: list[tuple[str, str]]) -> bool:
+        for code, value in entity_pairs:
+            if code != "70":
+                continue
+            try:
+                return bool(int(float(value)) & 1)
+            except ValueError:
+                return False
+        return False
+
+    def lwpolyline_vertices(entity_pairs: list[tuple[str, str]]) -> list[tuple[float, float, float]]:
+        vertices: list[tuple[float, float, float]] = []
+        vertex: dict[str, float] | None = None
+        for code, value in entity_pairs:
+            if code == "10":
+                if vertex is not None and "x" in vertex and "y" in vertex:
+                    vertices.append((vertex["x"], vertex["y"], vertex.get("bulge", 0.0)))
+                try:
+                    vertex = {"x": float(value)}
+                except ValueError:
+                    vertex = None
+            elif vertex is not None and code == "20":
+                try:
+                    vertex["y"] = float(value)
+                except ValueError:
+                    pass
+            elif vertex is not None and code == "42":
+                try:
+                    vertex["bulge"] = float(value)
+                except ValueError:
+                    pass
+        if vertex is not None and "x" in vertex and "y" in vertex:
+            vertices.append((vertex["x"], vertex["y"], vertex.get("bulge", 0.0)))
+        return vertices
+
+    def append_bulge_samples(vertices: list[tuple[float, float, float]], closed: bool) -> None:
+        segment_count = len(vertices) if closed else len(vertices) - 1
+        for index in range(max(0, segment_count)):
+            x1, y1, bulge = vertices[index]
+            x2, y2, _ = vertices[(index + 1) % len(vertices)]
+            if abs(bulge) <= 1e-12:
+                continue
+            chord = math.hypot(x2 - x1, y2 - y1)
+            if chord <= 1e-12:
+                continue
+            radius = chord * (1.0 + bulge * bulge) / (4.0 * abs(bulge))
+            if radius > 0:
+                samples.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0, radius))
+
+    def finish_active_polyline() -> None:
+        nonlocal active_polyline
+        if active_polyline is None:
+            return
+        append_bulge_samples(active_polyline["vertices"], bool(active_polyline["closed"]))
+        active_polyline = None
+
+    def flush() -> None:
+        nonlocal active_polyline
+        if current_type == "ARC":
+            x = first_float(current, "10")
+            y = first_float(current, "20")
+            radius = first_float(current, "40")
+            if x is not None and y is not None and radius is not None and radius > 0:
+                samples.append((x, y, radius))
+        elif current_type == "LWPOLYLINE":
+            append_bulge_samples(lwpolyline_vertices(current), is_closed(current))
+        elif current_type == "POLYLINE":
+            finish_active_polyline()
+            active_polyline = {"vertices": [], "closed": is_closed(current)}
+        elif current_type == "VERTEX" and active_polyline is not None:
+            x = first_float(current, "10")
+            y = first_float(current, "20")
+            bulge = first_float(current, "42") or 0.0
+            if x is not None and y is not None:
+                active_polyline["vertices"].append((x, y, bulge))
+
+    for code_raw, value_raw in pairs:
+        code = code_raw.strip()
+        value = value_raw.strip()
+        upper = value.upper()
+        if code == "2" and upper == "ENTITIES":
+            in_entities = True
+            continue
+        if not in_entities:
+            continue
+        if code == "0":
+            flush()
+            current = []
+            if upper == "SEQEND":
+                finish_active_polyline()
+                current_type = None
+                continue
+            if upper == "ENDSEC":
+                finish_active_polyline()
+                break
+            current_type = upper
+            continue
+        current.append((code, value))
+    else:
+        flush()
+        finish_active_polyline()
+
+    return samples
+
+
+def unique_dxf_internal_cut_radii(samples: list[tuple[float, float, float]]) -> list[float]:
+    unique: list[float] = []
+    for radius in sorted(radius for _x, _y, radius in samples):
+        if not unique or abs(radius - unique[-1]) > max(1e-7, abs(radius) * 1e-7):
+            unique.append(radius)
+    return unique
+
+
+def collect_dxf_internal_cut_radii(path: Path) -> list[float]:
+    """Return unique internal cut radii in native DXF units."""
+    return unique_dxf_internal_cut_radii(collect_dxf_internal_cut_radius_samples(path))
+
+
+def pph_hinge_internal_radii_inches(
+    samples: list[tuple[float, float, float]],
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    inches_per_unit: float = 1.0,
+) -> list[list[float]]:
+    """Group top-edge PPH cut arcs into hinges and return each hinge's radii."""
+    if not samples:
+        return []
+    scale = abs(float(inches_per_unit))
+    if scale <= 1e-12:
+        scale = 1.0
+    points = [point for segment in segments for point in segment]
+    top_y = max((y for _x, y in points), default=max(y for _x, y, _radius in samples))
+    top_band = 4.0 / scale
+    candidates = [sample for sample in samples if top_y - sample[1] <= top_band]
+    if not candidates:
+        return []
+
+    cluster_gap = 4.0 / scale
+    clusters: list[list[tuple[float, float, float]]] = []
+    for sample in sorted(candidates, key=lambda value: (value[0], value[1])):
+        if not clusters:
+            clusters.append([sample])
+            continue
+        cluster_x = sum(value[0] for value in clusters[-1]) / len(clusters[-1])
+        if abs(sample[0] - cluster_x) <= cluster_gap:
+            clusters[-1].append(sample)
+        else:
+            clusters.append([sample])
+
+    hinge_radii: list[list[float]] = []
+    for cluster in clusters:
+        values: list[float] = []
+        for _x, _y, radius in sorted(cluster, key=lambda value: value[2]):
+            radius_inches = abs(radius * scale)
+            if not values or abs(radius_inches - values[-1]) > max(1e-7, radius_inches * 1e-7):
+                values.append(radius_inches)
+        if values:
+            hinge_radii.append(values)
+    return hinge_radii
 
 
 def estimate_panel_bbox(

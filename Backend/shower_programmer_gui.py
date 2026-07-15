@@ -282,18 +282,33 @@ class ShowerProgrammerApp:
 
     def ensure_internal_runtime_folders(self) -> Path:
         root = self.preferred_runtime_root()
-        folders = [
+        self.ensure_workflow_folders(
             root / "Input" / "Orders",
             root / "Input" / "Process List",
             root / "Output",
-            root / "Output" / "Updates",
-        ]
-        for folder in folders:
-            try:
-                folder.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                pass
+        )
         return root
+
+    @staticmethod
+    def ensure_workflow_folders(order_folder: Path, process_list_path: Path, output_dir: Path) -> list[Path]:
+        process_list_is_file = process_list_path.is_file() or process_list_path.suffix.lower() in ShowerProgrammerApp.PROCESS_LIST_FILE_EXTENSIONS
+        process_list_dir = process_list_path.parent if process_list_is_file else process_list_path
+        folders = [
+            order_folder,
+            process_list_dir,
+            output_dir,
+            output_dir / "Runs",
+            output_dir / "Updates",
+        ]
+        created: list[Path] = []
+        for folder in folders:
+            existed = folder.exists()
+            if existed and not folder.is_dir():
+                raise NotADirectoryError(f"Required workflow path is not a folder: {folder}")
+            folder.mkdir(parents=True, exist_ok=True)
+            if not existed:
+                created.append(folder)
+        return created
 
     def internal_orders_dir(self) -> Path:
         return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Input" / "Orders"
@@ -2040,6 +2055,7 @@ class ShowerProgrammerApp:
             self.apply_import_source_dir()
             process_list = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
+            self.ensure_workflow_folders(folder, process_list, output_dir)
         except Exception as exc:
             messagebox.showerror("Invalid settings", str(exc))
             return
@@ -2061,6 +2077,7 @@ class ShowerProgrammerApp:
             self.apply_import_source_dir()
             process_list = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
+            self.ensure_workflow_folders(folder, process_list, output_dir)
         except Exception as exc:
             messagebox.showerror("Invalid settings", str(exc))
             return
@@ -2094,6 +2111,7 @@ class ShowerProgrammerApp:
 
     def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
+            self.ensure_workflow_folders(folder, process_list, output_dir)
             progress_value = 0
             progress_max = 5
             self.queue_scan_progress(progress_value, progress_max, "Loading configuration...")
@@ -2133,6 +2151,7 @@ class ShowerProgrammerApp:
                 orders,
                 progress_callback=order_file_progress,
             )
+            orders, retired_sent_orders = self.filter_retired_sent_orders(orders, folder, output_dir)
             progress_value += int(import_summary.get("considered", 0) or 0)
             progress_value += 1
             self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building order preview list...")
@@ -2147,6 +2166,7 @@ class ShowerProgrammerApp:
                         "process_list_count": len(process_list_files),
                         "process_list_import_summary": process_list_import_summary,
                         "import_summary": import_summary,
+                        "retired_sent_orders": retired_sent_orders,
                     },
                 )
             )
@@ -2274,6 +2294,88 @@ class ShowerProgrammerApp:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
+
+    @staticmethod
+    def sent_process_signature(order: shower_batch.ProcessOrder) -> str:
+        payload = ShowerProgrammerApp.process_order_signature(order)
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def filter_retired_sent_orders(
+        cls,
+        orders: list[shower_batch.ProcessOrder],
+        order_folder: Path,
+        output_dir: Path,
+    ) -> tuple[list[shower_batch.ProcessOrder], list[str]]:
+        try:
+            history = cls.load_processing_history_for_output(output_dir)
+        except Exception:
+            return orders, []
+
+        candidates: list[shower_batch.ProcessOrder] = []
+        for order in orders:
+            entry = cls.history_entry_from_data(history, order.aw_order)
+            if not entry.get("sent_at"):
+                continue
+            if str(entry.get("sent_process_signature", "")) != cls.sent_process_signature(order):
+                continue
+            candidates.append(order)
+        if not candidates:
+            return orders, []
+
+        root_inputs = (
+            [
+                path
+                for path in order_folder.iterdir()
+                if path.is_file() and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+            ]
+            if order_folder.exists()
+            else []
+        )
+        fresh_aw_orders: set[str] = set()
+        for order in candidates:
+            name_matches = cls.paths_matching_order_by_name(root_inputs, order)
+            content_matches = cls.matching_order_files(
+                order_folder,
+                [order],
+                root_only=True,
+                inspect_pdf_text=True,
+            )
+            if name_matches or content_matches:
+                fresh_aw_orders.add(str(order.aw_order))
+        retired_aw_orders = {
+            str(order.aw_order)
+            for order in candidates
+            if str(order.aw_order) not in fresh_aw_orders
+        }
+        kept = [order for order in orders if str(order.aw_order) not in retired_aw_orders]
+        return kept, sorted(retired_aw_orders)
+
+    def mark_orders_sent(
+        self,
+        orders_sent: list[shower_batch.ProcessOrder],
+        copied: list[Path],
+        archived: list[Path],
+    ) -> None:
+        if not orders_sent:
+            return
+        history = self.load_processing_history()
+        history_orders = history.setdefault("orders", {})
+        if not isinstance(history_orders, dict):
+            history_orders = {}
+            history["orders"] = history_orders
+        sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for order in orders_sent:
+            entry = history_orders.setdefault(str(order.aw_order), {})
+            if not isinstance(entry, dict):
+                entry = {}
+                history_orders[str(order.aw_order)] = entry
+            entry["sent_at"] = sent_at
+            entry["sent_process_signature"] = self.sent_process_signature(order)
+            entry["sent_files"] = [path.name for path in copied if path in self.paths_for_order(copied, order.aw_order)]
+            entry["archived_inputs"] = [path.name for path in self.paths_matching_order_by_name(archived, order)]
+        self.save_processing_history(history)
 
     def history_for_order(self, aw_order: str) -> dict[str, object]:
         try:
@@ -3348,8 +3450,10 @@ class ShowerProgrammerApp:
                     process_list_count = int(data.get("process_list_count", 0))
                     process_list_import_summary = data.get("process_list_import_summary", {})
                     import_summary = data.get("import_summary", {})
+                    retired_sent_orders = data.get("retired_sent_orders", [])
                     assert isinstance(orders, list)
                     assert isinstance(previews, list)
+                    assert isinstance(retired_sent_orders, list)
                     self.orders = orders
                     self.order_by_aw = {order.aw_order: order for order in self.orders}
                     self.tree.delete(*self.tree.get_children())
@@ -3359,14 +3463,15 @@ class ShowerProgrammerApp:
                         assert isinstance(result, shower_batch.BatchJobResult)
                         self.insert_or_update_result(result)
                     self.finish_background_activity()
-                    self.status_var.set(
-                        self.scan_status_message(
-                            len(self.orders),
-                            process_list_count,
-                            import_summary,
-                            process_list_import_summary,
-                        )
+                    scan_message = self.scan_status_message(
+                        len(self.orders),
+                        process_list_count,
+                        import_summary,
+                        process_list_import_summary,
                     )
+                    if retired_sent_orders:
+                        scan_message += f" Kept {len(retired_sent_orders)} previously sent order(s) retired."
+                    self.status_var.set(scan_message)
                     self.start_review_cache_warmup(self.orders)
                 elif kind == "import_done":
                     data = payload
@@ -3408,17 +3513,23 @@ class ShowerProgrammerApp:
                     archive_warnings = data.get("archive_warnings", [])
                     import_deleted = data.get("import_deleted", [])
                     input_cleanup_warnings = data.get("input_cleanup_warnings", [])
+                    sent_orders = data.get("sent_orders", [])
                     assert isinstance(copied, list)
                     assert isinstance(missing, list)
                     assert isinstance(archived, list)
                     assert isinstance(archive_warnings, list)
                     assert isinstance(import_deleted, list)
                     assert isinstance(input_cleanup_warnings, list)
+                    assert isinstance(sent_orders, list)
                     self.finish_background_activity()
                     if not copied:
                         messagebox.showinfo("Nothing sent", "No matching generated files were found.")
                         self.status_var.set("No matching generated files were found.")
                         continue
+                    try:
+                        self.mark_orders_sent(sent_orders, copied, archived)
+                    except Exception as exc:
+                        input_cleanup_warnings.append(f"Could not save sent-order receipt: {exc}")
                     details = self.send_complete_details(
                         copied,
                         missing,
@@ -3661,7 +3772,8 @@ a {{ color: #1f4e79; }}
         title = html.escape(path.name)
         link = html.escape(path.resolve().as_uri(), quote=True)
         try:
-            segments = programmer.collect_dxf_preview_segments(path)
+            preview_data = self.order_review_dxf_preview_data(path)
+            segments = preview_data["segments"]
         except Exception as exc:
             return (
                 "<div class='card'>"
@@ -3698,6 +3810,10 @@ a {{ color: #1f4e79; }}
         svg_width = width * scale + margin * 2
         svg_height = height * scale + margin * 2
         meta = f"{width:g} x {height:g} | {len(segments)} segment(s)"
+        internal_radii = preview_data.get("internal_radii", [])
+        if internal_radii:
+            radius_text = self.dxf_internal_radius_text(internal_radii, preview_data["inches_per_unit"])
+            meta += f" | Internal cut radius: {radius_text}"
         return (
             "<div class='card'>"
             f"<div class='name'><a href='{link}'>{title}</a></div>"
@@ -4709,6 +4825,8 @@ a {{ color: #1f4e79; }}
             segments = preview_data["segments"]
             unit_label = preview_data["unit_label"]
             inches_per_unit = preview_data["inches_per_unit"]
+            internal_radii = preview_data["internal_radii"]
+            internal_radius_samples = preview_data["internal_radius_samples"]
         except Exception as exc:
             canvas.create_text(col_1, 38, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill=self.DANGER, font=("Segoe UI", 10))
             return
@@ -4736,8 +4854,53 @@ a {{ color: #1f4e79; }}
             fill=self.TEXT,
             font=("Segoe UI", 10),
         )
+        is_pph = programmer.has_pph_hinge(panel)
+        show_internal_radius = panel.machine == "WJ" or is_pph
+        header_height = 132.0 if show_internal_radius else 116.0
+        legend_y = 98 if show_internal_radius else 76
+        if show_internal_radius:
+            radius_label = "PPH Hinge Radii" if is_pph else "Internal Cut Radius"
+            canvas.create_text(
+                col_1,
+                70,
+                anchor=tk.NW,
+                text=radius_label,
+                fill=self.MUTED,
+                font=("Segoe UI", 9, "bold"),
+            )
+            radius_x = col_1 + 126
+            radius_color = self.ACCENT_DARK if internal_radii else self.MUTED
+            radius_font = ("Segoe UI", 10, "bold")
+            if is_pph:
+                hinge_radii = programmer.pph_hinge_internal_radii_inches(
+                    internal_radius_samples,
+                    segments,
+                    inches_per_unit,
+                )
+                radius_text, radius_ok = self.dxf_pph_hinge_radius_status(hinge_radii)
+                radius_color = self.SUCCESS if radius_ok else self.DANGER
+                radius_font = ("Segoe UI", 11, "bold")
+                canvas.create_oval(
+                    radius_x,
+                    74,
+                    radius_x + 8,
+                    82,
+                    fill=radius_color,
+                    outline="",
+                )
+                radius_x += 14
+            else:
+                radius_text = self.dxf_internal_radius_text(internal_radii, inches_per_unit)
+            canvas.create_text(
+                radius_x,
+                70,
+                anchor=tk.NW,
+                text=radius_text,
+                fill=radius_color,
+                font=radius_font,
+            )
         if not segments:
-            canvas.create_text(col_1, 76, anchor=tk.NW, text="No drawable DXF entities found.", fill=self.TEXT, font=("Segoe UI", 10))
+            canvas.create_text(col_1, legend_y, anchor=tk.NW, text="No drawable DXF entities found.", fill=self.TEXT, font=("Segoe UI", 10))
             return
         points = [point for segment in segments for point in segment]
         min_x = min(x for x, _ in points)
@@ -4747,7 +4910,6 @@ a {{ color: #1f4e79; }}
         width = max(max_x - min_x, 0.001)
         height = max(max_y - min_y, 0.001)
         margin = 34.0
-        header_height = 116.0
         scale = min(
             max(20, canvas.winfo_width() - margin * 2) / width,
             max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
@@ -4785,7 +4947,7 @@ a {{ color: #1f4e79; }}
         if highlight_segments:
             canvas.create_text(
                 col_1,
-                76,
+                legend_y,
                 anchor=tk.NW,
                 text="Orange = angled/out-of-square side",
                 fill=self.WARNING,
@@ -4810,6 +4972,8 @@ a {{ color: #1f4e79; }}
             return cache[key]
 
         segments = programmer.collect_dxf_preview_segments(path)
+        internal_radius_samples = programmer.collect_dxf_internal_cut_radius_samples(path)
+        internal_radii = programmer.unique_dxf_internal_cut_radii(internal_radius_samples)
         insunits = self.dxf_insunits(path)
         inches_per_unit = {
             "1": 1.0,
@@ -4827,6 +4991,8 @@ a {{ color: #1f4e79; }}
         }.get(insunits, "units")
         data = {
             "segments": segments,
+            "internal_radii": internal_radii,
+            "internal_radius_samples": internal_radius_samples,
             "unit_label": unit_label,
             "inches_per_unit": inches_per_unit,
         }
@@ -4835,6 +5001,37 @@ a {{ color: #1f4e79; }}
                 cache.clear()
             cache[key] = data
         return data
+
+    @classmethod
+    def dxf_internal_radius_text(cls, radii: list[float], inches_per_unit: float = 1.0) -> str:
+        values: list[float] = []
+        for radius in sorted(abs(value * inches_per_unit) for value in radii if value > 0):
+            if not values or abs(radius - values[-1]) > max(1e-7, radius * 1e-7):
+                values.append(radius)
+        if not values:
+            return "Not detected"
+        labels = [cls.format_inches(value) for value in values[:4]]
+        if len(values) > 4:
+            labels.append(f"+{len(values) - 4} more")
+        return ", ".join(labels)
+
+    @classmethod
+    def dxf_pph_hinge_radius_status(cls, hinge_radii: list[list[float]]) -> tuple[str, bool]:
+        expected = 5.0 / 16.0
+        if not hinge_radii:
+            return "Not detected - check DXF", False
+        labels: list[str] = []
+        radius_ok = True
+        for index, radii in enumerate(hinge_radii, start=1):
+            values: list[float] = []
+            for radius in sorted(abs(value) for value in radii if value > 0):
+                if not values or abs(radius - values[-1]) > max(1e-7, radius * 1e-7):
+                    values.append(radius)
+            value_text = ", ".join(cls.format_inches(value) for value in values) or "Not detected"
+            labels.append(f"Hinge {index}: {value_text}")
+            if len(values) != 1 or abs(values[0] - expected) > 1e-4:
+                radius_ok = False
+        return "  |  ".join(labels), radius_ok
 
     @classmethod
     def out_of_square_preview_segments(
@@ -5476,18 +5673,26 @@ a {{ color: #1f4e79; }}
             self.status_var.set("Program is already up to date with GitHub main.")
             messagebox.showinfo("No updates", "This program is already up to date with the GitHub main branch.")
             return
+        if getattr(sys, "frozen", False):
+            remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+            local_exe_hash = self.current_packaged_exe_hash()
+            if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
+                self.write_update_metadata(repo, latest_sha, "bundle-match")
+                self.status_var.set("Program is already up to date with the packaged GitHub release.")
+                messagebox.showinfo("No updates", "This packaged program is already up to date.")
+                return
 
         if current_sha:
             prompt = (
                 "Updates are available on GitHub main.\n\n"
                 f"Latest update: {latest_date or latest_sha[:12]}\n\n"
-                "Download and install them now?"
+                "Download, install, and restart the program now?"
             )
         else:
             prompt = (
                 "Git is not installed, so this computer cannot compare local Git history.\n\n"
                 f"Latest GitHub update: {latest_date or latest_sha[:12]}\n\n"
-                "Download and install the latest GitHub main files now?"
+                "Download, install, and restart with the latest GitHub main files now?"
             )
         if not messagebox.askyesno("Update program?", prompt):
             return
@@ -5497,21 +5702,15 @@ a {{ color: #1f4e79; }}
         except Exception as exc:
             messagebox.showerror("Update failed", str(exc))
             return
-        self.write_update_metadata(repo, latest_sha, "zip")
         if self.pending_update_script is not None:
-            message = self.pending_update_message or (
-                "A replacement executable was downloaded. The updater needs to close this program, "
-                "replace the EXE, and reopen it."
-            )
-            if messagebox.askyesno("Restart to finish update?", message + "\n\nClose and apply the update now?"):
-                try:
-                    subprocess.Popen(["cmd", "/c", str(self.pending_update_script)], cwd=str(self.pending_update_script.parent))
-                    self.on_close()
-                except Exception as exc:
-                    messagebox.showerror("Update restart failed", str(exc))
-            else:
-                self.status_var.set("Update downloaded. Restart from the staged updater when ready.")
+            try:
+                self.status_var.set("Update downloaded. Restarting to install it...")
+                subprocess.Popen(["cmd", "/c", str(self.pending_update_script)], cwd=str(self.pending_update_script.parent))
+                self.on_close()
+            except Exception as exc:
+                messagebox.showerror("Update restart failed", str(exc))
             return
+        self.write_update_metadata(repo, latest_sha, "zip")
         if getattr(sys, "frozen", False):
             self.status_var.set("Support files were updated. A new EXE was not found in the update package.")
             messagebox.showinfo(
@@ -5557,6 +5756,32 @@ a {{ color: #1f4e79; }}
                 latest_date = str(committer.get("date", "")).strip()
         return sha, latest_date
 
+    @staticmethod
+    def github_packaged_exe_hash(owner: str, repo_name: str, branch: str) -> str:
+        url = (
+            f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/"
+            "Shower%20Programmer/.shower_update.json"
+        )
+        try:
+            data = json.loads(ShowerProgrammerApp.download_text(url, timeout=30))
+        except Exception:
+            return ""
+        return str(data.get("exe_sha256", "")).strip().lower() if isinstance(data, dict) else ""
+
+    @staticmethod
+    def current_packaged_exe_hash() -> str:
+        if not getattr(sys, "frozen", False):
+            return ""
+        executable = Path(sys.executable)
+        try:
+            digest = hashlib.sha256()
+            with executable.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.hexdigest().lower()
+        except OSError:
+            return ""
+
     def current_update_revision(self, repo: Path) -> str:
         for metadata_path in self.update_metadata_paths(repo):
             if not metadata_path.exists():
@@ -5568,6 +5793,17 @@ a {{ color: #1f4e79; }}
                     return sha
             except Exception:
                 pass
+        app_dir = self.frozen_app_dir()
+        if app_dir is not None:
+            packaged_metadata = app_dir / ".shower_update.json"
+            if packaged_metadata.exists():
+                try:
+                    data = json.loads(packaged_metadata.read_text(encoding="utf-8"))
+                    sha = str(data.get("sha", "")).strip() if isinstance(data, dict) else ""
+                    if sha:
+                        return sha
+                except Exception:
+                    pass
         return self.git_head_without_git(repo)
 
     @staticmethod
@@ -5580,6 +5816,26 @@ a {{ color: #1f4e79; }}
         if appdata:
             paths.append(Path(appdata) / "Shower Programmer" / "update_metadata.json")
         return paths
+
+    @staticmethod
+    def writable_update_metadata_path(repo: Path) -> Path | None:
+        for metadata_path in ShowerProgrammerApp.update_metadata_paths(repo):
+            try:
+                metadata_path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile("w", delete=True, dir=str(metadata_path.parent), encoding="utf-8"):
+                    pass
+                return metadata_path
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def update_metadata_payload(sha: str, method: str) -> dict[str, str]:
+        return {
+            "sha": sha,
+            "method": method,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     @staticmethod
     def git_head_without_git(repo: Path) -> str:
@@ -5634,9 +5890,22 @@ a {{ color: #1f4e79; }}
         if getattr(sys, "frozen", False):
             current_exe = Path(sys.executable).resolve()
             app_dir = current_exe.parent
+            staged_metadata = updates_dir / "update_metadata.json"
+            staged_metadata.write_text(
+                json.dumps(self.update_metadata_payload(latest_sha, "zip"), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            metadata_target = self.writable_update_metadata_path(repo)
             replacement_app_dir = self.find_replacement_app_bundle(source_root, current_exe.name)
             if replacement_app_dir is not None:
-                self.pending_update_script = self.stage_app_bundle_replacement(app_dir, replacement_app_dir, current_exe.name, updates_dir)
+                self.pending_update_script = self.stage_app_bundle_replacement(
+                    app_dir,
+                    replacement_app_dir,
+                    current_exe.name,
+                    updates_dir,
+                    staged_metadata,
+                    metadata_target,
+                )
                 self.pending_update_message = (
                     "Downloaded a replacement Shower Programmer app folder. "
                     "The app will close, replace the bundled EXE and _internal runtime folder, and reopen."
@@ -5647,7 +5916,13 @@ a {{ color: #1f4e79; }}
                 return
             replacement_exe = self.find_replacement_exe(source_root, current_exe.name)
             if replacement_exe is not None:
-                self.pending_update_script = self.stage_exe_replacement(current_exe, replacement_exe, updates_dir)
+                self.pending_update_script = self.stage_exe_replacement(
+                    current_exe,
+                    replacement_exe,
+                    updates_dir,
+                    staged_metadata,
+                    metadata_target,
+                )
                 self.pending_update_message = (
                     f"Downloaded a replacement executable for {current_exe.name}. "
                     "The app will close, replace the EXE in this folder, and reopen."
@@ -5723,7 +5998,20 @@ a {{ color: #1f4e79; }}
         return None
 
     @staticmethod
-    def stage_app_bundle_replacement(app_dir: Path, replacement_app_dir: Path, current_exe_name: str, updates_dir: Path) -> Path:
+    def stage_app_bundle_replacement(
+        app_dir: Path,
+        replacement_app_dir: Path,
+        current_exe_name: str,
+        updates_dir: Path,
+        staged_metadata: Path | None = None,
+        metadata_target: Path | None = None,
+    ) -> Path:
+        replacement_exe = replacement_app_dir / current_exe_name
+        replacement_internal = replacement_app_dir / "_internal"
+        if not replacement_exe.is_file() or replacement_exe.stat().st_size <= 0:
+            raise RuntimeError(f"The downloaded app bundle is missing {current_exe_name}.")
+        if not replacement_internal.is_dir() or not any(replacement_internal.iterdir()):
+            raise RuntimeError("The downloaded app bundle is missing its _internal runtime folder.")
         staged_dir = updates_dir / "staged_app"
         staged_app_dir = staged_dir / app_dir.name
         if staged_app_dir.exists():
@@ -5732,6 +6020,12 @@ a {{ color: #1f4e79; }}
         script_path = updates_dir / "apply_update.cmd"
         backup_dir = updates_dir / "backup_app"
         pid = os.getpid()
+        metadata_commands = ""
+        if staged_metadata is not None and metadata_target is not None:
+            metadata_commands = (
+                f'if not exist "{metadata_target.parent}" mkdir "{metadata_target.parent}" >nul 2>nul\n'
+                f'copy /Y "{staged_metadata}" "{metadata_target}" >nul\n'
+            )
         script = (
             "@echo off\n"
             "setlocal\n"
@@ -5748,38 +6042,62 @@ a {{ color: #1f4e79; }}
             "    goto wait_for_app\n"
             ")\n"
             "\n"
+            "if exist \"%BACKUP_DIR%\" rmdir /S /Q \"%BACKUP_DIR%\"\n"
             "mkdir \"%BACKUP_DIR%\" >nul 2>nul\n"
             "if exist \"%APP_DIR%\\%EXE_NAME%\" copy /Y \"%APP_DIR%\\%EXE_NAME%\" \"%BACKUP_DIR%\\%EXE_NAME%\" >nul\n"
-            "if exist \"%APP_DIR%\\_internal\" robocopy \"%APP_DIR%\\_internal\" \"%BACKUP_DIR%\\_internal\" /E /NFL /NDL /NJH /NJS /NP >nul\n"
+            "if exist \"%APP_DIR%\\_internal\" robocopy \"%APP_DIR%\\_internal\" \"%BACKUP_DIR%\\_internal\" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP >nul\n"
             "\n"
             "if exist \"%APP_DIR%\\_internal\" rmdir /S /Q \"%APP_DIR%\\_internal\"\n"
-            "robocopy \"%STAGED_APP%\" \"%APP_DIR%\" /E /NFL /NDL /NJH /NJS /NP\n"
-            "if errorlevel 8 (\n"
-            "    echo Failed to copy the updated Shower Programmer folder.\n"
-            "    echo Backup files are in \"%BACKUP_DIR%\".\n"
-            "    pause\n"
-            "    exit /b 1\n"
-            ")\n"
+            "robocopy \"%STAGED_APP%\" \"%APP_DIR%\" /E /R:5 /W:1 /NFL /NDL /NJH /NJS /NP\n"
+            "set \"COPY_CODE=%ERRORLEVEL%\"\n"
+            "if %COPY_CODE% GEQ 8 goto update_failed\n"
             "\n"
+            f"{metadata_commands}"
             "start \"\" \"%APP_DIR%\\%EXE_NAME%\"\n"
             "exit /b 0\n"
+            "\n"
+            ":update_failed\n"
+            "if exist \"%APP_DIR%\\_internal\" rmdir /S /Q \"%APP_DIR%\\_internal\"\n"
+            "if exist \"%BACKUP_DIR%\\_internal\" robocopy \"%BACKUP_DIR%\\_internal\" \"%APP_DIR%\\_internal\" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP >nul\n"
+            "if exist \"%BACKUP_DIR%\\%EXE_NAME%\" copy /Y \"%BACKUP_DIR%\\%EXE_NAME%\" \"%APP_DIR%\\%EXE_NAME%\" >nul\n"
+            "start \"\" \"%APP_DIR%\\%EXE_NAME%\"\n"
+            "echo The update could not be installed. The previous version was restored.\n"
+            "echo Update files and logs remain in \"%~dp0\".\n"
+            "pause\n"
+            "exit /b 1\n"
         )
         script_path.write_text(script, encoding="utf-8")
         return script_path
 
     @staticmethod
-    def stage_exe_replacement(current_exe: Path, replacement_exe: Path, updates_dir: Path) -> Path:
+    def stage_exe_replacement(
+        current_exe: Path,
+        replacement_exe: Path,
+        updates_dir: Path,
+        staged_metadata: Path | None = None,
+        metadata_target: Path | None = None,
+    ) -> Path:
+        if not replacement_exe.is_file() or replacement_exe.stat().st_size <= 0:
+            raise RuntimeError("The downloaded replacement EXE is empty or missing.")
         staged_dir = updates_dir / "staged_exe"
         staged_dir.mkdir(parents=True, exist_ok=True)
         staged_exe = staged_dir / current_exe.name
         shutil.copy2(replacement_exe, staged_exe)
         script_path = updates_dir / "apply_update.cmd"
+        backup_exe = updates_dir / "backup_exe" / current_exe.name
         pid = os.getpid()
+        metadata_commands = ""
+        if staged_metadata is not None and metadata_target is not None:
+            metadata_commands = (
+                f'if not exist "{metadata_target.parent}" mkdir "{metadata_target.parent}" >nul 2>nul\n'
+                f'copy /Y "{staged_metadata}" "{metadata_target}" >nul\n'
+            )
         script = (
             "@echo off\n"
             "setlocal\n"
             f"set \"CURRENT_EXE={current_exe}\"\n"
             f"set \"STAGED_EXE={staged_exe}\"\n"
+            f"set \"BACKUP_EXE={backup_exe}\"\n"
             f"set \"PID={pid}\"\n"
             "\n"
             ":wait_for_app\n"
@@ -5789,12 +6107,17 @@ a {{ color: #1f4e79; }}
             "    goto wait_for_app\n"
             ")\n"
             "\n"
+            "if not exist \"%~dp0backup_exe\" mkdir \"%~dp0backup_exe\" >nul 2>nul\n"
+            "if exist \"%CURRENT_EXE%\" copy /Y \"%CURRENT_EXE%\" \"%BACKUP_EXE%\" >nul\n"
             "copy /Y \"%STAGED_EXE%\" \"%CURRENT_EXE%\"\n"
             "if errorlevel 1 (\n"
-            "    echo Failed to replace \"%CURRENT_EXE%\".\n"
+            "    if exist \"%BACKUP_EXE%\" copy /Y \"%BACKUP_EXE%\" \"%CURRENT_EXE%\" >nul\n"
+            "    start \"\" \"%CURRENT_EXE%\"\n"
+            "    echo The update could not be installed. The previous EXE was restored.\n"
             "    pause\n"
             "    exit /b 1\n"
             ")\n"
+            f"{metadata_commands}"
             "start \"\" \"%CURRENT_EXE%\"\n"
             "exit /b 0\n"
         )
@@ -5925,11 +6248,7 @@ try {{
 
     @staticmethod
     def write_update_metadata(repo: Path, sha: str, method: str) -> None:
-        metadata = {
-            "sha": sha,
-            "method": method,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        metadata = ShowerProgrammerApp.update_metadata_payload(sha, method)
         for metadata_path in ShowerProgrammerApp.update_metadata_paths(repo):
             try:
                 metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5939,10 +6258,10 @@ try {{
                 continue
 
     def send_sketches_to_shop(self) -> None:
-        self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True, review_before_send=True)
+        self.send_outputs_to_shop(include_sketches=True, include_programs=False, archive_inputs=False, review_before_send=True)
 
     def send_programs_to_shop(self) -> None:
-        self.send_outputs_to_shop(include_sketches=True, include_programs=True, archive_inputs=True, review_before_send=True)
+        self.send_outputs_to_shop(include_sketches=False, include_programs=True, archive_inputs=False, review_before_send=True)
 
     def send_all_to_shop(self) -> None:
         if self.is_busy:
@@ -6048,7 +6367,17 @@ try {{
 
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
-        self.start_send_outputs_worker(sketch_paths, dxf_paths, missing, archive_inputs, orders, order_folder, process_list_path)
+        self.start_send_outputs_worker(
+            sketch_paths,
+            dxf_paths,
+            missing,
+            archive_inputs,
+            orders,
+            order_folder,
+            process_list_path,
+            include_sketches=include_sketches,
+            include_programs=include_programs,
+        )
 
     def orders_cover_all_scanned_orders(self, orders: list[shower_batch.ProcessOrder]) -> bool:
         selected_aw_orders = {str(order.aw_order) for order in orders if str(order.aw_order)}
@@ -6064,13 +6393,29 @@ try {{
         orders: list[shower_batch.ProcessOrder],
         order_folder: Path,
         process_list_path: Path,
+        *,
+        include_sketches: bool,
+        include_programs: bool,
     ) -> None:
+        output_dir = Path(self.output_dir_var.get()).resolve()
+        self.ensure_workflow_folders(order_folder, process_list_path, output_dir)
         send_steps = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
         archive_process_lists = self.orders_cover_all_scanned_orders(orders)
         self.start_background_activity("Sending generated files to shop folders...", maximum=send_steps)
         worker = threading.Thread(
             target=self.worker_send_outputs,
-            args=(sketch_paths, dxf_paths, missing, archive_inputs, archive_process_lists, orders, order_folder, process_list_path),
+            args=(
+                sketch_paths,
+                dxf_paths,
+                missing,
+                include_sketches,
+                include_programs,
+                archive_inputs,
+                archive_process_lists,
+                orders,
+                order_folder,
+                process_list_path,
+            ),
             daemon=True,
         )
         worker.start()
@@ -6380,11 +6725,13 @@ try {{
             self.start_send_outputs_worker(
                 chosen_sketches,
                 chosen_dxfs,
-                chosen_missing or missing,
+                chosen_missing,
                 bool(do_archive),
                 checked_orders,
                 order_folder,
                 process_list_path,
+                include_sketches=send_sketches,
+                include_programs=send_programs,
             )
 
         ctk.CTkButton(
@@ -6479,6 +6826,8 @@ try {{
         sketch_paths: list[Path],
         dxf_paths: list[Path],
         missing: list[str],
+        include_sketches: bool,
+        include_programs: bool,
         archive_inputs: bool,
         archive_process_lists: bool,
         orders: list[shower_batch.ProcessOrder],
@@ -6516,16 +6865,25 @@ try {{
                         progress_callback=lambda source, _target: advance(f"Sent program: {source.name}", 1),
                     )
                 )
-            if copied and archive_inputs:
+            sent_orders = self.successfully_sent_orders(
+                orders,
+                sketch_paths,
+                dxf_paths,
+                copied,
+                include_sketches=include_sketches,
+                include_programs=include_programs,
+            )
+            archive_all_process_lists = archive_process_lists and len(sent_orders) == len(orders)
+            if sent_orders and archive_inputs:
                 advance("Archiving sent input files...", 2)
                 def archive_progress(done: int, total: int, source: Path) -> None:
                     advance(f"Archived input {done}/{total}: {source.name}", total - done + 1)
 
                 archived, archive_warnings = self.archive_sent_input_files_for_orders(
-                    orders,
+                    sent_orders,
                     order_folder,
                     process_list_path,
-                    include_process_lists=archive_process_lists,
+                    include_process_lists=archive_all_process_lists,
                     progress_callback=archive_progress,
                 )
 
@@ -6534,8 +6892,8 @@ try {{
 
                 advance("Clearing Showers Programmer Input...", 1)
                 import_deleted, input_cleanup_warnings = self.clear_import_staging_folder(
-                    orders,
-                    include_process_lists=archive_process_lists,
+                    sent_orders,
+                    include_process_lists=archive_all_process_lists,
                     progress_callback=cleanup_progress,
                 )
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
@@ -6549,11 +6907,41 @@ try {{
                         "archive_warnings": archive_warnings,
                         "import_deleted": import_deleted,
                         "input_cleanup_warnings": input_cleanup_warnings,
+                        "sent_orders": sent_orders if archive_inputs else [],
                     },
                 )
             )
         except Exception as exc:
             self.worker_queue.put(("send_error", str(exc)))
+
+    @classmethod
+    def successfully_sent_orders(
+        cls,
+        orders: list[shower_batch.ProcessOrder],
+        sketch_paths: list[Path],
+        dxf_paths: list[Path],
+        copied: list[Path],
+        *,
+        include_sketches: bool,
+        include_programs: bool,
+    ) -> list[shower_batch.ProcessOrder]:
+        copied_names = {path.name.lower() for path in copied}
+
+        def paths_were_copied(paths: list[Path]) -> bool:
+            return bool(paths) and all(path.name.lower() in copied_names for path in paths)
+
+        sent: list[shower_batch.ProcessOrder] = []
+        for order in orders:
+            order_sketches = cls.paths_for_order(sketch_paths, order.aw_order)
+            order_dxfs = cls.paths_for_order(dxf_paths, order.aw_order)
+            if include_sketches and not paths_were_copied(order_sketches):
+                continue
+            if include_programs and not paths_were_copied(order_dxfs):
+                continue
+            if not include_sketches and not include_programs:
+                continue
+            sent.append(order)
+        return sent
 
     @staticmethod
     def send_complete_details(
