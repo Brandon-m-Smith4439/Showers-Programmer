@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
+import uuid
 import webbrowser
 import zipfile
 from datetime import datetime
@@ -4409,6 +4410,16 @@ a {{ color: #1f4e79; }}
                 status.set(f"Deleted manual X on {job.aw_order}.{item_number}. Click Save Edits to overwrite the sketch.")
                 redraw()
                 return
+            text_id = self.additional_text_id_from_mark_key(mark_key)
+            if text_id is not None:
+                self.delete_additional_text_box(job.aw_order, item_number, text_id)
+                refresh_prepared_job()
+                state["selected_key"] = None
+                state.get("pending_items", set()).add(item_number)
+                state["needs_output_save"] = True
+                status.set(f"Deleted additional text on {job.aw_order}.{item_number}. Click Save Edits to overwrite the sketch.")
+                redraw()
+                return
             self.set_mark_hidden(job.aw_order, item_number, mark_key, hidden=True)
             refresh_prepared_job()
             state["selected_key"] = None
@@ -4452,21 +4463,43 @@ a {{ color: #1f4e79; }}
 
         def add_text_box() -> None:
             panel = selected_panel()
-            initial = panel.label_text or f"{job.aw_order}.{panel.item}\n{panel.machine or ''}".strip()
             value = self.ask_themed_text(
                 dialog,
                 "Add Text Box",
-                "Enter sketch text. Put each line on its own row.",
-                initialvalue=initial,
+                "Enter the new text. This creates a separate movable text box.",
+                initialvalue="",
             )
-            if value is None:
+            if value is None or not value.strip():
                 return
-            self.set_label_text_and_detect_machine(job.aw_order, panel.item, value, panel, config)
+
+            page = source_reader.pages[panel.page_index]
+            page_width = float(page.mediabox.width)
+            page_height = float(page.mediabox.height)
+            existing_count = len(getattr(panel, "additional_text_boxes", []) or [])
+            column_ratios = (0.50, 0.35, 0.65)
+            column = existing_count % len(column_ratios)
+            row = existing_count // len(column_ratios)
+            x = page_width * column_ratios[column]
+            y = max(48.0, page_height * (0.34 - min(row, 3) * 0.08))
+            pdf_cfg = config.get("pdf", {}) if isinstance(config.get("pdf", {}), dict) else {}
+            font_size = float(pdf_cfg.get("label_font_size", 21))
+            text_id = self.add_additional_text_box(
+                job.aw_order,
+                panel.item,
+                value,
+                x,
+                y,
+                font_size,
+            )
             refresh_prepared_job()
             state.get("pending_items", set()).add(panel.item)
             state["needs_output_save"] = True
-            status.set(f"Added text box on {job.aw_order}.{panel.item}. Click Save Edits to overwrite the sketch.")
+            status.set(
+                f"Added a new text box on {job.aw_order}.{panel.item}. "
+                "Drag it into position, then click Save Edits."
+            )
             redraw()
+            state["selected_key"] = f"{panel.item}_extra_text:{text_id}"
 
         def set_current_indicator_machine(machine_kind: str) -> None:
             panel = selected_panel()
@@ -5256,6 +5289,17 @@ a {{ color: #1f4e79; }}
                 elif key == "remake":
                     item_override["remake_x"] = round(float(position["x"]), 3)
                     item_override["remake_y"] = round(float(position["y"]), 3)
+                elif key.startswith("extra_text:"):
+                    text_id = key.split(":", 1)[1]
+                    boxes = item_override.get("additional_text_boxes", [])
+                    if not isinstance(boxes, list):
+                        boxes = []
+                    for text_box in boxes:
+                        if isinstance(text_box, dict) and str(text_box.get("id")) == text_id:
+                            text_box["x"] = round(float(position["x"]), 3)
+                            text_box["y"] = round(float(position["y"]), 3)
+                            break
+                    item_override["additional_text_boxes"] = boxes
             self.save_manual_overrides(data)
             state["dirty"].clear()
             state["positions"].clear()
@@ -5316,7 +5360,121 @@ a {{ color: #1f4e79; }}
             item_override.pop("manual_x", None)
         self.save_manual_overrides(data)
 
+    @staticmethod
+    def additional_text_id_from_mark_key(mark_key: str) -> str | None:
+        prefix = "extra_text:"
+        return mark_key[len(prefix):] if mark_key.startswith(prefix) and len(mark_key) > len(prefix) else None
+
+    def add_additional_text_box(
+        self,
+        aw_order: str,
+        item_number: int,
+        value: str,
+        x: float,
+        y: float,
+        font_size: float,
+    ) -> str:
+        text = value.replace("\\n", "\n").strip()
+        if not text:
+            raise ValueError("Text cannot be blank.")
+        data = self.load_manual_overrides()
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        item_override = order_overrides.setdefault(str(item_number), {})
+        if not isinstance(item_override, dict):
+            item_override = {}
+            order_overrides[str(item_number)] = item_override
+        boxes = item_override.setdefault("additional_text_boxes", [])
+        if not isinstance(boxes, list):
+            boxes = []
+            item_override["additional_text_boxes"] = boxes
+        text_id = uuid.uuid4().hex[:10]
+        boxes.append(
+            {
+                "id": text_id,
+                "text": text,
+                "x": round(float(x), 3),
+                "y": round(float(y), 3),
+                "font_size": round(max(6.0, float(font_size)), 3),
+            }
+        )
+        self.save_manual_overrides(data)
+        return text_id
+
+    def update_additional_text_box(
+        self,
+        aw_order: str,
+        item_number: int,
+        text_id: str,
+        **changes: object,
+    ) -> bool:
+        data = self.load_manual_overrides()
+        item_overrides = data.get("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            return False
+        order_overrides = item_overrides.get(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            return False
+        item_override = order_overrides.get(str(item_number), {})
+        if not isinstance(item_override, dict):
+            return False
+        boxes = item_override.get("additional_text_boxes", [])
+        if not isinstance(boxes, list):
+            return False
+        for text_box in boxes:
+            if not isinstance(text_box, dict) or str(text_box.get("id")) != text_id:
+                continue
+            if "text" in changes:
+                text = str(changes["text"]).replace("\\n", "\n").strip()
+                if not text:
+                    return False
+                text_box["text"] = text
+            for field in ("x", "y", "font_size"):
+                if field in changes:
+                    text_box[field] = round(float(changes[field]), 3)
+            self.save_manual_overrides(data)
+            return True
+        return False
+
+    def delete_additional_text_box(self, aw_order: str, item_number: int, text_id: str) -> bool:
+        data = self.load_manual_overrides()
+        item_overrides = data.get("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            return False
+        order_overrides = item_overrides.get(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            return False
+        item_override = order_overrides.get(str(item_number), {})
+        if not isinstance(item_override, dict):
+            return False
+        boxes = item_override.get("additional_text_boxes", [])
+        if not isinstance(boxes, list):
+            return False
+        remaining = [
+            text_box
+            for text_box in boxes
+            if not isinstance(text_box, dict) or str(text_box.get("id")) != text_id
+        ]
+        if len(remaining) == len(boxes):
+            return False
+        if remaining:
+            item_override["additional_text_boxes"] = remaining
+        else:
+            item_override.pop("additional_text_boxes", None)
+        self.save_manual_overrides(data)
+        return True
+
     def set_mark_text_override(self, aw_order: str, item_number: int, mark_key: str, value: str) -> None:
+        text_id = self.additional_text_id_from_mark_key(mark_key)
+        if text_id is not None:
+            self.update_additional_text_box(aw_order, item_number, text_id, text=value)
+            return
         field_by_key = {
             "label": "label_text",
             "diamon_fusion": "diamon_fusion_text",
@@ -5515,6 +5673,18 @@ a {{ color: #1f4e79; }}
                 current = panel.indicator_size or float(obj.get("size") or pdf_cfg.get("indicator_size", 18))
                 step = 2.0
                 minimum = 6.0
+        elif self.additional_text_id_from_mark_key(mark_key) is not None:
+            text_id = self.additional_text_id_from_mark_key(mark_key)
+            current = float(obj.get("font_size") or pdf_cfg.get("label_font_size", 21))
+            new_size = max(6.0, current + 2.0 * (1 if direction > 0 else -1))
+            if text_id is None or not self.update_additional_text_box(
+                aw_order,
+                item_number,
+                text_id,
+                font_size=new_size,
+            ):
+                raise ValueError("Could not update the additional text box size.")
+            return new_size
         else:
             raise ValueError(f"Unsupported mark size key: {mark_key}")
 
@@ -7578,6 +7748,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             "label_text",
             "diamon_fusion_text",
             "remake_text",
+            "additional_text_boxes",
         }
         removed = 0
         empty_orders: list[str] = []
@@ -8417,6 +8588,30 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 "y": label_y,
                 "font_size": font_size,
                 "rect": programmer.label_rect(label_lines, label_x, label_y, font_size),
+            })
+
+        for index, text_box in enumerate(getattr(panel, "additional_text_boxes", []) or []):
+            if not isinstance(text_box, dict):
+                continue
+            text_id = str(text_box.get("id") or f"text_{index + 1}")
+            extra_lines, extra_x, extra_y, extra_font_size = programmer.additional_text_box_values(
+                text_box,
+                index,
+                width,
+                height,
+                font_size,
+            )
+            if not extra_lines:
+                continue
+            objects.append({
+                "key": f"extra_text:{text_id}",
+                "name": f"additional text {index + 1}",
+                "kind": "text",
+                "lines": extra_lines,
+                "x": extra_x,
+                "y": extra_y,
+                "font_size": extra_font_size,
+                "rect": programmer.label_rect(extra_lines, extra_x, extra_y, extra_font_size),
             })
 
         if panel.indicator_corner and panel.machine and not panel.hide_indicator:

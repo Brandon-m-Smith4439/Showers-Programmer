@@ -212,6 +212,7 @@ class Panel:
     label_text: str | None = None
     diamon_fusion_text: str | None = None
     remake_text: str | None = None
+    additional_text_boxes: list[dict[str, Any]] = field(default_factory=list)
     manual_x: bool = False
     source_item: int | None = None
     label_x: float | None = None
@@ -631,6 +632,8 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.diamon_fusion_text = clean_override_text(override["diamon_fusion_text"])
     if "remake_text" in override:
         panel.remake_text = clean_override_text(override["remake_text"])
+    if "additional_text_boxes" in override:
+        panel.additional_text_boxes = normalize_additional_text_boxes(override["additional_text_boxes"])
     if "hinges_up" in override and not position_only_indicator_override:
         panel.hinges_up = bool(override["hinges_up"])
     if "hinge_side" in override and not position_only_indicator_override:
@@ -740,6 +743,61 @@ def override_text_lines(value: str | None) -> list[str]:
     if not value:
         return []
     return [line.strip() for line in value.replace("\\n", "\n").splitlines() if line.strip()]
+
+
+def normalize_additional_text_boxes(value: object) -> list[dict[str, Any]]:
+    """Validate manually added sketch text boxes stored in item overrides."""
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for index, entry in enumerate(value, start=1):
+        if not isinstance(entry, dict):
+            continue
+        text = clean_override_text(entry.get("text"))
+        if not text:
+            continue
+
+        raw_id = re.sub(r"[^A-Za-z0-9_-]+", "_", str(entry.get("id") or f"text_{index}")).strip("_")
+        base_id = raw_id or f"text_{index}"
+        text_id = base_id
+        suffix = 2
+        while text_id in used_ids:
+            text_id = f"{base_id}_{suffix}"
+            suffix += 1
+        used_ids.add(text_id)
+
+        text_box: dict[str, Any] = {"id": text_id, "text": text}
+        if "x" in entry:
+            text_box["x"] = parse_float(entry.get("x"), 0.0)
+        if "y" in entry:
+            text_box["y"] = parse_float(entry.get("y"), 0.0)
+        font_size = parse_float(entry.get("font_size"), 0.0)
+        if font_size > 0:
+            text_box["font_size"] = font_size
+        normalized.append(text_box)
+    return normalized
+
+
+def additional_text_box_values(
+    text_box: dict[str, Any],
+    index: int,
+    page_width: float,
+    page_height: float,
+    default_font_size: float,
+) -> tuple[list[str], float, float, float]:
+    """Return display values for a manually added text box, including safe defaults."""
+    lines = override_text_lines(str(text_box.get("text") or ""))
+    font_size = max(6.0, parse_float(text_box.get("font_size"), default_font_size))
+    column_ratios = (0.50, 0.35, 0.65)
+    column = index % len(column_ratios)
+    row = index // len(column_ratios)
+    default_x = page_width * column_ratios[column]
+    default_y = max(48.0, page_height * (0.34 - min(row, 3) * 0.08))
+    x = parse_float(text_box.get("x"), default_x)
+    y = parse_float(text_box.get("y"), default_y)
+    return lines, x, y, font_size
 
 
 def sanitize_denver_indicator_override(panel: Panel) -> None:
@@ -2744,6 +2802,17 @@ def make_overlay_page(
         if panel.label_x is not None and panel.label_y is not None:
             x, y = panel.label_x, panel.label_y
         draw_centered_lines(c, lines, x, y, font_size, label_color)
+
+    for index, text_box in enumerate(panel.additional_text_boxes):
+        extra_lines, extra_x, extra_y, extra_font_size = additional_text_box_values(
+            text_box,
+            index,
+            width,
+            height,
+            font_size,
+        )
+        if extra_lines:
+            draw_centered_lines(c, extra_lines, extra_x, extra_y, extra_font_size, label_color)
 
     if panel.indicator_corner and panel.machine and not panel.hide_indicator:
         draw_indicator(
