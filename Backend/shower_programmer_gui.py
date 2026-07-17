@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Small Tkinter front end for shower batch programming."""
 
+# PROCESS_LIST_BATCH_GROUPING_V6: local-file filtering, grouped batches, and safe local batch deletion.
+
 from __future__ import annotations
 
 import os
@@ -226,6 +228,11 @@ class ShowerProgrammerApp:
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
         self.tree_rows: dict[str, str] = {}
+        self.tree_row_orders: dict[str, shower_batch.ProcessOrder] = {}
+        self.tree_row_batches: dict[str, str] = {}
+        self.batch_tree_rows: dict[str, str] = {}
+        self.process_batches: dict[str, dict[str, object]] = {}
+        self.order_batch_ids: dict[str, list[str]] = {}
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.last_reports: shower_batch.BatchRunResult | None = None
         self.last_run_folder: Path | None = None
@@ -509,7 +516,16 @@ class ShowerProgrammerApp:
         body = ctk.CTkFrame(shell, fg_color="transparent")
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
-        def run_and_close(command: object) -> None:
+        def run_action(command: object, keep_open: bool = False) -> None:
+            if keep_open:
+                if callable(command):
+                    command()
+                try:
+                    popup.lift()
+                    popup.focus_force()
+                except tk.TclError:
+                    pass
+                return
             try:
                 popup.destroy()
             except tk.TclError:
@@ -531,7 +547,7 @@ class ShowerProgrammerApp:
             ctk.CTkButton(
                 body,
                 text=str(action.get("text", "")),
-                command=lambda command=action.get("command"): run_and_close(command),
+                command=lambda command=action.get("command"), keep_open=bool(action.get("keep_open")): run_action(command, keep_open),
                 height=36,
                 corner_radius=8,
                 fg_color="transparent",
@@ -606,9 +622,19 @@ class ShowerProgrammerApp:
             if self.active_themed_context_popup is not popup:
                 return
 
-            def close_if_clicked_outside(_event: tk.Event) -> None:
-                if self.active_themed_context_popup is popup:
-                    self.close_active_themed_context_menu()
+            def close_if_clicked_outside(event: tk.Event) -> None:
+                if self.active_themed_context_popup is not popup:
+                    return
+                try:
+                    left = popup.winfo_rootx()
+                    top = popup.winfo_rooty()
+                    right = left + popup.winfo_width()
+                    bottom = top + popup.winfo_height()
+                    if left <= event.x_root <= right and top <= event.y_root <= bottom:
+                        return
+                except tk.TclError:
+                    return
+                self.close_active_themed_context_menu()
 
             try:
                 funcid = owner.bind("<ButtonPress>", close_if_clicked_outside, add="+")
@@ -887,39 +913,85 @@ class ShowerProgrammerApp:
             self.SCROLL_THUMB = "#98a2b3"
             self.SCROLL_ACTIVE = "#667085"
 
-    def capture_tree_snapshot(self) -> tuple[list[tuple[tuple[str, ...], tuple[str, ...]]], list[str]]:
+    def capture_tree_snapshot(self) -> tuple[list[dict[str, object]], list[str]]:
+        """Capture the grouped Orders tree so theme changes preserve batches and selection."""
         if not hasattr(self, "tree"):
             return [], []
-        rows: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-        selection_orders: list[str] = []
+        rows: list[dict[str, object]] = []
+        selection_tokens: list[str] = []
         try:
             selected_rows = set(self.tree.selection())
-            for row_id in self.tree.get_children():
-                values = tuple(str(value) for value in self.tree.item(row_id, "values"))
-                tags = tuple(str(tag) for tag in self.tree.item(row_id, "tags"))
-                rows.append((values, tags))
-                if row_id in selected_rows and len(values) >= 5:
-                    selection_orders.append(values[4])
+
+            def visit(parent_id: str, parent_token: str) -> None:
+                for row_id in self.tree.get_children(parent_id):
+                    batch_id = self.tree_row_batches.get(row_id)
+                    order = self.tree_row_orders.get(row_id)
+                    if batch_id:
+                        token = f"batch:{batch_id}"
+                    elif order is not None:
+                        token = f"order:{order.aw_order}"
+                    else:
+                        token = f"row:{len(rows)}"
+                    rows.append(
+                        {
+                            "token": token,
+                            "parent": parent_token,
+                            "text": str(self.tree.item(row_id, "text")),
+                            "values": tuple(str(value) for value in self.tree.item(row_id, "values")),
+                            "tags": tuple(str(tag) for tag in self.tree.item(row_id, "tags")),
+                            "open": bool(self.tree.item(row_id, "open")),
+                        }
+                    )
+                    if row_id in selected_rows:
+                        selection_tokens.append(token)
+                    visit(row_id, token)
+
+            visit("", "")
         except tk.TclError:
             return [], []
-        return rows, selection_orders
+        return rows, selection_tokens
 
     def restore_tree_snapshot(
         self,
-        rows: list[tuple[tuple[str, ...], tuple[str, ...]]],
-        selection_orders: list[str],
+        rows: list[dict[str, object]],
+        selection_tokens: list[str],
     ) -> None:
+        """Restore a grouped Orders tree after the interface is rebuilt."""
         if not hasattr(self, "tree"):
             return
         self.tree_rows.clear()
+        self.tree_row_orders.clear()
+        self.tree_row_batches.clear()
+        self.batch_tree_rows.clear()
+        token_rows: dict[str, str] = {}
         selected_row_ids: list[str] = []
-        for values, tags in rows:
-            row_id = self.tree.insert("", tk.END, values=values, tags=tags)
-            if len(values) >= 5:
-                aw_order = values[4]
-                self.tree_rows[aw_order] = row_id
-                if aw_order in selection_orders:
-                    selected_row_ids.append(row_id)
+        for entry in rows:
+            token = str(entry.get("token", ""))
+            parent_token = str(entry.get("parent", ""))
+            parent_id = token_rows.get(parent_token, "")
+            values = tuple(entry.get("values", ()))
+            tags = tuple(entry.get("tags", ()))
+            row_id = self.tree.insert(
+                parent_id,
+                tk.END,
+                text=str(entry.get("text", "")),
+                values=values,
+                tags=tags,
+                open=bool(entry.get("open", False)),
+            )
+            token_rows[token] = row_id
+            if token.startswith("batch:"):
+                batch_id = token.split(":", 1)[1]
+                self.batch_tree_rows[batch_id] = row_id
+                self.tree_row_batches[row_id] = batch_id
+            elif token.startswith("order:"):
+                aw_order = token.split(":", 1)[1]
+                order = self.order_by_aw.get(aw_order)
+                if order is not None:
+                    self.tree_rows[aw_order] = row_id
+                    self.tree_row_orders[row_id] = order
+            if token in selection_tokens:
+                selected_row_ids.append(row_id)
         if selected_row_ids:
             self.tree.selection_set(*selected_row_ids)
         self.update_summary_strip()
@@ -1650,7 +1722,7 @@ class ShowerProgrammerApp:
         table_frame.rowconfigure(0, weight=1)
 
         columns = ("status", "processed", "last_processed", "delivery", "order", "job", "customer", "items", "review", "pdf", "issues")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="extended")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", selectmode="extended")
         headings = {
             "status": "Status",
             "processed": "Processed",
@@ -1677,12 +1749,15 @@ class ShowerProgrammerApp:
             "pdf": 230,
             "issues": 380,
         }
+        self.tree.heading("#0", text="Batch / Process List", anchor=tk.W)
+        self.tree.column("#0", width=270, minwidth=210, anchor=tk.W, stretch=True)
         for col in columns:
             self.tree.heading(col, text=headings[col])
             min_width = 62 if col in {"status", "processed"} else 74
             stretch = col in {"job", "customer", "pdf", "issues"}
             self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=stretch)
 
+        self.tree.tag_configure("BATCH", foreground=self.ACCENT_DARK, background=self.SOFT_CARD_BG, font=("Segoe UI", 10, "bold"))
         self.tree.tag_configure("OK", foreground=self.SUCCESS)
         self.tree.tag_configure("READY", foreground=self.ACCENT_DARK)
         self.tree.tag_configure("ISSUES", foreground=self.WARNING)
@@ -2110,6 +2185,83 @@ class ShowerProgrammerApp:
         self.is_busy = False
         self.set_controls_enabled(True)
 
+    @classmethod
+    def load_process_list_batches(
+        cls,
+        process_list_path: Path,
+        config: dict[str, object],
+    ) -> list[dict[str, object]]:
+        """Load each process-list file independently so it remains a visible batch."""
+        batches: list[dict[str, object]] = []
+        for source in shower_batch.process_list_files(process_list_path):
+            try:
+                loaded = shower_batch.load_process_orders_from_file(source)
+            except Exception as exc:
+                raise RuntimeError(f"Could not read process list {source.name}: {exc}") from exc
+            orders = shower_batch.visible_orders(loaded, config)
+            batch_id = str(source.resolve()).casefold()
+            batches.append(
+                {
+                    "id": batch_id,
+                    "path": source.resolve(),
+                    "name": source.name,
+                    "orders": orders,
+                }
+            )
+        return batches
+
+    @staticmethod
+    def unique_orders_from_batches(batches: list[dict[str, object]]) -> list[shower_batch.ProcessOrder]:
+        """Return one order object per A&W order while preserving batch order."""
+        unique: dict[str, shower_batch.ProcessOrder] = {}
+        for batch in batches:
+            batch_orders = batch.get("orders", [])
+            if not isinstance(batch_orders, list):
+                continue
+            for order in batch_orders:
+                if isinstance(order, shower_batch.ProcessOrder):
+                    unique.setdefault(str(order.aw_order), order)
+        return list(unique.values())
+
+    @classmethod
+    def filter_batches_to_local_inputs(
+        cls,
+        batches: list[dict[str, object]],
+        order_folder: Path,
+    ) -> tuple[list[dict[str, object]], list[shower_batch.ProcessOrder], int]:
+        """Hide process-list orders that no longer have a local PDF or DXF."""
+        try:
+            local_files = [
+                path
+                for path in order_folder.iterdir()
+                if path.is_file()
+                and not path.is_symlink()
+                and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                and not cls.is_hardware_list_pdf(path)
+            ]
+        except OSError:
+            local_files = []
+
+        active_batches: list[dict[str, object]] = []
+        hidden_count = 0
+        for batch in batches:
+            batch_orders = batch.get("orders", [])
+            if not isinstance(batch_orders, list):
+                continue
+            active_orders: list[shower_batch.ProcessOrder] = []
+            for order in batch_orders:
+                if not isinstance(order, shower_batch.ProcessOrder):
+                    continue
+                if cls.paths_matching_order_by_name(local_files, order):
+                    active_orders.append(order)
+                else:
+                    hidden_count += 1
+            if active_orders:
+                active_batch = dict(batch)
+                active_batch["orders"] = active_orders
+                active_batches.append(active_batch)
+        return active_batches, cls.unique_orders_from_batches(active_batches), hidden_count
+
     def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
             self.ensure_workflow_folders(folder, process_list, output_dir)
@@ -2118,10 +2270,10 @@ class ShowerProgrammerApp:
             self.queue_scan_progress(progress_value, progress_max, "Loading configuration...")
             config = self.config_with_manual_overrides(folder, output_dir)
             progress_value += 1
-            self.queue_scan_progress(progress_value, progress_max, "Copying process lists into the local input folder...")
+            self.queue_scan_progress(progress_value, progress_max, "Checking shared process lists...")
 
             def process_list_progress(done: int, total: int, source: Path, copied: bool) -> None:
-                action = "Copied" if copied else "Checked"
+                action = "Copied" if copied else "Current"
                 self.queue_scan_progress(
                     progress_value + done,
                     max(progress_max, progress_value + total + 4),
@@ -2135,39 +2287,76 @@ class ShowerProgrammerApp:
             progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             process_list_files = shower_batch.process_list_files(process_list)
             progress_value += 1
-            self.queue_scan_progress(progress_value, max(progress_max, progress_value + 3), f"Reading {len(process_list_files)} process list file(s)...")
-            orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
+            self.queue_scan_progress(
+                progress_value,
+                max(progress_max, progress_value + 3),
+                f"Reading {len(process_list_files)} process-list batch(es)...",
+            )
+            all_batches = self.load_process_list_batches(process_list, config)
+            shared_process_paths = process_list_import_summary.get("source_files", [])
+            shared_process_names = {
+                Path(str(source)).name.casefold()
+                for source in shared_process_paths
+                if str(source)
+            } if isinstance(shared_process_paths, list) else set()
+            shared_batches = [
+                batch
+                for batch in all_batches
+                if str(batch.get("name", "")).casefold() in shared_process_names
+            ]
+            shared_gateway_orders = self.unique_orders_from_batches(shared_batches)
+            _present_batches, present_shared_orders, _missing_count = self.filter_batches_to_local_inputs(
+                shared_batches,
+                folder,
+            )
+            present_aw_orders = {str(order.aw_order) for order in present_shared_orders}
+            gateway_orders = [
+                order
+                for order in shared_gateway_orders
+                if str(order.aw_order) not in present_aw_orders
+            ]
 
             def order_file_progress(done: int, total: int, source: Path, copied: bool) -> None:
-                action = "Copied" if copied else "Checked"
+                action = "Copied" if copied else "Current"
                 self.queue_scan_progress(
                     progress_value + done,
                     max(progress_max, progress_value + total + 2),
                     f"{action} order file {done}/{total}: {source.name}",
                 )
 
-            self.queue_scan_progress(progress_value, max(progress_max, progress_value + 2), f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
+            self.queue_scan_progress(
+                progress_value,
+                max(progress_max, progress_value + 2),
+                (
+                    f"Checking {len(gateway_orders)} missing order(s) authorized by "
+                    f"{len(shared_batches)} shared process-list batch(es)..."
+                    if shared_batches
+                    else "No shared process lists found; using current local batches only."
+                ),
+            )
             import_summary = self.copy_edi_orders_for_process_orders(
                 folder,
-                orders,
+                gateway_orders,
                 progress_callback=order_file_progress,
             )
-            orders, retired_sent_orders = self.filter_retired_sent_orders(orders, folder, output_dir)
+            active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
             progress_value += int(import_summary.get("considered", 0) or 0)
             progress_value += 1
-            self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building order preview list...")
+            self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building grouped order list...")
             previews = shower_batch.preview_orders(orders, folder)
-            self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} order(s).")
+            self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} active order(s).")
             self.worker_queue.put(
                 (
                     "scan_done",
                     {
                         "orders": orders,
+                        "batches": active_batches,
                         "previews": previews,
                         "process_list_count": len(process_list_files),
                         "process_list_import_summary": process_list_import_summary,
                         "import_summary": import_summary,
-                        "retired_sent_orders": retired_sent_orders,
+                        "retired_sent_orders": [],
+                        "hidden_missing_orders": hidden_missing_orders,
                     },
                 )
             )
@@ -2419,6 +2608,43 @@ class ShowerProgrammerApp:
         if changed:
             self.save_processing_history(history)
 
+    def install_process_batches(self, batches: list[dict[str, object]]) -> None:
+        """Create process-list parent rows and map each active order into its batch."""
+        self.process_batches = {}
+        self.order_batch_ids = {}
+        self.batch_tree_rows.clear()
+        self.tree_row_batches.clear()
+        for batch in batches:
+            batch_id = str(batch.get("id", ""))
+            if not batch_id:
+                continue
+            batch_orders = batch.get("orders", [])
+            if not isinstance(batch_orders, list):
+                batch_orders = []
+            self.process_batches[batch_id] = batch
+            count = len(batch_orders)
+            label = str(batch.get("name", "Process List"))
+            parent_id = self.tree.insert(
+                "",
+                tk.END,
+                text=f"{label}  ({count} order{'s' if count != 1 else ''})",
+                values=("BATCH", "", "", "", "", "", "", str(count), "", "", ""),
+                tags=("BATCH",),
+                open=True,
+            )
+            self.batch_tree_rows[batch_id] = parent_id
+            self.tree_row_batches[parent_id] = batch_id
+            for order in batch_orders:
+                if isinstance(order, shower_batch.ProcessOrder):
+                    self.order_batch_ids.setdefault(str(order.aw_order), []).append(batch_id)
+
+    def parent_tree_row_for_order(self, aw_order: str) -> str:
+        for batch_id in self.order_batch_ids.get(str(aw_order), []):
+            parent_id = self.batch_tree_rows.get(batch_id)
+            if parent_id:
+                return parent_id
+        return ""
+
     def insert_or_update_result(self, result: shower_batch.BatchJobResult) -> None:
         processed, last_processed = self.processed_summary_for_order(result.aw_order)
         values = (
@@ -2437,11 +2663,33 @@ class ShowerProgrammerApp:
         row_id = self.tree_rows.get(result.aw_order)
         tag = result.status if result.status in {"OK", "READY", "ISSUES", "FAILED", "SKIPPED"} else ""
         if row_id:
-            self.tree.item(row_id, values=values, tags=(tag,))
+            self.tree.item(row_id, text=f"Order {result.aw_order}", values=values, tags=(tag,))
         else:
-            row_id = self.tree.insert("", tk.END, values=values, tags=(tag,))
+            parent_id = self.parent_tree_row_for_order(result.aw_order)
+            row_id = self.tree.insert(
+                parent_id,
+                tk.END,
+                text=f"Order {result.aw_order}",
+                values=values,
+                tags=(tag,),
+            )
             self.tree_rows[result.aw_order] = row_id
+            order = self.order_by_aw.get(str(result.aw_order))
+            if order is not None:
+                self.tree_row_orders[row_id] = order
         self.update_summary_strip()
+
+    def all_order_tree_rows(self) -> list[str]:
+        rows: list[str] = []
+
+        def visit(parent_id: str) -> None:
+            for row_id in self.tree.get_children(parent_id):
+                if row_id in self.tree_row_orders:
+                    rows.append(row_id)
+                visit(row_id)
+
+        visit("")
+        return rows
 
     def update_summary_strip(self) -> None:
         total = 0
@@ -2449,7 +2697,7 @@ class ShowerProgrammerApp:
         issues = 0
         processed = 0
         checked = 0
-        for row_id in self.tree.get_children():
+        for row_id in self.all_order_tree_rows():
             values = self.tree.item(row_id, "values")
             if len(values) < 9:
                 continue
@@ -2978,13 +3226,23 @@ class ShowerProgrammerApp:
     def order_for_tree_row(self, row_id: str) -> shower_batch.ProcessOrder | None:
         if not row_id:
             return None
+        order = self.tree_row_orders.get(row_id)
+        if order is not None:
+            return order
         try:
             values = self.tree.item(row_id, "values")
         except tk.TclError:
             return None
-        if len(values) < 5:
+        if len(values) < 5 or not values[4]:
             return None
         return self.order_by_aw.get(str(values[4]))
+
+    def selected_batch_ids(self) -> set[str]:
+        return {
+            self.tree_row_batches[row_id]
+            for row_id in self.tree.selection()
+            if row_id in self.tree_row_batches
+        }
 
     def open_orders_context_menu(self, event: tk.Event) -> str:
         row_id = self.tree.identify_row(event.y)
@@ -2995,16 +3253,29 @@ class ShowerProgrammerApp:
         if row_id not in self.tree.selection():
             self.tree.selection_set(row_id)
             self.tree.focus(row_id)
+
+        batch_id = self.tree_row_batches.get(row_id)
         order = self.order_for_tree_row(row_id)
-        if order is None:
+        selected_orders = self.selected_orders()
+        if batch_id:
+            batch = self.process_batches.get(batch_id, {})
+            title = "Process List Batch Actions"
+            subtitle = str(batch.get("name", "Process List"))
+            action_text = "Delete Local Batch"
+        elif order is not None:
+            title = "Order Actions"
+            subtitle = (
+                f"{len(selected_orders)} selected order(s)"
+                if len(selected_orders) > 1
+                else f"{order.aw_order}  {order.job_name}"
+            )
+            action_text = "Delete Local Input Files"
+        else:
             return "break"
 
-        selected_count = len(self.selected_orders())
-        title = "Order Actions"
-        subtitle = f"{selected_count} selected order(s)" if selected_count > 1 else f"{order.aw_order}  {order.job_name}"
         actions = [
             {
-                "text": "Delete Local Input Files",
+                "text": action_text,
                 "icon": "trash",
                 "destructive": True,
                 "command": self.delete_selected_local_order_inputs,
@@ -3013,92 +3284,194 @@ class ShowerProgrammerApp:
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
         return "break"
 
+    def batches_fully_selected_for_local_delete(
+        self,
+        selected_orders: list[shower_batch.ProcessOrder],
+        explicitly_selected_batches: set[str],
+    ) -> set[str]:
+        selected_aw = {str(order.aw_order) for order in selected_orders}
+        delete_batches = set(explicitly_selected_batches)
+        for batch_id, batch in self.process_batches.items():
+            batch_orders = batch.get("orders", [])
+            if not isinstance(batch_orders, list):
+                continue
+            active_aw = {
+                str(order.aw_order)
+                for order in batch_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            }
+            if active_aw and active_aw.issubset(selected_aw):
+                delete_batches.add(batch_id)
+        return delete_batches
+
     def delete_selected_local_order_inputs(self) -> None:
         orders = self.selected_orders()
+        explicit_batches = self.selected_batch_ids()
         if not orders:
-            messagebox.showinfo("No selection", "Select one or more orders first.")
+            messagebox.showinfo("No selection", "Select one or more orders or a process-list batch first.")
             return
         try:
             local_order_folder = Path(self.folder_var.get()).resolve()
+            process_list_root = Path(self.process_list_var.get()).resolve()
         except Exception as exc:
-            messagebox.showerror("Invalid order folder", str(exc))
+            messagebox.showerror("Invalid local input folder", str(exc))
             return
 
         files = self.matching_order_files(
             local_order_folder,
             orders,
             root_only=True,
-            inspect_pdf_text=True,
+            inspect_pdf_text=False,
         )
+        batches_to_delete = self.batches_fully_selected_for_local_delete(orders, explicit_batches)
+        process_lists_to_delete: list[Path] = []
+        for batch_id in sorted(batches_to_delete):
+            batch = self.process_batches.get(batch_id, {})
+            source = batch.get("path")
+            if isinstance(source, Path) and source.exists() and source.is_file():
+                process_lists_to_delete.append(source)
+
         order_names = ", ".join(order.aw_order for order in orders[:8])
         if len(orders) > 8:
             order_names += f", +{len(orders) - 8} more"
-        if files:
-            file_preview = "\n".join(path.name for path in files[:12])
-            if len(files) > 12:
-                file_preview += f"\n...and {len(files) - 12} more"
-            message = (
-                "Delete the local copied order PDF/DXF files for these order(s)?\n\n"
-                f"Orders: {order_names}\n\n"
-                f"Local folder only:\n{local_order_folder}\n\n"
-                f"Files to delete:\n{file_preview}\n\n"
-                "This will not delete anything from the shared Showers Programmer Input folder."
-            )
-        else:
-            message = (
-                "No matching local PDF/DXF files were found for the selected order(s).\n\n"
-                f"Orders: {order_names}\n\n"
-                "Remove the selected order(s) from the current orders list anyway?"
-            )
+        file_preview = "\n".join(path.name for path in files[:12]) or "No matching local PDF/DXF files found."
+        if len(files) > 12:
+            file_preview += f"\n...and {len(files) - 12} more"
+        process_preview = "\n".join(path.name for path in process_lists_to_delete)
+        process_note = (
+            f"\n\nProcess list(s) also removed because the entire active batch is selected:\n{process_preview}"
+            if process_lists_to_delete
+            else "\n\nProcess lists will remain because at least one order in each batch is not selected."
+        )
+        message = (
+            "Delete these local input files?\n\n"
+            f"Orders: {order_names}\n\n"
+            f"Local order folder:\n{local_order_folder}\n\n"
+            f"Files:\n{file_preview}"
+            f"{process_note}\n\n"
+            "Nothing will be deleted from the shared Showers Programmer Input folder."
+        )
         if not messagebox.askyesno("Delete local order input", message):
             return
 
         deleted: list[Path] = []
+        deleted_process_lists: list[Path] = []
         warnings: list[str] = []
         local_root = local_order_folder.resolve()
-        for path in files:
+        for source in files:
             try:
-                resolved = path.resolve()
+                resolved = source.resolve()
                 if resolved.parent != local_root:
-                    warnings.append(f"Skipped outside local order folder: {path.name}")
+                    warnings.append(f"Skipped outside local order folder: {source.name}")
                     continue
-                path.unlink()
-                deleted.append(path)
+                source.unlink()
+                deleted.append(source)
             except OSError as exc:
-                warnings.append(f"Could not delete {path.name}: {exc}")
+                warnings.append(f"Could not delete {source.name}: {exc}")
 
-        deleted_aw_orders = {order.aw_order for order in orders}
+        allowed_process_parent = process_list_root.parent if process_list_root.is_file() else process_list_root
+        try:
+            allowed_process_parent = allowed_process_parent.resolve()
+        except OSError:
+            pass
+        for source in process_lists_to_delete:
+            try:
+                resolved = source.resolve()
+                if resolved.parent != allowed_process_parent:
+                    warnings.append(f"Skipped process list outside local process-list folder: {source.name}")
+                    continue
+                source.unlink()
+                deleted_process_lists.append(source)
+            except OSError as exc:
+                warnings.append(f"Could not delete process list {source.name}: {exc}")
+
+        deleted_aw_orders = {str(order.aw_order) for order in orders}
         for aw_order in deleted_aw_orders:
             row_id = self.tree_rows.pop(aw_order, None)
             if row_id:
+                self.tree_row_orders.pop(row_id, None)
                 try:
                     self.tree.delete(row_id)
                 except tk.TclError:
                     pass
             self.order_by_aw.pop(aw_order, None)
-        self.orders = [order for order in self.orders if order.aw_order not in deleted_aw_orders]
+        self.orders = [order for order in self.orders if str(order.aw_order) not in deleted_aw_orders]
+
+        deleted_batch_ids: set[str] = set()
+        for batch_id in batches_to_delete:
+            batch_orders = self.process_batches.get(batch_id, {}).get("orders", [])
+            remaining_aw = {
+                str(order.aw_order)
+                for order in batch_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+                and str(order.aw_order) not in deleted_aw_orders
+            } if isinstance(batch_orders, list) else set()
+            if batch_id in explicit_batches or not remaining_aw:
+                deleted_batch_ids.add(batch_id)
+
+        for batch_id, batch in list(self.process_batches.items()):
+            batch_orders = batch.get("orders", [])
+            if isinstance(batch_orders, list):
+                batch["orders"] = [
+                    order
+                    for order in batch_orders
+                    if isinstance(order, shower_batch.ProcessOrder)
+                    and str(order.aw_order) not in deleted_aw_orders
+                ]
+            parent_id = self.batch_tree_rows.get(batch_id)
+            remaining = batch.get("orders", [])
+            if batch_id in deleted_batch_ids or not remaining:
+                if parent_id:
+                    self.tree_row_batches.pop(parent_id, None)
+                    try:
+                        self.tree.delete(parent_id)
+                    except tk.TclError:
+                        pass
+                self.batch_tree_rows.pop(batch_id, None)
+                self.process_batches.pop(batch_id, None)
+            elif parent_id:
+                count = len(remaining) if isinstance(remaining, list) else 0
+                self.tree.item(
+                    parent_id,
+                    text=f"{batch.get('name', 'Process List')}  ({count} order{'s' if count != 1 else ''})",
+                    values=("BATCH", "", "", "", "", "", "", str(count), "", "", ""),
+                )
+
+        for aw_order in deleted_aw_orders:
+            self.order_batch_ids.pop(aw_order, None)
         self.update_summary_strip()
 
-        detail = f"Deleted {len(deleted)} local file(s) and removed {len(deleted_aw_orders)} order(s) from the list."
+        detail = (
+            f"Deleted {len(deleted)} local order file(s), removed {len(deleted_aw_orders)} order(s), "
+            f"and deleted {len(deleted_process_lists)} completed local process list(s)."
+        )
         if warnings:
             detail += "\n\n" + "\n".join(warnings[:8])
             if len(warnings) > 8:
                 detail += f"\n...and {len(warnings) - 8} more"
         self.status_var.set(detail.split("\n", 1)[0])
-        messagebox.showinfo("Local order input deleted", detail)
+        messagebox.showinfo("Local input deleted", detail)
 
     def selected_orders(self) -> list[shower_batch.ProcessOrder]:
-        selected = []
+        selected_by_aw: dict[str, shower_batch.ProcessOrder] = {}
         for row_id in self.tree.selection():
-            values = self.tree.item(row_id, "values")
-            if len(values) >= 5:
-                order = self.order_by_aw.get(values[4])
-                if order:
-                    selected.append(order)
-        return selected
+            order = self.tree_row_orders.get(row_id)
+            if order is not None:
+                selected_by_aw.setdefault(str(order.aw_order), order)
+                continue
+            batch_id = self.tree_row_batches.get(row_id)
+            if not batch_id:
+                continue
+            batch_orders = self.process_batches.get(batch_id, {}).get("orders", [])
+            if not isinstance(batch_orders, list):
+                continue
+            for batch_order in batch_orders:
+                if isinstance(batch_order, shower_batch.ProcessOrder):
+                    selected_by_aw.setdefault(str(batch_order.aw_order), batch_order)
+        return list(selected_by_aw.values())
 
     def select_all_orders(self, _event: tk.Event | None = None) -> str | None:
-        row_ids = self.tree.get_children()
+        row_ids = self.all_order_tree_rows()
         if not row_ids:
             self.status_var.set("No scanned orders to select.")
             return "break" if _event is not None else None
@@ -3107,17 +3480,6 @@ class ShowerProgrammerApp:
         self.tree.see(row_ids[0])
         self.status_var.set(f"Selected {len(row_ids)} order(s).")
         return "break" if _event is not None else None
-
-    def selected_or_visible_aw_orders(self) -> list[str]:
-        selected = [order.aw_order for order in self.selected_orders()]
-        if selected:
-            return selected
-        aw_orders: list[str] = []
-        for row_id in self.tree.get_children():
-            values = self.tree.item(row_id, "values")
-            if len(values) >= 5 and values[4]:
-                aw_orders.append(str(values[4]))
-        return aw_orders
 
     def process_selected(self) -> None:
         orders = self.selected_orders()
@@ -3447,18 +3809,24 @@ class ShowerProgrammerApp:
                     data = payload
                     assert isinstance(data, dict)
                     orders = data.get("orders", [])
+                    batches = data.get("batches", [])
                     previews = data.get("previews", [])
                     process_list_count = int(data.get("process_list_count", 0))
                     process_list_import_summary = data.get("process_list_import_summary", {})
                     import_summary = data.get("import_summary", {})
                     retired_sent_orders = data.get("retired_sent_orders", [])
                     assert isinstance(orders, list)
+                    assert isinstance(batches, list)
                     assert isinstance(previews, list)
                     assert isinstance(retired_sent_orders, list)
                     self.orders = orders
-                    self.order_by_aw = {order.aw_order: order for order in self.orders}
+                    self.order_by_aw = {str(order.aw_order): order for order in self.orders}
                     self.tree.delete(*self.tree.get_children())
                     self.tree_rows.clear()
+                    self.tree_row_orders.clear()
+                    self.tree_row_batches.clear()
+                    self.batch_tree_rows.clear()
+                    self.install_process_batches(batches)
                     self.update_summary_strip()
                     for result in previews:
                         assert isinstance(result, shower_batch.BatchJobResult)
@@ -3472,6 +3840,9 @@ class ShowerProgrammerApp:
                     )
                     if retired_sent_orders:
                         scan_message += f" Kept {len(retired_sent_orders)} previously sent order(s) retired."
+                    hidden_missing_orders = int(data.get("hidden_missing_orders", 0) or 0)
+                    if hidden_missing_orders:
+                        scan_message += f" Hid {hidden_missing_orders} process-list order(s) with no local PDF/DXF."
                     self.status_var.set(scan_message)
                     self.start_review_cache_warmup(self.orders)
                 elif kind == "import_done":
@@ -3500,6 +3871,11 @@ class ShowerProgrammerApp:
                         self.order_by_aw = {}
                         self.tree.delete(*self.tree.get_children())
                         self.tree_rows.clear()
+                        self.tree_row_orders.clear()
+                        self.tree_row_batches.clear()
+                        self.batch_tree_rows.clear()
+                        self.process_batches.clear()
+                        self.order_batch_ids.clear()
                         self.update_summary_strip()
                         self.status_var.set(f"Scan complete: {message}")
                     else:
@@ -3826,6 +4202,12 @@ a {{ color: #1f4e79; }}
     def open_order_review(self, event: tk.Event | None = None) -> None:
         if event is not None:
             row_id = self.tree.identify_row(event.y)
+            if row_id in self.tree_row_batches:
+                try:
+                    self.tree.item(row_id, open=not bool(self.tree.item(row_id, "open")))
+                except tk.TclError:
+                    pass
+                return
             if row_id:
                 self.tree.selection_set(row_id)
         selected = self.selected_orders()
@@ -4576,8 +4958,8 @@ a {{ color: #1f4e79; }}
             if kind != "x":
                 actions.extend(
                     [
-                        {"text": "Increase Size", "icon": "plus", "command": select_then(lambda: resize_selected_mark(1))},
-                        {"text": "Decrease Size", "icon": "minus_circle", "command": select_then(lambda: resize_selected_mark(-1))},
+                        {"text": "Increase Size", "icon": "plus", "keep_open": True, "command": select_then(lambda: resize_selected_mark(1))},
+                        {"text": "Decrease Size", "icon": "minus_circle", "keep_open": True, "command": select_then(lambda: resize_selected_mark(-1))},
                     ]
                 )
             if kind == "text":
@@ -5649,34 +6031,34 @@ a {{ color: #1f4e79; }}
         if mark_key == "label":
             field = "label_font_size"
             current = panel.label_font_size or float(obj.get("font_size") or pdf_cfg.get("label_font_size", 21))
-            step = 2.0
+            step = 4.0
             minimum = 6.0
         elif mark_key == "diamon_fusion":
             field = "diamon_fusion_font_size"
             current = panel.diamon_fusion_font_size or float(obj.get("font_size") or pdf_cfg.get("diamon_fusion_font_size", 36))
-            step = 4.0
+            step = 8.0
             minimum = 10.0
         elif mark_key == "remake":
             field = "remake_font_size"
             remake_cfg = pdf_cfg.get("remake", {}) if isinstance(pdf_cfg.get("remake", {}), dict) else {}
             current = panel.remake_font_size or float(obj.get("font_size") or remake_cfg.get("font_size", 40))
-            step = 4.0
+            step = 8.0
             minimum = 10.0
         elif mark_key == "indicator":
             if str(obj.get("machine") or panel.machine).upper() == "WJ":
                 field = "waterjet_indicator_size"
                 current = panel.waterjet_indicator_size or float(obj.get("size") or pdf_cfg.get("waterjet_indicator_size", 30))
-                step = 4.0
+                step = 8.0
                 minimum = 8.0
             else:
                 field = "indicator_size"
                 current = panel.indicator_size or float(obj.get("size") or pdf_cfg.get("indicator_size", 18))
-                step = 2.0
+                step = 4.0
                 minimum = 6.0
         elif self.additional_text_id_from_mark_key(mark_key) is not None:
             text_id = self.additional_text_id_from_mark_key(mark_key)
             current = float(obj.get("font_size") or pdf_cfg.get("label_font_size", 21))
-            new_size = max(6.0, current + 2.0 * (1 if direction > 0 else -1))
+            new_size = max(6.0, current + 4.0 * (1 if direction > 0 else -1))
             if text_id is None or not self.update_additional_text_box(
                 aw_order,
                 item_number,
@@ -6438,14 +6820,15 @@ try {{
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         try:
-            row_ids = self.tree.get_children()
+            row_ids = self.all_order_tree_rows()
             if row_ids and not self.tree.selection():
                 self.tree.selection_set(*row_ids)
                 self.tree.focus(row_ids[0])
                 self.tree.see(row_ids[0])
                 self.status_var.set(f"No orders were selected, so Review / Send is using all {len(row_ids)} visible order(s).")
             elif self.tree.selection():
-                self.status_var.set(f"Preparing Review / Send for {len(self.tree.selection())} selected order(s)...")
+                selected_count = len(self.selected_orders())
+                self.status_var.set(f"Preparing Review / Send for {selected_count} selected order(s)...")
         except tk.TclError:
             pass
         self.progress.stop()
@@ -7352,11 +7735,15 @@ try {{
             "source_missing": False,
             "direct": False,
             "considered": 0,
+            "source_files": [],
         }
         if not source_dir.exists():
             summary["source_missing"] = True
             return summary
 
+        sources = cls.importable_process_list_files(source_dir)
+        summary["source_files"] = [str(source.resolve()) for source in sources]
+        summary["considered"] = len(sources)
         target_dir = cls.process_list_import_target_dir(process_list_path)
         if cls.same_path(source_dir, target_dir):
             summary["direct"] = True
@@ -7364,8 +7751,6 @@ try {{
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
-        sources = cls.importable_process_list_files(source_dir)
-        summary["considered"] = len(sources)
         for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
             did_copy = cls.copy_file_if_needed(source, target)
