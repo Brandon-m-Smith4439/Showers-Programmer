@@ -2,6 +2,7 @@
 """Small Tkinter front end for shower batch programming."""
 
 # RUNTIME_GUARD_V9: integrated batch grouping, Sent status, live progress, safe close, and single-instance protection.
+# UPDATE_UI_BATCH_REVIEW_V11: themed update results, live GitHub progress, safe ZIP staging, and grouped Review / Send batches.
 
 from __future__ import annotations
 
@@ -345,6 +346,11 @@ class ShowerProgrammerApp:
         self.active_themed_context_binding: tuple[tk.Widget, str, str] | None = None
         self.pending_update_script: Path | None = None
         self.pending_update_message = ""
+        self.update_progress_window: tk.Toplevel | None = None
+        self.update_progress_stage_var: tk.StringVar | None = None
+        self.update_progress_detail_var: tk.StringVar | None = None
+        self.update_progress_percent_var: tk.StringVar | None = None
+        self.update_progress_bar: ModernProgressBar | None = None
 
         self.configure_styles()
         self.build_ui()
@@ -886,6 +892,281 @@ class ShowerProgrammerApp:
             pass
         return result["value"]
 
+
+
+    def show_themed_notice(
+        self,
+        title: str,
+        heading: str,
+        message: str,
+        *,
+        icon_name: str = "info",
+        accent_color: str | None = None,
+        details: list[tuple[str, str]] | None = None,
+        parent: tk.Widget | None = None,
+        button_text: str = "Close",
+    ) -> None:
+        """Display a clear theme-aware result dialog instead of a raw message box."""
+        owner = parent.winfo_toplevel() if parent is not None else self.root
+        if ctk is None:
+            detail_text = ""
+            if details:
+                detail_text = "\n\n" + "\n".join(f"{label}: {value}" for label, value in details)
+            messagebox.showinfo(title, f"{heading}\n\n{message}{detail_text}", parent=owner)
+            return
+
+        accent = accent_color or self.ACCENT
+        dialog = ctk.CTkToplevel(owner)
+        dialog.title(title)
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.resizable(False, False)
+        self.set_window_icon(dialog)
+        try:
+            dialog.transient(owner)
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            dialog,
+            fg_color=self.CARD_BG,
+            corner_radius=18,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.grid_columnconfigure(1, weight=1)
+
+        icon_box = ctk.CTkFrame(
+            shell,
+            fg_color=self.ACCENT_LIGHT if accent in {self.ACCENT, self.ACCENT_DARK} else self.PANEL_BG,
+            corner_radius=18,
+            width=64,
+            height=64,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        icon_box.grid(row=0, column=0, rowspan=2, sticky="n", padx=(18, 14), pady=(20, 0))
+        icon_box.grid_propagate(False)
+        ctk.CTkLabel(
+            icon_box,
+            text="",
+            image=self.ctk_button_icon(icon_name, 30, accent).get("image"),
+        ).pack(expand=True)
+
+        ctk.CTkLabel(
+            shell,
+            text=heading,
+            font=("Segoe UI", 21, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 20), pady=(20, 4))
+        ctk.CTkLabel(
+            shell,
+            text=message,
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=470,
+        ).grid(row=1, column=1, sticky="ew", padx=(0, 20), pady=(0, 12))
+
+        next_row = 2
+        if details:
+            detail_card = ctk.CTkFrame(
+                shell,
+                fg_color=self.PANEL_BG,
+                corner_radius=12,
+                border_width=1,
+                border_color=self.BORDER,
+            )
+            detail_card.grid(row=next_row, column=0, columnspan=2, sticky="ew", padx=18, pady=(4, 14))
+            detail_card.grid_columnconfigure(1, weight=1)
+            for row, (label, value) in enumerate(details):
+                ctk.CTkLabel(
+                    detail_card,
+                    text=label,
+                    font=("Segoe UI", 10, "bold"),
+                    text_color=self.MUTED,
+                    anchor="w",
+                    width=120,
+                ).grid(row=row, column=0, sticky="w", padx=(12, 8), pady=(9 if row == 0 else 4, 9 if row == len(details) - 1 else 4))
+                ctk.CTkLabel(
+                    detail_card,
+                    text=value,
+                    font=("Segoe UI", 10),
+                    text_color=self.TEXT,
+                    anchor="w",
+                    justify="left",
+                    wraplength=360,
+                ).grid(row=row, column=1, sticky="ew", padx=(0, 12), pady=(9 if row == 0 else 4, 9 if row == len(details) - 1 else 4))
+            next_row += 1
+
+        def close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+            try:
+                owner.lift()
+                owner.focus_force()
+            except tk.TclError:
+                pass
+
+        button_row = ctk.CTkFrame(shell, fg_color="transparent")
+        button_row.grid(row=next_row, column=0, columnspan=2, sticky="e", padx=18, pady=(0, 18))
+        ctk.CTkButton(
+            button_row,
+            text=button_text,
+            command=close_dialog,
+            width=112,
+            height=38,
+            corner_radius=10,
+            fg_color=accent,
+            hover_color=self.ACCENT_DARK if accent in {self.ACCENT, self.ACCENT_DARK} else accent,
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("check", 15, "#ffffff", "left"),
+        ).pack(side=tk.RIGHT)
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        dialog.update_idletasks()
+        width = max(570, dialog.winfo_reqwidth())
+        height = max(250, dialog.winfo_reqheight())
+        try:
+            x = owner.winfo_rootx() + max(20, (owner.winfo_width() - width) // 2)
+            y = owner.winfo_rooty() + max(20, (owner.winfo_height() - height) // 3)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            dialog.geometry(f"{width}x{height}")
+        self.bring_window_to_front(dialog, make_transient=True)
+
+    def show_no_updates_dialog(self, latest_sha: str = "", latest_date: str = "", packaged: bool = False) -> None:
+        checked_at = datetime.now().strftime("%m/%d/%Y %I:%M %p")
+        details = [
+            ("Update channel", "GitHub main"),
+            ("Checked", checked_at),
+        ]
+        if latest_sha:
+            details.append(("Latest revision", latest_sha[:12]))
+        if latest_date:
+            details.append(("Published", latest_date.replace("T", " ").replace("Z", " UTC")))
+        if packaged:
+            details.append(("Package", "Installed EXE matches the published build"))
+        self.show_themed_notice(
+            "No updates found",
+            "You’re up to date",
+            "This computer is already running the latest published Shower Programmer version. No files were changed.",
+            icon_name="check_circle",
+            accent_color=self.SUCCESS,
+            details=details,
+            button_text="Done",
+        )
+
+    def open_update_progress_window(self) -> None:
+        """Open one themed updater window and reuse it throughout the update workflow."""
+        if ctk is None:
+            return
+        window = self.update_progress_window
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.deiconify()
+                    window.lift()
+                    return
+            except tk.TclError:
+                pass
+
+        window = ctk.CTkToplevel(self.root)
+        self.update_progress_window = window
+        window.title("Shower Programmer Update")
+        window.configure(fg_color=self.APP_BG)
+        window.resizable(False, False)
+        self.set_window_icon(window)
+        try:
+            window.transient(self.root)
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(window, fg_color=self.CARD_BG, corner_radius=18, border_width=1, border_color=self.BORDER)
+        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.grid_columnconfigure(1, weight=1)
+
+        icon_box = ctk.CTkFrame(shell, fg_color=self.ACCENT_LIGHT, corner_radius=16, width=58, height=58)
+        icon_box.grid(row=0, column=0, rowspan=2, sticky="n", padx=(18, 14), pady=(20, 0))
+        icon_box.grid_propagate(False)
+        ctk.CTkLabel(icon_box, text="", image=self.ctk_button_icon("refresh", 28, self.ACCENT_DARK).get("image")).pack(expand=True)
+
+        ctk.CTkLabel(shell, text="Checking for updates", font=("Segoe UI", 20, "bold"), text_color=self.TEXT, anchor="w").grid(row=0, column=1, sticky="ew", padx=(0, 18), pady=(20, 2))
+        ctk.CTkLabel(shell, text="The program will verify GitHub, download safely, and validate the package before installing.", font=("Segoe UI", 10), text_color=self.MUTED, anchor="w", justify="left", wraplength=500).grid(row=1, column=1, sticky="ew", padx=(0, 18), pady=(0, 14))
+
+        self.update_progress_stage_var = tk.StringVar(value="Connecting to GitHub...")
+        self.update_progress_detail_var = tk.StringVar(value="Waiting for GitHub to respond.")
+        self.update_progress_percent_var = tk.StringVar(value="0%")
+        status_card = ctk.CTkFrame(shell, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
+        status_card.grid(row=2, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 14))
+        status_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(status_card, textvariable=self.update_progress_stage_var, font=("Segoe UI", 12, "bold"), text_color=self.TEXT, anchor="w").grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(11, 2))
+        ctk.CTkLabel(status_card, textvariable=self.update_progress_percent_var, font=("Segoe UI", 11, "bold"), text_color=self.ACCENT_DARK, anchor="e").grid(row=0, column=1, sticky="e", padx=(8, 12), pady=(11, 2))
+        ctk.CTkLabel(status_card, textvariable=self.update_progress_detail_var, font=("Segoe UI", 10), text_color=self.MUTED, anchor="w", justify="left", wraplength=520).grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 10))
+        self.update_progress_bar = ModernProgressBar(status_card, self, height=12)
+        self.update_progress_bar.configure(mode="determinate", maximum=100, value=0)
+        self.update_progress_bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+
+        ctk.CTkLabel(shell, text="You may leave this window open. Long pauses can occur while Windows or antivirus scans a downloaded file.", font=("Segoe UI", 9), text_color=self.MUTED, anchor="w", justify="left", wraplength=540).grid(row=3, column=0, columnspan=2, sticky="ew", padx=18, pady=(0, 18))
+
+        def hide_window() -> None:
+            try:
+                window.withdraw()
+            except tk.TclError:
+                pass
+
+        window.protocol("WM_DELETE_WINDOW", hide_window)
+        window.update_idletasks()
+        width = max(620, window.winfo_reqwidth())
+        height = max(310, window.winfo_reqheight())
+        try:
+            x = self.root.winfo_rootx() + max(20, (self.root.winfo_width() - width) // 2)
+            y = self.root.winfo_rooty() + max(20, (self.root.winfo_height() - height) // 3)
+            window.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            window.geometry(f"{width}x{height}")
+        self.bring_window_to_front(window, make_transient=True)
+
+    def set_update_progress_ui(self, percent: float, stage: str, detail: str = "") -> None:
+        value = max(0.0, min(100.0, float(percent)))
+        self.background_progress_percent = max(self.background_progress_percent, value)
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=100, value=value)
+        self.status_var.set(stage)
+        self.record_activity_progress(stage if not detail else f"{stage} — {detail}")
+        if self.update_progress_stage_var is not None:
+            self.update_progress_stage_var.set(stage)
+        if self.update_progress_detail_var is not None:
+            self.update_progress_detail_var.set(detail or "Working...")
+        if self.update_progress_percent_var is not None:
+            self.update_progress_percent_var.set(f"{int(round(value))}%")
+        if self.update_progress_bar is not None:
+            try:
+                self.update_progress_bar.configure(mode="determinate", maximum=100, value=value)
+            except tk.TclError:
+                self.update_progress_bar = None
+
+    def close_update_progress_window(self) -> None:
+        window = self.update_progress_window
+        self.update_progress_window = None
+        self.update_progress_stage_var = None
+        self.update_progress_detail_var = None
+        self.update_progress_percent_var = None
+        self.update_progress_bar = None
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except tk.TclError:
+                pass
 
     @classmethod
     def preferred_ui_settings_path(cls) -> Path:
@@ -3974,7 +4255,97 @@ class ShowerProgrammerApp:
         try:
             while True:
                 kind, payload = self.worker_queue.get_nowait()
-                if kind == "result":
+                if kind == "update_progress":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.set_update_progress_ui(
+                        float(data.get("percent", 0.0) or 0.0),
+                        str(data.get("stage", "Updating...")),
+                        str(data.get("detail", "")),
+                    )
+                elif kind == "update_no_updates":
+                    data = payload
+                    assert isinstance(data, dict)
+                    latest_sha = str(data.get("latest_sha", ""))
+                    latest_date = str(data.get("latest_date", ""))
+                    packaged = bool(data.get("packaged", False))
+                    self.set_update_progress_ui(100, "No updates found", "This installation matches the latest published version.")
+                    self.finish_background_activity()
+                    self.close_update_progress_window()
+                    self.status_var.set("No updates found. Shower Programmer is up to date.")
+                    self.show_no_updates_dialog(latest_sha, latest_date, packaged)
+                elif kind == "update_available":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.begin_update_install(data)
+                elif kind == "update_information":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    self.close_update_progress_window()
+                    accent_name = str(data.get("accent", "accent"))
+                    accent = self.WARNING if accent_name == "warning" else self.ACCENT
+                    self.show_themed_notice(
+                        str(data.get("title", "Update information")),
+                        str(data.get("heading", "Update information")),
+                        str(data.get("message", "No files were changed.")),
+                        icon_name=str(data.get("icon", "info")),
+                        accent_color=accent,
+                    )
+                elif kind == "update_install_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    mode = str(data.get("mode", "zip"))
+                    repo = Path(str(data.get("repo", self.update_install_root()))).resolve()
+                    latest_sha = str(data.get("latest_sha", ""))
+                    restart = bool(data.get("restart", False))
+                    self.set_update_progress_ui(100, "Update complete", "The validated update is ready.")
+                    self.finish_background_activity()
+                    if restart and self.pending_update_script is not None:
+                        script_path = self.pending_update_script
+                        self.status_var.set("Update validated. Restarting Shower Programmer to install it...")
+                        try:
+                            subprocess.Popen(["cmd", "/c", str(script_path)], cwd=str(script_path.parent))
+                            self.close_update_progress_window()
+                            self.save_ui_settings()
+                            self.root.destroy()
+                        except Exception as exc:
+                            self.close_update_progress_window()
+                            self.show_themed_notice(
+                                "Update restart failed",
+                                "The update is staged but could not restart",
+                                "Close Shower Programmer and run the generated apply_update.cmd file from the update staging folder.",
+                                icon_name="warning",
+                                accent_color=self.WARNING,
+                                details=[("Staging folder", str(script_path.parent)), ("Technical detail", str(exc))],
+                            )
+                        continue
+                    self.write_update_metadata(repo, latest_sha, mode)
+                    self.close_update_progress_window()
+                    self.status_var.set("Update installed successfully. Restart Shower Programmer to load the changes.")
+                    self.show_themed_notice(
+                        "Update installed",
+                        "Shower Programmer was updated",
+                        "The update completed successfully. Close and reopen the program to load the new code.",
+                        icon_name="check_circle",
+                        accent_color=self.SUCCESS,
+                        details=[("Revision", latest_sha[:12] if latest_sha else "Latest GitHub main")],
+                        button_text="Done",
+                    )
+                elif kind == "update_error":
+                    detail = str(payload)
+                    self.finish_background_activity()
+                    self.close_update_progress_window()
+                    self.status_var.set("Update failed. The current installation was not replaced.")
+                    self.show_themed_notice(
+                        "Update failed",
+                        "The update could not be completed",
+                        "The existing Shower Programmer installation was left in place. Review the detail below, then try again.",
+                        icon_name="warning",
+                        accent_color=self.DANGER,
+                        details=[("What happened", detail)],
+                    )
+                elif kind == "result":
                     result = payload
                     assert isinstance(result, shower_batch.BatchJobResult)
                     self.insert_or_update_result(result)
@@ -6312,97 +6683,228 @@ a {{ color: #1f4e79; }}
         return new_size
 
     def check_for_updates(self) -> None:
+        """Check GitHub in a worker thread so the UI remains responsive and informative."""
+        if self.is_busy:
+            self.show_themed_notice(
+                "Program busy",
+                "Finish the current operation first",
+                "Shower Programmer is already scanning, processing, copying, archiving, sending, or updating files.",
+                icon_name="warning",
+                accent_color=self.WARNING,
+                details=[("Current step", self.activity_stage_message or self.status_var.get() or "Working")],
+            )
+            return
         repo = self.update_install_root()
         git = shutil.which("git")
-        # A PyInstaller executable cannot use the source checkout path inside the
-        # bundle. In frozen mode, update the executable folder with the GitHub zip
-        # updater instead of trying to pull a developer repository.
-        if getattr(sys, "frozen", False) or not git or not (repo / ".git").exists():
-            self.check_for_updates_without_git(repo)
+        use_git = bool(not getattr(sys, "frozen", False) and git and (repo / ".git").exists())
+        self.start_background_activity("Connecting to GitHub...", maximum=100)
+        self.open_update_progress_window()
+        self.set_update_progress_ui(2, "Connecting to GitHub...", "Starting a secure update check.")
+        worker = threading.Thread(
+            target=self.worker_check_for_updates,
+            args=(repo, str(git or ""), use_git),
+            daemon=True,
+        )
+        worker.start()
+
+    def check_for_updates_without_git(self, repo: Path) -> None:
+        """Compatibility wrapper used by older callers; the update check still runs in the worker."""
+        if self.is_busy:
             return
-        try:
-            status = subprocess.run(
-                [git, "status", "--porcelain"],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=True,
-            ).stdout.strip()
-            fetch = subprocess.run(
-                [git, "fetch", "origin", "main"],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                timeout=90,
+        self.start_background_activity("Connecting to GitHub...", maximum=100)
+        self.open_update_progress_window()
+        worker = threading.Thread(
+            target=self.worker_check_for_updates,
+            args=(repo, "", False),
+            daemon=True,
+        )
+        worker.start()
+
+    def queue_update_progress(self, percent: float, stage: str, detail: str = "") -> None:
+        self.worker_queue.put(
+            (
+                "update_progress",
+                {
+                    "percent": float(percent),
+                    "stage": str(stage),
+                    "detail": str(detail),
+                },
             )
-            if fetch.returncode != 0:
-                messagebox.showerror("Update check failed", fetch.stderr.strip() or fetch.stdout.strip())
+        )
+
+    def worker_check_for_updates(self, repo: Path, git: str, use_git: bool) -> None:
+        try:
+            if use_git:
+                self.queue_update_progress(8, "Checking the local project...", "Inspecting Git status before contacting GitHub.")
+                status = subprocess.run(
+                    [git, "status", "--porcelain"],
+                    cwd=repo,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=True,
+                ).stdout.strip()
+                self.queue_update_progress(20, "Checking GitHub main...", "Downloading the latest Git revision information.")
+                fetch = subprocess.run(
+                    [git, "fetch", "origin", "main"],
+                    cwd=repo,
+                    text=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+                if fetch.returncode != 0:
+                    raise RuntimeError(fetch.stderr.strip() or fetch.stdout.strip() or "Git fetch failed.")
+                current = subprocess.run([git, "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
+                remote = subprocess.run([git, "rev-parse", "origin/main"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
+                base = subprocess.run([git, "merge-base", "HEAD", "origin/main"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
+                self.queue_update_progress(100, "GitHub check complete", "The local project and GitHub main were compared successfully.")
+                if current == remote:
+                    self.worker_queue.put(("update_no_updates", {"latest_sha": remote, "latest_date": "", "packaged": False}))
+                elif status:
+                    self.worker_queue.put(("update_information", {
+                        "title": "Updates available",
+                        "heading": "Local changes need attention",
+                        "message": "GitHub has newer code, but this project folder contains uncommitted local changes. Commit or stash those changes before using automatic update.",
+                        "icon": "warning",
+                        "accent": "warning",
+                    }))
+                elif base == current:
+                    self.worker_queue.put(("update_available", {
+                        "mode": "git",
+                        "repo": str(repo),
+                        "git": git,
+                        "latest_sha": remote,
+                        "latest_date": "",
+                        "current_sha": current,
+                    }))
+                elif base == remote:
+                    self.worker_queue.put(("update_information", {
+                        "title": "Local branch ahead",
+                        "heading": "This project has unpublished commits",
+                        "message": "The local project contains commits that are not on GitHub main. Nothing was changed.",
+                        "icon": "info",
+                        "accent": "accent",
+                    }))
+                else:
+                    self.worker_queue.put(("update_information", {
+                        "title": "Branches diverged",
+                        "heading": "Manual Git update required",
+                        "message": "The local project and GitHub main both contain different changes. Resolve the branches manually with Git before updating.",
+                        "icon": "warning",
+                        "accent": "warning",
+                    }))
                 return
-            current = subprocess.run(
-                [git, "rev-parse", "HEAD"],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=True,
-            ).stdout.strip()
-            remote = subprocess.run(
-                [git, "rev-parse", "origin/main"],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=True,
-            ).stdout.strip()
-            base = subprocess.run(
-                [git, "merge-base", "HEAD", "origin/main"],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=True,
-            ).stdout.strip()
+
+            owner, repo_name = self.github_update_repo(repo)
+            self.queue_update_progress(10, "Checking GitHub main...", f"Requesting the latest revision for {owner}/{repo_name}.")
+            latest_sha, latest_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+            self.queue_update_progress(28, "Comparing installed version...", f"Latest revision: {latest_sha[:12]}")
+            current_sha = self.current_update_revision(repo)
+            if current_sha and current_sha == latest_sha:
+                self.worker_queue.put(("update_no_updates", {"latest_sha": latest_sha, "latest_date": latest_date, "packaged": bool(getattr(sys, "frozen", False))}))
+                return
+
+            if getattr(sys, "frozen", False):
+                self.queue_update_progress(38, "Checking the packaged EXE...", "Comparing the installed executable with the published build.")
+                remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+                local_exe_hash = self.current_packaged_exe_hash()
+                if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
+                    self.write_update_metadata(repo, latest_sha, "bundle-match")
+                    self.worker_queue.put(("update_no_updates", {"latest_sha": latest_sha, "latest_date": latest_date, "packaged": True}))
+                    return
+
+            self.queue_update_progress(100, "Update available", "A newer GitHub version is ready to download.")
+            self.worker_queue.put(("update_available", {
+                "mode": "zip",
+                "repo": str(repo),
+                "owner": owner,
+                "repo_name": repo_name,
+                "branch": self.GITHUB_UPDATE_BRANCH,
+                "latest_sha": latest_sha,
+                "latest_date": latest_date,
+                "current_sha": current_sha,
+            }))
         except Exception as exc:
-            messagebox.showerror("Update check failed", str(exc))
+            self.worker_queue.put(("update_error", friendly_error_message("GitHub update check", exc)))
+
+    def begin_update_install(self, data: dict[str, object]) -> None:
+        mode = str(data.get("mode", "zip"))
+        latest_date = str(data.get("latest_date", ""))
+        latest_sha = str(data.get("latest_sha", ""))
+        current_sha = str(data.get("current_sha", ""))
+        if mode == "git":
+            message = "A newer revision is available on GitHub main. Pull it into this development project now?"
+        elif current_sha:
+            message = "A newer packaged version is available. Download, validate, install, and restart Shower Programmer now?"
+        else:
+            message = "This computer has no saved update revision. Download, validate, install, and restart with the latest published version now?"
+        details = []
+        if current_sha:
+            details.append(("Installed revision", current_sha[:12]))
+        if latest_sha:
+            details.append(("Available revision", latest_sha[:12]))
+        if latest_date:
+            details.append(("Published", latest_date.replace("T", " ").replace("Z", " UTC")))
+
+        self.finish_background_activity()
+        self.set_update_progress_ui(100, "Update available", "Waiting for confirmation.")
+        should_install = messagebox.askyesno(
+            "Update Shower Programmer?",
+            message + ("\n\n" + "\n".join(f"{label}: {value}" for label, value in details) if details else ""),
+            parent=self.update_progress_window or self.root,
+        )
+        if not should_install:
+            self.close_update_progress_window()
+            self.status_var.set("Update cancelled. No files were changed.")
             return
 
-        if current == remote:
-            self.status_var.set("Program is already up to date with origin/main.")
-            messagebox.showinfo("No updates", "This program is already up to date with the GitHub main branch.")
-            return
-        if status:
-            self.status_var.set("Updates are available, but local changes must be committed or stashed first.")
-            messagebox.showwarning(
-                "Updates available",
-                "GitHub has newer code, but this working folder has local changes. "
-                "Commit or stash them before using automatic update.",
-            )
-            return
-        if base == current:
-            if not messagebox.askyesno("Update program?", "Updates are available on GitHub main. Pull them now?"):
+        self.start_background_activity("Preparing the update...", maximum=100)
+        self.open_update_progress_window()
+        self.set_update_progress_ui(2, "Preparing the update...", "Creating a safe local staging folder.")
+        worker = threading.Thread(target=self.worker_install_update, args=(data,), daemon=True)
+        worker.start()
+
+    def worker_install_update(self, data: dict[str, object]) -> None:
+        try:
+            mode = str(data.get("mode", "zip"))
+            repo = Path(str(data.get("repo", self.update_install_root()))).resolve()
+            latest_sha = str(data.get("latest_sha", ""))
+            if mode == "git":
+                git = str(data.get("git", "")) or shutil.which("git") or "git"
+                self.queue_update_progress(20, "Downloading Git changes...", "Pulling GitHub main into the local project.")
+                pull = subprocess.run(
+                    [git, "pull", "--ff-only", "origin", "main"],
+                    cwd=repo,
+                    text=True,
+                    capture_output=True,
+                    timeout=180,
+                )
+                if pull.returncode != 0:
+                    raise RuntimeError(pull.stderr.strip() or pull.stdout.strip() or "Git pull failed.")
+                self.write_update_metadata(repo, latest_sha, "git")
+                self.queue_update_progress(100, "Update installed", "Restart the GUI to load the new source code.")
+                self.worker_queue.put(("update_install_done", {"mode": "git", "repo": str(repo), "latest_sha": latest_sha, "restart": False}))
                 return
-            pull = subprocess.run(
-                [git, "pull", "--ff-only", "origin", "main"],
-                cwd=repo,
-                text=True,
-                capture_output=True,
-                timeout=120,
+
+            owner = str(data.get("owner", self.GITHUB_UPDATE_OWNER))
+            repo_name = str(data.get("repo_name", self.GITHUB_UPDATE_REPO))
+            branch = str(data.get("branch", self.GITHUB_UPDATE_BRANCH))
+            self.install_update_zip(
+                repo,
+                owner,
+                repo_name,
+                branch,
+                latest_sha,
+                progress_callback=self.queue_update_progress,
             )
-            if pull.returncode != 0:
-                messagebox.showerror("Update failed", pull.stderr.strip() or pull.stdout.strip())
-                return
-            self.write_update_metadata(repo, remote, "git")
-            self.status_var.set("Program updated from GitHub main. Restart the GUI to use the new code.")
-            messagebox.showinfo("Updated", "The program was updated. Close and reopen the GUI to use the new code.")
-            return
-        if base == remote:
-            messagebox.showinfo("Local branch ahead", "This folder has local commits that are not on GitHub main.")
-            return
-        messagebox.showwarning(
-            "Branches diverged",
-            "This folder and GitHub main both have different changes. Update manually with Git.",
-        )
+            self.worker_queue.put(("update_install_done", {
+                "mode": "zip",
+                "repo": str(repo),
+                "latest_sha": latest_sha,
+                "restart": bool(self.pending_update_script is not None),
+            }))
+        except Exception as exc:
+            self.worker_queue.put(("update_error", friendly_error_message("GitHub update", exc)))
 
     def update_install_root(self) -> Path:
         if getattr(sys, "frozen", False):
@@ -6432,68 +6934,6 @@ a {{ color: #1f4e79; }}
         except OSError:
             return False
         return (repo / "Backend").exists() or (repo / "Assets").exists()
-
-    def check_for_updates_without_git(self, repo: Path) -> None:
-        owner, repo_name = self.github_update_repo(repo)
-        try:
-            latest_sha, latest_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
-        except Exception as exc:
-            messagebox.showerror("Update check failed", f"Could not check GitHub for updates:\n\n{exc}")
-            return
-
-        current_sha = self.current_update_revision(repo)
-        if current_sha and current_sha == latest_sha:
-            self.status_var.set("Program is already up to date with GitHub main.")
-            messagebox.showinfo("No updates", "This program is already up to date with the GitHub main branch.")
-            return
-        if getattr(sys, "frozen", False):
-            remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
-            local_exe_hash = self.current_packaged_exe_hash()
-            if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
-                self.write_update_metadata(repo, latest_sha, "bundle-match")
-                self.status_var.set("Program is already up to date with the packaged GitHub release.")
-                messagebox.showinfo("No updates", "This packaged program is already up to date.")
-                return
-
-        if current_sha:
-            prompt = (
-                "Updates are available on GitHub main.\n\n"
-                f"Latest update: {latest_date or latest_sha[:12]}\n\n"
-                "Download, install, and restart the program now?"
-            )
-        else:
-            prompt = (
-                "Git is not installed, so this computer cannot compare local Git history.\n\n"
-                f"Latest GitHub update: {latest_date or latest_sha[:12]}\n\n"
-                "Download, install, and restart with the latest GitHub main files now?"
-            )
-        if not messagebox.askyesno("Update program?", prompt):
-            return
-
-        try:
-            self.install_update_zip(repo, owner, repo_name, self.GITHUB_UPDATE_BRANCH, latest_sha)
-        except Exception as exc:
-            messagebox.showerror("Update failed", str(exc))
-            return
-        if self.pending_update_script is not None:
-            try:
-                self.status_var.set("Update downloaded. Restarting to install it...")
-                subprocess.Popen(["cmd", "/c", str(self.pending_update_script)], cwd=str(self.pending_update_script.parent))
-                self.on_close()
-            except Exception as exc:
-                messagebox.showerror("Update restart failed", str(exc))
-            return
-        self.write_update_metadata(repo, latest_sha, "zip")
-        if getattr(sys, "frozen", False):
-            self.status_var.set("Support files were updated. A new EXE was not found in the update package.")
-            messagebox.showinfo(
-                "Update downloaded",
-                "The update package was installed into this program folder, but it did not contain a replacement EXE. "
-                "Bundled executable code changes only take effect when the GitHub update package includes a new EXE/release bundle."
-            )
-            return
-        self.status_var.set("Program updated from GitHub main. Restart the GUI to use the new code.")
-        messagebox.showinfo("Updated", "The program was updated. Close and reopen the GUI to use the new code.")
 
     def github_update_repo(self, repo: Path) -> tuple[str, str]:
         config_path = repo / ".git" / "config"
@@ -6642,8 +7082,18 @@ a {{ color: #1f4e79; }}
                 return ""
         return ""
 
-    def install_update_zip(self, repo: Path, owner: str, repo_name: str, branch: str, latest_sha: str) -> None:
-        updates_dir = self.update_work_dir(repo) / f"update_{datetime.now():%Y%m%d_%H%M%S}"
+    def install_update_zip(
+        self,
+        repo: Path,
+        owner: str,
+        repo_name: str,
+        branch: str,
+        latest_sha: str,
+        progress_callback: Callable[[float, str, str], None] | None = None,
+    ) -> None:
+        """Download and validate a GitHub ZIP in a local staging area before touching the installation."""
+        callback = progress_callback or (lambda _percent, _stage, _detail="": None)
+        updates_dir = self.update_work_dir(repo) / f"update_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
         updates_dir.mkdir(parents=True, exist_ok=True)
         archive_path = updates_dir / "main.zip"
         extract_dir = updates_dir / "extract"
@@ -6651,15 +7101,36 @@ a {{ color: #1f4e79; }}
         zip_url = f"https://codeload.github.com/{owner}/{repo_name}/zip/refs/heads/{branch}"
         self.pending_update_script = None
         self.pending_update_message = ""
-        self.status_var.set("Downloading update from GitHub...")
-        self.download_file(zip_url, archive_path)
-        with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(extract_dir)
+
+        callback(5, "Preparing download...", f"Staging files in {updates_dir}")
+
+        def download_progress(done: int, total: int) -> None:
+            if total > 0:
+                fraction = min(1.0, done / total)
+                percent = 8 + fraction * 32
+                detail = f"Downloaded {self.format_file_size(done)} of {self.format_file_size(total)}"
+            else:
+                percent = 18
+                detail = f"Downloaded {self.format_file_size(done)}"
+            callback(percent, "Downloading update from GitHub...", detail)
+
+        self.download_file(zip_url, archive_path, progress_callback=download_progress)
+        callback(42, "Validating downloaded package...", f"Checking {archive_path.name} before extraction.")
+        self.extract_update_archive(
+            archive_path,
+            extract_dir,
+            progress_callback=lambda done, total, name: callback(
+                45 + (done / max(total, 1)) * 28,
+                "Extracting and validating update...",
+                f"File {done:,} of {total:,}: {name}",
+            ),
+        )
         roots = [path for path in extract_dir.iterdir() if path.is_dir()]
         if not roots:
-            raise RuntimeError("Downloaded update package was empty.")
+            raise RuntimeError("The downloaded update package was empty after extraction.")
         source_root = roots[0]
-        self.status_var.set("Installing update files...")
+        callback(76, "Inspecting update contents...", "Looking for the rebuilt application folder and required runtime files.")
+
         if getattr(sys, "frozen", False):
             current_exe = Path(sys.executable).resolve()
             app_dir = current_exe.parent
@@ -6671,6 +7142,9 @@ a {{ color: #1f4e79; }}
             metadata_target = self.writable_update_metadata_path(repo)
             replacement_app_dir = self.find_replacement_app_bundle(source_root, current_exe.name)
             if replacement_app_dir is not None:
+                callback(82, "Validating application bundle...", f"Checking {replacement_app_dir.name} before staging.")
+                self.validate_replacement_app_bundle(replacement_app_dir, current_exe.name)
+                callback(88, "Staging application files...", "Copying the validated EXE and runtime to a local installation staging folder.")
                 self.pending_update_script = self.stage_app_bundle_replacement(
                     app_dir,
                     replacement_app_dir,
@@ -6680,15 +7154,22 @@ a {{ color: #1f4e79; }}
                     metadata_target,
                 )
                 self.pending_update_message = (
-                    "Downloaded a replacement Shower Programmer app folder. "
-                    "The app will close, replace the bundled EXE and _internal runtime folder, and reopen."
+                    "Downloaded and validated a replacement Shower Programmer application folder. "
+                    "The program will close, install the staged EXE and runtime, then reopen."
                 )
                 if self.should_update_source_tree(repo, app_dir):
+                    callback(94, "Updating support files...", "Copying source/configuration files while preserving Input and Output data.")
                     self.copy_update_tree(source_root, repo, backup_dir, skip_names={replacement_app_dir.name})
                 (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+                callback(100, "Update ready to install", "Validation passed. Shower Programmer is ready to restart and apply the update.")
                 return
+
             replacement_exe = self.find_replacement_exe(source_root, current_exe.name)
             if replacement_exe is not None:
+                callback(84, "Validating replacement EXE...", replacement_exe.name)
+                if replacement_exe.stat().st_size <= 0:
+                    raise RuntimeError("The replacement EXE in the update package is empty.")
+                callback(90, "Staging replacement EXE...", "Copying the validated executable to the local update staging folder.")
                 self.pending_update_script = self.stage_exe_replacement(
                     current_exe,
                     replacement_exe,
@@ -6697,27 +7178,36 @@ a {{ color: #1f4e79; }}
                     metadata_target,
                 )
                 self.pending_update_message = (
-                    f"Downloaded a replacement executable for {current_exe.name}. "
-                    "The app will close, replace the EXE in this folder, and reopen."
+                    f"Downloaded and validated a replacement executable for {current_exe.name}. "
+                    "The app will close, replace the EXE, and reopen."
                 )
                 if self.should_update_source_tree(repo, app_dir):
+                    callback(95, "Updating support files...", "Copying source/configuration files while preserving Input and Output data.")
                     self.copy_update_tree(source_root, repo, backup_dir, skip_names={app_dir.name})
                 (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+                callback(100, "Update ready to install", "Validation passed. Shower Programmer is ready to restart and apply the update.")
                 return
+
             if not self.should_update_source_tree(repo, app_dir):
                 raise RuntimeError(
-                    "The GitHub update was downloaded, but it did not contain a packaged "
-                    "'Shower Programmer' folder or replacement EXE. Rebuild and publish the "
-                    "folder EXE before using Check for Updates on packaged computers."
+                    "The GitHub package downloaded successfully, but it did not contain a rebuilt "
+                    "'Shower Programmer' application folder or replacement EXE. Rebuild the EXE and publish "
+                    "the entire application folder before updating packaged computers."
                 )
+
+        callback(84, "Installing source update...", "Backing up current source files before copying the validated GitHub files.")
         self.copy_update_tree(source_root, repo, backup_dir)
         (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+        callback(100, "Update installed", "The source files were updated successfully. Restart the GUI to load them.")
 
     def update_work_dir(self, repo: Path) -> Path:
-        candidates = [repo / "Output" / "Updates", self.internal_output_dir() / "Updates"]
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            candidates.append(Path(appdata) / "Shower Programmer" / "Updates")
+        """Prefer a short local path so OneDrive/cloud hydration cannot interrupt ZIP extraction."""
+        candidates: list[Path] = []
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            candidates.append(Path(local_appdata) / "Shower Programmer" / "Updates")
+        candidates.append(Path(tempfile.gettempdir()) / "Shower Programmer Updates")
+        candidates.extend([self.internal_output_dir() / "Updates", repo / "Output" / "Updates"])
         for candidate in candidates:
             try:
                 candidate.mkdir(parents=True, exist_ok=True)
@@ -6726,9 +7216,81 @@ a {{ color: #1f4e79; }}
                 return candidate
             except Exception:
                 continue
-        fallback = Path(tempfile.gettempdir()) / "Shower Programmer Updates"
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback
+        raise RuntimeError("No writable local folder was available for staging the GitHub update.")
+
+    @staticmethod
+    def format_file_size(byte_count: int | float) -> str:
+        size = max(0.0, float(byte_count))
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024.0 or unit == "GB":
+                return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} GB"
+
+    @staticmethod
+    def extract_update_archive(
+        archive_path: Path,
+        extract_dir: Path,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+    ) -> None:
+        """Safely extract every ZIP member atomically and verify its final size."""
+        callback = progress_callback or (lambda _done, _total, _name: None)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        extract_root = extract_dir.resolve()
+        with zipfile.ZipFile(archive_path) as archive:
+            bad_member = archive.testzip()
+            if bad_member:
+                raise RuntimeError(f"The downloaded ZIP failed its integrity test at: {bad_member}")
+            members = archive.infolist()
+            file_members = [member for member in members if not member.is_dir()]
+            total = max(1, len(file_members))
+            completed = 0
+            for member in members:
+                raw_name = member.filename.replace("\\", "/")
+                if not raw_name or raw_name.startswith("/") or re.match(r"^[A-Za-z]:", raw_name):
+                    raise RuntimeError(f"The update ZIP contains an unsafe path: {member.filename}")
+                relative = Path(raw_name)
+                if any(part in {"..", ""} for part in relative.parts):
+                    raise RuntimeError(f"The update ZIP contains an unsafe path: {member.filename}")
+                target = (extract_dir / relative).resolve()
+                try:
+                    target.relative_to(extract_root)
+                except ValueError as exc:
+                    raise RuntimeError(f"The update ZIP tried to write outside the staging folder: {member.filename}") from exc
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_name(target.name + ".part")
+                try:
+                    with archive.open(member, "r") as source, temporary.open("wb") as destination:
+                        shutil.copyfileobj(source, destination, length=1024 * 1024)
+                    if temporary.stat().st_size != member.file_size:
+                        raise RuntimeError(
+                            f"Extracted file size did not match the ZIP for {member.filename}: "
+                            f"expected {member.file_size}, received {temporary.stat().st_size}."
+                        )
+                    os.replace(temporary, target)
+                finally:
+                    try:
+                        if temporary.exists():
+                            temporary.unlink()
+                    except OSError:
+                        pass
+                completed += 1
+                callback(completed, total, member.filename)
+
+    @staticmethod
+    def validate_replacement_app_bundle(app_dir: Path, exe_name: str) -> None:
+        exe = app_dir / exe_name
+        internal = app_dir / "_internal"
+        if not exe.is_file() or exe.stat().st_size <= 0:
+            raise RuntimeError(f"The downloaded app bundle is missing a valid {exe_name}.")
+        if not internal.is_dir() or not any(internal.iterdir()):
+            raise RuntimeError("The downloaded app bundle is missing its _internal runtime folder.")
+        pdfium_candidates = list(internal.rglob("pdfium.dll"))
+        if not pdfium_candidates:
+            raise RuntimeError("The downloaded app bundle is missing pdfium.dll, which is required for Review Order previews.")
 
     @staticmethod
     def find_replacement_app_bundle(source_root: Path, current_exe_name: str) -> Path | None:
@@ -6898,18 +7460,58 @@ a {{ color: #1f4e79; }}
         return script_path
 
     @staticmethod
-    def download_file(url: str, destination: Path) -> None:
+    def download_file(
+        url: str,
+        destination: Path,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> None:
+        callback = progress_callback or (lambda _done, _total: None)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".part")
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
         request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
         try:
-            with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
-                shutil.copyfileobj(response, handle)
+            with urllib.request.urlopen(request, timeout=180) as response, temporary.open("wb") as handle:
+                try:
+                    total = int(response.headers.get("Content-Length", "0") or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                done = 0
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    handle.write(block)
+                    done += len(block)
+                    callback(done, total)
+            if not temporary.exists() or temporary.stat().st_size <= 0:
+                raise RuntimeError("GitHub returned an empty update download.")
+            os.replace(temporary, destination)
         except Exception as exc:
             try:
-                ShowerProgrammerApp.download_file_with_powershell(url, destination, timeout=120)
+                if temporary.exists():
+                    temporary.unlink()
+            except OSError:
+                pass
+            try:
+                ShowerProgrammerApp.download_file_with_powershell(url, temporary, timeout=180)
+                if not temporary.exists() or temporary.stat().st_size <= 0:
+                    raise RuntimeError("PowerShell downloaded an empty update file.")
+                callback(temporary.stat().st_size, temporary.stat().st_size)
+                os.replace(temporary, destination)
             except Exception as fallback_exc:
+                try:
+                    if temporary.exists():
+                        temporary.unlink()
+                except OSError:
+                    pass
                 raise RuntimeError(
-                    f"Python HTTPS download failed:\n{exc}\n\n"
-                    f"PowerShell HTTPS fallback also failed:\n{fallback_exc}"
+                    "The update could not be downloaded securely.\n\n"
+                    f"Python HTTPS: {exc}\n\nPowerShell HTTPS fallback: {fallback_exc}"
                 ) from exc
 
     @staticmethod
@@ -7225,14 +7827,14 @@ try {{
         header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             header,
-            text="Review / Send Batch",
+            text="Review / Send Batches",
             font=("Segoe UI", 24, "bold"),
             text_color=self.TEXT,
             anchor="w",
         ).grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
             header,
-            text="Confirm checked orders, generated sketches, DXF programs, and archive actions before sending to the shop folders.",
+            text="Review each process-list batch, its orders, generated sketches, DXF programs, and archive actions before sending.",
             font=("Segoe UI", 12),
             text_color=self.MUTED,
             anchor="w",
@@ -7323,10 +7925,10 @@ try {{
         main_header = ctk.CTkFrame(main, fg_color="transparent", height=58)
         main_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
         main_header.grid_propagate(False)
-        ctk.CTkLabel(main_header, text="Send plan", font=("Segoe UI", 16, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        ctk.CTkLabel(main_header, text="Batch send plan", font=("Segoe UI", 16, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
         ctk.CTkLabel(
             main_header,
-            text="Expand an order to see sketches, programs, archive files, and warnings.",
+            text="Expand a process-list batch, then expand an order to see its files and warnings.",
             font=("Segoe UI", 10),
             text_color=self.MUTED,
         ).pack(side=tk.LEFT, padx=(10, 0))
@@ -7337,12 +7939,12 @@ try {{
         tree_frame.rowconfigure(0, weight=1)
         columns = ("status", "source", "destination", "note")
         tree = ttk.Treeview(tree_frame, columns=columns, show="tree headings", selectmode="browse")
-        tree.heading("#0", text="Order / Action")
+        tree.heading("#0", text="Batch / Order / Action")
         tree.heading("status", text="Status")
         tree.heading("source", text="Source")
         tree.heading("destination", text="Destination")
         tree.heading("note", text="Note")
-        tree.column("#0", width=255, minwidth=190, stretch=True)
+        tree.column("#0", width=310, minwidth=220, stretch=True)
         tree.column("status", width=118, minwidth=88, stretch=False)
         tree.column("source", width=270, minwidth=180, stretch=True)
         tree.column("destination", width=250, minwidth=180, stretch=True)
@@ -7378,6 +7980,57 @@ try {{
         warning_count = 0
         checked_warning_count = 0
 
+        # Mirror the main Orders screen: each selected order is shown under its
+        # process-list batch. An order is displayed once even if duplicate process
+        # lists happen to contain the same A&W order.
+        selected_by_aw = {str(order.aw_order): order for order in orders}
+        order_parent_rows: dict[str, str] = {}
+        batch_parent_rows: dict[str, str] = {}
+        batch_status_counts: dict[str, dict[str, int]] = {}
+        assigned_aw: set[str] = set()
+
+        for batch_id, batch in self.process_batches.items():
+            batch_orders = batch.get("orders", [])
+            if not isinstance(batch_orders, list):
+                continue
+            member_aw: list[str] = []
+            for batch_order in batch_orders:
+                if not isinstance(batch_order, shower_batch.ProcessOrder):
+                    continue
+                aw_order = str(batch_order.aw_order)
+                if aw_order in selected_by_aw and aw_order not in assigned_aw:
+                    member_aw.append(aw_order)
+                    assigned_aw.add(aw_order)
+            if not member_aw:
+                continue
+            batch_name = str(batch.get("name", "Process List"))
+            batch_parent = tree.insert(
+                "",
+                tk.END,
+                text=f"{batch_name}  ({len(member_aw)} order{'s' if len(member_aw) != 1 else ''})",
+                values=("Batch", batch_name, "", "Expand to review this batch."),
+                open=True,
+                tags=("ready",),
+            )
+            batch_parent_rows[batch_id] = batch_parent
+            batch_status_counts[batch_parent] = {"ready": 0, "warning": 0, "blocked": 0}
+            for aw_order in member_aw:
+                order_parent_rows[aw_order] = batch_parent
+
+        unassigned_aw = [aw_order for aw_order in selected_by_aw if aw_order not in assigned_aw]
+        if unassigned_aw:
+            unassigned_parent = tree.insert(
+                "",
+                tk.END,
+                text=f"Local / Unassigned Orders  ({len(unassigned_aw)} order{'s' if len(unassigned_aw) != 1 else ''})",
+                values=("Batch", "No active process-list batch", "", "These orders are available locally but are not mapped to an active batch."),
+                open=True,
+                tags=("warning",),
+            )
+            batch_status_counts[unassigned_parent] = {"ready": 0, "warning": 1, "blocked": 0}
+            for aw_order in unassigned_aw:
+                order_parent_rows[aw_order] = unassigned_parent
+
         for order in orders:
             checked = self.order_review_is_complete(order)
             remake_badge = self.remake_badge_for_order(order.aw_order)
@@ -7408,14 +8061,17 @@ try {{
 
             tag = "blocked" if not checked else "warning" if warnings else "ready"
             status_text = "Blocked" if not checked else "Warnings" if warnings else "Ready"
+            batch_parent = order_parent_rows.get(str(order.aw_order), "")
             parent = tree.insert(
-                "",
+                batch_parent,
                 tk.END,
                 text=f"{order.aw_order}  {remake_badge + '  ' if remake_badge else ''}{order.job_name}",
                 values=(status_text, "", "", "; ".join(warnings[:2])),
                 open=bool(warnings) or len(orders) <= 6,
                 tags=(tag,),
             )
+            if batch_parent in batch_status_counts:
+                batch_status_counts[batch_parent][tag] = batch_status_counts[batch_parent].get(tag, 0) + 1
             if not checked:
                 tree.insert(parent, tk.END, text="Blocked", values=("Blocked", "", "", "Open the order review and mark it checked first."), tags=("blocked",))
                 continue
@@ -7440,12 +8096,48 @@ try {{
             for warning in warnings:
                 tree.insert(parent, tk.END, text="Warning", values=("Review", "", "", warning), tags=("warning",))
 
+        # Summarize each batch after all of its order states are known.
+        for batch_parent, counts in batch_status_counts.items():
+            blocked = int(counts.get("blocked", 0))
+            warnings_in_batch = int(counts.get("warning", 0))
+            ready_in_batch = int(counts.get("ready", 0))
+            if blocked and not ready_in_batch and not warnings_in_batch:
+                batch_status = "Blocked"
+                batch_tag = "blocked"
+            elif blocked or warnings_in_batch:
+                batch_status = "Review"
+                batch_tag = "warning"
+            else:
+                batch_status = "Ready"
+                batch_tag = "ready"
+            current_values = list(tree.item(batch_parent, "values"))
+            while len(current_values) < 4:
+                current_values.append("")
+            current_values[0] = batch_status
+            current_values[3] = f"Ready {ready_in_batch}  |  Warnings {warnings_in_batch}  |  Blocked {blocked}"
+            tree.item(batch_parent, values=current_values, tags=(batch_tag,))
+
         show_process_list_archive = archive_inputs and checked_orders and self.orders_cover_all_scanned_orders(checked_orders)
         process_list_files = self.archive_process_list_files(process_list_path) if show_process_list_archive else []
         if process_list_files:
-            parent = tree.insert("", tk.END, text="Process Lists", values=("Ready", "", "dated process-list archive", ""), open=False, tags=("ready",))
+            fallback_parent = ""
             for path in process_list_files:
-                tree.insert(parent, tk.END, text="Archive process list", values=("Ready", path.name, "dated process-list archive", ""), tags=("ready",))
+                matching_parent = ""
+                path_key = str(path.resolve()).casefold()
+                for batch_id, batch in self.process_batches.items():
+                    source = batch.get("path")
+                    try:
+                        source_key = str(Path(source).resolve()).casefold() if source is not None else ""
+                    except (OSError, TypeError, ValueError):
+                        source_key = ""
+                    if source_key == path_key:
+                        matching_parent = batch_parent_rows.get(batch_id, "")
+                        break
+                if not matching_parent:
+                    if not fallback_parent:
+                        fallback_parent = tree.insert("", tk.END, text="Other Process Lists", values=("Ready", "", "dated process-list archive", ""), open=False, tags=("ready",))
+                    matching_parent = fallback_parent
+                tree.insert(matching_parent, tk.END, text="Archive process list", values=("Ready", path.name, "dated process-list archive", ""), tags=("ready",))
 
         send_sketch_paths = self.generated_sketch_paths_for_orders(checked_aw_orders, output_dir) if include_sketches else []
         send_dxf_paths = self.generated_dxf_paths_for_orders(checked_aw_orders, output_dir) if include_programs else []
@@ -9450,6 +10142,10 @@ def validate_runtime_contracts() -> None:
         "worker_send_outputs",
         "install_process_batches",
         "sent_summary_for_order",
+        "show_no_updates_dialog",
+        "worker_check_for_updates",
+        "begin_update_install",
+        "extract_update_archive",
     }
     missing = sorted(name for name in required_methods if not callable(getattr(ShowerProgrammerApp, name, None)))
     if missing:
@@ -9463,7 +10159,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     """Exercise critical non-visual workflows inside the source build or packaged EXE."""
     result: dict[str, object] = {
         "ok": False,
-        "version": "RUNTIME_GUARD_V9",
+        "version": "UPDATE_UI_BATCH_REVIEW_V11",
         "executable": str(Path(sys.executable).resolve()),
     }
     try:
@@ -9493,12 +10189,29 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             if list(target.parent.glob(".*.part")):
                 raise RuntimeError("Atomic file-copy self-test left a partial file behind.")
 
+            archive_path = temp_root / "test_update.zip"
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("repo-main/Shower Programmer.exe", b"test-exe")
+                archive.writestr("repo-main/_internal/pypdfium2_raw/pdfium.dll", b"test-dll")
+            extract_path = temp_root / "extracted"
+            extraction_events: list[tuple[int, int, str]] = []
+            ShowerProgrammerApp.extract_update_archive(
+                archive_path,
+                extract_path,
+                progress_callback=lambda done, total, name: extraction_events.append((done, total, name)),
+            )
+            if not (extract_path / "repo-main" / "Shower Programmer.exe").is_file():
+                raise RuntimeError("Safe update extraction self-test failed.")
+            if not extraction_events or extraction_events[-1][0] != extraction_events[-1][1]:
+                raise RuntimeError("Update extraction progress self-test failed.")
+
         result.update(
             {
                 "ok": True,
                 "review_send_helper": True,
                 "atomic_copy": True,
                 "required_methods": True,
+                "safe_update_extraction": True,
             }
         )
     except Exception as exc:
