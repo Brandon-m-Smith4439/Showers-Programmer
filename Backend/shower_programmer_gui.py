@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small Tkinter front end for shower batch programming."""
 
-# PROCESS_LIST_BATCH_GROUPING_V6: local-file filtering, grouped batches, and safe local batch deletion.
+# RUNTIME_GUARD_V9: integrated batch grouping, Sent status, live progress, safe close, and single-instance protection.
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import ctypes
 import urllib.request
 import uuid
 import webbrowser
@@ -68,6 +70,93 @@ except Exception:
     Image = None
     ImageDraw = None
     ImageTk = None
+
+
+class SingleInstanceGuard:
+    """Prevent two Shower Programmer copies from running on one Windows user session."""
+
+    MUTEX_NAME = r"Local\BarefootShowersProgrammerDesktopApp"
+
+    def __init__(self) -> None:
+        self._handle: int | None = None
+        self._fallback_path: Path | None = None
+
+    def acquire(self) -> bool:
+        if os.name == "nt":
+            kernel32 = ctypes.windll.kernel32
+            kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            handle = kernel32.CreateMutexW(None, False, self.MUTEX_NAME)
+            if not handle:
+                raise ctypes.WinError()
+            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                kernel32.CloseHandle(handle)
+                return False
+            self._handle = int(handle)
+            return True
+
+        # Development fallback for non-Windows systems. The production EXE uses the mutex above.
+        lock_root = Path(tempfile.gettempdir()) / "Shower Programmer"
+        lock_root.mkdir(parents=True, exist_ok=True)
+        path = lock_root / "shower_programmer.instance.lock"
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                pid_text = path.read_text(encoding="utf-8").strip()
+                pid = int(pid_text)
+                os.kill(pid, 0)
+                return False
+            except (ValueError, ProcessLookupError, PermissionError, OSError):
+                try:
+                    path.unlink()
+                except OSError:
+                    return False
+                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        self._fallback_path = path
+        return True
+
+    def release(self) -> None:
+        if self._handle is not None and os.name == "nt":
+            try:
+                ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(self._handle))
+            except Exception:
+                pass
+            self._handle = None
+        if self._fallback_path is not None:
+            try:
+                self._fallback_path.unlink()
+            except OSError:
+                pass
+            self._fallback_path = None
+
+
+def friendly_error_message(action: str, error: object) -> str:
+    """Turn common file and integration failures into instructions a shop user can follow."""
+    detail = str(error).strip() or error.__class__.__name__
+    if isinstance(error, AttributeError):
+        return (
+            f"{action} could not start because the installed program files do not match each other.\n\n"
+            "Close Shower Programmer, replace Backend\\shower_programmer_gui.py with the latest supplied file, "
+            "and rebuild using the included Rebuild Shower Programmer EXE.bat.\n\n"
+            f"Technical detail: {detail}"
+        )
+    if isinstance(error, PermissionError) or "being used by another process" in detail.lower():
+        return (
+            f"{action} could not access a file because Windows says it is in use.\n\n"
+            "Close any second Shower Programmer window and close the affected PDF, DXF, or process list in other programs, "
+            "then try again.\n\n"
+            f"Technical detail: {detail}"
+        )
+    if isinstance(error, FileExistsError):
+        return (
+            f"{action} encountered a temporary-file conflict. This usually means two copies were working in the same "
+            "local folders. Close the other copy and try again.\n\n"
+            f"Technical detail: {detail}"
+        )
+    return f"{action} failed.\n\n{detail}"
 
 
 class ModernProgressBar:
@@ -216,6 +305,7 @@ class ShowerProgrammerApp:
         self.remake_var = tk.BooleanVar(value=False)
         self.remake_items_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Scan the process list to begin.")
+        self.activity_detail_var = tk.StringVar(value="")
         self.summary_var = tk.StringVar(value="Orders 0   Ready 0   Issues 0   Processed 0   Checked 0")
         self.summary_count_vars = {
             "orders": tk.StringVar(value="0"),
@@ -238,6 +328,9 @@ class ShowerProgrammerApp:
         self.last_run_folder: Path | None = None
         self.is_busy = False
         self.background_progress_percent = 0.0
+        self.activity_started_at = 0.0
+        self.activity_last_progress_at = 0.0
+        self.activity_stage_message = ""
         self.send_review_window: tk.Toplevel | None = None
         self.send_review_progress: ttk.Progressbar | None = None
         self.send_review_status_var: tk.StringVar | None = None
@@ -257,6 +350,7 @@ class ShowerProgrammerApp:
         self.build_ui()
         self.force_main_window_maximized()
         self.root.after(75, self.drain_worker_queue)
+        self.root.after(1000, self.refresh_activity_heartbeat)
         self.root.after_idle(lambda: self.root.after(850, self.scan_orders))
 
     def force_main_window_maximized(self) -> None:
@@ -832,8 +926,67 @@ class ShowerProgrammerApp:
             pass
 
     def on_close(self) -> None:
+        if self.is_busy:
+            elapsed = self.format_elapsed_seconds(self.activity_elapsed_seconds())
+            current_step = self.activity_stage_message or self.status_var.get() or "Background work is still running."
+            should_close = messagebox.askyesno(
+                "Operation still running",
+                "Shower Programmer is still working. Closing now can interrupt the current scan, copy, "
+                "archive, processing, or production-folder transfer.\n\n"
+                f"Current step:\n{current_step}\n\n"
+                f"Elapsed time: {elapsed}\n\n"
+                "Choose No to keep the program open and let it finish. Choose Yes only to force it closed.",
+                icon="warning",
+                parent=self.root,
+            )
+            if not should_close:
+                return
         self.save_ui_settings()
         self.root.destroy()
+
+    def activity_elapsed_seconds(self) -> int:
+        if not self.activity_started_at:
+            return 0
+        return max(0, int(time.monotonic() - self.activity_started_at))
+
+    @staticmethod
+    def format_elapsed_seconds(total_seconds: int | float) -> str:
+        seconds = max(0, int(total_seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:d}:{seconds:02d}"
+
+    def record_activity_progress(self, message: str) -> None:
+        now = time.monotonic()
+        if not self.activity_started_at:
+            self.activity_started_at = now
+        self.activity_last_progress_at = now
+        self.activity_stage_message = str(message or "Working...")
+        self.update_activity_detail()
+
+    def update_activity_detail(self) -> None:
+        if not self.is_busy:
+            self.activity_detail_var.set("")
+            return
+        now = time.monotonic()
+        elapsed = max(0, int(now - self.activity_started_at)) if self.activity_started_at else 0
+        idle = max(0, int(now - self.activity_last_progress_at)) if self.activity_last_progress_at else elapsed
+        detail = (
+            f"Elapsed {self.format_elapsed_seconds(elapsed)}  |  "
+            f"Last update {self.format_elapsed_seconds(idle)} ago"
+        )
+        if idle >= 5:
+            detail += "  |  Still working — cloud files can pause while Windows downloads or scans them."
+        self.activity_detail_var.set(detail)
+
+    def refresh_activity_heartbeat(self) -> None:
+        try:
+            self.update_activity_detail()
+            self.root.after(1000, self.refresh_activity_heartbeat)
+        except tk.TclError:
+            pass
 
     def apply_ui_mode_palette(self) -> None:
         dark = bool(getattr(self, "dark_mode_var", tk.BooleanVar(value=False)).get())
@@ -1721,7 +1874,7 @@ class ShowerProgrammerApp:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        columns = ("status", "processed", "last_processed", "delivery", "order", "job", "customer", "items", "review", "pdf", "issues")
+        columns = ("status", "processed", "last_processed", "delivery", "order", "sent", "job", "customer", "items", "review", "pdf", "issues")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="tree headings", selectmode="extended")
         headings = {
             "status": "Status",
@@ -1729,6 +1882,7 @@ class ShowerProgrammerApp:
             "last_processed": "Last Processed",
             "delivery": "Delivery",
             "order": "A&W",
+            "sent": "Sent",
             "job": "Job",
             "customer": "Customer",
             "items": "Items",
@@ -1742,6 +1896,7 @@ class ShowerProgrammerApp:
             "last_processed": 142,
             "delivery": 102,
             "order": 88,
+            "sent": 112,
             "job": 260,
             "customer": 210,
             "items": 110,
@@ -1795,7 +1950,16 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 12),
             width=520,
         )
-        self.status_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(9, 12))
+        self.status_label.grid(row=1, column=0, sticky="ew", padx=14, pady=(9, 2))
+        self.activity_detail_label = ctk.CTkLabel(
+            bottom,
+            textvariable=self.activity_detail_var,
+            anchor="w",
+            text_color=self.MUTED,
+            font=("Segoe UI", 10),
+            width=520,
+        )
+        self.activity_detail_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 10))
     def make_sidebar_button(
         self,
         parent: Any,
@@ -2169,6 +2333,10 @@ class ShowerProgrammerApp:
     def start_background_activity(self, message: str, maximum: int | None = None) -> None:
         self.is_busy = True
         self.background_progress_percent = 0.0
+        now = time.monotonic()
+        self.activity_started_at = now
+        self.activity_last_progress_at = now
+        self.activity_stage_message = message
         self.set_controls_enabled(False)
         self.progress.stop()
         if maximum:
@@ -2177,12 +2345,17 @@ class ShowerProgrammerApp:
             self.progress.configure(mode="indeterminate", maximum=100, value=0)
             self.progress.start(12)
         self.status_var.set(message)
+        self.update_activity_detail()
 
     def finish_background_activity(self) -> None:
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
         self.background_progress_percent = 0.0
         self.is_busy = False
+        self.activity_started_at = 0.0
+        self.activity_last_progress_at = 0.0
+        self.activity_stage_message = ""
+        self.activity_detail_var.set("")
         self.set_controls_enabled(True)
 
     @classmethod
@@ -2272,12 +2445,13 @@ class ShowerProgrammerApp:
             progress_value += 1
             self.queue_scan_progress(progress_value, progress_max, "Checking shared process lists...")
 
-            def process_list_progress(done: int, total: int, source: Path, copied: bool) -> None:
-                action = "Copied" if copied else "Current"
+            def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
+                action = "Copying" if copied is None else ("Copied" if copied else "Current")
+                display_done = min(total, done + 1) if copied is None else done
                 self.queue_scan_progress(
                     progress_value + done,
                     max(progress_max, progress_value + total + 4),
-                    f"{action} process list {done}/{total}: {source.name}",
+                    f"{action} process list {display_done}/{total}: {source.name}",
                 )
 
             process_list_import_summary = self.copy_process_lists_from_import_folder(
@@ -2316,12 +2490,13 @@ class ShowerProgrammerApp:
                 if str(order.aw_order) not in present_aw_orders
             ]
 
-            def order_file_progress(done: int, total: int, source: Path, copied: bool) -> None:
-                action = "Copied" if copied else "Current"
+            def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
+                action = "Copying" if copied is None else ("Copied" if copied else "Current")
+                display_done = min(total, done + 1) if copied is None else done
                 self.queue_scan_progress(
                     progress_value + done,
                     max(progress_max, progress_value + total + 2),
-                    f"{action} order file {done}/{total}: {source.name}",
+                    f"{action} order file {display_done}/{total}: {source.name}",
                 )
 
             self.queue_scan_progress(
@@ -2361,19 +2536,20 @@ class ShowerProgrammerApp:
                 )
             )
         except Exception as exc:
-            self.worker_queue.put(("scan_error", str(exc)))
+            self.worker_queue.put(("scan_error", exc))
 
     def worker_import_edi_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
             progress_value = 0
             progress_max = 4
 
-            def process_list_progress(done: int, total: int, source: Path, copied: bool) -> None:
-                action = "Copied" if copied else "Checked"
+            def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
+                action = "Copying" if copied is None else ("Copied" if copied else "Already local")
+                display_done = min(total, done + 1) if copied is None else done
                 self.queue_scan_progress(
                     progress_value + done,
                     max(progress_max, progress_value + total + 3),
-                    f"{action} process list {done}/{total}: {source.name}",
+                    f"{action} process list {display_done}/{total}: {source.name}",
                 )
 
             self.queue_scan_progress(progress_value, progress_max, "Copying process lists into the local input folder...")
@@ -2393,12 +2569,13 @@ class ShowerProgrammerApp:
                 process_list_count = len(process_list_files)
                 orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
 
-            def order_file_progress(done: int, total: int, source: Path, copied: bool) -> None:
-                action = "Copied" if copied else "Checked"
+            def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
+                action = "Copying" if copied is None else ("Copied" if copied else "Already local")
+                display_done = min(total, done + 1) if copied is None else done
                 self.queue_scan_progress(
                     progress_value + done,
                     max(progress_max, progress_value + total + 1),
-                    f"{action} order file {done}/{total}: {source.name}",
+                    f"{action} order file {display_done}/{total}: {source.name}",
                 )
 
             self.queue_scan_progress(progress_value, max(progress_max, progress_value + 1), f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
@@ -2421,7 +2598,7 @@ class ShowerProgrammerApp:
                 )
             )
         except Exception as exc:
-            self.worker_queue.put(("scan_error", str(exc)))
+            self.worker_queue.put(("scan_error", exc))
 
     def queue_scan_progress(self, value: int, maximum: int, message: str) -> None:
         self.worker_queue.put(
@@ -2566,6 +2743,7 @@ class ShowerProgrammerApp:
             entry["sent_files"] = [path.name for path in copied if path in self.paths_for_order(copied, order.aw_order)]
             entry["archived_inputs"] = [path.name for path in self.paths_matching_order_by_name(archived, order)]
         self.save_processing_history(history)
+        self.update_sent_status_for_orders([str(order.aw_order) for order in orders_sent])
 
     def history_for_order(self, aw_order: str) -> dict[str, object]:
         try:
@@ -2608,6 +2786,34 @@ class ShowerProgrammerApp:
         if changed:
             self.save_processing_history(history)
 
+    def sent_summary_for_order(self, aw_order: str) -> str:
+        history = self.history_for_order(aw_order)
+        sent_at = str(history.get("sent_at", "")).strip()
+        if not sent_at:
+            return "No"
+        order = self.order_by_aw.get(str(aw_order))
+        stored_signature = str(history.get("sent_process_signature", "")).strip()
+        if order is not None and stored_signature and stored_signature != self.sent_process_signature(order):
+            return "Previous"
+        try:
+            stamp = datetime.fromisoformat(sent_at)
+            return f"Yes {stamp:%m/%d/%y}"
+        except ValueError:
+            return "Yes"
+
+    def update_sent_status_for_orders(self, aw_orders: list[str]) -> None:
+        for aw_order in aw_orders:
+            row_id = self.tree_rows.get(str(aw_order))
+            if not row_id:
+                continue
+            try:
+                values = list(self.tree.item(row_id, "values"))
+            except tk.TclError:
+                continue
+            if len(values) >= 6:
+                values[5] = self.sent_summary_for_order(str(aw_order))
+                self.tree.item(row_id, values=values)
+
     def install_process_batches(self, batches: list[dict[str, object]]) -> None:
         """Create process-list parent rows and map each active order into its batch."""
         self.process_batches = {}
@@ -2628,7 +2834,7 @@ class ShowerProgrammerApp:
                 "",
                 tk.END,
                 text=f"{label}  ({count} order{'s' if count != 1 else ''})",
-                values=("BATCH", "", "", "", "", "", "", str(count), "", "", ""),
+                values=("BATCH", "", "", "", "", "", "", "", str(count), "", "", ""),
                 tags=("BATCH",),
                 open=True,
             )
@@ -2653,6 +2859,7 @@ class ShowerProgrammerApp:
             last_processed,
             result.delivery_date,
             result.aw_order,
+            self.sent_summary_for_order(result.aw_order),
             result.job_name,
             result.customer,
             result.items,
@@ -2699,7 +2906,7 @@ class ShowerProgrammerApp:
         checked = 0
         for row_id in self.all_order_tree_rows():
             values = self.tree.item(row_id, "values")
-            if len(values) < 9:
+            if len(values) < 10:
                 continue
             total += 1
             status = str(values[0]).upper()
@@ -2709,7 +2916,7 @@ class ShowerProgrammerApp:
                 issues += 1
             if str(values[1]).lower() in {"yes", "remake"}:
                 processed += 1
-            if "checked" in str(values[8]).lower():
+            if "checked" in str(values[9]).lower():
                 checked += 1
         self.summary_var.set(
             f"Orders {total}   Ready {ready}   Issues {issues}   Processed {processed}   Checked {checked}"
@@ -3195,7 +3402,7 @@ class ShowerProgrammerApp:
 
     def tree_issue_text_for_order(self, aw_order: str) -> str:
         values = self.tree_values_for_order(aw_order)
-        return values[10] if len(values) > 10 else ""
+        return values[11] if len(values) > 11 else ""
 
     def mark_selected_orders_checked(self) -> None:
         orders = self.selected_orders()
@@ -3216,8 +3423,8 @@ class ShowerProgrammerApp:
             row_id = self.tree_rows.get(order.aw_order)
             if row_id:
                 values = list(self.tree.item(row_id, "values"))
-                if len(values) >= 9:
-                    values[8] = "Order checked"
+                if len(values) >= 10:
+                    values[9] = "Order checked"
                     self.tree.item(row_id, values=values)
         self.save_manual_overrides(data)
         self.update_summary_strip()
@@ -3434,7 +3641,7 @@ class ShowerProgrammerApp:
                 self.tree.item(
                     parent_id,
                     text=f"{batch.get('name', 'Process List')}  ({count} order{'s' if count != 1 else ''})",
-                    values=("BATCH", "", "", "", "", "", "", str(count), "", "", ""),
+                    values=("BATCH", "", "", "", "", "", "", "", str(count), "", "", ""),
                 )
 
         for aw_order in deleted_aw_orders:
@@ -3480,6 +3687,13 @@ class ShowerProgrammerApp:
         self.tree.see(row_ids[0])
         self.status_var.set(f"Selected {len(row_ids)} order(s).")
         return "break" if _event is not None else None
+
+    def selected_or_visible_aw_orders(self) -> list[str]:
+        """Use selected orders, or every active order when nothing is selected."""
+        selected = [str(order.aw_order) for order in self.selected_orders()]
+        if selected:
+            return list(dict.fromkeys(selected))
+        return [str(order.aw_order) for order in self.orders]
 
     def process_selected(self) -> None:
         orders = self.selected_orders()
@@ -3620,7 +3834,7 @@ class ShowerProgrammerApp:
                 self.update_processing_history(run, output_dir, processed_at, run_folder, remake_items_by_order)
             self.worker_queue.put(("done", (run, run_folder)))
         except Exception as exc:
-            self.worker_queue.put(("error", str(exc)))
+            self.worker_queue.put(("error", exc))
 
     def write_run_manifest(
         self,
@@ -3765,7 +3979,9 @@ class ShowerProgrammerApp:
                     assert isinstance(result, shower_batch.BatchJobResult)
                     self.insert_or_update_result(result)
                     self.progress.step(1)
-                    self.status_var.set(f"{result.status}: {result.aw_order} {result.job_name}")
+                    result_message = f"{result.status}: {result.aw_order} {result.job_name}"
+                    self.status_var.set(result_message)
+                    self.record_activity_progress(result_message)
                 elif kind == "scan_progress":
                     data = payload
                     assert isinstance(data, dict)
@@ -3780,6 +3996,7 @@ class ShowerProgrammerApp:
                     self.progress.stop()
                     self.progress.configure(mode="determinate", maximum=100, value=percent)
                     self.status_var.set(message)
+                    self.record_activity_progress(message)
                     if self.send_review_progress is not None:
                         try:
                             self.send_review_progress.configure(mode="determinate", maximum=100, value=percent)
@@ -3793,6 +4010,10 @@ class ShowerProgrammerApp:
                     self.last_reports = run
                     self.last_run_folder = run_folder if isinstance(run_folder, Path) else self.latest_run_folder(Path(self.output_dir_var.get()).resolve())
                     self.is_busy = False
+                    self.activity_started_at = 0.0
+                    self.activity_last_progress_at = 0.0
+                    self.activity_stage_message = ""
+                    self.activity_detail_var.set("")
                     self.set_controls_enabled(True)
                     for result in run.results:
                         self.insert_or_update_result(result)
@@ -3804,7 +4025,7 @@ class ShowerProgrammerApp:
                 elif kind == "error":
                     self.finish_background_activity()
                     self.status_var.set("Error")
-                    messagebox.showerror("Batch failed", str(payload))
+                    messagebox.showerror("Batch failed", friendly_error_message("Batch processing", payload))
                 elif kind == "scan_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -3880,7 +4101,7 @@ class ShowerProgrammerApp:
                         self.status_var.set(f"Scan complete: {message}")
                     else:
                         self.status_var.set("Scan failed")
-                        messagebox.showerror("Scan failed", message)
+                        messagebox.showerror("Scan failed", friendly_error_message("Order scan", payload))
                 elif kind == "send_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -3938,7 +4159,7 @@ class ShowerProgrammerApp:
                     self.status_var.set("Send failed")
                     if self.send_review_status_var is not None:
                         self.send_review_status_var.set("Send failed.")
-                    messagebox.showerror("Send failed", str(payload))
+                    messagebox.showerror("Send failed", friendly_error_message("Review / Send", payload))
         except queue.Empty:
             pass
         self.root.after(150, self.drain_worker_queue)
@@ -5085,8 +5306,8 @@ a {{ color: #1f4e79; }}
             row_id = self.tree_rows.get(process_order.aw_order)
             if row_id:
                 values = list(self.tree.item(row_id, "values"))
-                if len(values) >= 9:
-                    values[8] = "Order checked"
+                if len(values) >= 10:
+                    values[9] = "Order checked"
                     self.tree.item(row_id, values=values)
             self.update_summary_strip()
             self.status_var.set(f"Marked order {process_order.aw_order} checked.")
@@ -7402,12 +7623,24 @@ try {{
                 progress_max = max(progress_max, progress_value + max(remaining_hint, 0))
                 self.queue_scan_progress(progress_value, progress_max, message)
 
+            def sketch_copy_progress(source: Path, _target: Path, phase: str) -> None:
+                if phase == "starting":
+                    self.queue_scan_progress(progress_value, progress_max, f"Copying sketch to production folder: {source.name}")
+                else:
+                    advance(f"Sent sketch: {source.name}", len(dxf_paths) + 1)
+
+            def program_copy_progress(source: Path, _target: Path, phase: str) -> None:
+                if phase == "starting":
+                    self.queue_scan_progress(progress_value, progress_max, f"Copying program to production folder: {source.name}")
+                else:
+                    advance(f"Sent program: {source.name}", 1)
+
             if sketch_paths:
                 copied.extend(
                     self.copy_outputs_to_folder(
                         sketch_paths,
                         self.SHOP_SKETCHES_DIR,
-                        progress_callback=lambda source, _target: advance(f"Sent sketch: {source.name}", len(dxf_paths) + 1),
+                        progress_callback=sketch_copy_progress,
                     )
                 )
             if dxf_paths:
@@ -7415,7 +7648,7 @@ try {{
                     self.copy_outputs_to_folder(
                         dxf_paths,
                         self.SHOP_PROGRAMS_DIR,
-                        progress_callback=lambda source, _target: advance(f"Sent program: {source.name}", 1),
+                        progress_callback=program_copy_progress,
                     )
                 )
             sent_orders = self.successfully_sent_orders(
@@ -7460,12 +7693,12 @@ try {{
                         "archive_warnings": archive_warnings,
                         "import_deleted": import_deleted,
                         "input_cleanup_warnings": input_cleanup_warnings,
-                        "sent_orders": sent_orders if archive_inputs else [],
+                        "sent_orders": sent_orders,
                     },
                 )
             )
         except Exception as exc:
-            self.worker_queue.put(("send_error", str(exc)))
+            self.worker_queue.put(("send_error", exc))
 
     @classmethod
     def successfully_sent_orders(
@@ -7542,7 +7775,7 @@ try {{
         self,
         paths: list[Path],
         target_dir: Path,
-        progress_callback: Callable[[Path, Path], None] | None = None,
+        progress_callback: Callable[[Path, Path, str], None] | None = None,
     ) -> list[Path]:
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
@@ -7550,10 +7783,12 @@ try {{
             if not source.exists() or not source.is_file():
                 continue
             target = target_dir / source.name
-            shutil.copy2(source, target)
+            if progress_callback is not None:
+                progress_callback(source, target, "starting")
+            self.copy_file_atomically(source, target)
             copied.append(target)
             if progress_callback is not None:
-                progress_callback(source, target)
+                progress_callback(source, target, "complete")
         return copied
 
     def archive_sent_input_files(self, aw_orders: list[str]) -> tuple[list[Path], list[str]]:
@@ -7725,7 +7960,7 @@ try {{
     def copy_process_lists_from_import_folder(
         cls,
         process_list_path: Path,
-        progress_callback: Callable[[int, int, Path, bool], None] | None = None,
+        progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -7753,6 +7988,8 @@ try {{
         skipped = 0
         for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
+            if progress_callback is not None:
+                progress_callback(index - 1, len(sources), source, None)
             did_copy = cls.copy_file_if_needed(source, target)
             if did_copy:
                 copied.append(target)
@@ -7786,7 +8023,7 @@ try {{
         cls,
         target_dir: Path,
         orders: list[shower_batch.ProcessOrder],
-        progress_callback: Callable[[int, int, Path, bool], None] | None = None,
+        progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -7818,6 +8055,8 @@ try {{
         summary["considered"] = len(sources)
         for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
+            if progress_callback is not None:
+                progress_callback(index - 1, len(sources), source, None)
             did_copy = cls.copy_file_if_needed(source, target)
             if did_copy:
                 copied.append(target)
@@ -7952,7 +8191,21 @@ try {{
         return False
 
     @staticmethod
-    def copy_file_if_needed(source: Path, target: Path) -> bool:
+    def copy_file_atomically(source: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+        try:
+            shutil.copy2(source, partial)
+            os.replace(partial, target)
+        finally:
+            try:
+                if partial.exists():
+                    partial.unlink()
+            except OSError:
+                pass
+
+    @classmethod
+    def copy_file_if_needed(cls, source: Path, target: Path) -> bool:
         if source.resolve() == target.resolve():
             return False
         if target.exists():
@@ -7963,8 +8216,7 @@ try {{
                     return False
             except OSError:
                 pass
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        cls.copy_file_atomically(source, target)
         return True
 
     def autocad_save_as_programs(self) -> None:
@@ -8072,10 +8324,10 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.last_run_folder = None
         for aw_order, row_id in self.tree_rows.items():
             values = list(self.tree.item(row_id, "values"))
-            if len(values) >= 9:
+            if len(values) >= 10:
                 values[1] = "No"
                 values[2] = ""
-                values[8] = self.review_status_for_order(aw_order)
+                values[9] = self.review_status_for_order(aw_order)
                 self.tree.item(row_id, values=values)
         self.status_var.set(
             f"Cleared {removed_files} sketch file(s), {changed_fields} saved sketch field(s), "
@@ -8458,8 +8710,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 row_id = self.tree_rows.get(job.aw_order)
                 if row_id:
                     values = list(self.tree.item(row_id, "values"))
-                    if len(values) >= 9:
-                        values[8] = self.review_status_for_order(job.aw_order)
+                    if len(values) >= 10:
+                        values[9] = self.review_status_for_order(job.aw_order)
                         self.tree.item(row_id, values=values)
             except Exception as exc:
                 messagebox.showerror("Review mark failed", str(exc), parent=dialog)
@@ -9189,10 +9441,115 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         os.startfile(path)
 
 
+def validate_runtime_contracts() -> None:
+    required_methods = {
+        "selected_or_visible_aw_orders",
+        "selected_orders",
+        "send_all_to_shop",
+        "open_send_review_dialog",
+        "worker_send_outputs",
+        "install_process_batches",
+        "sent_summary_for_order",
+    }
+    missing = sorted(name for name in required_methods if not callable(getattr(ShowerProgrammerApp, name, None)))
+    if missing:
+        raise RuntimeError(
+            "The installed GUI is incomplete or was mixed with an older version. Missing method(s): "
+            + ", ".join(missing)
+        )
+
+
+def run_packaged_self_test(report_path: Path) -> dict[str, object]:
+    """Exercise critical non-visual workflows inside the source build or packaged EXE."""
+    result: dict[str, object] = {
+        "ok": False,
+        "version": "RUNTIME_GUARD_V9",
+        "executable": str(Path(sys.executable).resolve()),
+    }
+    try:
+        validate_runtime_contracts()
+
+        class TestOrder:
+            def __init__(self, aw_order: str) -> None:
+                self.aw_order = aw_order
+
+        test_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
+        test_app.orders = [TestOrder("100001"), TestOrder("100002")]
+        test_app.selected_orders = lambda: [TestOrder("100002")]
+        if test_app.selected_or_visible_aw_orders() != ["100002"]:
+            raise RuntimeError("Selected-order Review/Send routing failed.")
+        test_app.selected_orders = lambda: []
+        if test_app.selected_or_visible_aw_orders() != ["100001", "100002"]:
+            raise RuntimeError("Visible-order Review/Send routing failed.")
+
+        with tempfile.TemporaryDirectory(prefix="shower_programmer_self_test_") as temp_name:
+            temp_root = Path(temp_name)
+            source = temp_root / "source.txt"
+            target = temp_root / "target" / "copied.txt"
+            source.write_text("self-test", encoding="utf-8")
+            ShowerProgrammerApp.copy_file_atomically(source, target)
+            if target.read_text(encoding="utf-8") != "self-test":
+                raise RuntimeError("Atomic file-copy self-test failed.")
+            if list(target.parent.glob(".*.part")):
+                raise RuntimeError("Atomic file-copy self-test left a partial file behind.")
+
+        result.update(
+            {
+                "ok": True,
+                "review_send_helper": True,
+                "atomic_copy": True,
+                "required_methods": True,
+            }
+        )
+    except Exception as exc:
+        result["error"] = f"{exc.__class__.__name__}: {exc}"
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    return result
+
+
 def main() -> None:
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "--self-test":
+        report = Path(sys.argv[2]).resolve() if len(sys.argv) >= 3 else Path(tempfile.gettempdir()) / "shower_programmer_self_test.json"
+        result = run_packaged_self_test(report)
+        if not bool(result.get("ok")):
+            raise SystemExit(1)
+        return
+
     root = ctk.CTk() if ctk is not None else tk.Tk()
-    app = ShowerProgrammerApp(root)
-    root.mainloop()
+    guard = SingleInstanceGuard()
+    try:
+        if not guard.acquire():
+            root.withdraw()
+            messagebox.showwarning(
+                "Shower Programmer is already running",
+                "Another Shower Programmer window is already open on this computer.\n\n"
+                "Using two copies at the same time can make both copies scan, copy, archive, or delete the same files. "
+                "Close the existing window before opening another copy.",
+                parent=root,
+            )
+            root.destroy()
+            return
+        validate_runtime_contracts()
+        ShowerProgrammerApp(root)
+        root.mainloop()
+    except Exception as exc:
+        try:
+            root.withdraw()
+            messagebox.showerror(
+                "Shower Programmer could not start",
+                friendly_error_message("Program startup", exc),
+                parent=root,
+            )
+        except Exception:
+            print(friendly_error_message("Program startup", exc), file=sys.stderr)
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
+    finally:
+        guard.release()
 
 
 if __name__ == "__main__":

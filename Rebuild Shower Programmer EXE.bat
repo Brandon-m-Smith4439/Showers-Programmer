@@ -3,13 +3,15 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem ================================================================
 rem Shower Programmer one-folder EXE rebuild
-rem BUILD_SCRIPT_V8
+rem BUILD_SCRIPT_V9
 rem
 rem Safe rebuild behavior:
 rem - Rebuilds the executable and _internal runtime.
 rem - Refreshes program Assets.
 rem - Preserves existing local Input, Output, history, manifests,
 rem   settings, archives, and user-created runtime data.
+rem - Verifies the integrated V9 GUI contract before building.
+rem - Runs a self-test inside the staged EXE before deployment.
 rem ================================================================
 
 title Rebuild Shower Programmer EXE
@@ -116,6 +118,19 @@ echo Checking Python syntax for all backend modules...
 %PY_CMD% -m py_compile "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%"
 if errorlevel 1 goto failed
 
+echo Verifying integrated GUI version and Review / Send contracts...
+findstr /C:"RUNTIME_GUARD_V9" "%SOURCE_GUI%" >NUL
+if errorlevel 1 (
+    echo ERROR: Backend\shower_programmer_gui.py is not the integrated V9 file.
+    echo Replace it with the supplied V9 GUI before rebuilding.
+    goto failed
+)
+%PY_CMD% -c "import sys; sys.path.insert(0, r'%CD%\Backend'); import shower_programmer_gui as gui; gui.validate_runtime_contracts(); print('  GUI runtime contracts passed.')"
+if errorlevel 1 (
+    echo ERROR: The GUI is missing a required workflow method or contains mixed-version code.
+    goto failed
+)
+
 set "ICON=%CD%\%ICON_FILE%"
 
 echo.
@@ -147,6 +162,26 @@ if not exist "%STAGED_EXE%" (
     goto failed
 )
 
+echo Running the packaged EXE self-test...
+set "SELF_TEST_REPORT=%CD%\build\release\shower_programmer_self_test.json"
+if exist "%SELF_TEST_REPORT%" del /F /Q "%SELF_TEST_REPORT%"
+start "" /wait "%CD%\%STAGED_EXE%" --self-test "%SELF_TEST_REPORT%"
+if errorlevel 1 (
+    echo ERROR: The staged EXE reported a failed self-test.
+    if exist "%SELF_TEST_REPORT%" type "%SELF_TEST_REPORT%"
+    goto failed
+)
+if not exist "%SELF_TEST_REPORT%" (
+    echo ERROR: The staged EXE did not create its self-test report.
+    goto failed
+)
+%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'RUNTIME_GUARD_V9', d; print('  Packaged EXE self-test passed.')"
+if errorlevel 1 (
+    type "%SELF_TEST_REPORT%"
+    goto failed
+)
+del /F /Q "%SELF_TEST_REPORT%" >NUL 2>NUL
+
 rem Copy application assets beside the EXE. The current GUI resolves icons
 rem from the executable folder, so these must be distributed at the root.
 if exist "%STAGED_DIR%\Assets" rmdir /S /Q "%STAGED_DIR%\Assets"
@@ -168,6 +203,7 @@ if not exist "%STAGED_DIR%\Output\Updates" mkdir "%STAGED_DIR%\Output\Updates"
 
 set "BUILD_SHA="
 set "EXE_SHA256="
+set "GUI_SHA256="
 set "BUILD_TIME="
 
 where git >NUL 2>NUL
@@ -176,12 +212,13 @@ if not errorlevel 1 (
 )
 
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '%STAGED_EXE%').Hash.ToLowerInvariant()"`) do set "EXE_SHA256=%%I"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '%SOURCE_GUI%').Hash.ToLowerInvariant()"`) do set "GUI_SHA256=%%I"
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'"`) do set "BUILD_TIME=%%I"
 
 if defined BUILD_SHA (
-    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"RUNTIME_GUARD_V9","built_at":"%BUILD_TIME%","method":"build"}
 ) else if defined EXE_SHA256 (
-    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"RUNTIME_GUARD_V9","built_at":"%BUILD_TIME%","method":"build"}
 )
 
 rem Refresh only program-controlled build files. Do not remove Input, Output,
@@ -229,7 +266,8 @@ echo.
 echo EXE:
 echo   %CD%\%FINAL_EXE%
 echo.
-if defined EXE_SHA256 echo SHA-256: %EXE_SHA256%
+if defined EXE_SHA256 echo EXE SHA-256: %EXE_SHA256%
+if defined GUI_SHA256 echo GUI SHA-256: %GUI_SHA256%
 if defined BUILD_SHA echo Git commit: %BUILD_SHA%
 if defined BUILD_TIME echo Built at: %BUILD_TIME%
 echo.
