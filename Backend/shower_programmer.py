@@ -8,6 +8,8 @@ machine programming.
 
 from __future__ import annotations
 
+# OUTPUT_CONTROL_AND_PDF_MATCH_V12: blank-markup safety and order-number PDF matching.
+
 import argparse
 import copy
 import io
@@ -209,6 +211,7 @@ class Panel:
     hide_indicator: bool = False
     hide_diamon_fusion: bool = False
     hide_remake: bool = False
+    hide_xout: bool = False
     label_text: str | None = None
     diamon_fusion_text: str | None = None
     remake_text: str | None = None
@@ -380,11 +383,94 @@ def extract_transom_label(text: str) -> str | None:
     return None
 
 
+def extract_first_page_text(pdf_path: Path) -> str:
+    """Return normalized first-page text without guessing from the filename."""
+    reader = PdfReader(str(pdf_path))
+    if not reader.pages:
+        return ""
+    return re.sub(r"\s+", " ", reader.pages[0].extract_text() or "").strip()
+
+
+def extract_job_number(value: str | None) -> str | None:
+    """Extract the Job Nr token, such as ``87576307.2``, from text or a job label."""
+    text = str(value or "")
+    match = re.search(r"(?<!\d)(\d{7,8}(?:\.\d+)?)(?!\d)", text)
+    return match.group(1) if match else None
+
+
+def text_contains_aw_order(text: str, aw_order: str | None) -> bool:
+    """Match the exact A&W order number, such as ``236505``, in PDF text."""
+    order_text = str(aw_order or "").strip()
+    if not order_text:
+        return False
+    return bool(re.search(rf"(?<!\d){re.escape(order_text)}(?!\d)", text))
+
+
+def text_contains_job_number(text: str, job_number: str | None) -> bool:
+    """Match the exact Job Nr token, including its revision suffix when present."""
+    job_text = str(job_number or "").strip()
+    if not job_text:
+        return False
+    return bool(re.search(rf"(?<!\d){re.escape(job_text)}(?![\d.])", text, flags=re.IGNORECASE))
+
+
+def pdf_contains_aw_order(pdf_path: Path, aw_order: str | None) -> bool:
+    """Match an exact A&W order number in the first page of a PDF."""
+    try:
+        text = extract_first_page_text(pdf_path)
+    except Exception:
+        return False
+    return text_contains_aw_order(text, aw_order)
+
+
+def pdf_contains_job_number(pdf_path: Path, job_number: str | None) -> bool:
+    """Match an exact Job Nr in the first page of a PDF."""
+    try:
+        text = extract_first_page_text(pdf_path)
+    except Exception:
+        return False
+    return text_contains_job_number(text, job_number)
+
+
+def extract_aw_order_from_pdf(pdf_path: Path) -> str | None:
+    """Best-effort extraction of the labeled A&W order number from page one."""
+    try:
+        text = extract_first_page_text(pdf_path)
+    except Exception:
+        return None
+    labeled_patterns = (
+        r"(?:A\s*[+&]\s*W|A&W)\s*(?:ORDER|ORDER NUMBER|ORDER NO\.?|#)?\s*[:#-]?\s*(\d{5,10})",
+        r"\bA/W\s*(?:ORDER|ORDER NUMBER|ORDER NO\.?|#)?\s*[:#-]?\s*(\d{5,10})",
+        r"\bORDER\s*(?:NUMBER|NO\.?|#)\s*[:#-]?\s*(\d{5,10})",
+    )
+    for pattern in labeled_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def extract_job_number_from_pdf(pdf_path: Path) -> str | None:
+    """Best-effort extraction of the Job Nr, such as ``87576307.2``, from page one."""
+    try:
+        text = extract_first_page_text(pdf_path)
+    except Exception:
+        return None
+    labeled_patterns = (
+        r"\bJOB\s*(?:NR|NUMBER|NO\.?|#)\s*[:#-]?\s*(\d{7,8}(?:\.\d+)?)",
+        r"\bSO\s*(?:NR|NUMBER|NO\.?|#)\s*[:#-]?\s*(\d{7,8}(?:\.\d+)?)",
+    )
+    for pattern in labeled_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return extract_job_number(text)
+
+
 def extract_job_from_pdf(pdf_path: Path) -> str:
     name_guess = job_from_filename(pdf_path.name)
     try:
-        reader = PdfReader(str(pdf_path))
-        text = (reader.pages[0].extract_text() or "").replace("\n", " ")
+        text = extract_first_page_text(pdf_path)
     except Exception:
         return name_guess or pdf_path.stem
 
@@ -395,7 +481,8 @@ def extract_job_from_pdf(pdf_path: Path) -> str:
     )
     if match:
         return clean_job_name(match.group("job"))
-    return name_guess or pdf_path.stem
+    job_number = extract_job_number_from_pdf(pdf_path)
+    return name_guess or job_number or pdf_path.stem
 
 
 def job_from_filename(name: str) -> str | None:
@@ -415,25 +502,88 @@ def clean_job_name(value: str) -> str:
     return value
 
 
-def find_pdf(folder: Path, job: str | None) -> Path:
-    pdfs = sorted(p for p in folder.rglob("*.pdf") if p.is_file() and not is_archived_input_file(p, folder))
+def find_pdf(folder: Path, job: str | None, aw_order: str | None = None) -> Path:
+    """Find an input PDF using the separate A&W order and Job Nr identities.
+
+    The A&W order is the shorter production order value (for example ``236505``).
+    The Job Nr is the longer value at the beginning of source filenames and the
+    glass-order header (for example ``87576307.2``). Either identity may locate
+    a PDF whose filename was changed.
+    """
+    pdfs = sorted(
+        p for p in folder.rglob("*.pdf")
+        if p.is_file() and not is_archived_input_file(p, folder)
+    )
     if not pdfs:
-        raise FileNotFoundError(f"No PDF files found in {folder}")
-    if job:
-        key = normalize_lookup(job)
-        matches = [p for p in pdfs if key in normalize_lookup(p.stem) or key in normalize_lookup(extract_job_from_pdf(p))]
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            glass_matches = [p for p in matches if p.name.lower().startswith("glass order")]
-            if len(glass_matches) == 1:
-                return glass_matches[0]
-            names = "\n  ".join(str(p.name) for p in matches)
-            raise RuntimeError(f"Multiple PDFs match {job!r}:\n  {names}\nPass --pdf to choose one.")
+        raise FileNotFoundError(f"No PDF files were found in the local orders folder: {folder}")
+
+    order_text = str(aw_order or "").strip()
+    job_text = clean_job_name(job) if job else ""
+    job_number = extract_job_number(job_text)
+    normalized_job = normalize_lookup(job_text)
+    scores: dict[Path, tuple[int, list[str]]] = {}
+
+    def add_score(path: Path, score: int, reason: str) -> None:
+        current_score, reasons = scores.get(path, (0, []))
+        scores[path] = (current_score + score, reasons + [reason])
+
+    for path in pdfs:
+        stem = path.stem
+        normalized_stem = normalize_lookup(stem)
+        if order_text and re.search(rf"(?<!\d){re.escape(order_text)}(?!\d)", stem):
+            add_score(path, 1200, "A&W order in filename")
+        if job_number and re.search(rf"(?<!\d){re.escape(job_number)}(?![\d.])", stem, flags=re.IGNORECASE):
+            starts = bool(re.match(rf"^(?:Glass Order\s+)?{re.escape(job_number)}(?:$|[ _.-])", stem, flags=re.IGNORECASE))
+            add_score(path, 1100 if starts else 950, "Job Nr in filename")
+        if normalized_job and normalized_job in normalized_stem:
+            add_score(path, 800, "job name in filename")
+
+    # A uniquely strong filename match avoids opening every cloud-backed PDF.
+    ranked_filename = sorted(scores.items(), key=lambda item: (item[1][0], item[0].name.casefold()), reverse=True)
+    if ranked_filename and ranked_filename[0][1][0] >= 1100:
+        if len(ranked_filename) == 1 or ranked_filename[0][1][0] > ranked_filename[1][1][0]:
+            return ranked_filename[0][0]
+
+    for path in pdfs:
+        try:
+            text = extract_first_page_text(path)
+        except Exception:
+            text = ""
+        if order_text and text_contains_aw_order(text, order_text):
+            add_score(path, 1300, "A&W order on first page")
+        if job_number and text_contains_job_number(text, job_number):
+            add_score(path, 1200, "Job Nr on first page")
+        try:
+            extracted_job = normalize_lookup(extract_job_from_pdf(path))
+        except Exception:
+            extracted_job = ""
+        if normalized_job and extracted_job and normalized_job in extracted_job:
+            add_score(path, 900, "job name on first page")
+
+    ranked = sorted(scores.items(), key=lambda item: (item[1][0], item[0].name.casefold()), reverse=True)
+    if ranked:
+        top_score = ranked[0][1][0]
+        top_matches = [entry for entry in ranked if entry[1][0] == top_score]
+        if len(top_matches) == 1:
+            return top_matches[0][0]
+        glass_matches = [entry for entry in top_matches if entry[0].name.lower().startswith("glass order")]
+        if len(glass_matches) == 1:
+            return glass_matches[0][0]
+        names = "\n  ".join(entry[0].name for entry in top_matches[:12])
+        identity = f"A&W order {order_text or '(unknown)'} / Job Nr {job_number or '(unknown)'}"
+        raise RuntimeError(
+            f"Multiple PDFs match {identity}. Keep only the intended local PDF or rename it to include "
+            f"the A&W order or Job Nr:\n  {names}"
+        )
+
     glass_orders = [p for p in pdfs if p.name.lower().startswith("glass order")]
     if len(glass_orders) == 1:
         return glass_orders[0]
-    raise RuntimeError("Could not choose a PDF automatically. Pass --pdf.")
+    raise FileNotFoundError(
+        "No local PDF could be correlated to "
+        f"A&W order {order_text or '(unknown)'} or Job Nr {job_number or '(unknown)'}. "
+        "The PDF may be named differently, but one of those exact values must appear in the filename or first page."
+    )
 
 
 def normalize_lookup(value: str) -> str:
@@ -624,6 +774,8 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.hide_diamon_fusion = bool(override["hide_diamon_fusion"])
     if "hide_remake" in override:
         panel.hide_remake = bool(override["hide_remake"])
+    if "hide_xout" in override:
+        panel.hide_xout = bool(override["hide_xout"])
     if "manual_x" in override:
         panel.manual_x = bool(override["manual_x"])
     if "label_text" in override:
@@ -1378,16 +1530,28 @@ def estimate_hinge_side(
     return "left" if left_score > right_score else "right"
 
 
-def find_source_dxf(folder: Path, job_name: str, panel: Panel) -> Path | None:
+def find_source_dxf(
+    folder: Path,
+    job_name: str,
+    panel: Panel,
+    aw_order: str | None = None,
+) -> Path | None:
     norm_job = normalize_lookup(job_name)
+    job_number = extract_job_number(job_name)
     source_item = panel.source_item or panel.item
-    candidates: list[tuple[tuple[int, int, int, int], Path]] = []
+    candidates: list[tuple[tuple[int, int, int, int, int], Path]] = []
     for path in folder.rglob("*.dxf"):
         if not path.is_file():
             continue
         if is_archived_input_file(path, folder):
             continue
-        score = dxf_match_score(path, norm_job, source_item)
+        score = dxf_match_score(
+            path,
+            norm_job,
+            source_item,
+            aw_order=aw_order,
+            job_number=job_number,
+        )
         if score is not None:
             candidates.append((score, path))
     if candidates:
@@ -1396,22 +1560,61 @@ def find_source_dxf(folder: Path, job_name: str, panel: Panel) -> Path | None:
     return None
 
 
-def dxf_match_score(path: Path, norm_job: str, item_number: int) -> tuple[int, int, int, int] | None:
+def dxf_match_score(
+    path: Path,
+    norm_job: str,
+    item_number: int,
+    *,
+    aw_order: str | None = None,
+    job_number: str | None = None,
+) -> tuple[int, int, int, int, int] | None:
+    """Score a source DXF using Job Nr first and A&W only as a compatibility fallback."""
     stem = path.stem
     norm_stem = normalize_lookup(stem)
-    if norm_job not in norm_stem:
-        return None
+    source_item = int(item_number)
+    job_text = str(job_number or "").strip()
+    if not job_text:
+        job_text = extract_job_number(norm_job) or ""
+    aw_digits = re.sub(r"\D", "", str(aw_order or ""))
 
-    item_pattern = rf"(?:^|[_\s-]){item_number}(?:$|__|[_\s-]|[^0-9])"
-    p_pattern = rf"__P{item_number}(?:$|[^0-9])"
-    if not re.search(item_pattern, stem, re.IGNORECASE) and not re.search(p_pattern, stem, re.IGNORECASE):
+    job_prefix_match = bool(
+        job_text
+        and re.match(rf"^{re.escape(job_text)}(?:$|[ _.-])", stem, re.IGNORECASE)
+    )
+    aw_piece_number = f"{aw_digits}{source_item:02d}" if aw_digits else ""
+    aw_piece_prefix_match = bool(
+        aw_piece_number
+        and re.match(rf"^{re.escape(aw_piece_number)}(?:$|[._\s-])", stem, re.IGNORECASE)
+    )
+    aw_order_prefix_match = bool(
+        aw_digits
+        and re.match(rf"^{re.escape(aw_digits)}(?:$|[._\s-])", stem, re.IGNORECASE)
+    )
+
+    job_name_match = bool(norm_job and norm_job in norm_stem)
+    item_pattern = rf"(?:^|[_\s-]){source_item}(?:$|__|[_\s-]|[^0-9])"
+    p_pattern = rf"__P{source_item}(?:$|[^0-9])"
+    item_match = bool(
+        re.search(item_pattern, stem, re.IGNORECASE)
+        or re.search(p_pattern, stem, re.IGNORECASE)
+    )
+    job_item_match = bool(job_prefix_match and item_match)
+    aw_order_item_match = bool(aw_order_prefix_match and item_match)
+    if not job_item_match and not aw_piece_prefix_match and not aw_order_item_match and not (job_name_match and item_match):
         return None
 
     has_weight = bool(re.search(r"\(\s*\d+(?:\.\d+)?\s*lb\s*\)", stem, re.IGNORECASE))
-    has_detail_suffix = bool(re.search(rf"_{item_number}__.+", stem, re.IGNORECASE))
+    has_detail_suffix = bool(re.search(rf"_{source_item}__.+", stem, re.IGNORECASE))
     has_panel_suffix = bool(re.search(p_pattern, stem, re.IGNORECASE))
-    exact_plain = stem.upper().endswith(f"_{item_number}".upper())
+    exact_plain = stem.upper().endswith(f"_{source_item}".upper())
+    identity_score = (
+        150 if job_item_match
+        else 130 if job_name_match and item_match
+        else 110 if aw_piece_prefix_match
+        else 90
+    )
     return (
+        identity_score,
         4 if has_weight else 0,
         2 if has_detail_suffix else 0,
         1 if has_panel_suffix else 0,
@@ -1426,7 +1629,7 @@ def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: d
         validate_panel_constraints(panel, config)
         if panel.skip_dxf:
             continue
-        panel.source_dxf = find_source_dxf(dxf_folder, job.job_name, panel)
+        panel.source_dxf = find_source_dxf(dxf_folder, job.job_name, panel, aw_order=job.aw_order)
         panel.output_dxf = dxf_output_dir / f"{job.aw_order}{panel.item:02d}.dxf"
         note_dxf_output_settings(panel, config)
         if panel.source_dxf is None:
@@ -2747,8 +2950,13 @@ def make_overlay_page(
     )
 
     remake_rect: tuple[float, float, float, float] | None = None
-    if panel.remake_excluded or panel.manual_x:
+    if panel.manual_x or (panel.remake_excluded and not panel.hide_xout):
         draw_remake_x(c, width, height, pdf_cfg, label_color)
+        c.save()
+        return packet.getvalue()
+    if panel.remake_excluded:
+        # Preserve the process-list exclusion while allowing the operator
+        # to remove only the visual X-out from the marked sketch.
         c.save()
         return packet.getvalue()
 
@@ -3671,6 +3879,23 @@ def clamp_denver_marker_point(
     )
 
 
+def panel_has_visible_markup(panel: Panel) -> bool:
+    """Return True only when the output page needs a drawn overlay."""
+    if panel.manual_x or (panel.remake_excluded and not panel.hide_xout):
+        return True
+    if panel.remake_excluded:
+        return False
+    if panel.remake and not panel.hide_remake:
+        return True
+    if panel.diamon_fusion and not panel.hide_diamon_fusion:
+        return True
+    if not panel.hide_label:
+        return True
+    if any(override_text_lines(str(box.get("text", ""))) for box in panel.additional_text_boxes if isinstance(box, dict)):
+        return True
+    return bool(panel.indicator_corner and panel.machine and not panel.hide_indicator)
+
+
 def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force: bool) -> None:
     if job.output_pdf.exists() and not force:
         raise FileExistsError(f"{job.output_pdf} already exists. Use --force to overwrite.")
@@ -3680,7 +3905,7 @@ def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force:
     for page_index, page in enumerate(reader.pages):
         page_copy = page
         panel = panel_by_page.get(page_index)
-        if panel:
+        if panel and panel_has_visible_markup(panel):
             width = float(page.mediabox.width)
             height = float(page.mediabox.height)
             bbox = estimate_panel_bbox(reader, page_index)
@@ -3699,7 +3924,8 @@ def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force:
                 config,
             )
             overlay_reader = PdfReader(io.BytesIO(overlay_bytes))
-            page_copy.merge_page(overlay_reader.pages[0])
+            if overlay_reader.pages:
+                page_copy.merge_page(overlay_reader.pages[0])
         writer.add_page(page_copy)
 
     job.output_pdf.parent.mkdir(parents=True, exist_ok=True)
@@ -4067,7 +4293,7 @@ def main() -> int:
     folder = Path(args.folder).resolve()
     config = load_config(resolve_config_path(args.config, folder))
 
-    pdf_path = Path(args.pdf).resolve() if args.pdf else find_pdf(folder, args.job).resolve()
+    pdf_path = Path(args.pdf).resolve() if args.pdf else find_pdf(folder, args.job, args.aw_order).resolve()
     reader = PdfReader(str(pdf_path))
     job_name = clean_job_name(args.job) if args.job else extract_job_from_pdf(pdf_path)
     output_dir = Path(args.output_dir)

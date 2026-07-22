@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+# UNMARKED_SKETCH_AND_ORDER_PDF_V12: process-list mapping for unmarked pages and order-number PDF names.
+
 import argparse
 import csv
 import hashlib
@@ -993,6 +995,69 @@ def attach_unlabeled_process_pages(
     panels.sort(key=lambda panel: panel.item)
 
 
+def attach_unmarked_process_pages(
+    reader: PdfReader,
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    config: dict[str, object],
+) -> None:
+    """Map piece pages that contain no readable P-number, dimensions, or text.
+
+    The process list is the authority for item order. After all stronger matching
+    strategies run, remaining non-template pages are paired with remaining items
+    in page order. This lets a completely unmarked sketch remain valid while the
+    DXF is still programmed from process-list data.
+    """
+    existing_items = {panel.item for panel in panels}
+    missing_items = [item for item in process_order.item_numbers if item not in existing_items]
+    if not missing_items:
+        return
+
+    used_pages = {panel.page_index for panel in panels}
+    candidates: list[tuple[int, str]] = []
+    for page_index, page in enumerate(reader.pages):
+        if page_index == 0 or page_index in used_pages:
+            continue
+        text_value = page.extract_text() or ""
+        if programmer.looks_like_template_page(text_value):
+            continue
+        if programmer.extract_item_number(text_value) is not None:
+            continue
+        candidates.append((page_index, text_value))
+
+    # Some vendors export a piece-only PDF without a cover page. Use page 0 as
+    # a final fallback only when the file does not contain enough later pages
+    # to represent the process-list items.
+    if len(candidates) < len(missing_items) and len(reader.pages) <= len(missing_items):
+        page_index = 0
+        if page_index not in used_pages and reader.pages:
+            page_zero_text = reader.pages[0].extract_text() or ""
+            if (
+                not programmer.looks_like_template_page(page_zero_text)
+                and programmer.extract_item_number(page_zero_text) is None
+            ):
+                candidates.insert(0, (page_index, page_zero_text))
+
+    for item_number, (page_index, text_value) in zip(sorted(missing_items), candidates):
+        width, height = programmer.extract_dimensions(text_value)
+        panel = programmer.classify_panel(
+            programmer.Panel(
+                item=item_number,
+                page_index=page_index,
+                text=text_value,
+                width=width,
+                height=height,
+                machine="",
+            ),
+            config,
+            process_order.aw_order,
+        )
+        panel.reasons.append(f"unmarked sketch page mapped to P{item_number} from process list")
+        panels.append(panel)
+
+    panels.sort(key=lambda panel: panel.item)
+
+
 def reconcile_process_list_item_gaps(
     panels: list[programmer.Panel],
     process_order: ProcessOrder,
@@ -1206,6 +1271,10 @@ def apply_process_dimensions(panel: programmer.Panel, process_item: ProcessItem)
         panel.width = width
         panel.height = height
         panel.reasons.append("dimensions from process list")
+    panel.warnings = [
+        warning for warning in panel.warnings
+        if warning != "Could not read dimensions from PDF text."
+    ]
 
 
 def apply_process_list_scope(panels: list[programmer.Panel], process_order: ProcessOrder) -> None:
@@ -1277,7 +1346,7 @@ def prepare_job(
     remake_items: set[int] | None = None,
 ) -> tuple[programmer.Job, PdfReader, list[str]]:
     process_order = clone_process_order(process_order)
-    pdf_path = programmer.find_pdf(folder, process_order.job_name).resolve()
+    pdf_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
     reader = PdfReader(str(pdf_path))
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
     item_remaps = remap_process_items_to_sketch_pages(panels, process_order, remake_items)
@@ -1285,6 +1354,7 @@ def prepare_job(
         remake_items = {item_remaps.get(item, item) for item in remake_items}
     attach_transom_panels(reader, panels, process_order, config)
     attach_unlabeled_process_pages(reader, panels, process_order, config)
+    attach_unmarked_process_pages(reader, panels, process_order, config)
     reconcile_process_list_item_gaps(panels, process_order)
     reconcile_missing_items_from_extra_sketch_pages(panels, process_order)
     apply_process_hints(panels, process_order, config)
@@ -1619,7 +1689,7 @@ def preview_orders(orders: list[ProcessOrder], folder: Path) -> list[BatchJobRes
             delivery_date=order.delivery_date,
         )
         try:
-            result.input_pdf = programmer.find_pdf(folder, order.job_name).resolve()
+            result.input_pdf = programmer.find_pdf(folder, order.job_name, order.aw_order).resolve()
         except Exception as exc:
             result.status = "ISSUES"
             result.issues.append(str(exc))
