@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem ================================================================
 rem Shower Programmer one-folder EXE rebuild
-rem BUILD_SCRIPT_V28
+rem BUILD_SCRIPT_V28_1
 rem
 rem Safe rebuild behavior:
 rem - Rebuilds the executable and _internal runtime.
@@ -11,6 +11,7 @@ rem - Refreshes program Assets.
 rem - Preserves existing local Input, Output, history, manifests,
 rem   settings, archives, and user-created runtime data.
 rem - Verifies the V28 combined Processed and expanded Issues overview contract before building.
+rem - BUILD FIX V28.1: uses Windows CRLF and inline file checks; no CALL subroutine labels.
 rem - Runs a self-test inside the staged EXE before deployment.
 rem ================================================================
 
@@ -74,18 +75,36 @@ echo Using Python:
 %PY_CMD% -c "import sys; print('  ' + sys.executable); print('  Python ' + sys.version.split()[0])"
 if errorlevel 1 goto failed
 
-call :require_file "%SOURCE_GUI%"
-if errorlevel 1 goto failed
-call :require_file "%SOURCE_BATCH%"
-if errorlevel 1 goto failed
-call :require_file "%SOURCE_PROGRAMMER%"
-if errorlevel 1 goto failed
-call :require_file "%SOURCE_CONFIG%"
-if errorlevel 1 goto failed
-call :require_file "%ICON_FILE%"
-if errorlevel 1 goto failed
-call :require_file "%PNG_FILE%"
-if errorlevel 1 goto failed
+if not exist "%SOURCE_GUI%" (
+    echo ERROR: Missing required file:
+    echo   %SOURCE_GUI%
+    goto failed
+)
+if not exist "%SOURCE_BATCH%" (
+    echo ERROR: Missing required file:
+    echo   %SOURCE_BATCH%
+    goto failed
+)
+if not exist "%SOURCE_PROGRAMMER%" (
+    echo ERROR: Missing required file:
+    echo   %SOURCE_PROGRAMMER%
+    goto failed
+)
+if not exist "%SOURCE_CONFIG%" (
+    echo ERROR: Missing required file:
+    echo   %SOURCE_CONFIG%
+    goto failed
+)
+if not exist "%ICON_FILE%" (
+    echo ERROR: Missing required file:
+    echo   %ICON_FILE%
+    goto failed
+)
+if not exist "%PNG_FILE%" (
+    echo ERROR: Missing required file:
+    echo   %PNG_FILE%
+    goto failed
+)
 
 echo.
 echo Checking required Python packages...
@@ -235,22 +254,33 @@ if errorlevel 8 (
     goto failed
 )
 
-call :require_file "%FINAL_EXE%"
-if errorlevel 1 goto failed
-call :require_file "%FINAL_DIR%\_internal\pypdfium2_raw\pdfium.dll"
-if errorlevel 1 (
+if not exist "%FINAL_EXE%" (
+    echo ERROR: Missing required file after deployment:
+    echo   %FINAL_EXE%
+    goto failed
+)
+if not exist "%FINAL_DIR%\_internal\pypdfium2_raw\pdfium.dll" (
+    echo ERROR: Missing required file after deployment:
+    echo   %FINAL_DIR%\_internal\pypdfium2_raw\pdfium.dll
     echo The Review Order preview may be slow or fail without pdfium.dll.
     goto failed
 )
-call :require_file "%FINAL_DIR%\_internal\Backend\shower_programmer_config.json"
-if errorlevel 1 (
+if not exist "%FINAL_DIR%\_internal\Backend\shower_programmer_config.json" (
+    echo ERROR: Missing required file after deployment:
+    echo   %FINAL_DIR%\_internal\Backend\shower_programmer_config.json
     echo The CNC configuration was not included in the bundled runtime.
     goto failed
 )
-call :require_file "%FINAL_DIR%\Assets\ShowersProgrammer.ico"
-if errorlevel 1 goto failed
-call :require_file "%FINAL_DIR%\Assets\ShowersProgrammer.png"
-if errorlevel 1 goto failed
+if not exist "%FINAL_DIR%\Assets\ShowersProgrammer.ico" (
+    echo ERROR: Missing required file after deployment:
+    echo   %FINAL_DIR%\Assets\ShowersProgrammer.ico
+    goto failed
+)
+if not exist "%FINAL_DIR%\Assets\ShowersProgrammer.png" (
+    echo ERROR: Missing required file after deployment:
+    echo   %FINAL_DIR%\Assets\ShowersProgrammer.png
+    goto failed
+)
 
 if not exist "%FINAL_DIR%\Input\Orders" mkdir "%FINAL_DIR%\Input\Orders"
 if not exist "%FINAL_DIR%\Input\Process List" mkdir "%FINAL_DIR%\Input\Process List"
@@ -284,14 +314,6 @@ set "LAUNCH="
 set /p "LAUNCH=Launch Shower Programmer now? [y/N]: "
 if /I "%LAUNCH%"=="Y" start "" "%CD%\%FINAL_EXE%"
 pause
-exit /b 0
-
-:require_file
-if not exist "%~1" (
-    echo ERROR: Missing required file:
-    echo   %~1
-    exit /b 1
-)
 exit /b 0
 
 :cancelled
