@@ -9,6 +9,8 @@ machine programming.
 from __future__ import annotations
 
 # OUTPUT_CONTROL_AND_PDF_MATCH_V12: blank-markup safety and order-number PDF matching.
+# PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: use unambiguous PPH radius pairs to confirm the DXF hinge side.
+# BILATERAL_SCU4_DENVER_ORIENTATION_V36: orient proven symmetric SCU4 panels opposite a bottom-left logo.
 
 import argparse
 import copy
@@ -34,6 +36,11 @@ TEMPLATE_PAGE_MARKERS = ("TEMPLATES FOR GLASS", "TEMPLATE A:", "TEMPLATE B:")
 LABEL_FONT = "Helvetica-Bold"
 PDF_MATRIX_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
+JOB_NUMBER_TOKEN = r"\d{7,8}(?:\.\d+)*(?:[A-Z]+)?"
+JOB_NUMBER_RE = re.compile(
+    rf"(?<![A-Z0-9])({JOB_NUMBER_TOKEN})(?![A-Z0-9.])",
+    flags=re.IGNORECASE,
+)
 PdfMatrix = tuple[float, float, float, float, float, float]
 
 
@@ -392,9 +399,9 @@ def extract_first_page_text(pdf_path: Path) -> str:
 
 
 def extract_job_number(value: str | None) -> str | None:
-    """Extract the Job Nr token, such as ``87576307.2``, from text or a job label."""
+    """Extract a complete Job Nr token, including dotted/revision suffixes."""
     text = str(value or "")
-    match = re.search(r"(?<!\d)(\d{7,8}(?:\.\d+)?)(?!\d)", text)
+    match = JOB_NUMBER_RE.search(text)
     return match.group(1) if match else None
 
 
@@ -411,7 +418,13 @@ def text_contains_job_number(text: str, job_number: str | None) -> bool:
     job_text = str(job_number or "").strip()
     if not job_text:
         return False
-    return bool(re.search(rf"(?<!\d){re.escape(job_text)}(?![\d.])", text, flags=re.IGNORECASE))
+    return bool(
+        re.search(
+            rf"(?<![A-Z0-9]){re.escape(job_text)}(?![A-Z0-9.])",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def pdf_contains_aw_order(pdf_path: Path, aw_order: str | None) -> bool:
@@ -451,14 +464,14 @@ def extract_aw_order_from_pdf(pdf_path: Path) -> str | None:
 
 
 def extract_job_number_from_pdf(pdf_path: Path) -> str | None:
-    """Best-effort extraction of the Job Nr, such as ``87576307.2``, from page one."""
+    """Best-effort extraction of the complete Job Nr from page one."""
     try:
         text = extract_first_page_text(pdf_path)
     except Exception:
         return None
     labeled_patterns = (
-        r"\bJOB\s*(?:NR|NUMBER|NO\.?|#)\s*[:#-]?\s*(\d{7,8}(?:\.\d+)?)",
-        r"\bSO\s*(?:NR|NUMBER|NO\.?|#)\s*[:#-]?\s*(\d{7,8}(?:\.\d+)?)",
+        rf"\bJOB\s*(?:NR|NUMBER|NO\.?|#)\s*[:#-]?\s*({JOB_NUMBER_TOKEN})(?![A-Z0-9.])",
+        rf"\bSO\s*(?:NR|NUMBER|NO\.?|#)\s*[:#-]?\s*({JOB_NUMBER_TOKEN})(?![A-Z0-9.])",
     )
     for pattern in labeled_patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -475,7 +488,7 @@ def extract_job_from_pdf(pdf_path: Path) -> str:
         return name_guess or pdf_path.stem
 
     match = re.search(
-        r"(?P<job>\d{7,8}(?:\.\d+)?\s+[A-Z0-9][A-Z0-9 .#&'/_-]+?)(?:Project Name:|Printed On:|Delivery Date:)",
+        rf"(?P<job>{JOB_NUMBER_TOKEN}\s+[A-Z0-9][A-Z0-9 .#&'/_-]+?)(?:Project Name:|Printed On:|Delivery Date:)",
         text,
         flags=re.IGNORECASE,
     )
@@ -487,10 +500,10 @@ def extract_job_from_pdf(pdf_path: Path) -> str:
 
 def job_from_filename(name: str) -> str | None:
     stem = Path(name).stem
-    stem = re.sub(r"^Glass Order\s+", "", stem, flags=re.IGNORECASE).strip()
+    stem = re.sub(r"^Glass Order(?:\s*[-_]\s*|\s+)", "", stem, flags=re.IGNORECASE).strip()
     if "_" in stem:
         stem = stem.split("_", 1)[1].strip()
-    match = re.search(r"(\d{7,8}(?:\.\d+)?\s+.+)", stem)
+    match = re.search(rf"({JOB_NUMBER_TOKEN}\s+.+)", stem, flags=re.IGNORECASE)
     if match:
         return clean_job_name(match.group(1))
     return None
@@ -532,8 +545,14 @@ def find_pdf(folder: Path, job: str | None, aw_order: str | None = None) -> Path
         normalized_stem = normalize_lookup(stem)
         if order_text and re.search(rf"(?<!\d){re.escape(order_text)}(?!\d)", stem):
             add_score(path, 1200, "A&W order in filename")
-        if job_number and re.search(rf"(?<!\d){re.escape(job_number)}(?![\d.])", stem, flags=re.IGNORECASE):
-            starts = bool(re.match(rf"^(?:Glass Order\s+)?{re.escape(job_number)}(?:$|[ _.-])", stem, flags=re.IGNORECASE))
+        if job_number and text_contains_job_number(stem, job_number):
+            starts = bool(
+                re.match(
+                    rf"^(?:Glass Order(?:\s*[-_]\s*|\s+))?{re.escape(job_number)}(?:$|[ _.-])",
+                    stem,
+                    flags=re.IGNORECASE,
+                )
+            )
             add_score(path, 1100 if starts else 950, "Job Nr in filename")
         if normalized_job and normalized_job in normalized_stem:
             add_score(path, 800, "job name in filename")
@@ -744,6 +763,7 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
     if not override:
         enforce_pph_hinges_up(panel)
         return
+    manual_dxf_rotation = bool(override.get("manual_dxf_rotation")) and override.get("rotation_degrees") is not None
     coerced_denver_indicator_override = False
     coerced_waterjet_indicator_override = False
     override_machine = str(override.get("machine", panel.machine)).strip().upper()
@@ -816,9 +836,14 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
             panel.indicator_corner = None
     if (
         "rotation_degrees" in override
-        and not position_only_indicator_override
-        and not (panel.machine.startswith("DENVER") and bool(override.get("manual_indicator_corner")))
-        and not (panel.machine == "WJ" and bool(override.get("manual_indicator_corner")))
+        and (
+            manual_dxf_rotation
+            or (
+                not position_only_indicator_override
+                and not (panel.machine.startswith("DENVER") and bool(override.get("manual_indicator_corner")))
+                and not (panel.machine == "WJ" and bool(override.get("manual_indicator_corner")))
+            )
+        )
     ):
         value = override["rotation_degrees"]
         panel.rotation_degrees = None if value is None else float(value)
@@ -882,6 +907,12 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
     if "remake_y" in override:
         panel.remake_y = parse_float(override["remake_y"], 0)
     enforce_pph_hinges_up(panel)
+    if manual_dxf_rotation:
+        panel.rotation_degrees = float(override["rotation_degrees"])
+        panel.manual_rotation_override = True
+        reason = f"manual DXF rotation {panel.rotation_degrees:g} deg"
+        if reason not in panel.reasons:
+            panel.reasons.append(reason)
     sanitize_denver_indicator_override(panel)
     sanitize_waterjet_indicator(panel)
 
@@ -2038,6 +2069,10 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
     if not bool(rules.get("auto_dxf_hinge_side_detection", True)):
         return
     side = dxf_hinge_side_candidate(panel.source_dxf)
+    pph_radius_confirmation = False
+    if side is None and has_pph_hinge(panel):
+        side = dxf_pph_hinge_side_candidate(panel.source_dxf)
+        pph_radius_confirmation = side is not None
     if side is None:
         return
     dxf_cut_in = dxf_hinge_side_has_cut_in(panel.source_dxf, side, config)
@@ -2047,7 +2082,15 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
         if panel.hinge_side is not None and not (panel.hinges_up or dxf_cut_in or has_door_cut_in(panel, config)):
             return
         panel.hinge_side = side
-        panel.reasons.append(f"DXF hinge side {side} overrides {previous}")
+        if pph_radius_confirmation:
+            panel.reasons = [
+                reason
+                for reason in panel.reasons
+                if not reason.startswith("PPH hinge rule: hinge side ")
+            ]
+            panel.reasons.append(f"PPH DXF hinge radii confirm {side} side; hinges up; overrides {previous}")
+        else:
+            panel.reasons.append(f"DXF hinge side {side} overrides {previous}")
     moved_off_hinge = False
     if dxf_cut_in and not panel.hinges_up:
         panel.hinges_up = True
@@ -2088,6 +2131,44 @@ def dxf_hinge_side_candidate(path: Path) -> str | None:
     if abs(left_score - right_score) < 3:
         return None
     return "left" if left_score > right_score else "right"
+
+
+def dxf_pph_hinge_side_candidate(path: Path) -> str | None:
+    """Confirm a PPH hinge side only from separated internal-radius groups."""
+    segments = collect_dxf_preview_segments(path)
+    samples = [
+        sample
+        for sample in collect_dxf_internal_cut_radius_samples(path)
+        if 0 < abs(sample[2]) <= 1.0
+    ]
+    if len(samples) < 2 or not segments:
+        return None
+
+    points = [point for segment in segments for point in segment]
+    min_x = min(x for x, _y in points)
+    max_x = max(x for x, _y in points)
+    min_y = min(y for _x, y in points)
+    max_y = max(y for _x, y in points)
+    width = max_x - min_x
+    height = max_y - min_y
+    if width <= 0 or height <= 0:
+        return None
+
+    side_band = min(4.0, width * 0.30)
+    minimum_hinge_span = max(4.0, height * 0.20)
+
+    def has_separated_hinge_groups(side: str) -> bool:
+        if side == "left":
+            y_values = [y for x, y, _radius in samples if x - min_x <= side_band]
+        else:
+            y_values = [y for x, y, _radius in samples if max_x - x <= side_band]
+        return len(y_values) >= 2 and max(y_values) - min(y_values) >= minimum_hinge_span
+
+    left_evidence = has_separated_hinge_groups("left")
+    right_evidence = has_separated_hinge_groups("right")
+    if left_evidence == right_evidence:
+        return None
+    return "left" if left_evidence else "right"
 
 
 def dxf_hinge_side_has_cut_in(path: Path, side: str, config: dict[str, Any]) -> bool:
@@ -2181,8 +2262,74 @@ def dxf_hinge_side_score(path: Path, side: str) -> float:
     return score
 
 
+def has_bilateral_scu4_denver_orientation(panel: Panel) -> bool:
+    """Recognize only the symmetric four-slot Denver panel layout."""
+    if (
+        panel.machine != "DENVER 2"
+        or panel.source_dxf is None
+        or panel.manual_indicator_override
+        or panel.manual_rotation_override
+    ):
+        return False
+    upper = panel_combined_text(panel).upper()
+    if "SCU4" not in upper or "TEMPERED LOGO IN BOTTOM LEFT CORNER" not in upper:
+        return False
+
+    source_dims = dxf_outline_dimensions(panel.source_dxf)
+    if source_dims is None:
+        return False
+    source_width, source_height = source_dims
+    if source_height <= source_width + 0.01:
+        return False
+
+    segments = collect_dxf_preview_segments(panel.source_dxf)
+    if not segments:
+        return False
+    points = [point for segment in segments for point in segment]
+    min_x = min(x for x, _y in points)
+    max_x = max(x for x, _y in points)
+    min_y = min(y for _x, y in points)
+    max_y = max(y for _x, y in points)
+    width = max_x - min_x
+    height = max_y - min_y
+    if width <= 0 or height <= 0:
+        return False
+
+    slot_samples = [
+        (x, y)
+        for x, y, radius in collect_dxf_internal_cut_radius_samples(panel.source_dxf)
+        if abs(abs(radius) - 0.375) <= 0.03125
+    ]
+    if len(slot_samples) != 4:
+        return False
+
+    side_band = min(2.0, width * 0.25)
+    if side_band <= 0 or side_band * 2 >= width:
+        return False
+    left_y = sorted(y for x, y in slot_samples if x - min_x <= side_band)
+    right_y = sorted(y for x, y in slot_samples if max_x - x <= side_band)
+    if len(left_y) != 2 or len(right_y) != 2:
+        return False
+
+    y_tolerance = max(0.125, height * 0.005)
+    if any(abs(left - right) > y_tolerance for left, right in zip(left_y, right_y)):
+        return False
+    minimum_slot_span = max(8.0, height * 0.35)
+    return (
+        left_y[1] - left_y[0] >= minimum_slot_span
+        and right_y[1] - right_y[0] >= minimum_slot_span
+        and min(left_y + right_y) >= min_y - y_tolerance
+        and max(left_y + right_y) <= max_y + y_tolerance
+    )
+
+
 def adjust_denver_panel_square_side(panel: Panel, config: dict[str, Any]) -> None:
     if panel.source_dxf is None:
+        return
+    if has_bilateral_scu4_denver_orientation(panel):
+        panel.rotation_degrees = -90.0
+        panel.indicator_corner = "top_right"
+        panel.reasons.append("bilateral SCU4 panel keeps bottom-left tempered logo opposite top-right marker")
         return
     square_corners = dxf_square_corners(panel.source_dxf)
     square_sides = dxf_square_sides(panel.source_dxf)

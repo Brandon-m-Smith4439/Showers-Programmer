@@ -3,14 +3,14 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem ================================================================
 rem Shower Programmer one-folder EXE rebuild
-rem BUILD_SCRIPT_V28_1
+rem BUILD_SCRIPT_V36
 rem
 rem Safe rebuild behavior:
 rem - Rebuilds the executable and _internal runtime.
 rem - Refreshes program Assets.
 rem - Preserves existing local Input, Output, history, manifests,
 rem   settings, archives, and user-created runtime data.
-rem - Verifies the V28 combined Processed and expanded Issues overview contract before building.
+rem - Verifies the V29 exact Job Nr and transactional sketch-edit contract before building.
 rem - BUILD FIX V28.1: uses Windows CRLF and inline file checks; no CALL subroutine labels.
 rem - Runs a self-test inside the staged EXE before deployment.
 rem ================================================================
@@ -137,11 +137,11 @@ echo Checking Python syntax for all backend modules...
 %PY_CMD% -m py_compile "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%"
 if errorlevel 1 goto failed
 
-echo Verifying integrated GUI version and Job Nr/A&W correlation contracts...
-findstr /C:"ORDER_OVERVIEW_SIMPLIFICATION_V28" "%SOURCE_GUI%" >NUL
+echo Verifying integrated GUI version and selected-order memory contracts...
+findstr /C:"BILATERAL_SCU4_DENVER_ORIENTATION_V36" "%SOURCE_GUI%" >NUL
 if errorlevel 1 (
-    echo ERROR: Backend\shower_programmer_gui.py is not the order-overview simplification V28 file.
-    echo Replace it with the supplied V28 GUI before rebuilding.
+    echo ERROR: Backend\shower_programmer_gui.py is not the persisted-status/scoped-memory V30 file.
+    echo Replace it with the supplied V30 GUI before rebuilding.
     goto failed
 )
 %PY_CMD% -c "import sys; sys.path.insert(0, r'%CD%\Backend'); import shower_programmer_gui as gui; gui.validate_runtime_contracts(); print('  GUI runtime contracts passed.')"
@@ -194,7 +194,7 @@ if not exist "%SELF_TEST_REPORT%" (
     echo ERROR: The staged EXE did not create its self-test report.
     goto failed
 )
-%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'ORDER_OVERVIEW_SIMPLIFICATION_V28', d; print('  Packaged EXE self-test passed.')"
+%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'BILATERAL_SCU4_DENVER_ORIENTATION_V36', d; print('  Packaged EXE self-test passed.')"
 if errorlevel 1 (
     type "%SELF_TEST_REPORT%"
     goto failed
@@ -235,9 +235,9 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'"`) do set "BUILD_TIME=%%I"
 
 if defined BUILD_SHA (
-    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"ORDER_OVERVIEW_SIMPLIFICATION_V28","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"BILATERAL_SCU4_DENVER_ORIENTATION_V36","built_at":"%BUILD_TIME%","method":"build"}
 ) else if defined EXE_SHA256 (
-    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"ORDER_OVERVIEW_SIMPLIFICATION_V28","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"BILATERAL_SCU4_DENVER_ORIENTATION_V36","built_at":"%BUILD_TIME%","method":"build"}
 )
 
 rem Refresh only program-controlled build files. Do not remove Input, Output,

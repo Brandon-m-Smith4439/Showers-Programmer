@@ -15,9 +15,15 @@
 # JOB_NUMBER_CORRELATION_V25: separate Job Nr/A&W identities and place Mark Checked beside A&W.
 # ORDER_OVERVIEW_HEADERS_V27: place Sent beside Processed and add polished drag-grip headers.
 # ORDER_OVERVIEW_SIMPLIFICATION_V28: combine Processed/date, remove PDF, and expand Issues.
+# EXACT_REVISION_AND_EDIT_HISTORY_V29: exact dotted-revision matching plus transactional Undo/Redo sketch edits.
+# PERSISTED_STATUS_AND_SCOPED_MEMORY_V30: restore processed colors and clear only selected-order memory.
+# ROTATION_ARROW_ICON_CLARITY_V34: full curved arrows with action-accurate directional heads.
+# PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: confirm ambiguous PPH hinge sides from paired DXF radii.
+# BILATERAL_SCU4_DENVER_ORIENTATION_V36: flip proven symmetric four-slot panels to the top-right marker.
 
 from __future__ import annotations
 
+import copy
 import os
 import hashlib
 import html
@@ -36,6 +42,7 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -380,6 +387,8 @@ class ShowerProgrammerApp:
         self.update_progress_bar: ModernProgressBar | None = None
         self.managed_page_windows: dict[str, tk.Toplevel] = {}
         self.recent_external_page_launches: dict[str, float] = {}
+        self._manual_overrides_session_output: Path | None = None
+        self._manual_overrides_session_data: dict[str, object] | None = None
 
         self.configure_styles()
         self.build_ui()
@@ -1479,6 +1488,10 @@ class ShowerProgrammerApp:
             self.TREE_HEADER_TEXT = "#d0d5dd"
             self.TREE_SELECTED_BG = "#1d4ed8"
             self.TREE_SELECTED_TEXT = "#ffffff"
+            self.TREE_SENT_BG = "#174832"
+            self.TREE_CHECKED_BG = "#2b3248"
+            self.TREE_SENT_CHECKED_BG = "#1b4132"
+            self.TREE_CHECKED_TEXT = "#b9c5f5"
             self.PREVIEW_BG = "#0f172a"
             self.PREVIEW_CARD_BG = "#111827"
             self.DIVIDER = "#344054"
@@ -1516,6 +1529,10 @@ class ShowerProgrammerApp:
             self.TREE_HEADER_TEXT = "#344054"
             self.TREE_SELECTED_BG = "#dbeafe"
             self.TREE_SELECTED_TEXT = "#111827"
+            self.TREE_SENT_BG = "#d9f2e2"
+            self.TREE_CHECKED_BG = "#eef1f8"
+            self.TREE_SENT_CHECKED_BG = "#d5edde"
+            self.TREE_CHECKED_TEXT = "#4f5f96"
             self.PREVIEW_BG = "#eef4fa"
             self.PREVIEW_CARD_BG = "#fbfdff"
             self.DIVIDER = "#eef2f7"
@@ -1967,11 +1984,19 @@ class ShowerProgrammerApp:
             arc(4.7, 5.0, 19.3, 19.6, 35, 305)
             poly([(17.8, 5.3), (20.8, 5.5), (19.2, 8.2)], fill=color)
         elif icon == "rotate_left":
-            arc(5, 5, 19, 19, 70, 340)
-            poly([(6.9, 4.9), (4.3, 8.1), (8.4, 8.0)], fill=color)
+            arc(4.5, 4.5, 19.5, 19.5, 250, 360, width=stroke)
+            arc(4.5, 4.5, 19.5, 19.5, 0, 205, width=stroke)
+            poly([(4.3, 9.1), (5.6, 4.8), (9.2, 7.9)], fill=color)
         elif icon == "rotate_right":
-            arc(5, 5, 19, 19, 200, 110)
-            poly([(17.1, 4.9), (19.7, 8.1), (15.6, 8.0)], fill=color)
+            arc(4.5, 4.5, 19.5, 19.5, 335, 360, width=stroke)
+            arc(4.5, 4.5, 19.5, 19.5, 0, 290, width=stroke)
+            poly([(19.7, 9.1), (14.8, 7.9), (18.4, 4.8)], fill=color)
+        elif icon == "undo":
+            arc(5, 6, 20, 20, 210, 30)
+            poly([(7.3, 5.0), (3.5, 8.5), (8.5, 9.0)], fill=color)
+        elif icon == "redo":
+            arc(4, 6, 19, 20, 150, 330)
+            poly([(16.7, 5.0), (20.5, 8.5), (15.5, 9.0)], fill=color)
         elif icon == "link":
             rect(3.8, 9.4, 12.6, 15.2, radius=2.8, width=thin)
             rect(11.4, 8.8, 20.2, 14.6, radius=2.8, width=thin)
@@ -2225,7 +2250,13 @@ class ShowerProgrammerApp:
         self.make_sidebar_button(workflow, "Process Selected", "check_circle", self.process_selected).pack(fill=tk.X, pady=(0, 6))
         self.make_sidebar_button(workflow, "Process All", "play", self.process_all_orders).pack(fill=tk.X, pady=(0, 6))
         self.make_sidebar_button(workflow, "Review Order", "eye", self.open_order_review).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(workflow, "Mark Checked", "check", self.mark_selected_orders_checked).pack(fill=tk.X)
+        self.checked_action_button = self.make_sidebar_button(
+            workflow,
+            "Mark Checked",
+            "check",
+            self.toggle_selected_orders_checked,
+        )
+        self.checked_action_button.pack(fill=tk.X)
 
         options_card = ctk.CTkFrame(
             center_stack,
@@ -2442,6 +2473,19 @@ class ShowerProgrammerApp:
         self.tree.tag_configure("ISSUES", foreground=self.WARNING)
         self.tree.tag_configure("FAILED", foreground=self.DANGER)
         self.tree.tag_configure("SKIPPED", foreground=self.DANGER)
+        self.tree.tag_configure("SENT", background=self.TREE_SENT_BG)
+        self.tree.tag_configure(
+            "CHECKED",
+            foreground=self.TREE_CHECKED_TEXT,
+            background=self.TREE_CHECKED_BG,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.tree.tag_configure(
+            "SENT_CHECKED",
+            foreground=self.TREE_CHECKED_TEXT,
+            background=self.TREE_SENT_CHECKED_BG,
+            font=("Segoe UI", 10, "bold"),
+        )
         self.tree.bind("<Double-1>", self.open_order_review)
         self.tree.bind("<Button-3>", self.open_orders_context_menu)
         self.tree.bind("<<TreeviewSelect>>", self.on_orders_tree_selection, add="+")
@@ -2574,6 +2618,111 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 11, "bold"),
             **self.ctk_button_icon(icon_name, 15, self.ACCENT_DARK, "left"),
         )
+
+    def attach_tooltip(self, widget: Any, text: str) -> None:
+        """Show a compact native tooltip for icon-only controls."""
+        tooltip: dict[str, Any] = {"after_id": None, "window": None}
+
+        def hide(_event: tk.Event | None = None) -> None:
+            after_id = tooltip.get("after_id")
+            if after_id is not None:
+                try:
+                    widget.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                tooltip["after_id"] = None
+            window = tooltip.get("window")
+            if window is not None:
+                try:
+                    window.destroy()
+                except tk.TclError:
+                    pass
+                tooltip["window"] = None
+
+        def show() -> None:
+            tooltip["after_id"] = None
+            try:
+                if not widget.winfo_exists():
+                    return
+                window = tk.Toplevel(widget)
+                window.wm_overrideredirect(True)
+                window.attributes("-topmost", True)
+                x = widget.winfo_rootx() + max(4, widget.winfo_width() // 2)
+                y = widget.winfo_rooty() + widget.winfo_height() + 6
+                window.geometry(f"+{x}+{y}")
+                tk.Label(
+                    window,
+                    text=text,
+                    bg="#101828",
+                    fg="#ffffff",
+                    padx=8,
+                    pady=4,
+                    font=("Segoe UI", 9),
+                    relief=tk.SOLID,
+                    borderwidth=1,
+                ).pack()
+                tooltip["window"] = window
+            except tk.TclError:
+                tooltip["window"] = None
+
+        def schedule(_event: tk.Event | None = None) -> None:
+            hide()
+            try:
+                tooltip["after_id"] = widget.after(450, show)
+            except tk.TclError:
+                pass
+
+        widget.bind("<Enter>", schedule, add="+")
+        widget.bind("<Leave>", hide, add="+")
+        widget.bind("<ButtonPress>", hide, add="+")
+
+    def make_header_icon_button(
+        self,
+        parent: Any,
+        icon_name: str,
+        tooltip: str,
+        command: Callable[..., object],
+    ) -> Any:
+        button = ctk.CTkButton(
+            parent,
+            text="",
+            command=command,
+            width=36,
+            height=36,
+            corner_radius=10,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            image=self.ctk_button_icon(icon_name, 16, self.ACCENT_DARK).get("image"),
+        )
+        self.attach_tooltip(button, tooltip)
+        return button
+
+    def make_header_refresh_button(
+        self,
+        parent: Any,
+        command: Callable[..., object],
+        tooltip: str,
+    ) -> Any:
+        """Create a labeled refresh action that is distinct from view rotation."""
+        button = ctk.CTkButton(
+            parent,
+            text="Refresh",
+            command=command,
+            width=94,
+            height=36,
+            corner_radius=10,
+            fg_color=self.ACCENT_LIGHT,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.ACCENT,
+            text_color=self.ACCENT_DARK,
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("refresh", 15, self.ACCENT_DARK, "left"),
+        )
+        self.attach_tooltip(button, tooltip)
+        return button
 
     def make_section(self, parent: Any, title: str, icon_name: str | None = None) -> Any:
         frame = ctk.CTkFrame(
@@ -3173,7 +3322,7 @@ class ShowerProgrammerApp:
 
     def config_with_manual_overrides(self, folder: Path, output_dir: Path) -> dict[str, object]:
         config = programmer.load_config(self.config_path(folder))
-        manual = self.load_manual_overrides_for_output(output_dir)
+        manual = self.manual_overrides_for_output(output_dir)
         return programmer.merge_item_overrides(config, manual)
 
     def manual_overrides_path(self) -> Path:
@@ -3192,13 +3341,62 @@ class ShowerProgrammerApp:
         return data if isinstance(data, dict) else {}
 
     def load_manual_overrides(self) -> dict[str, object]:
-        return self.load_manual_overrides_for_output(Path(self.output_dir_var.get()).resolve())
+        return self.manual_overrides_for_output(Path(self.output_dir_var.get()).resolve())
 
     def save_manual_overrides(self, data: dict[str, object]) -> None:
-        path = self.manual_overrides_path()
+        output_dir = Path(self.output_dir_var.get()).resolve()
+        session_output = getattr(self, "_manual_overrides_session_output", None)
+        session_data = getattr(self, "_manual_overrides_session_data", None)
+        if (
+            session_output is not None
+            and session_data is not None
+            and self.same_path(session_output, output_dir)
+        ):
+            self._manual_overrides_session_data = copy.deepcopy(data)
+            return
+        self.save_manual_overrides_for_output(output_dir, data)
+
+    def manual_overrides_for_output(self, output_dir: Path) -> dict[str, object]:
+        output_dir = output_dir.resolve()
+        session_output = getattr(self, "_manual_overrides_session_output", None)
+        session_data = getattr(self, "_manual_overrides_session_data", None)
+        if (
+            session_output is not None
+            and session_data is not None
+            and self.same_path(session_output, output_dir)
+        ):
+            return copy.deepcopy(session_data)
+        return self.load_manual_overrides_for_output(output_dir)
+
+    @staticmethod
+    def save_manual_overrides_for_output(output_dir: Path, data: dict[str, object]) -> None:
+        path = output_dir / "manual_overrides.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
+        os.replace(temporary, path)
+
+    def begin_manual_overrides_session(self, output_dir: Path) -> None:
+        output_dir = output_dir.resolve()
+        if getattr(self, "_manual_overrides_session_output", None) is not None:
+            raise RuntimeError("Another sketch editing session is already active.")
+        self._manual_overrides_session_output = output_dir
+        self._manual_overrides_session_data = self.load_manual_overrides_for_output(output_dir)
+
+    def commit_manual_overrides_session(self) -> None:
+        session_output = getattr(self, "_manual_overrides_session_output", None)
+        session_data = getattr(self, "_manual_overrides_session_data", None)
+        if session_output is None or session_data is None:
+            return
+        self.save_manual_overrides_for_output(
+            session_output,
+            session_data,
+        )
+
+    def end_manual_overrides_session(self) -> None:
+        self._manual_overrides_session_output = None
+        self._manual_overrides_session_data = None
 
     @staticmethod
     def load_processing_history_for_output(output_dir: Path) -> dict[str, object]:
@@ -3391,9 +3589,30 @@ class ShowerProgrammerApp:
             return "Previous"
         try:
             stamp = datetime.fromisoformat(sent_at)
-            return f"Yes {stamp:%m/%d/%y}"
+            return f"Sent {stamp:%m/%d/%y}"
         except ValueError:
-            return "Yes"
+            return "Sent"
+
+    def order_tree_tags_for_values(self, values: tuple[object, ...] | list[object]) -> tuple[str, ...]:
+        """Combine processing status with subtle checked/sent row highlighting."""
+        if len(values) < len(self.ORDER_TREE_COLUMNS):
+            return ()
+        status = str(values[self.ORDER_TREE_INDEX["status"]]).strip().upper()
+        sent_text = str(values[self.ORDER_TREE_INDEX["sent"]]).strip().casefold()
+        review_text = str(values[self.ORDER_TREE_INDEX["review"]]).strip().casefold()
+        is_sent = sent_text == "sent" or sent_text.startswith("sent ")
+        is_checked = "checked" in review_text
+        if is_sent and is_checked:
+            return ("SENT_CHECKED",)
+        if is_checked:
+            return ("CHECKED",)
+
+        tags: list[str] = []
+        if status in {"OK", "READY", "ISSUES", "FAILED", "SKIPPED"}:
+            tags.append(status)
+        if is_sent:
+            tags.append("SENT")
+        return tuple(tags)
 
     def update_sent_status_for_orders(self, aw_orders: list[str]) -> None:
         for aw_order in aw_orders:
@@ -3406,7 +3625,20 @@ class ShowerProgrammerApp:
                 continue
             if len(values) > self.ORDER_TREE_INDEX["sent"]:
                 values[self.ORDER_TREE_INDEX["sent"]] = self.sent_summary_for_order(str(aw_order))
-                self.tree.item(row_id, values=values)
+                self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+
+    def persisted_display_status(self, aw_order: str, current_status: str) -> str:
+        """Restore the last processed color when a fresh scan only reports READY."""
+        status = str(current_status or "").strip().upper() or "READY"
+        if status != "READY":
+            return status
+        history = self.history_for_order(aw_order)
+        if not str(history.get("last_processed", "")).strip():
+            return status
+        historical_status = str(history.get("status", "")).strip().upper()
+        if historical_status in {"ISSUES", "FAILED", "SKIPPED"}:
+            return historical_status
+        return "OK"
 
     def install_process_batches(self, batches: list[dict[str, object]]) -> None:
         """Create process-list parent rows and map each active order into its batch."""
@@ -3469,8 +3701,9 @@ class ShowerProgrammerApp:
 
     def insert_or_update_result(self, result: shower_batch.BatchJobResult) -> None:
         processed = self.processed_summary_for_order(result.aw_order)
+        display_status = self.persisted_display_status(result.aw_order, result.status)
         values = (
-            result.status,
+            display_status,
             processed,
             result.delivery_date,
             result.aw_order,
@@ -3482,9 +3715,9 @@ class ShowerProgrammerApp:
             self.issue_summary(result.issues),
         )
         row_id = self.tree_rows.get(result.aw_order)
-        tag = result.status if result.status in {"OK", "READY", "ISSUES", "FAILED", "SKIPPED"} else ""
+        tags = self.order_tree_tags_for_values(values)
         if row_id:
-            self.tree.item(row_id, text=f"Order {result.aw_order}", values=values, tags=(tag,))
+            self.tree.item(row_id, text=f"Order {result.aw_order}", values=values, tags=tags)
         else:
             parent_id = self.parent_tree_row_for_order(result.aw_order)
             row_id = self.tree.insert(
@@ -3492,7 +3725,7 @@ class ShowerProgrammerApp:
                 tk.END,
                 text=f"Order {result.aw_order}",
                 values=values,
-                tags=(tag,),
+                tags=tags,
             )
             self.tree_rows[result.aw_order] = row_id
             order = self.order_by_aw.get(str(result.aw_order))
@@ -4014,11 +4247,11 @@ class ShowerProgrammerApp:
                 checked.append(f"P{int(key)} checked")
         return ", ".join(sorted(checked, key=lambda text: int(text.split()[0][1:])))
 
-    def order_review_is_complete(self, order: shower_batch.ProcessOrder) -> bool:
-        try:
-            data = self.load_manual_overrides()
-        except Exception:
-            return False
+    @staticmethod
+    def order_review_is_complete_in_overrides(
+        order: shower_batch.ProcessOrder,
+        data: dict[str, object],
+    ) -> bool:
         item_overrides = data.get("item_overrides", {})
         if not isinstance(item_overrides, dict):
             return False
@@ -4036,6 +4269,91 @@ class ShowerProgrammerApp:
                 return False
         return True
 
+    def order_review_is_complete(self, order: shower_batch.ProcessOrder) -> bool:
+        try:
+            data = self.load_manual_overrides()
+        except Exception:
+            return False
+        return self.order_review_is_complete_in_overrides(order, data)
+
+    @staticmethod
+    def set_order_checked_state_in_overrides(
+        data: dict[str, object],
+        aw_orders: set[str],
+        checked: bool,
+    ) -> int:
+        """Set full-order review state while preserving unrelated manual edits."""
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+
+        changed_orders = 0
+        for aw_order in {str(value) for value in aw_orders}:
+            order_overrides = item_overrides.get(aw_order, {})
+            if not isinstance(order_overrides, dict):
+                order_overrides = {}
+
+            changed = False
+            if checked:
+                if order_overrides.get("_order_checked") is not True:
+                    order_overrides["_order_checked"] = True
+                    changed = True
+                item_overrides[aw_order] = order_overrides
+            else:
+                if "_order_checked" in order_overrides:
+                    order_overrides.pop("_order_checked", None)
+                    changed = True
+                empty_items: list[str] = []
+                for item_key, item_override in order_overrides.items():
+                    if not str(item_key).isdigit() or not isinstance(item_override, dict):
+                        continue
+                    if "checked" in item_override:
+                        item_override.pop("checked", None)
+                        changed = True
+                    if not item_override:
+                        empty_items.append(str(item_key))
+                for item_key in empty_items:
+                    order_overrides.pop(item_key, None)
+                if order_overrides:
+                    item_overrides[aw_order] = order_overrides
+                else:
+                    item_overrides.pop(aw_order, None)
+
+            if changed:
+                changed_orders += 1
+        return changed_orders
+
+    def selected_orders_are_all_checked(
+        self,
+        orders: list[shower_batch.ProcessOrder] | None = None,
+    ) -> bool:
+        selected = list(orders) if orders is not None else self.selected_orders()
+        if not selected:
+            return False
+        try:
+            data = self.load_manual_overrides()
+        except Exception:
+            return False
+        return all(self.order_review_is_complete_in_overrides(order, data) for order in selected)
+
+    def update_checked_action_button(self) -> None:
+        button = getattr(self, "checked_action_button", None)
+        if button is None:
+            return
+        try:
+            if not button.winfo_exists():
+                return
+            uncheck = self.selected_orders_are_all_checked()
+            icon_name = "minus_circle" if uncheck else "check"
+            icon_color = "#d0d5dd" if bool(self.dark_mode_var.get()) else self.ACCENT_DARK
+            button.configure(
+                text="Uncheck Selected" if uncheck else "Mark Checked",
+                image=self.ctk_button_icon(icon_name, 17, icon_color).get("image"),
+            )
+        except (AttributeError, tk.TclError):
+            return
+
     def tree_values_for_order(self, aw_order: str) -> tuple[str, ...]:
         row_id = self.tree_rows.get(aw_order)
         if not row_id:
@@ -4048,30 +4366,48 @@ class ShowerProgrammerApp:
         return values[self.ORDER_TREE_INDEX["issues"]] if len(values) > self.ORDER_TREE_INDEX["issues"] else ""
 
     def mark_selected_orders_checked(self) -> None:
+        self.set_selected_orders_checked(True)
+
+    def uncheck_selected_orders(self) -> None:
+        self.set_selected_orders_checked(False)
+
+    def toggle_selected_orders_checked(self) -> None:
         orders = self.selected_orders()
         if not orders:
             messagebox.showinfo("No selection", "Select one or more orders first.")
             return
+        self.set_selected_orders_checked(not self.selected_orders_are_all_checked(orders), orders)
+
+    def set_selected_orders_checked(
+        self,
+        checked: bool,
+        orders: list[shower_batch.ProcessOrder] | None = None,
+    ) -> None:
+        orders = list(orders) if orders is not None else self.selected_orders()
+        if not orders:
+            messagebox.showinfo("No selection", "Select one or more orders first.")
+            return
         data = self.load_manual_overrides()
-        item_overrides = data.setdefault("item_overrides", {})
-        if not isinstance(item_overrides, dict):
-            item_overrides = {}
-            data["item_overrides"] = item_overrides
+        self.set_order_checked_state_in_overrides(
+            data,
+            {str(order.aw_order) for order in orders},
+            checked,
+        )
+        self.save_manual_overrides(data)
+        review_text = "Order checked" if checked else ""
         for order in orders:
-            order_overrides = item_overrides.setdefault(order.aw_order, {})
-            if not isinstance(order_overrides, dict):
-                order_overrides = {}
-                item_overrides[order.aw_order] = order_overrides
-            order_overrides["_order_checked"] = True
             row_id = self.tree_rows.get(order.aw_order)
             if row_id:
                 values = list(self.tree.item(row_id, "values"))
                 if len(values) > self.ORDER_TREE_INDEX["review"]:
-                    values[self.ORDER_TREE_INDEX["review"]] = "Order checked"
-                    self.tree.item(row_id, values=values)
-        self.save_manual_overrides(data)
+                    values[self.ORDER_TREE_INDEX["review"]] = review_text
+                    self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
         self.update_summary_strip()
-        self.status_var.set(f"Marked {len(orders)} order(s) checked.")
+        self.update_checked_action_button()
+        if checked:
+            self.status_var.set(f"Marked {len(orders)} order(s) checked.")
+        else:
+            self.status_var.set(f"Unchecked {len(orders)} order(s).")
 
     def order_for_tree_row(self, row_id: str) -> shower_batch.ProcessOrder | None:
         if not row_id:
@@ -4124,7 +4460,13 @@ class ShowerProgrammerApp:
         else:
             return "break"
 
+        uncheck_selected = self.selected_orders_are_all_checked(selected_orders)
         actions = [
+            {
+                "text": "Uncheck Selected" if uncheck_selected else "Mark Checked",
+                "icon": "minus_circle" if uncheck_selected else "check",
+                "command": self.toggle_selected_orders_checked,
+            },
             {
                 "text": action_text,
                 "icon": "trash",
@@ -4343,6 +4685,7 @@ class ShowerProgrammerApp:
                 if child_id in self.tree_row_orders and child_id not in expanded:
                     expanded.append(child_id)
         if expanded == selected:
+            self.update_checked_action_button()
             return
         self._expanding_batch_selection = True
         try:
@@ -4353,6 +4696,7 @@ class ShowerProgrammerApp:
             pass
         finally:
             self._expanding_batch_selection = False
+        self.update_checked_action_button()
 
     def selected_orders(self) -> list[shower_batch.ProcessOrder]:
         selected_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -4777,24 +5121,38 @@ class ShowerProgrammerApp:
         return removed
 
     @staticmethod
-    def clear_generated_sketch_artifacts(output_dir: Path) -> int:
-        """Delete generated sketch/review files across all nested run folders."""
+    def clear_generated_sketch_artifacts(
+        output_dir: Path,
+        aw_orders: set[str] | None = None,
+    ) -> int:
+        """Delete generated sketch files, optionally only for selected orders."""
+        filtered = aw_orders is not None
+        order_filter = {str(value) for value in aw_orders or set()}
+        sketch_patterns = (
+            tuple(f"{aw_order}.pdf" for aw_order in sorted(order_filter))
+            if filtered
+            else ("*.pdf",)
+        )
         folders_and_patterns: list[tuple[Path, tuple[str, ...]]] = [
-            (output_dir / "Sketches", ("*.pdf",)),
-            (output_dir / "Reviews", ("sketch_review_*.pdf", "debug_*.png", "clean_*.png")),
+            (output_dir / "Sketches", sketch_patterns),
         ]
+        if not filtered:
+            folders_and_patterns.append(
+                (output_dir / "Reviews", ("sketch_review_*.pdf", "debug_*.png", "clean_*.png"))
+            )
         runs_dir = output_dir / "Runs"
         if runs_dir.exists():
             folders_and_patterns.extend(
-                (folder, ("*.pdf",))
+                (folder, sketch_patterns)
                 for folder in runs_dir.rglob("Sketches")
                 if folder.is_dir()
             )
-            folders_and_patterns.extend(
-                (folder, ("sketch_review_*.pdf", "debug_*.png", "clean_*.png"))
-                for folder in runs_dir.rglob("Reviews")
-                if folder.is_dir()
-            )
+            if not filtered:
+                folders_and_patterns.extend(
+                    (folder, ("sketch_review_*.pdf", "debug_*.png", "clean_*.png"))
+                    for folder in runs_dir.rglob("Reviews")
+                    if folder.is_dir()
+                )
 
         removed_files = 0
         seen: set[Path] = set()
@@ -4816,13 +5174,14 @@ class ShowerProgrammerApp:
                     except OSError as exc:
                         failures.append(f"{artifact}: {exc}")
 
-        for folder in output_dir.glob("DebugClean*"):
-            if folder.is_dir():
-                try:
-                    shutil.rmtree(folder)
-                    removed_files += 1
-                except OSError as exc:
-                    failures.append(f"{folder}: {exc}")
+        if not filtered:
+            for folder in output_dir.glob("DebugClean*"):
+                if folder.is_dir():
+                    try:
+                        shutil.rmtree(folder)
+                        removed_files += 1
+                    except OSError as exc:
+                        failures.append(f"{folder}: {exc}")
         if failures:
             raise RuntimeError(
                 "Some generated sketch files could not be deleted. Close Adobe Reader, your browser PDF tab, "
@@ -4832,24 +5191,36 @@ class ShowerProgrammerApp:
         return removed_files
 
     @staticmethod
-    def clear_generated_program_artifacts(output_dir: Path) -> int:
-        """Delete generated DXFs and DXF review files across nested run folders."""
+    def clear_generated_program_artifacts(
+        output_dir: Path,
+        aw_orders: set[str] | None = None,
+    ) -> int:
+        """Delete generated DXFs, optionally only for selected orders."""
+        filtered = aw_orders is not None
+        order_filter = {str(value) for value in aw_orders or set()}
+        program_patterns = (
+            tuple(f"{aw_order}*.dxf" for aw_order in sorted(order_filter))
+            if filtered
+            else ("*.dxf",)
+        )
         folders_and_patterns: list[tuple[Path, tuple[str, ...]]] = [
-            (output_dir / "Programs", ("*.dxf",)),
-            (output_dir / "Reviews", ("dxf_review_*.html",)),
+            (output_dir / "Programs", program_patterns),
         ]
+        if not filtered:
+            folders_and_patterns.append((output_dir / "Reviews", ("dxf_review_*.html",)))
         runs_dir = output_dir / "Runs"
         if runs_dir.exists():
             folders_and_patterns.extend(
-                (folder, ("*.dxf",))
+                (folder, program_patterns)
                 for folder in runs_dir.rglob("Programs")
                 if folder.is_dir()
             )
-            folders_and_patterns.extend(
-                (folder, ("dxf_review_*.html",))
-                for folder in runs_dir.rglob("Reviews")
-                if folder.is_dir()
-            )
+            if not filtered:
+                folders_and_patterns.extend(
+                    (folder, ("dxf_review_*.html",))
+                    for folder in runs_dir.rglob("Reviews")
+                    if folder.is_dir()
+                )
 
         removed_files = 0
         seen: set[Path] = set()
@@ -5625,6 +5996,11 @@ a {{ color: #1f4e79; }}
         if not job.panels:
             messagebox.showinfo("No pieces", "No piece pages were found for this order.")
             return
+        try:
+            self.begin_manual_overrides_session(output_dir)
+        except Exception as exc:
+            messagebox.showerror("Sketch editor unavailable", str(exc))
+            return
 
         dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
         self.register_page_window("review_order", dialog)
@@ -5705,7 +6081,7 @@ a {{ color: #1f4e79; }}
         control_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         control_panel.grid_propagate(False)
         control_panel.grid_columnconfigure(0, weight=1)
-        control_panel.grid_rowconfigure(7, weight=1)
+        control_panel.grid_rowconfigure(5, weight=1)
 
         def control_section(parent: Any, row: int, title: str) -> Any:
             section = ctk.CTkFrame(parent, fg_color="transparent")
@@ -5763,8 +6139,8 @@ a {{ color: #1f4e79; }}
         primary_section = control_section(control_panel, 2, "PRIMARY ACTIONS")
         primary_grid = ctk.CTkFrame(primary_section, fg_color="transparent")
         primary_grid.grid(row=1, column=0, sticky="ew")
-        primary_grid.grid_columnconfigure(0, weight=1)
-        ctk.CTkButton(
+        primary_grid.grid_columnconfigure((0, 1), weight=1)
+        save_edits_button = ctk.CTkButton(
             primary_grid,
             text="Save Sketch Edits",
             command=lambda: save_review_edits(),
@@ -5775,8 +6151,20 @@ a {{ color: #1f4e79; }}
             text_color="#ffffff",
             font=("Segoe UI", 12, "bold"),
             **self.ctk_button_icon("save", 16, "#ffffff", "left"),
-        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self.make_tool_button(primary_grid, "Process DXF Again", "play", lambda: process_review_order(), width=250).grid(row=1, column=0, sticky="ew")
+        )
+        undo_button = self.make_tool_button(primary_grid, "Undo", "undo", lambda: undo_review_edit(), width=74)
+        undo_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
+        redo_button = self.make_tool_button(primary_grid, "Redo", "redo", lambda: redo_review_edit(), width=74)
+        redo_button.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8))
+        undo_button.configure(state=tk.DISABLED)
+        redo_button.configure(state=tk.DISABLED)
+        save_edits_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.make_tool_button(primary_grid, "Process DXF Again", "play", lambda: process_review_order(), width=250).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+        )
 
         edit_section = control_section(control_panel, 3, "MARKUP TOOLS")
         sketch_edit_mode_button: Any | None = None
@@ -5806,23 +6194,8 @@ a {{ color: #1f4e79; }}
         self.make_tool_button(edit_grid, "Text Box", "text", lambda: add_text_box(), width=120).grid(row=1, column=0, sticky="ew", padx=(0, 6))
         self.make_tool_button(edit_grid, "Add X", "x", lambda: add_x_mark(), width=120).grid(row=1, column=1, sticky="ew")
 
-        view_section = control_section(control_panel, 4, "VIEW")
-        view_grid = ctk.CTkFrame(view_section, fg_color="transparent")
-        view_grid.grid(row=1, column=0, sticky="ew")
-        view_grid.grid_columnconfigure((0, 1), weight=1)
-        self.make_tool_button(view_grid, "Rotate Left", "rotate_left", lambda: rotate_view(-90), width=120).grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=(0, 7))
-        self.make_tool_button(view_grid, "Rotate Right", "rotate_right", lambda: rotate_view(90), width=120).grid(row=0, column=1, sticky="ew", pady=(0, 7))
-        self.make_tool_button(
-            view_grid,
-            "Open Sketch",
-            "pdf",
-            lambda: os.startfile(generated_sketch_path if generated_sketch_path.exists() else sketch_path),
-            width=120,
-        ).grid(row=1, column=0, sticky="ew", padx=(0, 6))
-        self.make_tool_button(view_grid, "Open DXF", "dxf", lambda: open_current_dxf(), width=120).grid(row=1, column=1, sticky="ew")
-
         status_card = ctk.CTkFrame(control_panel, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
-        status_card.grid(row=8, column=0, sticky="ew", padx=14, pady=(0, 14))
+        status_card.grid(row=4, column=0, sticky="ew", padx=14, pady=(0, 14))
         ctk.CTkLabel(
             status_card,
             text="Current status",
@@ -5841,7 +6214,7 @@ a {{ color: #1f4e79; }}
         ).pack(fill=tk.X, padx=12, pady=(0, 12))
 
         complete_card = ctk.CTkFrame(control_panel, fg_color=self.CARD_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
-        complete_card.grid(row=9, column=0, sticky="ew", padx=14, pady=(0, 14))
+        complete_card.grid(row=6, column=0, sticky="ew", padx=14, pady=(0, 14))
         ctk.CTkLabel(
             complete_card,
             text="Complete this order",
@@ -5872,11 +6245,29 @@ a {{ color: #1f4e79; }}
         sketch_header.grid_propagate(False)
         ctk.CTkLabel(sketch_header, text="", image=self.ctk_button_icon("pdf", 18, self.ACCENT_DARK).get("image"), width=24).pack(side=tk.LEFT, padx=(0, 8))
         ctk.CTkLabel(sketch_header, text="Sketch Preview", font=("Segoe UI", 15, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
-        ctk.CTkLabel(
+        self.make_tool_button(
             sketch_header,
-            text="No scrollbars - preview auto-fits the available space",
-            font=("Segoe UI", 10),
-            text_color=self.MUTED,
+            "Open Sketch",
+            "pdf",
+            lambda: os.startfile(generated_sketch_path if generated_sketch_path.exists() else sketch_path),
+            width=108,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        self.make_header_icon_button(
+            sketch_header,
+            "rotate_left",
+            "Rotate sketch view left",
+            lambda: rotate_view(-90),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_header_icon_button(
+            sketch_header,
+            "rotate_right",
+            "Rotate sketch view right",
+            lambda: rotate_view(90),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_header_refresh_button(
+            sketch_header,
+            lambda: refresh_sketch_preview(),
+            "Reload the latest sketch from disk",
         ).pack(side=tk.RIGHT)
         sketch_canvas = tk.Canvas(sketch_frame, background=self.PREVIEW_BG, highlightthickness=0, bd=0)
         sketch_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -5914,6 +6305,30 @@ a {{ color: #1f4e79; }}
         dxf_header.grid_propagate(False)
         ctk.CTkLabel(dxf_header, text="", image=self.ctk_button_icon("dxf", 18, self.ACCENT_DARK).get("image"), width=24).pack(side=tk.LEFT, padx=(0, 8))
         ctk.CTkLabel(dxf_header, text="DXF Reference", font=("Segoe UI", 15, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        self.make_tool_button(
+            dxf_header,
+            "Open DXF",
+            "dxf",
+            lambda: open_current_dxf(),
+            width=96,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        self.make_header_icon_button(
+            dxf_header,
+            "rotate_left",
+            "Rotate and reprocess DXF left",
+            lambda: rotate_dxf_and_process(-90),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_header_icon_button(
+            dxf_header,
+            "rotate_right",
+            "Rotate and reprocess DXF right",
+            lambda: rotate_dxf_and_process(90),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self.make_header_refresh_button(
+            dxf_header,
+            lambda: refresh_dxf_preview(),
+            "Reload the latest DXF from disk",
+        ).pack(side=tk.RIGHT)
         dxf_canvas = tk.Canvas(dxf_frame, background=self.PREVIEW_CARD_BG, highlightthickness=0, bd=0)
         dxf_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
 
@@ -5941,12 +6356,39 @@ a {{ color: #1f4e79; }}
             "show_sketch_marks": not sketch_output_skipped,
             "sketch_output_skipped": sketch_output_skipped,
             "dxf_output_skipped": dxf_output_skipped,
+            "sketch_preview_reader": source_reader,
+            "sketch_preview_path": job.pdf_path,
+            "embedded_sketch_preview": False,
             "redraw_after_id": None,
+            "undo_stack": [],
+            "redo_stack": [],
+            "drag_history_recorded": False,
+            "saved_manual_overrides": copy.deepcopy(self._manual_overrides_session_data or {}),
         }
+
+        def clear_sketch_preview_caches() -> None:
+            state["render_cache"] = {}
+            state["overlay_cache"] = {}
+            state["page_images"] = []
+            state["raster_rendering"] = set()
+
+        def reset_sketch_to_editable_preview() -> bool:
+            if not bool(state.get("embedded_sketch_preview")):
+                return False
+            state["sketch_preview_reader"] = source_reader
+            state["sketch_preview_path"] = job.pdf_path
+            state["embedded_sketch_preview"] = False
+            state["pdf_page_count"] = len(source_reader.pages)
+            clear_sketch_preview_caches()
+            return True
 
         def enable_sketch_editing() -> None:
             """Reveal proposed marks only when the user intentionally starts editing."""
+            returned_to_editor = reset_sketch_to_editable_preview()
             if bool(state.get("show_sketch_marks", True)):
+                if returned_to_editor:
+                    status.set("Returned to the editable sketch preview.")
+                    redraw()
                 return
             state["show_sketch_marks"] = True
             if sketch_edit_mode_button is not None:
@@ -5974,6 +6416,61 @@ a {{ color: #1f4e79; }}
             item = int(item_var.get().replace("P", ""))
             return next(panel for panel in job.panels if panel.item == item)
 
+        def update_history_buttons() -> None:
+            undo_button.configure(state=tk.NORMAL if state.get("undo_stack") else tk.DISABLED)
+            redo_button.configure(state=tk.NORMAL if state.get("redo_stack") else tk.DISABLED)
+
+        def capture_edit_snapshot() -> dict[str, Any]:
+            return {
+                "manual_overrides": copy.deepcopy(self._manual_overrides_session_data or {}),
+                "positions": copy.deepcopy(state.get("positions", {})),
+                "dirty": set(state.get("dirty", set())),
+                "pending_items": set(state.get("pending_items", set())),
+                "needs_output_save": bool(state.get("needs_output_save")),
+                "selected_key": state.get("selected_key"),
+            }
+
+        def record_undo_state() -> None:
+            undo_stack = state.setdefault("undo_stack", [])
+            undo_stack.append(capture_edit_snapshot())
+            if len(undo_stack) > 50:
+                del undo_stack[:-50]
+            state.setdefault("redo_stack", []).clear()
+            update_history_buttons()
+
+        def restore_edit_snapshot(snapshot: dict[str, Any], action: str) -> None:
+            self._manual_overrides_session_data = copy.deepcopy(snapshot.get("manual_overrides", {}))
+            state["positions"] = copy.deepcopy(snapshot.get("positions", {}))
+            state["dirty"] = set(snapshot.get("dirty", set()))
+            state["pending_items"] = set(snapshot.get("pending_items", set()))
+            state["needs_output_save"] = bool(snapshot.get("needs_output_save"))
+            state["selected_key"] = snapshot.get("selected_key")
+            state["drag_key"] = None
+            state["drag_history_recorded"] = False
+            refresh_prepared_job()
+            redraw()
+            status.set(f"{action} sketch edit on {job.aw_order}.{selected_panel().item}.")
+
+        def undo_review_edit() -> str:
+            undo_stack = state.setdefault("undo_stack", [])
+            if not undo_stack:
+                status.set("Nothing to undo.")
+                return "break"
+            state.setdefault("redo_stack", []).append(capture_edit_snapshot())
+            restore_edit_snapshot(undo_stack.pop(), "Undid")
+            update_history_buttons()
+            return "break"
+
+        def redo_review_edit() -> str:
+            redo_stack = state.setdefault("redo_stack", [])
+            if not redo_stack:
+                status.set("Nothing to redo.")
+                return "break"
+            state.setdefault("undo_stack", []).append(capture_edit_snapshot())
+            restore_edit_snapshot(redo_stack.pop(), "Redid")
+            update_history_buttons()
+            return "break"
+
         def has_pending_item_edits(item_number: int | None = None) -> bool:
             dirty = state.get("dirty", set())
             pending = state.get("pending_items", set())
@@ -5982,20 +6479,58 @@ a {{ color: #1f4e79; }}
             return any(item == item_number for item, _key in dirty) or item_number in pending
 
         def discard_pending_item_edits(item_number: int | None = None) -> None:
+            changed_items = {
+                int(item)
+                for item in state.get("pending_items", set())
+            }
+            changed_items.update(int(item) for item, _key in state.get("dirty", set()))
+            if item_number is not None:
+                changed_items = {item_number}
+
+            current_data = copy.deepcopy(self._manual_overrides_session_data or {})
+            saved_data = copy.deepcopy(state.get("saved_manual_overrides", {}))
+            current_items = current_data.setdefault("item_overrides", {})
+            saved_items = saved_data.get("item_overrides", {})
+            if not isinstance(current_items, dict):
+                current_items = {}
+                current_data["item_overrides"] = current_items
+            if not isinstance(saved_items, dict):
+                saved_items = {}
+            current_order = current_items.setdefault(job.aw_order, {})
+            saved_order = saved_items.get(job.aw_order, {})
+            if not isinstance(current_order, dict):
+                current_order = {}
+                current_items[job.aw_order] = current_order
+            if not isinstance(saved_order, dict):
+                saved_order = {}
+            for changed_item in changed_items:
+                key = str(changed_item)
+                if key in saved_order:
+                    current_order[key] = copy.deepcopy(saved_order[key])
+                else:
+                    current_order.pop(key, None)
+            if not current_order:
+                current_items.pop(job.aw_order, None)
+            self._manual_overrides_session_data = current_data
+
             if item_number is None:
                 state.get("dirty", set()).clear()
                 state.get("positions", {}).clear()
                 state.get("pending_items", set()).clear()
                 state["needs_output_save"] = False
-                return
-            state["dirty"] = {entry for entry in state.get("dirty", set()) if entry[0] != item_number}
-            state["positions"] = {
-                entry: position
-                for entry, position in state.get("positions", {}).items()
-                if entry[0] != item_number
-            }
-            state.get("pending_items", set()).discard(item_number)
-            state["needs_output_save"] = bool(state.get("dirty") or state.get("pending_items"))
+            else:
+                state["dirty"] = {entry for entry in state.get("dirty", set()) if entry[0] != item_number}
+                state["positions"] = {
+                    entry: position
+                    for entry, position in state.get("positions", {}).items()
+                    if entry[0] != item_number
+                }
+                state.get("pending_items", set()).discard(item_number)
+                state["needs_output_save"] = bool(state.get("dirty") or state.get("pending_items"))
+            state.setdefault("undo_stack", []).clear()
+            state.setdefault("redo_stack", []).clear()
+            update_history_buttons()
+            refresh_prepared_job()
 
         def confirm_save_before_leaving(item_number: int | None = None) -> bool:
             if not has_pending_item_edits(item_number):
@@ -6050,6 +6585,145 @@ a {{ color: #1f4e79; }}
             rotation_var.set((rotation_var.get() + delta) % 360)
             redraw()
 
+        def refresh_sketch_preview() -> None:
+            target = (
+                generated_sketch_path
+                if generated_sketch_path.exists() and not bool(state.get("sketch_output_skipped", False))
+                else job.pdf_path
+            )
+            try:
+                refreshed_reader = PdfReader(str(target))
+            except Exception as exc:
+                messagebox.showerror("Refresh Sketch failed", str(exc), parent=dialog)
+                return
+            state["sketch_preview_reader"] = refreshed_reader
+            state["sketch_preview_path"] = target
+            state["embedded_sketch_preview"] = not self.same_path(target, job.pdf_path)
+            state["pdf_page_count"] = len(refreshed_reader.pages)
+            clear_sketch_preview_caches()
+            self.clear_review_context_cache(process_order.aw_order)
+            redraw()
+            if bool(state.get("embedded_sketch_preview")):
+                suffix = " Unsaved GUI edits are preserved but hidden in this saved-file preview." if has_pending_item_edits() else ""
+                status.set(f"Refreshed saved sketch from {target.name}.{suffix}")
+            else:
+                status.set(f"Refreshed source sketch from {target.name}.")
+
+        def refresh_dxf_preview() -> None:
+            panel = selected_panel()
+            path = (
+                panel.source_dxf
+                if bool(state.get("dxf_output_skipped", False))
+                else panel.output_dxf if panel.output_dxf and panel.output_dxf.exists() else panel.source_dxf
+            )
+            if path is None or not path.exists():
+                messagebox.showinfo("No DXF", "No matching DXF exists for this piece.", parent=dialog)
+                return
+            state["dxf_preview_cache"] = {}
+            self.clear_review_context_cache(process_order.aw_order)
+            redraw()
+            status.set(f"Refreshed DXF preview from {path.name}.")
+
+        def rotate_dxf_and_process(delta: int) -> None:
+            nonlocal job, source_reader, sketch_reader, issues, config
+            panel = selected_panel()
+            if panel.source_dxf is None or panel.output_dxf is None or panel.skip_dxf:
+                messagebox.showinfo("No programmable DXF", "This piece does not have a programmable DXF.", parent=dialog)
+                return
+            if bool(self.skip_dxf_var.get()):
+                if not messagebox.askyesno(
+                    "Enable DXF output?",
+                    "Skip DXF output is currently selected. Enable DXF output and rotate this program?",
+                    parent=dialog,
+                ):
+                    return
+                self.skip_dxf_var.set(False)
+            if has_pending_item_edits() and not save_review_edits(show_no_edits=False):
+                return
+            if not self.confirm_dxf_outputs_closed_for_reprocessing(
+                dialog,
+                process_order,
+                programs_dir,
+                job,
+            ):
+                status.set("DXF rotation cancelled. Close the open program file and try again.")
+                return
+            direction = "right" if delta > 0 else "left"
+            try:
+                target_rotation = self.set_manual_dxf_rotation_override(
+                    job.aw_order,
+                    panel.item,
+                    delta,
+                    panel,
+                )
+                self.commit_manual_overrides_session()
+                state["saved_manual_overrides"] = copy.deepcopy(self._manual_overrides_session_data or {})
+                refreshed_config = self.config_with_manual_overrides(folder, output_dir)
+                remake_items = self.editor_remake_items(process_order.aw_order)
+                refreshed_job, refreshed_reader, refreshed_issues = shower_batch.prepare_job(
+                    folder,
+                    sketch_dir,
+                    programs_dir,
+                    report_dir,
+                    refreshed_config,
+                    process_order,
+                    remake_items=remake_items,
+                )
+                refreshed_panel = next(
+                    (candidate for candidate in refreshed_job.panels if candidate.item == panel.item),
+                    None,
+                )
+                if (
+                    refreshed_panel is None
+                    or refreshed_panel.source_dxf is None
+                    or refreshed_panel.output_dxf is None
+                    or refreshed_panel.skip_dxf
+                ):
+                    raise RuntimeError(f"P{panel.item} no longer has a programmable DXF.")
+                programmer.write_panel_dxf(refreshed_panel, force=True, config=refreshed_config)
+                job = refreshed_job
+                source_reader = refreshed_reader
+                issues = refreshed_issues
+                config = refreshed_config
+                sketch_reader = PdfReader(
+                    str(job.output_pdf if job.output_pdf.exists() else job.pdf_path)
+                )
+                if not bool(state.get("embedded_sketch_preview")):
+                    state["sketch_preview_reader"] = source_reader
+                    state["sketch_preview_path"] = job.pdf_path
+                    state["pdf_page_count"] = len(source_reader.pages)
+                    clear_sketch_preview_caches()
+                state["dxf_output_skipped"] = False
+                state["dxf_preview_cache"] = {}
+                result = shower_batch.BatchJobResult(
+                    aw_order=process_order.aw_order,
+                    job_name=process_order.job_name,
+                    customer=process_order.customer,
+                    items=", ".join(f"P{item}" for item in process_order.item_numbers),
+                    status="ISSUES" if issues else "OK",
+                    issues=list(issues),
+                    delivery_date=process_order.delivery_date,
+                    input_pdf=job.pdf_path,
+                    output_pdf=job.output_pdf,
+                    report_path=job.report_path,
+                )
+                self.record_direct_review_processing_result(
+                    result,
+                    run_folder,
+                    bool(state.get("sketch_output_skipped", False)),
+                    False,
+                )
+                self.insert_or_update_result(result)
+                self.clear_review_context_cache(process_order.aw_order)
+                redraw()
+                effective = programmer.effective_rotation(refreshed_panel)
+                status.set(
+                    f"Rotated P{panel.item} DXF {direction}; base {target_rotation:g} deg, "
+                    f"flat-bottom output {effective:g} deg."
+                )
+            except Exception as exc:
+                messagebox.showerror("Rotate DXF failed", str(exc), parent=dialog)
+
         def open_current_dxf() -> None:
             panel = selected_panel()
             if bool(state.get("dxf_output_skipped", False)):
@@ -6071,6 +6745,7 @@ a {{ color: #1f4e79; }}
                 status.set("X marks can be deleted from the popup, but they are not draggable.")
                 return
             state["drag_key"] = key
+            state["drag_history_recorded"] = False
             state["last_x"] = float(sketch_canvas.canvasx(event.x))
             state["last_y"] = float(sketch_canvas.canvasy(event.y))
 
@@ -6078,6 +6753,9 @@ a {{ color: #1f4e79; }}
             key = state.get("drag_key")
             if not key:
                 return
+            if not bool(state.get("drag_history_recorded")):
+                record_undo_state()
+                state["drag_history_recorded"] = True
             x = float(sketch_canvas.canvasx(event.x))
             y = float(sketch_canvas.canvasy(event.y))
             dx = x - float(state["last_x"])
@@ -6127,6 +6805,7 @@ a {{ color: #1f4e79; }}
 
         def release(_event: tk.Event) -> None:
             state["drag_key"] = None
+            state["drag_history_recorded"] = False
 
         def regenerate_review_sketch() -> bool:
             nonlocal job, source_reader, sketch_reader, issues, config
@@ -6167,11 +6846,24 @@ a {{ color: #1f4e79; }}
         def save_review_edits(show_no_edits: bool = True) -> bool:
             dirty = bool(state.get("dirty"))
             pending_output = bool(state.get("pending_items") or state.get("needs_output_save"))
+            changed_items = {int(item) for item in state.get("pending_items", set())}
+            changed_items.update(int(item) for item, _key in state.get("dirty", set()))
             if dirty and not self.save_editor_state_positions(job, state, config, dialog, show_no_edits=show_no_edits):
                 return False
             if dirty or pending_output:
                 if not regenerate_review_sketch():
                     return False
+                try:
+                    self.commit_manual_overrides_session()
+                except Exception as exc:
+                    state.get("pending_items", set()).update(changed_items)
+                    state["needs_output_save"] = True
+                    messagebox.showerror("Save sketch failed", f"Could not save the sketch edit settings:\n{exc}", parent=dialog)
+                    return False
+                state["saved_manual_overrides"] = copy.deepcopy(self._manual_overrides_session_data or {})
+                state.setdefault("undo_stack", []).clear()
+                state.setdefault("redo_stack", []).clear()
+                update_history_buttons()
                 status.set("Saved edits and overwrote the sketch PDF.")
                 redraw()
                 return True
@@ -6268,6 +6960,7 @@ a {{ color: #1f4e79; }}
             mark_key = str(obj.get("key", "")).strip()
             if not mark_key:
                 return
+            record_undo_state()
             if mark_key == "manual_x":
                 self.set_manual_x_override(job.aw_order, item_number, False)
                 refresh_prepared_job()
@@ -6312,6 +7005,7 @@ a {{ color: #1f4e79; }}
         def add_indicator_mark() -> None:
             ensure_sketch_editing_enabled()
             panel = selected_panel()
+            record_undo_state()
             self.set_mark_hidden(job.aw_order, panel.item, "indicator", hidden=False)
             refresh_prepared_job()
             state.get("pending_items", set()).add(panel.item)
@@ -6328,6 +7022,7 @@ a {{ color: #1f4e79; }}
                 else programmer.denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
             )
             corner = self.flipped_indicator_corner(current)
+            record_undo_state()
             self.set_indicator_corner_override(job.aw_order, panel.item, corner, panel, config)
             refresh_prepared_job()
             state.get("pending_items", set()).add(panel.item)
@@ -6338,6 +7033,7 @@ a {{ color: #1f4e79; }}
         def add_x_mark() -> None:
             ensure_sketch_editing_enabled()
             panel = selected_panel()
+            record_undo_state()
             self.set_manual_x_override(job.aw_order, panel.item, True)
             refresh_prepared_job()
             state.get("pending_items", set()).add(panel.item)
@@ -6368,6 +7064,7 @@ a {{ color: #1f4e79; }}
             y = max(48.0, page_height * (0.34 - min(row, 3) * 0.08))
             pdf_cfg = config.get("pdf", {}) if isinstance(config.get("pdf", {}), dict) else {}
             font_size = float(pdf_cfg.get("label_font_size", 21))
+            record_undo_state()
             text_id = self.add_additional_text_box(
                 job.aw_order,
                 panel.item,
@@ -6388,6 +7085,7 @@ a {{ color: #1f4e79; }}
 
         def set_current_indicator_machine(machine_kind: str) -> None:
             panel = selected_panel()
+            record_undo_state()
             self.set_indicator_machine_override(job.aw_order, panel.item, machine_kind, panel, config)
             refresh_prepared_job()
             state.get("pending_items", set()).add(panel.item)
@@ -6406,6 +7104,7 @@ a {{ color: #1f4e79; }}
             if not mark_key:
                 return
             panel = next(panel for panel in job.panels if panel.item == item_number)
+            record_undo_state()
             new_size = self.set_mark_size_override(job.aw_order, item_number, mark_key, direction, obj, panel, config)
             refresh_prepared_job()
             state.get("pending_items", set()).add(item_number)
@@ -6433,6 +7132,7 @@ a {{ color: #1f4e79; }}
             )
             if value is None:
                 return
+            record_undo_state()
             self.set_mark_text_override(job.aw_order, item_number, mark_key, value)
             refresh_prepared_job()
             state.get("pending_items", set()).add(item_number)
@@ -6498,10 +7198,16 @@ a {{ color: #1f4e79; }}
             if panel.item in ordered_items:
                 page_count_var.set(f"{ordered_items.index(panel.item) + 1}/{len(ordered_items)}")
             try:
+                preview_reader = state.get("sketch_preview_reader")
+                if not isinstance(preview_reader, PdfReader):
+                    preview_reader = source_reader
+                preview_path = state.get("sketch_preview_path")
+                if not isinstance(preview_path, Path):
+                    preview_path = job.pdf_path
                 self.draw_order_review_sketch(
                     sketch_canvas,
-                    source_reader,
-                    job.pdf_path,
+                    preview_reader,
+                    preview_path,
                     job,
                     panel,
                     config,
@@ -6606,14 +7312,21 @@ a {{ color: #1f4e79; }}
                 item_overrides[process_order.aw_order] = order_overrides
             order_overrides["_order_checked"] = True
             self.save_manual_overrides(data)
+            try:
+                self.commit_manual_overrides_session()
+            except Exception as exc:
+                messagebox.showerror("Mark checked failed", str(exc), parent=dialog)
+                return
+            state["saved_manual_overrides"] = copy.deepcopy(self._manual_overrides_session_data or {})
 
             row_id = self.tree_rows.get(process_order.aw_order)
             if row_id:
                 values = list(self.tree.item(row_id, "values"))
                 if len(values) > self.ORDER_TREE_INDEX["review"]:
                     values[self.ORDER_TREE_INDEX["review"]] = "Order checked"
-                    self.tree.item(row_id, values=values)
+                    self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
             self.update_summary_strip()
+            self.update_checked_action_button()
             self.status_var.set(f"Marked order {process_order.aw_order} checked.")
             cleanup_render_temp()
             dialog.destroy()
@@ -6624,11 +7337,16 @@ a {{ color: #1f4e79; }}
                 return
             if isinstance(temp_dir, str):
                 shutil.rmtree(temp_dir, ignore_errors=True)
+            self.end_manual_overrides_session()
 
         def request_close() -> None:
             if confirm_save_before_leaving(None):
                 cleanup_render_temp()
                 dialog.destroy()
+
+        def save_shortcut(_event: tk.Event) -> str:
+            save_review_edits()
+            return "break"
 
         item_box.bind("<<ComboboxSelected>>", lambda _event: set_piece(item_var.get()))
         item_box.bind("<MouseWheel>", piece_wheel)
@@ -6640,6 +7358,11 @@ a {{ color: #1f4e79; }}
         sketch_canvas.bind("<Shift-MouseWheel>", lambda event: "break")
         dialog.bind("<Control-MouseWheel>", piece_wheel)
         dialog.bind("<MouseWheel>", lambda event: "break")
+        dialog.bind("<Control-s>", save_shortcut)
+        dialog.bind("<Control-S>", save_shortcut)
+        dialog.bind("<Control-z>", lambda _event: undo_review_edit())
+        dialog.bind("<Control-y>", lambda _event: redo_review_edit())
+        dialog.bind("<Control-Shift-Z>", lambda _event: redo_review_edit())
         state["start_drag"] = start_drag
         state["show_mark_menu"] = show_mark_menu
         dialog.protocol("WM_DELETE_WINDOW", request_close)
@@ -6687,7 +7410,8 @@ a {{ color: #1f4e79; }}
         x = max(8.0, (canvas.winfo_width() - image.width()) / 2)
         y = max(8.0, (canvas.winfo_height() - image.height()) / 2)
         canvas.create_image(x, y, image=image, anchor=tk.NW)
-        if self.should_draw_sketch_overlays(state):
+        embedded_preview = bool(state.get("embedded_sketch_preview"))
+        if not embedded_preview and self.should_draw_sketch_overlays(state):
             objects = self.editor_overlay_objects(
                 reader,
                 job,
@@ -6709,6 +7433,15 @@ a {{ color: #1f4e79; }}
                     page_width=page_width,
                     rotation_degrees=rotation_degrees,
                 )
+        elif embedded_preview:
+            canvas.create_text(
+                x + 12,
+                y + 12,
+                anchor=tk.NW,
+                text="REFRESHED SAVED SKETCH - READ ONLY",
+                fill=self.SUCCESS,
+                font=("Segoe UI", 10, "bold"),
+            )
         else:
             canvas.create_text(
                 x + 12,
@@ -7463,6 +8196,52 @@ a {{ color: #1f4e79; }}
             "bottom_right": "bottom_left",
             "bottom_left": "bottom_right",
         }.get(str(corner or "").strip().lower(), "top_right")
+
+    @staticmethod
+    def normalized_quarter_turn_rotation(rotation_degrees: float) -> float:
+        """Normalize manual DXF rotation to a stable cardinal value."""
+        normalized = ((float(rotation_degrees) + 180.0) % 360.0) - 180.0
+        if abs(normalized + 180.0) <= 1e-6:
+            return 180.0
+        cardinal = round(normalized / 90.0) * 90.0
+        return float(cardinal) if abs(normalized - cardinal) <= 1e-6 else normalized
+
+    def set_manual_dxf_rotation_override(
+        self,
+        aw_order: str,
+        item_number: int,
+        delta_degrees: float,
+        panel: programmer.Panel,
+    ) -> float:
+        """Persist a direct quarter-turn while leaving fine OOS correction automatic."""
+        target = self.normalized_quarter_turn_rotation(
+            float(panel.rotation_degrees or 0.0) + float(delta_degrees)
+        )
+        data = self.load_manual_overrides()
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        item_override = order_overrides.setdefault(str(item_number), {})
+        if not isinstance(item_override, dict):
+            item_override = {}
+            order_overrides[str(item_number)] = item_override
+        item_override["rotation_degrees"] = target
+        item_override["manual_dxf_rotation"] = True
+        item_override["skip_dxf"] = False
+        for field in (
+            "angle_correction_degrees",
+            "out_of_square",
+            "out_of_square_length",
+            "angle_direction",
+        ):
+            item_override.pop(field, None)
+        self.save_manual_overrides(data)
+        return target
 
     def set_indicator_corner_override(
         self,
@@ -8887,9 +9666,14 @@ try {{
         worker.start()
 
     @staticmethod
-    def review_send_row_starts_open(status_tag: str) -> bool:
-        """Only rows needing attention start expanded in Review / Send."""
-        return str(status_tag or "").strip().casefold() in {"warning", "blocked", "error"}
+    def review_send_row_starts_open(_status_tag: str) -> bool:
+        """Keep Review / Send order/action details collapsed initially."""
+        return False
+
+    @staticmethod
+    def review_send_batch_starts_open() -> bool:
+        """Show batch contents while leaving each order's details collapsed."""
+        return True
 
     def open_send_review_dialog(
         self,
@@ -9112,7 +9896,7 @@ try {{
                 tk.END,
                 text=f"{batch_name}  ({len(member_aw)} order{'s' if len(member_aw) != 1 else ''})",
                 values=("Batch", batch_name, "", "Expand to review this batch."),
-                open=False,
+                open=self.review_send_batch_starts_open(),
                 tags=("ready",),
             )
             batch_parent_rows[batch_id] = batch_parent
@@ -9128,7 +9912,7 @@ try {{
                 tk.END,
                 text=f"Local / Unassigned Orders  ({len(unassigned_aw)} order{'s' if len(unassigned_aw) != 1 else ''})",
                 values=("Batch", "No active process-list batch", "", "These orders are available locally but are not mapped to an active batch."),
-                open=False,
+                open=self.review_send_batch_starts_open(),
                 tags=("warning",),
             )
             review_tree_batch_rows[unassigned_parent] = []
@@ -9277,7 +10061,7 @@ try {{
                 batch_parent,
                 values=current_values,
                 tags=(batch_tag,),
-                open=self.review_send_row_starts_open(batch_tag),
+                open=self.review_send_batch_starts_open(),
             )
 
         process_list_files = (
@@ -9390,7 +10174,7 @@ try {{
 
         ctk.CTkButton(
             action_panel,
-            text="Send Selected Checked Orders",
+            text="Send Checked Orders",
             command=lambda: begin_send(True, True, archive_inputs),
             height=46,
             corner_radius=11,
@@ -10327,16 +11111,16 @@ try {{
     @staticmethod
     def filename_matches_job_number(stem: str, job_number: str) -> bool:
         """Match the full Job Nr token, including a suffix such as ``.2``."""
-        job_number = str(job_number or "").strip()
-        if not job_number:
-            return False
-        return bool(re.search(rf"(?<!\d){re.escape(job_number)}(?![\d.])", stem, flags=re.IGNORECASE))
+        return programmer.text_contains_job_number(stem, job_number)
 
     @staticmethod
     def leading_job_number_from_filename(stem: str) -> str | None:
         """Read the authoritative leading Job Nr from a source filename."""
-        match = re.match(r"^\s*(\d{7,8}(?:\.\d+)?)(?=$|[ _-])", stem)
-        return match.group(1) if match else None
+        job_number = programmer.extract_job_number(stem)
+        if not job_number:
+            return None
+        match = re.match(rf"^\s*{re.escape(job_number)}(?=$|[ _-])", stem, flags=re.IGNORECASE)
+        return job_number if match else None
 
     @staticmethod
     def job_number_for_order(order: shower_batch.ProcessOrder) -> str | None:
@@ -10497,58 +11281,95 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     pass
 
     def clear_sketch_memory(self) -> None:
+        if getattr(self, "_manual_overrides_session_output", None) is not None:
+            messagebox.showinfo(
+                "Close Review Order",
+                "Close the Review Order window before clearing sketch memory so unsaved edits are handled first.",
+            )
+            return
         output_dir = Path(self.output_dir_var.get()).resolve()
+        selected = self.selected_orders()
+        if not selected:
+            messagebox.showinfo("Select orders", "Select one or more orders before clearing sketch memory.")
+            return
+        aw_orders = {str(order.aw_order) for order in selected}
+        order_text = ", ".join(sorted(aw_orders))
         if not messagebox.askyesno(
-            "Clear sketch memory?",
-            "This deletes generated sketch PDFs, clears sketch history pointers, and removes "
+            "Clear selected sketch memory?",
+            f"Clear sketch memory only for the selected order(s)?\n\n{order_text}\n\n"
+            "This deletes their generated sketch PDFs, clears their sketch history pointers, and removes "
             "saved sketch-edit positions from manual_overrides.json. Machine overrides, DXFs, "
             "and process-list data are kept.",
         ):
             return
         try:
-            removed_files = self.clear_generated_sketch_artifacts(output_dir)
+            removed_files = self.clear_generated_sketch_artifacts(output_dir, aw_orders)
         except Exception as exc:
             messagebox.showerror("Clear Sketch Memory failed", friendly_error_message("Clear Sketch Memory", exc))
             return
-        changed_fields = self.clear_manual_sketch_fields()
-        history_entries = self.clear_processing_history_sketch_fields()
-        self.clear_review_context_cache()
-        self.last_run_folder = None
-        for aw_order, row_id in self.tree_rows.items():
+        changed_fields = self.clear_manual_sketch_fields(aw_orders)
+        history_entries = self.clear_processing_history_sketch_fields(aw_orders)
+        for aw_order in aw_orders:
+            self.clear_review_context_cache(aw_order)
+            row_id = self.tree_rows.get(aw_order)
+            if not row_id:
+                continue
             values = list(self.tree.item(row_id, "values"))
             if len(values) >= len(self.ORDER_TREE_COLUMNS):
                 values[self.ORDER_TREE_INDEX["processed"]] = self.processed_summary_for_order(aw_order)
                 values[self.ORDER_TREE_INDEX["review"]] = self.review_status_for_order(aw_order)
-                self.tree.item(row_id, values=values)
+                values[self.ORDER_TREE_INDEX["status"]] = (
+                    "ISSUES" if str(values[self.ORDER_TREE_INDEX["issues"]]).strip() else "READY"
+                )
+                self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+        self.update_summary_strip()
+        self.update_checked_action_button()
         self.status_var.set(
-            f"Cleared {removed_files} sketch file(s), {changed_fields} saved sketch field(s), "
-            f"and {history_entries} history entries."
+            f"Cleared sketch memory for {len(aw_orders)} selected order(s): {removed_files} file(s), "
+            f"{changed_fields} saved field(s), and {history_entries} history entries."
         )
         messagebox.showinfo(
-            "Sketch memory cleared",
-            f"Deleted {removed_files} sketch/review file(s).\n"
+            "Selected sketch memory cleared",
+            f"Orders: {order_text}\n\n"
+            f"Deleted {removed_files} generated sketch file(s).\n"
             f"Removed {changed_fields} saved sketch field(s).\n"
             f"Cleared {history_entries} sketch history entries.",
         )
 
     def clear_program_memory(self) -> None:
+        if getattr(self, "_manual_overrides_session_output", None) is not None:
+            messagebox.showinfo(
+                "Close Review Order",
+                "Close the Review Order window before clearing program memory so its current edits stay consistent.",
+            )
+            return
         output_dir = Path(self.output_dir_var.get()).resolve()
+        selected = self.selected_orders()
+        if not selected:
+            messagebox.showinfo("Select orders", "Select one or more orders before clearing program memory.")
+            return
+        aw_orders = {str(order.aw_order) for order in selected}
+        order_text = ", ".join(sorted(aw_orders))
         if not messagebox.askyesno(
-            "Clear program memory?",
-            "This deletes generated local DXF program files and DXF review pages, and clears program-history "
+            "Clear selected program memory?",
+            f"Clear program memory only for the selected order(s)?\n\n{order_text}\n\n"
+            "This deletes their generated local DXF program files and clears their program-history "
             "pointers. Original input DXFs, machine/orientation overrides, process lists, generated sketches, "
             "and files already sent to production are kept.",
         ):
             return
         try:
-            removed_files = self.clear_generated_program_artifacts(output_dir)
-            history_entries = self.clear_processing_history_program_fields()
+            removed_files = self.clear_generated_program_artifacts(output_dir, aw_orders)
+            changed_fields = self.clear_manual_program_fields(aw_orders)
+            history_entries = self.clear_processing_history_program_fields(aw_orders)
         except Exception as exc:
             messagebox.showerror("Clear Program Memory failed", friendly_error_message("Clear Program Memory", exc))
             return
-        self.last_run_folder = None
-        self.clear_review_context_cache()
-        for aw_order, row_id in self.tree_rows.items():
+        for aw_order in aw_orders:
+            self.clear_review_context_cache(aw_order)
+            row_id = self.tree_rows.get(aw_order)
+            if not row_id:
+                continue
             try:
                 values = list(self.tree.item(row_id, "values"))
             except tk.TclError:
@@ -10556,13 +11377,20 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             if len(values) >= len(self.ORDER_TREE_COLUMNS):
                 values[self.ORDER_TREE_INDEX["processed"]] = self.processed_summary_for_order(aw_order)
                 values[self.ORDER_TREE_INDEX["review"]] = self.review_status_for_order(aw_order)
-                self.tree.item(row_id, values=values)
+                values[self.ORDER_TREE_INDEX["status"]] = (
+                    "ISSUES" if str(values[self.ORDER_TREE_INDEX["issues"]]).strip() else "READY"
+                )
+                self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+        self.update_summary_strip()
         self.status_var.set(
-            f"Cleared {removed_files} program/review file(s) and {history_entries} program history entries."
+            f"Cleared program memory for {len(aw_orders)} selected order(s): "
+            f"{removed_files} file(s), {changed_fields} saved field(s), and {history_entries} history entries."
         )
         messagebox.showinfo(
-            "Program memory cleared",
-            f"Deleted {removed_files} generated DXF/review file(s).\n"
+            "Selected program memory cleared",
+            f"Orders: {order_text}\n\n"
+            f"Deleted {removed_files} generated DXF file(s).\n"
+            f"Removed {changed_fields} saved program field(s).\n"
             f"Cleared {history_entries} program history entries.\n\n"
             "Original input DXFs and files already sent to production were not changed.",
         )
@@ -10570,10 +11398,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
     def convert_programs_to_ac1032(self) -> None:
         self.autocad_save_as_programs()
 
-    def clear_manual_sketch_fields(self) -> int:
+    def clear_manual_sketch_fields(self, aw_orders: set[str] | None = None) -> int:
         path = self.manual_overrides_path()
         if not path.exists():
             return 0
+        order_filter = {str(value) for value in aw_orders} if aw_orders is not None else None
         data = self.load_manual_overrides()
         item_overrides = data.get("item_overrides", {})
         if not isinstance(item_overrides, dict):
@@ -10618,6 +11447,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         removed = 0
         empty_orders: list[str] = []
         for aw_order, order_overrides in item_overrides.items():
+            if order_filter is not None and str(aw_order) not in order_filter:
+                continue
             if not isinstance(order_overrides, dict):
                 continue
             if "_order_checked" in order_overrides:
@@ -10627,7 +11458,10 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             for item_key, override in order_overrides.items():
                 if not isinstance(override, dict):
                     continue
+                preserve_manual_dxf_rotation = bool(override.get("manual_dxf_rotation"))
                 for field in list(override.keys()):
+                    if field == "rotation_degrees" and preserve_manual_dxf_rotation:
+                        continue
                     if field in sketch_fields:
                         del override[field]
                         removed += 1
@@ -10642,10 +11476,55 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.save_manual_overrides(data)
         return removed
 
-    def clear_processing_history_sketch_fields(self) -> int:
+    def clear_manual_program_fields(self, aw_orders: set[str] | None = None) -> int:
+        """Remove direct DXF rotation overrides without disturbing sketch edits."""
+        path = self.manual_overrides_path()
+        if not path.exists():
+            return 0
+        order_filter = {str(value) for value in aw_orders} if aw_orders is not None else None
+        data = self.load_manual_overrides()
+        item_overrides = data.get("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            return 0
+        removed = 0
+        empty_orders: list[str] = []
+        program_fields = {
+            "manual_dxf_rotation",
+            "rotation_degrees",
+            "angle_correction_degrees",
+            "out_of_square",
+            "out_of_square_length",
+            "angle_direction",
+        }
+        for aw_order, order_overrides in item_overrides.items():
+            if order_filter is not None and str(aw_order) not in order_filter:
+                continue
+            if not isinstance(order_overrides, dict):
+                continue
+            empty_items: list[str] = []
+            for item_key, override in order_overrides.items():
+                if not isinstance(override, dict) or not bool(override.get("manual_dxf_rotation")):
+                    continue
+                for field in program_fields:
+                    if field in override:
+                        del override[field]
+                        removed += 1
+                if not override:
+                    empty_items.append(str(item_key))
+            for item_key in empty_items:
+                order_overrides.pop(item_key, None)
+            if not order_overrides:
+                empty_orders.append(str(aw_order))
+        for aw_order in empty_orders:
+            item_overrides.pop(aw_order, None)
+        self.save_manual_overrides(data)
+        return removed
+
+    def clear_processing_history_sketch_fields(self, aw_orders: set[str] | None = None) -> int:
         path = self.processing_history_path()
         if not path.exists():
             return 0
+        order_filter = {str(value) for value in aw_orders} if aw_orders is not None else None
         data = self.load_processing_history()
         orders = data.get("orders", {})
         if not isinstance(orders, dict):
@@ -10662,6 +11541,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         changed = 0
         empty_orders: list[str] = []
         for aw_order, entry in orders.items():
+            if order_filter is not None and str(aw_order) not in order_filter:
+                continue
             if not isinstance(entry, dict):
                 continue
             removed_any = False
@@ -10678,10 +11559,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.save_processing_history(data)
         return changed
 
-    def clear_processing_history_program_fields(self) -> int:
+    def clear_processing_history_program_fields(self, aw_orders: set[str] | None = None) -> int:
         path = self.processing_history_path()
         if not path.exists():
             return 0
+        order_filter = {str(value) for value in aw_orders} if aw_orders is not None else None
         data = self.load_processing_history()
         orders = data.get("orders", {})
         if not isinstance(orders, dict):
@@ -10697,6 +11579,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         changed = 0
         empty_orders: list[str] = []
         for aw_order, entry in orders.items():
+            if order_filter is not None and str(aw_order) not in order_filter:
+                continue
             if not isinstance(entry, dict):
                 continue
             removed_any = False
@@ -10979,7 +11863,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     values = list(self.tree.item(row_id, "values"))
                     if len(values) >= len(self.ORDER_TREE_COLUMNS):
                         values[self.ORDER_TREE_INDEX["review"]] = self.review_status_for_order(job.aw_order)
-                        self.tree.item(row_id, values=values)
+                        self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+                self.update_checked_action_button()
             except Exception as exc:
                 messagebox.showerror("Review mark failed", str(exc), parent=dialog)
 
@@ -11565,6 +12450,26 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         key = obj["key"]
         object_key = f"{obj.get('item')}_{key}" if obj.get("item") is not None else str(key)
         tag = f"edit_{object_key}"
+        position_key = (int(obj["item"]), str(key)) if obj.get("item") is not None else None
+        pending_position = state.get("positions", {}).get(position_key) if position_key is not None else None
+        if isinstance(pending_position, dict) and "x" in pending_position and "y" in pending_position:
+            target_x = float(pending_position["x"])
+            target_y = float(pending_position["y"])
+            dx = target_x - float(obj.get("x", target_x))
+            dy = target_y - float(obj.get("y", target_y))
+            obj["x"] = target_x
+            obj["y"] = target_y
+            if "rect" in obj:
+                x1, y1, x2, y2 = obj["rect"]
+                obj["rect"] = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
+            if "center" in obj:
+                center_x, center_y = obj["center"]
+                obj["center"] = (center_x + dx, center_y + dy)
+            if "lines" in obj:
+                obj["lines"] = [
+                    ((start[0] + dx, start[1] + dy), (end[0] + dx, end[1] + dy))
+                    for start, end in obj["lines"]
+                ]
         effective_page_width = page_width if page_width is not None else float(obj.get("page_width", 0.0))
         if effective_page_width <= 0:
             effective_page_width = float(obj.get("page_height", page_height))
@@ -11722,6 +12627,7 @@ def validate_runtime_contracts() -> None:
         "worker_send_outputs",
         "install_process_batches",
         "sent_summary_for_order",
+        "order_tree_tags_for_values",
         "show_no_updates_dialog",
         "worker_check_for_updates",
         "begin_update_install",
@@ -11759,6 +12665,16 @@ def validate_runtime_contracts() -> None:
         "order_tree_heading_text",
         "update_orders_tree_resize_cursor",
         "clear_orders_tree_resize_cursor",
+        "make_header_icon_button",
+        "make_header_refresh_button",
+        "normalized_quarter_turn_rotation",
+        "set_manual_dxf_rotation_override",
+        "clear_manual_program_fields",
+        "set_order_checked_state_in_overrides",
+        "selected_orders_are_all_checked",
+        "update_checked_action_button",
+        "toggle_selected_orders_checked",
+        "uncheck_selected_orders",
     }
     missing = sorted(name for name in required_methods if not callable(getattr(ShowerProgrammerApp, name, None)))
     if missing:
@@ -11768,11 +12684,23 @@ def validate_runtime_contracts() -> None:
         )
 
 
+@contextmanager
+def writable_test_directory(parent: Path, prefix: str) -> Any:
+    """Create self-test scratch space without tempfile's restricted Windows ACL."""
+    path = parent / f".{prefix}{uuid.uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=False)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     """Exercise critical non-visual workflows inside the source build or packaged EXE."""
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {
         "ok": False,
-        "version": "ORDER_OVERVIEW_SIMPLIFICATION_V28",
+        "version": "BILATERAL_SCU4_DENVER_ORIENTATION_V36",
         "executable": str(Path(sys.executable).resolve()),
     }
     try:
@@ -11837,12 +12765,79 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         selection_app.on_orders_tree_selection()
         if selection_app.tree.selected != ["batch", "order_1", "order_2"]:
             raise RuntimeError("Batch-wide order selection self-test failed.")
-        if ShowerProgrammerApp.review_send_row_starts_open("ready"):
-            raise RuntimeError("Ready Review / Send rows should start collapsed.")
-        if not ShowerProgrammerApp.review_send_row_starts_open("warning"):
-            raise RuntimeError("Warning Review / Send rows should start expanded.")
-        if not ShowerProgrammerApp.review_send_row_starts_open("blocked"):
-            raise RuntimeError("Blocked Review / Send rows should start expanded.")
+        for review_tag in ("ready", "warning", "blocked", "error"):
+            if ShowerProgrammerApp.review_send_row_starts_open(review_tag):
+                raise RuntimeError("Review / Send rows should start collapsed.")
+        if not ShowerProgrammerApp.review_send_batch_starts_open():
+            raise RuntimeError("Review / Send batches should start expanded.")
+        tag_test_values = [""] * len(ShowerProgrammerApp.ORDER_TREE_COLUMNS)
+        tag_test_values[ShowerProgrammerApp.ORDER_TREE_INDEX["status"]] = "READY"
+        tag_test_values[ShowerProgrammerApp.ORDER_TREE_INDEX["review"]] = "Order checked"
+        tag_test_values[ShowerProgrammerApp.ORDER_TREE_INDEX["sent"]] = "Sent 07/24/26"
+        if test_app.order_tree_tags_for_values(tag_test_values) != ("SENT_CHECKED",):
+            raise RuntimeError("Sent and checked Orders-row highlighting self-test failed.")
+        tag_test_values[ShowerProgrammerApp.ORDER_TREE_INDEX["sent"]] = ""
+        if test_app.order_tree_tags_for_values(tag_test_values) != ("CHECKED",):
+            raise RuntimeError("Checked-order foreground styling self-test failed.")
+
+        class CheckedStateOrder:
+            aw_order = "100001"
+            item_numbers = {1, 2}
+
+        checked_state_order = CheckedStateOrder()
+        checked_state_data: dict[str, object] = {
+            "item_overrides": {
+                "100001": {
+                    "1": {"checked": True, "label_x": 12.0},
+                    "2": {"checked": True},
+                }
+            }
+        }
+        if not ShowerProgrammerApp.order_review_is_complete_in_overrides(
+            checked_state_order,
+            checked_state_data,
+        ):
+            raise RuntimeError("Item-level checked state self-test setup failed.")
+        if ShowerProgrammerApp.set_order_checked_state_in_overrides(
+            checked_state_data,
+            {"100001"},
+            False,
+        ) != 1:
+            raise RuntimeError("Uncheck workflow did not report the changed order.")
+        unchecked_overrides = checked_state_data["item_overrides"]["100001"]
+        if ShowerProgrammerApp.order_review_is_complete_in_overrides(
+            checked_state_order,
+            checked_state_data,
+        ):
+            raise RuntimeError("Uncheck workflow left the order checked.")
+        if unchecked_overrides["1"].get("label_x") != 12.0 or "checked" in unchecked_overrides["1"]:
+            raise RuntimeError("Uncheck workflow damaged unrelated sketch edits.")
+        if "2" in unchecked_overrides:
+            raise RuntimeError("Uncheck workflow left an empty item override.")
+        if ShowerProgrammerApp.set_order_checked_state_in_overrides(
+            checked_state_data,
+            {"100001"},
+            True,
+        ) != 1:
+            raise RuntimeError("Re-check workflow did not report the changed order.")
+        if not ShowerProgrammerApp.order_review_is_complete_in_overrides(
+            checked_state_order,
+            checked_state_data,
+        ):
+            raise RuntimeError("Re-check workflow did not restore the checked state.")
+
+        status_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
+        status_history = {
+            "100001": {"last_processed": "2026-07-27 08:00:00", "status": "OK"},
+            "100002": {"last_processed": "2026-07-27 08:05:00", "status": "ISSUES"},
+        }
+        status_app.history_for_order = lambda aw_order: status_history.get(str(aw_order), {})
+        if status_app.persisted_display_status("100001", "READY") != "OK":
+            raise RuntimeError("Processed READY row did not restore its saved green OK status.")
+        if status_app.persisted_display_status("100002", "READY") != "ISSUES":
+            raise RuntimeError("Processed READY row did not restore its saved orange ISSUES status.")
+        if status_app.persisted_display_status("100001", "FAILED") != "FAILED":
+            raise RuntimeError("Current scan status was incorrectly replaced by processing history.")
 
         class FakePageWindow:
             def __init__(self) -> None:
@@ -11911,8 +12906,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         route_app.review_sketches()
         route_app.review_dxfs()
 
-        with tempfile.TemporaryDirectory(prefix="shower_programmer_self_test_") as temp_name:
-            temp_root = Path(temp_name)
+        with writable_test_directory(report_path.parent, "shower_programmer_self_test_") as temp_root:
             source = temp_root / "source.txt"
             target = temp_root / "target" / "copied.txt"
             source.write_text("self-test", encoding="utf-8")
@@ -11921,6 +12915,31 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 raise RuntimeError("Atomic file-copy self-test failed.")
             if list(target.parent.glob(".*.part")):
                 raise RuntimeError("Atomic file-copy self-test left a partial file behind.")
+
+            class FakePathVar:
+                def __init__(self, value: Path) -> None:
+                    self.value = str(value)
+
+                def get(self) -> str:
+                    return self.value
+
+            session_output = temp_root / "session_output"
+            session_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
+            session_app.output_dir_var = FakePathVar(session_output)
+            session_app._manual_overrides_session_output = None
+            session_app._manual_overrides_session_data = None
+            session_app.begin_manual_overrides_session(session_output)
+            staged_overrides = {"item_overrides": {"236505": {"1": {"label_x": 123.0}}}}
+            session_app.save_manual_overrides(staged_overrides)
+            if (session_output / "manual_overrides.json").exists():
+                raise RuntimeError("Unsaved sketch overrides escaped the edit session.")
+            session_app.end_manual_overrides_session()
+            session_app.begin_manual_overrides_session(session_output)
+            session_app.save_manual_overrides(staged_overrides)
+            session_app.commit_manual_overrides_session()
+            session_app.end_manual_overrides_session()
+            if ShowerProgrammerApp.load_manual_overrides_for_output(session_output) != staged_overrides:
+                raise RuntimeError("Saved sketch overrides were not committed.")
 
             archive_path = temp_root / "test_update.zip"
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -11996,6 +13015,99 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 raise RuntimeError("Automatic X-out deletion self-test failed.")
             if not xout_panel.remake_excluded or not xout_panel.skip_dxf:
                 raise RuntimeError("Hiding the X-out changed the programming exclusion logic.")
+
+            if ShowerProgrammerApp.normalized_quarter_turn_rotation(0.0 + 90.0) != 90.0:
+                raise RuntimeError("Manual DXF right-rotation normalization failed.")
+            if ShowerProgrammerApp.normalized_quarter_turn_rotation(90.0 + 90.0) != 180.0:
+                raise RuntimeError("Manual DXF half-turn normalization failed.")
+            if ShowerProgrammerApp.normalized_quarter_turn_rotation(180.0 + 90.0) != -90.0:
+                raise RuntimeError("Manual DXF wraparound normalization failed.")
+
+            pph_manual_panel = programmer.Panel(
+                item=1,
+                page_index=0,
+                text="SRPPH01",
+                width=30.0,
+                height=70.0,
+                machine="DENVER 1",
+                indicator_corner="bottom_left",
+            )
+            programmer.apply_override(
+                pph_manual_panel,
+                {
+                    "item_overrides": {
+                        "234567": {
+                            "1": {
+                                "rotation_degrees": 180.0,
+                                "manual_dxf_rotation": True,
+                            }
+                        }
+                    }
+                },
+                "234567",
+            )
+            if pph_manual_panel.rotation_degrees != 180.0 or not pph_manual_panel.manual_rotation_override:
+                raise RuntimeError("Manual DXF rotation did not take priority for a PPH piece.")
+
+            def write_side_radius_test_dxf(path: Path, side: str, radius: float = 0.3125) -> None:
+                hinge_x_values = [2.0, 28.0] if side == "both" else [28.0 if side == "right" else 2.0]
+                entities = [
+                    ("LINE", {"10": 0, "20": 0, "11": 30, "21": 0}),
+                    ("LINE", {"10": 30, "20": 0, "11": 30, "21": 70}),
+                    ("LINE", {"10": 30, "20": 70, "11": 0, "21": 70}),
+                    ("LINE", {"10": 0, "20": 70, "11": 0, "21": 0}),
+                ]
+                for hinge_x in hinge_x_values:
+                    entities.extend(
+                        [
+                            ("ARC", {"10": hinge_x, "20": 5, "40": radius, "50": 0, "51": 180}),
+                            ("ARC", {"10": hinge_x, "20": 65, "40": radius, "50": 180, "51": 360}),
+                        ]
+                    )
+                lines = ["0", "SECTION", "2", "ENTITIES"]
+                for entity_type, values in entities:
+                    lines.extend(["0", entity_type, "8", "0"])
+                    for code, value in values.items():
+                        lines.extend([code, str(value)])
+                lines.extend(["0", "ENDSEC", "0", "EOF"])
+                path.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+            pph_right_dxf = temp_root / "pph_right_hinges.dxf"
+            pph_left_dxf = temp_root / "pph_left_hinges.dxf"
+            pph_ambiguous_dxf = temp_root / "pph_both_side_hinges.dxf"
+            write_side_radius_test_dxf(pph_right_dxf, "right")
+            write_side_radius_test_dxf(pph_left_dxf, "left")
+            write_side_radius_test_dxf(pph_ambiguous_dxf, "both")
+            if programmer.dxf_pph_hinge_side_candidate(pph_right_dxf) != "right":
+                raise RuntimeError("Right-side PPH DXF hinge-radius confirmation failed.")
+            if programmer.dxf_pph_hinge_side_candidate(pph_left_dxf) != "left":
+                raise RuntimeError("Left-side PPH DXF hinge-radius confirmation failed.")
+            if programmer.dxf_pph_hinge_side_candidate(pph_ambiguous_dxf) is not None:
+                raise RuntimeError("Ambiguous PPH DXF hinge-radius evidence was not left unchanged.")
+
+            scu4_bilateral_dxf = temp_root / "scu4_bilateral_slots.dxf"
+            write_side_radius_test_dxf(scu4_bilateral_dxf, "both", radius=0.375)
+            scu4_panel = programmer.Panel(
+                item=1,
+                page_index=0,
+                text="Tempered logo in Bottom Left Corner",
+                process_text="SCU4 SLOT MACRO",
+                width=30.0,
+                height=70.0,
+                machine="DENVER 2",
+                source_dxf=scu4_bilateral_dxf,
+                indicator_corner="bottom_left",
+                rotation_degrees=90.0,
+            )
+            programmer.adjust_denver_panel_square_side(scu4_panel, {})
+            if scu4_panel.indicator_corner != "top_right" or scu4_panel.rotation_degrees != -90.0:
+                raise RuntimeError("Bilateral SCU4 Denver orientation self-test failed.")
+            scu4_panel.manual_indicator_override = True
+            scu4_panel.indicator_corner = "bottom_left"
+            scu4_panel.rotation_degrees = 90.0
+            programmer.adjust_denver_panel_square_side(scu4_panel, {})
+            if scu4_panel.indicator_corner != "bottom_left" or scu4_panel.rotation_degrees != 90.0:
+                raise RuntimeError("Bilateral SCU4 rule overrode a manual orientation.")
 
             process_item = shower_batch.ProcessItem(
                 item=1,
@@ -12098,6 +13210,24 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             if cleared < 2 or nested_sketch.exists() or nested_review_file.exists():
                 raise RuntimeError("Recursive Clear Sketch Memory self-test failed.")
 
+            selected_sketch_dir = output_root / "Runs" / "07.21.2026" / "Batch_Selected" / "Sketches"
+            selected_sketch_dir.mkdir(parents=True, exist_ok=True)
+            selected_sketch = selected_sketch_dir / "100001.pdf"
+            retained_sketch = selected_sketch_dir / "100002.pdf"
+            selected_sketch.write_bytes(b"selected")
+            retained_sketch.write_bytes(b"retained")
+            selected_review = selected_sketch_dir.parent / "Reviews" / "sketch_review_selected.pdf"
+            selected_review.parent.mkdir(parents=True, exist_ok=True)
+            selected_review.write_bytes(b"aggregate-review")
+            selected_cleared = ShowerProgrammerApp.clear_generated_sketch_artifacts(
+                output_root,
+                {"100001"},
+            )
+            if selected_cleared != 1 or selected_sketch.exists() or not retained_sketch.exists():
+                raise RuntimeError("Selected-order Clear Sketch Memory deleted the wrong sketch files.")
+            if not selected_review.exists():
+                raise RuntimeError("Selected-order Clear Sketch Memory deleted a shared review artifact.")
+
             # Skip DXF output must remove stale current-run programs and make
             # older program files ineligible for Review / Send.
             stale_run_programs = output_root / "Runs" / "07.20.2026" / "Batch_C" / "Programs"
@@ -12164,6 +13294,107 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             if cleared_programs < 2 or nested_program.exists() or nested_dxf_review.exists():
                 raise RuntimeError("Recursive Clear Program Memory self-test failed.")
 
+            selected_program_dir = output_root / "Runs" / "07.21.2026" / "Batch_Selected" / "Programs"
+            selected_program_dir.mkdir(parents=True, exist_ok=True)
+            selected_program = selected_program_dir / "10000101.dxf"
+            retained_program = selected_program_dir / "10000201.dxf"
+            selected_program.write_text("selected", encoding="utf-8")
+            retained_program.write_text("retained", encoding="utf-8")
+            selected_dxf_review = selected_program_dir.parent / "Reviews" / "dxf_review_selected.html"
+            selected_dxf_review.parent.mkdir(parents=True, exist_ok=True)
+            selected_dxf_review.write_text("aggregate-review", encoding="utf-8")
+            selected_programs_cleared = ShowerProgrammerApp.clear_generated_program_artifacts(
+                output_root,
+                {"100001"},
+            )
+            if selected_programs_cleared != 1 or selected_program.exists() or not retained_program.exists():
+                raise RuntimeError("Selected-order Clear Program Memory deleted the wrong DXF files.")
+            if not selected_dxf_review.exists():
+                raise RuntimeError("Selected-order Clear Program Memory deleted a shared review artifact.")
+
+            scoped_memory_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
+            scoped_memory_app.output_dir_var = TestVar(str(output_root))
+            scoped_memory_app._manual_overrides_session_output = None
+            scoped_memory_app._manual_overrides_session_data = None
+            scoped_memory_app.save_manual_overrides(
+                {
+                    "item_overrides": {
+                        "100001": {
+                            "1": {
+                                "label_x": 10.0,
+                                "machine": "DENVER 1",
+                                "manual_dxf_rotation": True,
+                                "rotation_degrees": 90.0,
+                            }
+                        },
+                        "100002": {"1": {"label_x": 20.0, "machine": "WJ"}},
+                    }
+                }
+            )
+            removed_fields = scoped_memory_app.clear_manual_sketch_fields({"100001"})
+            retained_overrides = scoped_memory_app.load_manual_overrides()["item_overrides"]
+            if removed_fields != 1:
+                raise RuntimeError("Selected-order sketch override clearing reported the wrong field count.")
+            if "label_x" in retained_overrides["100001"]["1"]:
+                raise RuntimeError("Selected-order sketch override was not cleared.")
+            if retained_overrides["100001"]["1"].get("machine") != "DENVER 1":
+                raise RuntimeError("Selected-order sketch clearing removed a machine override.")
+            if (
+                retained_overrides["100001"]["1"].get("manual_dxf_rotation") is not True
+                or retained_overrides["100001"]["1"].get("rotation_degrees") != 90.0
+            ):
+                raise RuntimeError("Selected-order sketch clearing removed a manual DXF rotation.")
+            if retained_overrides["100002"]["1"].get("label_x") != 20.0:
+                raise RuntimeError("Selected-order sketch clearing changed another order's override.")
+            removed_program_fields = scoped_memory_app.clear_manual_program_fields({"100001"})
+            retained_overrides = scoped_memory_app.load_manual_overrides()["item_overrides"]
+            if removed_program_fields != 2:
+                raise RuntimeError("Selected-order program override clearing reported the wrong field count.")
+            if (
+                "manual_dxf_rotation" in retained_overrides["100001"]["1"]
+                or "rotation_degrees" in retained_overrides["100001"]["1"]
+            ):
+                raise RuntimeError("Selected-order manual DXF rotation was not cleared.")
+            if retained_overrides["100001"]["1"].get("machine") != "DENVER 1":
+                raise RuntimeError("Selected-order program clearing removed a machine override.")
+            if retained_overrides["100002"]["1"].get("label_x") != 20.0:
+                raise RuntimeError("Selected-order program clearing changed another order's override.")
+
+            scoped_memory_app.save_processing_history(
+                {
+                    "orders": {
+                        "100001": {
+                            "last_processed": "2026-07-27 08:00:00",
+                            "status": "OK",
+                            "output_pdf": "100001.pdf",
+                            "sent_at": "2026-07-27 09:00:00",
+                        },
+                        "100002": {
+                            "last_processed": "2026-07-27 08:05:00",
+                            "status": "ISSUES",
+                            "run_folder": "Batch_Selected",
+                            "sent_at": "2026-07-27 09:05:00",
+                        },
+                    }
+                }
+            )
+            if scoped_memory_app.clear_processing_history_sketch_fields({"100001"}) != 1:
+                raise RuntimeError("Selected-order sketch history clearing reported the wrong order count.")
+            scoped_history = scoped_memory_app.load_processing_history()["orders"]
+            if "last_processed" in scoped_history["100001"] or "output_pdf" in scoped_history["100001"]:
+                raise RuntimeError("Selected-order sketch history pointers were not cleared.")
+            if scoped_history["100001"].get("sent_at") != "2026-07-27 09:00:00":
+                raise RuntimeError("Selected-order sketch clearing removed send history.")
+            if scoped_history["100002"].get("status") != "ISSUES":
+                raise RuntimeError("Selected-order sketch history clearing changed another order.")
+            if scoped_memory_app.clear_processing_history_program_fields({"100002"}) != 1:
+                raise RuntimeError("Selected-order program history clearing reported the wrong order count.")
+            scoped_history = scoped_memory_app.load_processing_history()["orders"]
+            if "last_processed" in scoped_history["100002"] or "run_folder" in scoped_history["100002"]:
+                raise RuntimeError("Selected-order program history pointers were not cleared.")
+            if scoped_history["100002"].get("sent_at") != "2026-07-27 09:05:00":
+                raise RuntimeError("Selected-order program clearing removed send history.")
+
 
             # Input cleanup must correlate source filenames by Job Nr while
             # keeping the shorter A&W order as the generated-output identity.
@@ -12184,6 +13415,14 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             )
             if ShowerProgrammerApp.leading_job_number_from_filename("87576307.2 AMARA 8_1") != "87576307.2":
                 raise RuntimeError("Leading Job Nr extraction self-test failed.")
+            revision_jobs = ("88893379.2R", "88893379.2.2R")
+            if [programmer.extract_job_number(value) for value in revision_jobs] != list(revision_jobs):
+                raise RuntimeError("Revision-style Job Nr extraction self-test failed.")
+            if ShowerProgrammerApp.filename_matches_job_number(
+                "Glass Order - 88893379.2.2R 184 LAKESHORE",
+                "88893379.2R",
+            ):
+                raise RuntimeError("Shorter revision-style Job Nr matched a different order.")
             if ShowerProgrammerApp.filename_matches_aw_order("87576307.2 AMARA 8_1", "236505"):
                 raise RuntimeError("Job Nr was incorrectly treated as the A&W order number.")
             if not ShowerProgrammerApp.file_matches_process_orders(
@@ -12274,6 +13513,21 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             pdf_canvas.drawString(72, 730, "Job Nr: 87576307.2")
             pdf_canvas.drawString(72, 710, "Project Name: AMARA 8")
             pdf_canvas.save()
+            revision_root = temp_root / "revision_pdf_matching"
+            revision_root.mkdir()
+            revision_pdf_paths: dict[str, Path] = {}
+            for revision_job in revision_jobs:
+                revision_pdf = revision_root / f"Glass Order - {revision_job} 184 LAKESHORE.pdf"
+                revision_canvas = reportlab_canvas.Canvas(str(revision_pdf))
+                revision_canvas.drawString(72, 750, f"Job Nr: {revision_job}")
+                revision_canvas.drawString(72, 730, "Project Name: 184 LAKESHORE")
+                revision_canvas.save()
+                revision_pdf_paths[revision_job] = revision_pdf
+            for revision_job, revision_pdf in revision_pdf_paths.items():
+                if programmer.extract_job_number_from_pdf(revision_pdf) != revision_job:
+                    raise RuntimeError("Revision-style PDF Job Nr extraction self-test failed.")
+                if programmer.find_pdf(revision_root, f"{revision_job} 184 LAKESHORE") != revision_pdf:
+                    raise RuntimeError("Revision-style PDF correlation self-test failed.")
             if not programmer.pdf_contains_aw_order(hidden_name_pdf, "236505"):
                 raise RuntimeError("PDF first-page A&W detection self-test failed.")
             if not programmer.pdf_contains_job_number(hidden_name_pdf, "87576307.2"):
@@ -12315,7 +13569,9 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             {
                 "ok": True,
                 "review_send_helper": True,
+                "review_send_batch_only_expansion": True,
                 "batch_wide_selection": True,
+                "persisted_processing_status": True,
                 "atomic_copy": True,
                 "required_methods": True,
                 "safe_update_extraction": True,
@@ -12324,8 +13580,23 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "independent_output_controls": True,
                 "stale_sketch_skip_protection": True,
                 "recursive_sketch_memory_clear": True,
+                "selected_sketch_memory_clear": True,
+                "selected_sketch_override_clear": True,
+                "selected_sketch_history_clear": True,
                 "stale_dxf_skip_protection": True,
                 "recursive_program_memory_clear": True,
+                "selected_program_memory_clear": True,
+                "manual_dxf_rotation_override": True,
+                "manual_dxf_rotation_memory_clear": True,
+                "review_header_rotate_refresh": True,
+                "right_aligned_refresh_actions": True,
+                "checked_order_text_accent": True,
+                "checked_order_toggle": True,
+                "rotation_arrow_icon_clarity": True,
+                "pph_dxf_hinge_side_confirmation": True,
+                "bilateral_scu4_denver_orientation": True,
+                "unchecked_state_preserves_edits": True,
+                "selected_program_history_clear": True,
                 "clean_skipped_sketch_preview": True,
                 "manual_sketch_save_reenables_output": True,
                 "dxf_reprocess_lock_guard": True,
