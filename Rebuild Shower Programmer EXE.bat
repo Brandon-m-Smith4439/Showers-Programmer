@@ -3,14 +3,14 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem ================================================================
 rem Shower Programmer one-folder EXE rebuild
-rem BUILD_SCRIPT_V38
+rem BUILD_SCRIPT_V39
 rem
 rem Safe rebuild behavior:
 rem - Rebuilds the executable and _internal runtime.
 rem - Refreshes program Assets.
 rem - Preserves existing local Input, Output, history, manifests,
 rem   settings, archives, and user-created runtime data.
-rem - Verifies the V38 short-path updater and update-package contracts before building.
+rem - Verifies the V39 atomic runtime-swap updater and update-package contracts before building.
 rem - Creates release\Shower-Programmer-Windows.zip for automatic updates.
 rem - BUILD FIX V28.1: uses Windows CRLF and inline file checks; no CALL subroutine labels.
 rem - Runs a self-test inside the staged EXE before deployment.
@@ -148,10 +148,10 @@ echo Checking Python syntax for all backend modules...
 if errorlevel 1 goto failed
 
 echo Verifying integrated GUI version and short-path updater contracts...
-findstr /C:"SHORT_PATH_UPDATE_PACKAGE_V38" "%SOURCE_GUI%" >NUL
+findstr /C:"ATOMIC_RUNTIME_SWAP_V39" "%SOURCE_GUI%" >NUL
 if errorlevel 1 (
-    echo ERROR: Backend\shower_programmer_gui.py is not the short-path updater V38 file.
-    echo Replace it with the supplied V38 GUI before rebuilding.
+    echo ERROR: Backend\shower_programmer_gui.py is not the atomic runtime-swap updater V39 file.
+    echo Replace it with the supplied V39 GUI before rebuilding.
     goto failed
 )
 %PY_CMD% -c "import sys; sys.path.insert(0, r'%CD%\Backend'); import shower_programmer_gui as gui; gui.validate_runtime_contracts(); print('  GUI runtime contracts passed.')"
@@ -191,6 +191,15 @@ if not exist "%STAGED_EXE%" (
     goto failed
 )
 
+if not exist "%STAGED_DIR%\_internal\_tcl_data" if not exist "%STAGED_DIR%\_internal\tcl_data" (
+    echo ERROR: The staged build is missing Tcl runtime data required by Tkinter.
+    goto failed
+)
+if not exist "%STAGED_DIR%\_internal\_tk_data" if not exist "%STAGED_DIR%\_internal\tk_data" (
+    echo ERROR: The staged build is missing Tk runtime data required by Tkinter.
+    goto failed
+)
+
 echo Running the packaged EXE self-test...
 set "SELF_TEST_REPORT=%CD%\build\release\shower_programmer_self_test.json"
 if exist "%SELF_TEST_REPORT%" del /F /Q "%SELF_TEST_REPORT%"
@@ -204,7 +213,7 @@ if not exist "%SELF_TEST_REPORT%" (
     echo ERROR: The staged EXE did not create its self-test report.
     goto failed
 )
-%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'SHORT_PATH_UPDATE_PACKAGE_V38', d; print('  Packaged EXE self-test passed.')"
+%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'ATOMIC_RUNTIME_SWAP_V39', d; print('  Packaged EXE self-test passed.')"
 if errorlevel 1 (
     type "%SELF_TEST_REPORT%"
     goto failed
@@ -245,9 +254,9 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'"`) do set "BUILD_TIME=%%I"
 
 if defined BUILD_SHA (
-    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"SHORT_PATH_UPDATE_PACKAGE_V38","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"ATOMIC_RUNTIME_SWAP_V39","built_at":"%BUILD_TIME%","method":"build"}
 ) else if defined EXE_SHA256 (
-    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"SHORT_PATH_UPDATE_PACKAGE_V38","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"ATOMIC_RUNTIME_SWAP_V39","built_at":"%BUILD_TIME%","method":"build"}
 )
 
 rem Refresh only program-controlled build files. Do not remove Input, Output,
@@ -273,6 +282,14 @@ if not exist "%FINAL_DIR%\_internal\pypdfium2_raw\pdfium.dll" (
     echo ERROR: Missing required file after deployment:
     echo   %FINAL_DIR%\_internal\pypdfium2_raw\pdfium.dll
     echo The Review Order preview may be slow or fail without pdfium.dll.
+    goto failed
+)
+if not exist "%FINAL_DIR%\_internal\_tcl_data" if not exist "%FINAL_DIR%\_internal\tcl_data" (
+    echo ERROR: Missing Tcl runtime data after deployment.
+    goto failed
+)
+if not exist "%FINAL_DIR%\_internal\_tk_data" if not exist "%FINAL_DIR%\_internal\tk_data" (
+    echo ERROR: Missing Tk runtime data after deployment.
     goto failed
 )
 if not exist "%FINAL_DIR%\_internal\Backend\shower_programmer_config.json" (
@@ -305,7 +322,7 @@ if not exist "%UPDATE_RELEASE_DIR%" mkdir "%UPDATE_RELEASE_DIR%"
   --app-dir "%STAGED_DIR%" ^
   --zip "%UPDATE_ZIP%" ^
   --metadata "%UPDATE_METADATA%" ^
-  --version "SHORT_PATH_UPDATE_PACKAGE_V38" ^
+  --version "ATOMIC_RUNTIME_SWAP_V39" ^
   --commit "%BUILD_SHA%"
 if errorlevel 1 (
     echo ERROR: Could not create or validate the clean update-only ZIP.

@@ -21,7 +21,7 @@
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: confirm ambiguous PPH hinge sides from paired DXF radii.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: flip proven symmetric four-slot panels to the top-right marker.
 # FIXED_SIDEBAR_NO_SCROLL_V37: keep all main sidebar controls in one fixed, non-scrolling panel.
-# SHORT_PATH_UPDATE_PACKAGE_V38: use short safe staging, selective bundle extraction, stale cleanup, and update-only ZIPs. Update TEST
+# ATOMIC_RUNTIME_SWAP_V39: pre-copy and self-test updates before a fast runtime swap with rollback and visible progress.
 
 from __future__ import annotations
 
@@ -9279,7 +9279,11 @@ a {{ color: #1f4e79; }}
                 value.startswith(internal_prefix.casefold()) and value.endswith("pdfium.dll")
                 for value in lowered
             )
-            if not has_internal or not has_pdfium:
+            tcl_prefixes = tuple((internal_prefix + name + "/").casefold() for name in ("_tcl_data", "tcl_data"))
+            tk_prefixes = tuple((internal_prefix + name + "/").casefold() for name in ("_tk_data", "tk_data"))
+            has_tcl = any(value.startswith(tcl_prefixes) for value in lowered)
+            has_tk = any(value.startswith(tk_prefixes) for value in lowered)
+            if not has_internal or not has_pdfium or not has_tcl or not has_tk:
                 continue
             folder_name = prefix.rsplit("/", 1)[-1] if prefix else ""
             score = (0 if folder_name.casefold() == "shower programmer" or not prefix else 1, len([p for p in prefix.split("/") if p]))
@@ -9394,13 +9398,27 @@ a {{ color: #1f4e79; }}
                 callback(completed, total, selected_name)
 
     @staticmethod
-    def validate_replacement_app_bundle(app_dir: Path, exe_name: str) -> None:
+    def runtime_data_directory(internal: Path, *names: str) -> Path | None:
+        """Return the first existing required runtime-data directory."""
+        for name in names:
+            candidate = internal / name
+            if candidate.is_dir() and any(candidate.iterdir()):
+                return candidate
+        return None
+
+    @classmethod
+    def validate_replacement_app_bundle(cls, app_dir: Path, exe_name: str) -> None:
+        """Reject incomplete bundles before the installed runtime is touched."""
         exe = app_dir / exe_name
         internal = app_dir / "_internal"
         if not exe.is_file() or exe.stat().st_size <= 0:
             raise RuntimeError(f"The downloaded app bundle is missing a valid {exe_name}.")
         if not internal.is_dir() or not any(internal.iterdir()):
             raise RuntimeError("The downloaded app bundle is missing its _internal runtime folder.")
+        if cls.runtime_data_directory(internal, "_tcl_data", "tcl_data") is None:
+            raise RuntimeError("The downloaded app bundle is missing the Tcl runtime data required by Tkinter.")
+        if cls.runtime_data_directory(internal, "_tk_data", "tk_data") is None:
+            raise RuntimeError("The downloaded app bundle is missing the Tk runtime data required by Tkinter.")
         pdfium_candidates = list(internal.rglob("pdfium.dll"))
         if not pdfium_candidates:
             raise RuntimeError("The downloaded app bundle is missing pdfium.dll, which is required for Review Order previews.")
@@ -9454,67 +9472,179 @@ a {{ color: #1f4e79; }}
         staged_metadata: Path | None = None,
         metadata_target: Path | None = None,
     ) -> Path:
+        """Prepare a visible, rollback-safe updater that never exposes a partial runtime."""
         replacement_exe = replacement_app_dir / current_exe_name
         replacement_internal = replacement_app_dir / "_internal"
         if not replacement_exe.is_file() or replacement_exe.stat().st_size <= 0:
             raise RuntimeError(f"The downloaded app bundle is missing {current_exe_name}.")
         if not replacement_internal.is_dir() or not any(replacement_internal.iterdir()):
             raise RuntimeError("The downloaded app bundle is missing its _internal runtime folder.")
+
         staged_dir = updates_dir / "staged_app"
         staged_app_dir = staged_dir / app_dir.name
         if staged_app_dir.exists():
             shutil.rmtree(staged_app_dir)
         shutil.copytree(replacement_app_dir, staged_app_dir)
+
+        session_id = re.sub(r"[^A-Za-z0-9]+", "", updates_dir.name)[-10:] or uuid.uuid4().hex[:8]
+        new_dir = app_dir / f".__sp_new_{session_id}"
+        old_dir = app_dir / f".__sp_old_{session_id}"
         script_path = updates_dir / "apply_update.cmd"
-        backup_dir = updates_dir / "backup_app"
+        log_path = updates_dir / "apply_update.log"
         pid = os.getpid()
         metadata_commands = ""
         if staged_metadata is not None and metadata_target is not None:
             metadata_commands = (
                 f'if not exist "{metadata_target.parent}" mkdir "{metadata_target.parent}" >nul 2>nul\n'
-                f'copy /Y "{staged_metadata}" "{metadata_target}" >nul\n'
+                f'copy /Y "{staged_metadata}" "{metadata_target}" >>"%LOG_FILE%" 2>&1\n'
+                'if errorlevel 1 goto rollback\n'
             )
-        script = (
-            "@echo off\n"
-            "setlocal\n"
-            f"set \"APP_DIR={app_dir}\"\n"
-            f"set \"STAGED_APP={staged_app_dir}\"\n"
-            f"set \"EXE_NAME={current_exe_name}\"\n"
-            f"set \"BACKUP_DIR={backup_dir}\"\n"
-            f"set \"PID={pid}\"\n"
-            "\n"
-            ":wait_for_app\n"
-            "tasklist /FI \"PID eq %PID%\" | find \"%PID%\" >nul\n"
-            "if not errorlevel 1 (\n"
-            "    timeout /t 1 /nobreak >nul\n"
-            "    goto wait_for_app\n"
-            ")\n"
-            "\n"
-            "if exist \"%BACKUP_DIR%\" rmdir /S /Q \"%BACKUP_DIR%\"\n"
-            "mkdir \"%BACKUP_DIR%\" >nul 2>nul\n"
-            "if exist \"%APP_DIR%\\%EXE_NAME%\" copy /Y \"%APP_DIR%\\%EXE_NAME%\" \"%BACKUP_DIR%\\%EXE_NAME%\" >nul\n"
-            "if exist \"%APP_DIR%\\_internal\" robocopy \"%APP_DIR%\\_internal\" \"%BACKUP_DIR%\\_internal\" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP >nul\n"
-            "\n"
-            "if exist \"%APP_DIR%\\_internal\" rmdir /S /Q \"%APP_DIR%\\_internal\"\n"
-            "robocopy \"%STAGED_APP%\" \"%APP_DIR%\" /E /R:5 /W:1 /NFL /NDL /NJH /NJS /NP\n"
-            "set \"COPY_CODE=%ERRORLEVEL%\"\n"
-            "if %COPY_CODE% GEQ 8 goto update_failed\n"
-            "\n"
-            f"{metadata_commands}"
-            "start \"\" \"%APP_DIR%\\%EXE_NAME%\"\n"
-            "exit /b 0\n"
-            "\n"
-            ":update_failed\n"
-            "if exist \"%APP_DIR%\\_internal\" rmdir /S /Q \"%APP_DIR%\\_internal\"\n"
-            "if exist \"%BACKUP_DIR%\\_internal\" robocopy \"%BACKUP_DIR%\\_internal\" \"%APP_DIR%\\_internal\" /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP >nul\n"
-            "if exist \"%BACKUP_DIR%\\%EXE_NAME%\" copy /Y \"%BACKUP_DIR%\\%EXE_NAME%\" \"%APP_DIR%\\%EXE_NAME%\" >nul\n"
-            "start \"\" \"%APP_DIR%\\%EXE_NAME%\"\n"
-            "echo The update could not be installed. The previous version was restored.\n"
-            "echo Update files and logs remain in \"%~dp0\".\n"
-            "pause\n"
-            "exit /b 1\n"
-        )
-        script_path.write_text(script, encoding="utf-8")
+
+        script = f"""@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+title Shower Programmer Update
+color 1F
+set "APP_DIR={app_dir}"
+set "STAGED_APP={staged_app_dir}"
+set "NEW_DIR={new_dir}"
+set "OLD_DIR={old_dir}"
+set "EXE_NAME={current_exe_name}"
+set "PID={pid}"
+set "LOG_FILE={log_path}"
+set "SELF_TEST_REPORT=%NEW_DIR%\\update_self_test.json"
+
+>"%LOG_FILE%" echo Shower Programmer update started %DATE% %TIME%
+call :status "Waiting for Shower Programmer to close..."
+set /a WAIT_COUNT=0
+:wait_for_app
+tasklist /FI "PID eq %PID%" /NH 2>nul | findstr /R /C:"[ ]%PID%[ ]" >nul
+if not errorlevel 1 (
+    set /a WAIT_COUNT+=1
+    if !WAIT_COUNT! GEQ 180 goto wait_failed
+    timeout /t 1 /nobreak >nul
+    goto wait_for_app
+)
+
+call :status "Copying the new runtime while the current installation remains untouched..."
+if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
+if exist "%OLD_DIR%" rmdir /S /Q "%OLD_DIR%"
+robocopy "%STAGED_APP%" "%NEW_DIR%" /E /COPY:DAT /DCOPY:DAT /R:3 /W:1 /NFL /NDL /NJH /NJS /NP /LOG+:"%LOG_FILE%"
+set "COPY_CODE=!ERRORLEVEL!"
+if !COPY_CODE! GEQ 8 goto pre_swap_failed
+
+call :status "Validating the copied application bundle..."
+if not exist "%NEW_DIR%\\%EXE_NAME%" goto pre_swap_failed
+if not exist "%NEW_DIR%\\_internal" goto pre_swap_failed
+if not exist "%NEW_DIR%\\_internal\\_tcl_data" if not exist "%NEW_DIR%\\_internal\\tcl_data" goto pre_swap_failed
+if not exist "%NEW_DIR%\\_internal\\_tk_data" if not exist "%NEW_DIR%\\_internal\\tk_data" goto pre_swap_failed
+if not exist "%NEW_DIR%\\_internal\\pypdfium2_raw\\pdfium.dll" goto pre_swap_failed
+
+call :status "Running the new EXE self-test before installation..."
+if exist "%SELF_TEST_REPORT%" del /F /Q "%SELF_TEST_REPORT%" >nul 2>nul
+start "" /wait "%NEW_DIR%\\%EXE_NAME%" --self-test "%SELF_TEST_REPORT%"
+if errorlevel 1 goto pre_swap_failed
+if not exist "%SELF_TEST_REPORT%" goto pre_swap_failed
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=Get-Content -LiteralPath '%SELF_TEST_REPORT%' -Raw | ConvertFrom-Json; if(-not $d.ok){{exit 1}}" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto pre_swap_failed
+
+call :status "Checking that Shower Programmer was not reopened during staging..."
+tasklist /FI "IMAGENAME eq %EXE_NAME%" /NH 2>nul | find /I "%EXE_NAME%" >nul
+if not errorlevel 1 goto reopened_failed
+
+call :status "Creating a fast rollback snapshot..."
+mkdir "%OLD_DIR%" >nul 2>nul
+if errorlevel 1 goto pre_swap_failed
+if exist "%APP_DIR%\\_internal" move /Y "%APP_DIR%\\_internal" "%OLD_DIR%\\_internal" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+if exist "%APP_DIR%\\Assets" move /Y "%APP_DIR%\\Assets" "%OLD_DIR%\\Assets" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+if exist "%APP_DIR%\\.shower_update.json" move /Y "%APP_DIR%\\.shower_update.json" "%OLD_DIR%\\.shower_update.json" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+if exist "%APP_DIR%\\%EXE_NAME%" move /Y "%APP_DIR%\\%EXE_NAME%" "%OLD_DIR%\\%EXE_NAME%" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+
+call :status "Activating the validated runtime..."
+move /Y "%NEW_DIR%\\_internal" "%APP_DIR%\\_internal" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+if exist "%NEW_DIR%\\Assets" move /Y "%NEW_DIR%\\Assets" "%APP_DIR%\\Assets" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+if exist "%NEW_DIR%\\.shower_update.json" move /Y "%NEW_DIR%\\.shower_update.json" "%APP_DIR%\\.shower_update.json" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+move /Y "%NEW_DIR%\\%EXE_NAME%" "%APP_DIR%\\%EXE_NAME%" >>"%LOG_FILE%" 2>&1
+if errorlevel 1 goto rollback
+
+if not exist "%APP_DIR%\\%EXE_NAME%" goto rollback
+if not exist "%APP_DIR%\\_internal\\_tcl_data" if not exist "%APP_DIR%\\_internal\\tcl_data" goto rollback
+if not exist "%APP_DIR%\\_internal\\_tk_data" if not exist "%APP_DIR%\\_internal\\tk_data" goto rollback
+if not exist "%APP_DIR%\\_internal\\pypdfium2_raw\\pdfium.dll" goto rollback
+{metadata_commands}
+call :status "Starting the updated Shower Programmer..."
+start "" "%APP_DIR%\\%EXE_NAME%"
+timeout /t 10 /nobreak >nul
+tasklist /FI "IMAGENAME eq %EXE_NAME%" /NH 2>nul | find /I "%EXE_NAME%" >nul
+if errorlevel 1 goto rollback_after_launch
+
+call :status "Update completed successfully. Cleaning temporary files..."
+if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
+if exist "%OLD_DIR%" rmdir /S /Q "%OLD_DIR%"
+echo. & echo Update complete. Shower Programmer has reopened.
+echo This window will close in 5 seconds.
+timeout /t 5 /nobreak >nul
+exit /b 0
+
+:wait_failed
+call :status "The previous Shower Programmer process did not close within three minutes."
+goto pre_swap_failed
+
+:reopened_failed
+call :status "Shower Programmer was reopened before installation could begin."
+echo Close every Shower Programmer window and run Check for Updates again.
+goto pre_swap_failed
+
+:rollback_after_launch
+taskkill /IM "%EXE_NAME%" /F >nul 2>nul
+call :status "The updated program did not stay open. Restoring the previous version..."
+goto rollback
+
+:rollback
+call :status "Installation did not complete. Restoring the previous known-good version..."
+if exist "%OLD_DIR%\\_internal" (
+    if exist "%APP_DIR%\\_internal" rmdir /S /Q "%APP_DIR%\\_internal"
+    move /Y "%OLD_DIR%\\_internal" "%APP_DIR%\\_internal" >>"%LOG_FILE%" 2>&1
+)
+if exist "%OLD_DIR%\\Assets" (
+    if exist "%APP_DIR%\\Assets" rmdir /S /Q "%APP_DIR%\\Assets"
+    move /Y "%OLD_DIR%\\Assets" "%APP_DIR%\\Assets" >>"%LOG_FILE%" 2>&1
+)
+if exist "%OLD_DIR%\\.shower_update.json" (
+    if exist "%APP_DIR%\\.shower_update.json" del /F /Q "%APP_DIR%\\.shower_update.json" >nul 2>nul
+    move /Y "%OLD_DIR%\\.shower_update.json" "%APP_DIR%\\.shower_update.json" >>"%LOG_FILE%" 2>&1
+)
+if exist "%OLD_DIR%\\%EXE_NAME%" (
+    if exist "%APP_DIR%\\%EXE_NAME%" del /F /Q "%APP_DIR%\\%EXE_NAME%" >nul 2>nul
+    move /Y "%OLD_DIR%\\%EXE_NAME%" "%APP_DIR%\\%EXE_NAME%" >>"%LOG_FILE%" 2>&1
+)
+if exist "%APP_DIR%\\%EXE_NAME%" start "" "%APP_DIR%\\%EXE_NAME%"
+echo. & echo The update failed, but the previous version was restored.
+echo Log: %LOG_FILE%
+pause
+exit /b 1
+
+:pre_swap_failed
+call :status "The update was stopped before the installed program was changed."
+if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
+if exist "%APP_DIR%\\%EXE_NAME%" start "" "%APP_DIR%\\%EXE_NAME%"
+echo. & echo Your existing Shower Programmer installation was not changed.
+echo Log: %LOG_FILE%
+pause
+exit /b 1
+
+:status
+echo. & echo [%TIME%] %~1
+>>"%LOG_FILE%" echo [%DATE% %TIME%] %~1
+exit /b 0
+"""
+        script_path.write_text(script, encoding="utf-8", newline="\r\n")
         return script_path
 
     @staticmethod
@@ -13012,6 +13142,9 @@ def validate_runtime_contracts() -> None:
         "begin_update_install",
         "extract_update_archive",
         "find_update_bundle_prefix_in_archive",
+        "runtime_data_directory",
+        "validate_replacement_app_bundle",
+        "stage_app_bundle_replacement",
         "create_update_session_dir",
         "cleanup_stale_update_folders",
         "safe_remove_update_path",
@@ -13084,7 +13217,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {
         "ok": False,
-        "version": "SHORT_PATH_UPDATE_PACKAGE_V38",
+        "version": "ATOMIC_RUNTIME_SWAP_V39",
         "executable": str(Path(sys.executable).resolve()),
     }
     try:
@@ -13333,6 +13466,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("repo-main/build/release/Shower Programmer/Shower Programmer.exe", b"test-exe")
                 archive.writestr("repo-main/build/release/Shower Programmer/_internal/pypdfium2_raw/pdfium.dll", b"test-dll")
+                archive.writestr("repo-main/build/release/Shower Programmer/_internal/_tcl_data/init.tcl", b"test-tcl")
+                archive.writestr("repo-main/build/release/Shower Programmer/_internal/_tk_data/tk.tcl", b"test-tk")
                 archive.writestr(deep_member, b"deep-test")
                 archive.writestr("repo-main/Backend/should_not_extract.py", b"not part of clean bundle")
             prefix = ShowerProgrammerApp.find_update_bundle_prefix_in_archive(archive_path, "Shower Programmer.exe")
@@ -13355,6 +13490,31 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 raise RuntimeError("Repository clutter was included in selective update extraction.")
             if not extraction_events or extraction_events[-1][0] != extraction_events[-1][1]:
                 raise RuntimeError("Update extraction progress self-test failed.")
+
+            bundle_dir = temp_root / "bundle"
+            (bundle_dir / "_internal" / "_tcl_data").mkdir(parents=True)
+            (bundle_dir / "_internal" / "_tk_data").mkdir(parents=True)
+            (bundle_dir / "_internal" / "pypdfium2_raw").mkdir(parents=True)
+            (bundle_dir / "Shower Programmer.exe").write_bytes(b"test-exe")
+            (bundle_dir / "_internal" / "_tcl_data" / "init.tcl").write_text("test", encoding="utf-8")
+            (bundle_dir / "_internal" / "_tk_data" / "tk.tcl").write_text("test", encoding="utf-8")
+            (bundle_dir / "_internal" / "pypdfium2_raw" / "pdfium.dll").write_bytes(b"dll")
+            ShowerProgrammerApp.validate_replacement_app_bundle(bundle_dir, "Shower Programmer.exe")
+            fake_app = temp_root / "installed" / "Shower Programmer"
+            fake_app.mkdir(parents=True)
+            script_dir = temp_root / "session123"
+            script_dir.mkdir()
+            update_script = ShowerProgrammerApp.stage_app_bundle_replacement(
+                fake_app, bundle_dir, "Shower Programmer.exe", script_dir
+            )
+            update_text = update_script.read_text(encoding="utf-8")
+            copy_position = update_text.find('robocopy "%STAGED_APP%" "%NEW_DIR%"')
+            self_test_position = update_text.find('--self-test')
+            move_old_position = update_text.find('move /Y "%APP_DIR%\\_internal"')
+            if min(copy_position, self_test_position, move_old_position) < 0:
+                raise RuntimeError("Atomic updater script is missing required pre-copy, self-test, or swap stages.")
+            if not (copy_position < self_test_position < move_old_position):
+                raise RuntimeError("Atomic updater touches the installed runtime before the staged EXE self-test.")
 
             unsafe_archive = temp_root / "unsafe_update.zip"
             with zipfile.ZipFile(unsafe_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -14010,6 +14170,9 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "deep_runtime_path_extraction": True,
                 "stale_update_cleanup": True,
                 "update_only_package_support": True,
+                "atomic_runtime_swap": True,
+                "tcl_tk_runtime_validation": True,
+                "visible_update_progress": True,
                 "order_number_pdf_matching": True,
                 "unmarked_sketch_mapping": True,
                 "independent_output_controls": True,

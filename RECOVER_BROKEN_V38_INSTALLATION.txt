@@ -1,0 +1,25 @@
+Recovering a Shower Programmer installation broken by the V38 updater
+
+The V38 updater could remove the live _internal folder while its replacement was still copying. A missing _internal\_tcl_data or _internal\tcl_data error means the installed runtime is incomplete.
+
+Do not copy the broken _internal folder into a new installation.
+
+Recovery:
+1. On the affected computer, close Shower Programmer and the updater terminal after you have a complete replacement folder ready.
+2. Rename the broken folder from "Shower Programmer" to "Shower Programmer Broken V38". Do not delete it yet.
+3. On the build computer, install the V39 source files and run "Rebuild Shower Programmer EXE.bat".
+4. Copy the complete newly built "Shower Programmer" folder to the affected computer.
+5. From "Shower Programmer Broken V38", copy back only user data that is needed:
+   - Input
+   - Output
+   - shower_programmer_ui_settings.json, if present
+   Output already contains processing_history.json, manual_overrides.json, runs, reviews, and archives.
+6. Do not copy these items from the broken folder:
+   - Shower Programmer.exe
+   - _internal
+   - Assets
+   - .shower_update.json
+7. Start the new Shower Programmer.exe and confirm Scan Orders and Review Order work.
+8. Keep the broken folder until the new installation has been verified, then archive or delete it.
+
+The first true updater test should be from V39 to a later V40 package. V38 cannot safely update itself because its installer is the defective component.

@@ -1,14 +1,14 @@
 {
-  "built_at": "2026-07-27T19:03:52.667911+00:00",
-  "commit": "a49df1a80224803d007b60530a9dd9f1db67e0d8",
-  "exe_sha256": "43ac82ed3d369331bc0c11bf296bc6ae7beb0ed0fa22999149030e29b00e22af",
+  "built_at": "2026-07-27T19:24:40.580328+00:00",
+  "commit": "c844695df984a090d441419412cfc8e189f650ad",
+  "exe_sha256": "f5d9f75aab89688999a00d1208edf34bca1b491a718916b392fa2f320d16101f",
   "file_count": 1136,
-  "gui_sha256": "88fcf3974c0e694e0964a98ef4ce76d791ffd7b7af6bf215fd230365510217e3",
-  "sha256": "63e9c974525f51b8bb2e88549e8a83c60ead3aaa793ae9c314c7affff31c2cde",
-  "size": 45631105,
-  "source_size": 105250364,
+  "gui_sha256": "bf8d7f9c2776ffc745de0021e201900d06318b6944ac04e514492f236efc24f8",
+  "sha256": "4678a4cdaf3ff68797aee3021f15c4e9e58c7485743f911e0cd53ef6a657189f",
+  "size": 45633955,
+  "source_size": 105253766,
   "validated_file_count": 1136,
-  "version": "SHORT_PATH_UPDATE_PACKAGE_V38",
+  "version": "ATOMIC_RUNTIME_SWAP_V39",
   "zip_name": "Shower-Programmer-Windows.zip",
   "zip_path": "release/Shower-Programmer-Windows.zip"
 }

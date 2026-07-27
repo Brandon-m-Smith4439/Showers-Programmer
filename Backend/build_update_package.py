@@ -49,6 +49,14 @@ def iter_package_files(app_dir: Path):
             yield path, relative
 
 
+
+def runtime_data_directory(internal: Path, *names: str) -> Path | None:
+    for name in names:
+        candidate = internal / name
+        if candidate.is_dir() and any(candidate.iterdir()):
+            return candidate
+    return None
+
 def validate_app_dir(app_dir: Path) -> None:
     for relative in REQUIRED_FILES:
         path = app_dir / Path(relative)
@@ -57,6 +65,10 @@ def validate_app_dir(app_dir: Path) -> None:
     internal = app_dir / "_internal"
     if not internal.is_dir() or not any(internal.iterdir()):
         raise RuntimeError("The staged app is missing its _internal runtime folder.")
+    if runtime_data_directory(internal, "_tcl_data", "tcl_data") is None:
+        raise RuntimeError("The staged app is missing Tcl runtime data.")
+    if runtime_data_directory(internal, "_tk_data", "tk_data") is None:
+        raise RuntimeError("The staged app is missing Tk runtime data.")
     if not any(path.name.casefold() == "pdfium.dll" for path in internal.rglob("pdfium.dll")):
         raise RuntimeError("The staged app is missing pdfium.dll.")
 
@@ -90,8 +102,13 @@ def validate_zip(zip_path: Path) -> list[str]:
     for required in REQUIRED_FILES:
         if required not in name_set:
             raise RuntimeError(f"The clean update ZIP is missing: {required}")
-    if not any(name.startswith("_internal/") and name.endswith("pdfium.dll") for name in names):
+    lowered = [name.casefold() for name in names]
+    if not any(name.startswith("_internal/") and name.endswith("pdfium.dll") for name in lowered):
         raise RuntimeError("The clean update ZIP is missing pdfium.dll.")
+    if not any(name.startswith("_internal/_tcl_data/") or name.startswith("_internal/tcl_data/") for name in lowered):
+        raise RuntimeError("The clean update ZIP is missing Tcl runtime data.")
+    if not any(name.startswith("_internal/_tk_data/") or name.startswith("_internal/tk_data/") for name in lowered):
+        raise RuntimeError("The clean update ZIP is missing Tk runtime data.")
     for name in names:
         top_level = name.split("/", 1)[0]
         if top_level in FORBIDDEN_TOP_LEVEL:
