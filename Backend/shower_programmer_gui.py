@@ -20,6 +20,7 @@
 # ROTATION_ARROW_ICON_CLARITY_V34: full curved arrows with action-accurate directional heads.
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: confirm ambiguous PPH hinge sides from paired DXF radii.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: flip proven symmetric four-slot panels to the top-right marker.
+# FIXED_SIDEBAR_NO_SCROLL_V37: keep all main sidebar controls in one fixed, non-scrolling panel.
 
 from __future__ import annotations
 
@@ -2190,9 +2191,9 @@ class ShowerProgrammerApp:
         sidebar.grid(row=0, column=0, sticky="ns", padx=(0, 14))
         sidebar.grid_propagate(False)
         sidebar.grid_columnconfigure(0, weight=1)
-        # Keep the send controls permanently visible at the bottom.  The middle
-        # workflow/tools region owns all remaining height and becomes scrollable
-        # when a smaller monitor or Windows display scaling cannot show it all.
+        # Keep the send controls permanently visible at the bottom. The middle
+        # workflow/tools region uses a fixed frame so the sidebar has no internal
+        # scrollbar and all controls remain part of one stable panel.
         sidebar.grid_rowconfigure(1, weight=1, minsize=0)
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
@@ -2224,14 +2225,11 @@ class ShowerProgrammerApp:
             anchor="w",
         ).grid(row=1, column=1, sticky="ew", padx=(12, 0))
 
-        center_stack = ctk.CTkScrollableFrame(
+        center_stack = ctk.CTkFrame(
             sidebar,
             fg_color="transparent",
             corner_radius=0,
             border_width=0,
-            scrollbar_fg_color="transparent",
-            scrollbar_button_color=self.SIDEBAR_BORDER,
-            scrollbar_button_hover_color=self.ACCENT,
         )
         center_stack.grid(row=1, column=0, sticky="nsew", padx=(0, 3), pady=(0, 0))
         center_stack.grid_columnconfigure(0, weight=1)
@@ -12700,7 +12698,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {
         "ok": False,
-        "version": "BILATERAL_SCU4_DENVER_ORIENTATION_V36",
+        "version": "FIXED_SIDEBAR_NO_SCROLL_V37",
         "executable": str(Path(sys.executable).resolve()),
     }
     try:
@@ -13604,6 +13602,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "external_review_double_click_guard": True,
                 "page_entrypoint_guard": True,
                 "responsive_sidebar_layout": True,
+                "fixed_sidebar_no_scroll": True,
                 "skipped_output_cleanup": True,
                 "batch_specific_process_list_cleanup": True,
                 "job_number_dxf_cleanup_matching": True,
