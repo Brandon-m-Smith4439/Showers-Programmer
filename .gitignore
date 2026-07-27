@@ -1,2 +1,14 @@
 Output/
 Input/
+
+# Generated Python bytecode
+__pycache__/
+*.py[cod]
+
+# Generated build and temporary output
+build/
+tmp/
+
+# Local crash reports and updater audit folders
+ErrorReports/
+.update-audit-*/
