@@ -21,7 +21,7 @@
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: confirm ambiguous PPH hinge sides from paired DXF radii.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: flip proven symmetric four-slot panels to the top-right marker.
 # FIXED_SIDEBAR_NO_SCROLL_V37: keep all main sidebar controls in one fixed, non-scrolling panel.
-# SHORT_PATH_UPDATE_PACKAGE_V38: use short safe staging, selective bundle extraction, stale cleanup, and update-only ZIPs.
+# SHORT_PATH_UPDATE_PACKAGE_V38: use short safe staging, selective bundle extraction, stale cleanup, and update-only ZIPs. Update TEST
 
 from __future__ import annotations
 

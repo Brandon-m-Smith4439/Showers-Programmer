@@ -1,5 +1,10 @@
-Output/
-Input/
+# Local input and generated output for source runs
+/Input/
+/Output/
+
+# Local input and generated output for the packaged application
+/Shower Programmer/Input/
+/Shower Programmer/Output/
 
 # Generated Python bytecode
 __pycache__/
