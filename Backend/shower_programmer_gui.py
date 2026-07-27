@@ -21,6 +21,7 @@
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: confirm ambiguous PPH hinge sides from paired DXF radii.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: flip proven symmetric four-slot panels to the top-right marker.
 # FIXED_SIDEBAR_NO_SCROLL_V37: keep all main sidebar controls in one fixed, non-scrolling panel.
+# SHORT_PATH_UPDATE_PACKAGE_V38: use short safe staging, selective bundle extraction, stale cleanup, and update-only ZIPs.
 
 from __future__ import annotations
 
@@ -39,6 +40,7 @@ import tempfile
 import threading
 import time
 import ctypes
+import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
@@ -157,6 +159,35 @@ class SingleInstanceGuard:
 def friendly_error_message(action: str, error: object) -> str:
     """Turn common file and integration failures into instructions a shop user can follow."""
     detail = str(error).strip() or error.__class__.__name__
+    lower = detail.casefold()
+    is_update = "update" in action.casefold()
+
+    if is_update:
+        if "404" in lower or "not found" in lower and "github" in lower:
+            message = (
+                "The GitHub update package could not be found. Rebuild and publish "
+                "release/Shower-Programmer-Windows.zip, or check the repository configuration."
+            )
+        elif (
+            "filename or extension is too long" in lower
+            or "path too long" in lower
+            or "winerror 206" in lower
+            or "errno 36" in lower
+        ):
+            message = "The update package contains a Windows path that is too long to extract safely."
+        elif isinstance(error, PermissionError) or "access is denied" in lower or "permission" in lower:
+            message = "The updater could not write to the staging or installation folder."
+        elif "being used by another process" in lower or "sharing violation" in lower or "locked" in lower:
+            message = (
+                "Close any open Shower Programmer, PDF, DXF, NCEditor, AutoCAD, or File Explorer Preview "
+                "windows and try again."
+            )
+        elif isinstance(error, FileNotFoundError) or "no such file or directory" in lower:
+            message = "The downloaded update package was incomplete or could not be extracted safely."
+        else:
+            message = f"{action} failed.\n\n{detail}"
+        return message + "\n\nYour current Shower Programmer installation was not changed."
+
     if isinstance(error, AttributeError):
         return (
             f"{action} could not start because the installed program files do not match each other.\n\n"
@@ -164,7 +195,7 @@ def friendly_error_message(action: str, error: object) -> str:
             "and rebuild using the included Rebuild Shower Programmer EXE.bat.\n\n"
             f"Technical detail: {detail}"
         )
-    if isinstance(error, PermissionError) or "being used by another process" in detail.lower():
+    if isinstance(error, PermissionError) or "being used by another process" in lower:
         return (
             f"{action} could not access a file because Windows says it is in use.\n\n"
             "Close any second Shower Programmer window and close the affected PDF, DXF, or process list in other programs, "
@@ -295,6 +326,11 @@ class ShowerProgrammerApp:
     GITHUB_UPDATE_OWNER = "Brandon-m-Smith4439"
     GITHUB_UPDATE_REPO = "Showers-Programmer"
     GITHUB_UPDATE_BRANCH = "main"
+    GITHUB_UPDATE_PACKAGE_NAME = "Shower-Programmer-Windows.zip"
+    GITHUB_UPDATE_PACKAGE_PATH = "release/Shower-Programmer-Windows.zip"
+    GITHUB_UPDATE_PACKAGE_METADATA_PATH = "release/Shower-Programmer-Windows.json"
+    UPDATE_STAGE_FOLDER_NAME = "SPU"
+    UPDATE_STALE_HOURS = 24
     SHOP_SKETCHES_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Sketches")
     SHOP_PROGRAMS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")
     EDI_IMPORT_ORDERS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\EDIImportSG\Showers Programmer Input")
@@ -328,6 +364,10 @@ class ShowerProgrammerApp:
         self.set_window_icon(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.runtime_root = self.ensure_internal_runtime_folders()
+        try:
+            self.cleanup_stale_update_folders(self.update_install_root())
+        except Exception:
+            pass
         self.folder_var = tk.StringVar(value=str(self.internal_orders_dir()))
         self.import_source_var = tk.StringVar(value=str(self.EDI_IMPORT_ORDERS_DIR))
         self.process_list_var = tk.StringVar(value=str(self.internal_process_list_dir()))
@@ -8427,6 +8467,10 @@ a {{ color: #1f4e79; }}
             )
             return
         repo = self.update_install_root()
+        try:
+            self.cleanup_stale_update_folders(repo)
+        except Exception:
+            pass
         git = shutil.which("git")
         use_git = bool(not getattr(sys, "frozen", False) and git and (repo / ".git").exists())
         self.start_background_activity("Connecting to GitHub...", maximum=100)
@@ -8702,16 +8746,106 @@ a {{ color: #1f4e79; }}
         return sha, latest_date
 
     @staticmethod
-    def github_packaged_exe_hash(owner: str, repo_name: str, branch: str) -> str:
-        url = (
+    def github_raw_url(owner: str, repo_name: str, branch: str, relative_path: str) -> str:
+        quoted = "/".join(urllib.parse.quote(part) for part in relative_path.replace("\\", "/").split("/") if part)
+        return f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{quoted}"
+
+    @classmethod
+    def github_update_package_descriptor(
+        cls,
+        owner: str,
+        repo_name: str,
+        branch: str,
+    ) -> dict[str, object]:
+        """Locate the clean update ZIP, preferring branch metadata and then a GitHub Release asset."""
+        metadata_url = cls.github_raw_url(owner, repo_name, branch, cls.GITHUB_UPDATE_PACKAGE_METADATA_PATH)
+        try:
+            data = json.loads(cls.download_text(metadata_url, timeout=30))
+            if isinstance(data, dict):
+                zip_path = str(data.get("zip_path") or cls.GITHUB_UPDATE_PACKAGE_PATH).strip()
+                if zip_path:
+                    return {
+                        "url": cls.github_raw_url(owner, repo_name, branch, zip_path),
+                        "sha256": str(data.get("sha256", "")).strip().lower(),
+                        "size": int(data.get("size", 0) or 0),
+                        "source": "branch update package",
+                    }
+        except Exception:
+            pass
+
+        release_descriptor = cls.github_release_update_package_descriptor(owner, repo_name)
+        if release_descriptor is not None:
+            return release_descriptor
+
+        return {
+            "url": cls.github_raw_url(owner, repo_name, branch, cls.GITHUB_UPDATE_PACKAGE_PATH),
+            "sha256": "",
+            "size": 0,
+            "source": "branch update ZIP",
+        }
+
+    @classmethod
+    def github_release_update_package_descriptor(
+        cls,
+        owner: str,
+        repo_name: str,
+    ) -> dict[str, object] | None:
+        """Return the latest matching GitHub Release asset when one is published."""
+        try:
+            release = cls.github_json(f"https://api.github.com/repos/{owner}/{repo_name}/releases/latest")
+            assets = release.get("assets", [])
+            if not isinstance(assets, list):
+                return None
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                if str(asset.get("name", "")).casefold() != cls.GITHUB_UPDATE_PACKAGE_NAME.casefold():
+                    continue
+                url = str(asset.get("browser_download_url", "")).strip()
+                if not url:
+                    continue
+                digest = str(asset.get("digest", "")).strip().lower()
+                if digest.startswith("sha256:"):
+                    digest = digest.split(":", 1)[1]
+                return {
+                    "url": url,
+                    "sha256": digest,
+                    "size": int(asset.get("size", 0) or 0),
+                    "source": "GitHub Release asset",
+                }
+        except Exception:
+            return None
+        return None
+
+    @classmethod
+    def github_packaged_exe_hash(cls, owner: str, repo_name: str, branch: str) -> str:
+        metadata_url = cls.github_raw_url(owner, repo_name, branch, cls.GITHUB_UPDATE_PACKAGE_METADATA_PATH)
+        try:
+            data = json.loads(cls.download_text(metadata_url, timeout=30))
+            if isinstance(data, dict):
+                digest = str(data.get("exe_sha256", "")).strip().lower()
+                if digest:
+                    return digest
+        except Exception:
+            pass
+
+        legacy_url = (
             f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/"
             "Shower%20Programmer/.shower_update.json"
         )
         try:
-            data = json.loads(ShowerProgrammerApp.download_text(url, timeout=30))
+            data = json.loads(cls.download_text(legacy_url, timeout=30))
         except Exception:
             return ""
         return str(data.get("exe_sha256", "")).strip().lower() if isinstance(data, dict) else ""
+
+    @staticmethod
+    def sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest().lower()
 
     @staticmethod
     def current_packaged_exe_hash() -> str:
@@ -8823,132 +8957,289 @@ a {{ color: #1f4e79; }}
         latest_sha: str,
         progress_callback: Callable[[float, str, str], None] | None = None,
     ) -> None:
-        """Download and validate a GitHub ZIP in a local staging area before touching the installation."""
+        """Download and validate a clean application ZIP before touching the installation."""
         callback = progress_callback or (lambda _percent, _stage, _detail="": None)
-        updates_dir = self.update_work_dir(repo) / f"update_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
-        updates_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = updates_dir / "main.zip"
-        extract_dir = updates_dir / "extract"
-        backup_dir = updates_dir / "backup"
-        zip_url = f"https://codeload.github.com/{owner}/{repo_name}/zip/refs/heads/{branch}"
+        updates_dir = self.create_update_session_dir(repo)
+        archive_path = updates_dir / "u.zip"
+        extract_dir = updates_dir / "x"
+        backup_dir = updates_dir / "b"
         self.pending_update_script = None
         self.pending_update_message = ""
 
-        callback(5, "Preparing download...", f"Staging files in {updates_dir}")
-
-        def download_progress(done: int, total: int) -> None:
-            if total > 0:
-                fraction = min(1.0, done / total)
-                percent = 8 + fraction * 32
-                detail = f"Downloaded {self.format_file_size(done)} of {self.format_file_size(total)}"
+        try:
+            if getattr(sys, "frozen", False):
+                descriptor = self.github_update_package_descriptor(owner, repo_name, branch)
             else:
-                percent = 18
-                detail = f"Downloaded {self.format_file_size(done)}"
-            callback(percent, "Downloading update from GitHub...", detail)
+                descriptor = {
+                    "url": f"https://codeload.github.com/{owner}/{repo_name}/zip/refs/heads/{branch}",
+                    "sha256": "",
+                    "size": 0,
+                    "source": "GitHub source archive",
+                }
+            zip_url = str(descriptor.get("url", "")).strip()
+            expected_hash = str(descriptor.get("sha256", "")).strip().lower()
+            package_source = str(descriptor.get("source", "clean update ZIP"))
+            callback(5, "Preparing download...", f"Using short staging folder {updates_dir}")
 
-        self.download_file(zip_url, archive_path, progress_callback=download_progress)
-        callback(42, "Validating downloaded package...", f"Checking {archive_path.name} before extraction.")
-        self.extract_update_archive(
-            archive_path,
-            extract_dir,
-            progress_callback=lambda done, total, name: callback(
-                45 + (done / max(total, 1)) * 28,
-                "Extracting and validating update...",
-                f"File {done:,} of {total:,}: {name}",
-            ),
-        )
-        roots = [path for path in extract_dir.iterdir() if path.is_dir()]
-        if not roots:
-            raise RuntimeError("The downloaded update package was empty after extraction.")
-        source_root = roots[0]
-        callback(76, "Inspecting update contents...", "Looking for the rebuilt application folder and required runtime files.")
+            def download_progress(done: int, total: int) -> None:
+                if total > 0:
+                    fraction = min(1.0, done / total)
+                    percent = 8 + fraction * 32
+                    detail = f"Downloaded {self.format_file_size(done)} of {self.format_file_size(total)}"
+                else:
+                    percent = 18
+                    detail = f"Downloaded {self.format_file_size(done)}"
+                callback(percent, f"Downloading {package_source}...", detail)
 
-        if getattr(sys, "frozen", False):
-            current_exe = Path(sys.executable).resolve()
-            app_dir = current_exe.parent
-            staged_metadata = updates_dir / "update_metadata.json"
-            staged_metadata.write_text(
-                json.dumps(self.update_metadata_payload(latest_sha, "zip"), indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-            metadata_target = self.writable_update_metadata_path(repo)
-            replacement_app_dir = self.find_replacement_app_bundle(source_root, current_exe.name)
-            if replacement_app_dir is not None:
-                callback(82, "Validating application bundle...", f"Checking {replacement_app_dir.name} before staging.")
-                self.validate_replacement_app_bundle(replacement_app_dir, current_exe.name)
-                callback(88, "Staging application files...", "Copying the validated EXE and runtime to a local installation staging folder.")
-                self.pending_update_script = self.stage_app_bundle_replacement(
-                    app_dir,
-                    replacement_app_dir,
-                    current_exe.name,
-                    updates_dir,
-                    staged_metadata,
-                    metadata_target,
+            downloaded = False
+            clean_error: Exception | None = None
+            try:
+                self.download_file(zip_url, archive_path, progress_callback=download_progress)
+                downloaded = True
+            except Exception as exc:
+                clean_error = exc
+
+            if not downloaded:
+                release_descriptor = self.github_release_update_package_descriptor(owner, repo_name)
+                release_url = str((release_descriptor or {}).get("url", "")).strip()
+                if release_url and release_url != zip_url:
+                    try:
+                        expected_hash = str((release_descriptor or {}).get("sha256", "")).strip().lower()
+                        package_source = str((release_descriptor or {}).get("source", "GitHub Release asset"))
+                        callback(8, "Branch update ZIP unavailable", "Trying the latest GitHub Release asset instead.")
+                        self.download_file(release_url, archive_path, progress_callback=download_progress)
+                        downloaded = True
+                    except Exception:
+                        downloaded = False
+
+            if not downloaded:
+                # Backward compatibility for repositories that have not published the clean ZIP yet.
+                fallback_url = f"https://codeload.github.com/{owner}/{repo_name}/zip/refs/heads/{branch}"
+                expected_hash = ""
+                package_source = "GitHub branch archive fallback"
+                callback(8, "Clean update ZIP unavailable", "Falling back to the repository archive for this update.")
+                try:
+                    self.download_file(fallback_url, archive_path, progress_callback=download_progress)
+                except Exception as fallback_error:
+                    raise RuntimeError(
+                        "No usable clean update ZIP or repository archive could be downloaded.\n\n"
+                        f"Clean package: {clean_error}\n\nFallback archive: {fallback_error}"
+                    ) from clean_error
+
+            callback(42, "Validating downloaded package...", f"Checking {archive_path.name} before extraction.")
+            if expected_hash:
+                actual_hash = self.sha256_file(archive_path)
+                if actual_hash != expected_hash:
+                    raise RuntimeError(
+                        "The downloaded update ZIP failed SHA-256 validation. "
+                        f"Expected {expected_hash}, received {actual_hash}."
+                    )
+
+            app_dir = self.frozen_app_dir()
+            bundle_prefix: str | None = None
+            if app_dir is not None:
+                bundle_prefix = self.find_update_bundle_prefix_in_archive(archive_path, Path(sys.executable).name)
+                if bundle_prefix is None:
+                    raise RuntimeError(
+                        "The downloaded update package does not contain a valid Shower Programmer.exe, "
+                        "_internal runtime, and pdfium.dll bundle. Rebuild the EXE and publish the clean update ZIP."
+                    )
+
+            if app_dir is not None and bundle_prefix is not None:
+                callback(45, "Extracting application bundle...", "Only the clean EXE, runtime, assets, and update metadata will be staged.")
+                self.extract_update_archive(
+                    archive_path,
+                    extract_dir,
+                    progress_callback=lambda done, total, name: callback(
+                        45 + (done / max(total, 1)) * 28,
+                        "Extracting and validating update...",
+                        f"File {done:,} of {total:,}: {name}",
+                    ),
+                    member_prefix=bundle_prefix,
+                    strip_prefix=True,
                 )
-                self.pending_update_message = (
-                    "Downloaded and validated a replacement Shower Programmer application folder. "
-                    "The program will close, install the staged EXE and runtime, then reopen."
+                source_root = extract_dir
+            else:
+                self.extract_update_archive(
+                    archive_path,
+                    extract_dir,
+                    progress_callback=lambda done, total, name: callback(
+                        45 + (done / max(total, 1)) * 28,
+                        "Extracting and validating update...",
+                        f"File {done:,} of {total:,}: {name}",
+                    ),
                 )
-                if self.should_update_source_tree(repo, app_dir):
-                    callback(94, "Updating support files...", "Copying source/configuration files while preserving Input and Output data.")
-                    self.copy_update_tree(source_root, repo, backup_dir, skip_names={replacement_app_dir.name})
-                (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
-                callback(100, "Update ready to install", "Validation passed. Shower Programmer is ready to restart and apply the update.")
-                return
+                roots = [path for path in extract_dir.iterdir() if path.is_dir()]
+                source_root = roots[0] if len(roots) == 1 else extract_dir
 
-            replacement_exe = self.find_replacement_exe(source_root, current_exe.name)
-            if replacement_exe is not None:
-                callback(84, "Validating replacement EXE...", replacement_exe.name)
-                if replacement_exe.stat().st_size <= 0:
-                    raise RuntimeError("The replacement EXE in the update package is empty.")
-                callback(90, "Staging replacement EXE...", "Copying the validated executable to the local update staging folder.")
-                self.pending_update_script = self.stage_exe_replacement(
-                    current_exe,
-                    replacement_exe,
-                    updates_dir,
-                    staged_metadata,
-                    metadata_target,
+            callback(76, "Inspecting update contents...", "Looking for the rebuilt application folder and required runtime files.")
+
+            if getattr(sys, "frozen", False):
+                current_exe = Path(sys.executable).resolve()
+                app_dir = current_exe.parent
+                staged_metadata = updates_dir / "m.json"
+                staged_metadata.write_text(
+                    json.dumps(self.update_metadata_payload(latest_sha, "zip"), indent=2, sort_keys=True),
+                    encoding="utf-8",
                 )
-                self.pending_update_message = (
-                    f"Downloaded and validated a replacement executable for {current_exe.name}. "
-                    "The app will close, replace the EXE, and reopen."
-                )
-                if self.should_update_source_tree(repo, app_dir):
-                    callback(95, "Updating support files...", "Copying source/configuration files while preserving Input and Output data.")
-                    self.copy_update_tree(source_root, repo, backup_dir, skip_names={app_dir.name})
-                (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
-                callback(100, "Update ready to install", "Validation passed. Shower Programmer is ready to restart and apply the update.")
-                return
+                metadata_target = self.writable_update_metadata_path(repo)
+                replacement_app_dir = self.find_replacement_app_bundle(source_root, current_exe.name)
+                if replacement_app_dir is not None:
+                    callback(82, "Validating application bundle...", f"Checking {replacement_app_dir.name} before staging.")
+                    self.validate_replacement_app_bundle(replacement_app_dir, current_exe.name)
+                    callback(88, "Staging application files...", "Copying the validated EXE and runtime into the short staging folder.")
+                    self.pending_update_script = self.stage_app_bundle_replacement(
+                        app_dir,
+                        replacement_app_dir,
+                        current_exe.name,
+                        updates_dir,
+                        staged_metadata,
+                        metadata_target,
+                    )
+                    self.pending_update_message = (
+                        "Downloaded and validated the clean Shower Programmer update package. "
+                        "The program will close, install the staged EXE and runtime, then reopen."
+                    )
+                    if self.should_update_source_tree(repo, app_dir) and bundle_prefix is None:
+                        callback(94, "Updating support files...", "Copying source/configuration files while preserving Input and Output data.")
+                        self.copy_update_tree(source_root, repo, backup_dir, skip_names={replacement_app_dir.name})
+                    (updates_dir / "commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+                    callback(100, "Update ready to install", "Validation passed. Shower Programmer is ready to restart and apply the update.")
+                    return
 
-            if not self.should_update_source_tree(repo, app_dir):
-                raise RuntimeError(
-                    "The GitHub package downloaded successfully, but it did not contain a rebuilt "
-                    "'Shower Programmer' application folder or replacement EXE. Rebuild the EXE and publish "
-                    "the entire application folder before updating packaged computers."
-                )
+                replacement_exe = self.find_replacement_exe(source_root, current_exe.name)
+                if replacement_exe is not None:
+                    callback(84, "Validating replacement EXE...", replacement_exe.name)
+                    if replacement_exe.stat().st_size <= 0:
+                        raise RuntimeError("The replacement EXE in the update package is empty.")
+                    callback(90, "Staging replacement EXE...", "Copying the validated executable to the local update staging folder.")
+                    self.pending_update_script = self.stage_exe_replacement(
+                        current_exe, replacement_exe, updates_dir, staged_metadata, metadata_target
+                    )
+                    self.pending_update_message = (
+                        f"Downloaded and validated a replacement executable for {current_exe.name}. "
+                        "The app will close, replace the EXE, and reopen."
+                    )
+                    (updates_dir / "commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+                    callback(100, "Update ready to install", "Validation passed. Shower Programmer is ready to restart and apply the update.")
+                    return
 
-        callback(84, "Installing source update...", "Backing up current source files before copying the validated GitHub files.")
-        self.copy_update_tree(source_root, repo, backup_dir)
-        (updates_dir / "installed_commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
-        callback(100, "Update installed", "The source files were updated successfully. Restart the GUI to load them.")
+                if not self.should_update_source_tree(repo, app_dir):
+                    raise RuntimeError(
+                        "The downloaded package did not contain a valid Shower Programmer.exe and _internal runtime. "
+                        "Rebuild and publish release/Shower-Programmer-Windows.zip."
+                    )
 
-    def update_work_dir(self, repo: Path) -> Path:
-        """Prefer a short local path so OneDrive/cloud hydration cannot interrupt ZIP extraction."""
+            callback(84, "Installing source update...", "Backing up current source files before copying the validated GitHub files.")
+            self.copy_update_tree(source_root, repo, backup_dir)
+            (updates_dir / "commit.txt").write_text(latest_sha + "\n", encoding="utf-8")
+            callback(100, "Update installed", "The source files were updated successfully. Restart the GUI to load them.")
+        except Exception:
+            if self.pending_update_script is None:
+                self.safe_remove_update_path(updates_dir, self.update_root_candidates(repo))
+            raise
+
+    def update_root_candidates(self, repo: Path) -> list[Path]:
+        """Return approved staging roots from shortest to longest."""
         candidates: list[Path] = []
+        if os.name == "nt":
+            system_drive = os.environ.get("SystemDrive", "C:")
+            candidates.append(Path(system_drive + os.sep) / self.UPDATE_STAGE_FOLDER_NAME)
+        candidates.append(Path(tempfile.gettempdir()) / self.UPDATE_STAGE_FOLDER_NAME)
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata:
             candidates.append(Path(local_appdata) / "Shower Programmer" / "Updates")
-        candidates.append(Path(tempfile.gettempdir()) / "Shower Programmer Updates")
         candidates.extend([self.internal_output_dir() / "Updates", repo / "Output" / "Updates"])
+        unique: list[Path] = []
+        seen: set[str] = set()
         for candidate in candidates:
+            key = os.path.normcase(os.path.abspath(str(candidate)))
+            if key not in seen:
+                seen.add(key)
+                unique.append(candidate)
+        return unique
+
+    def update_work_dir(self, repo: Path) -> Path:
+        """Use C:\\SPU when possible, with %TEMP%\\SPU as the normal fallback."""
+        for candidate in self.update_root_candidates(repo):
             try:
                 candidate.mkdir(parents=True, exist_ok=True)
                 with tempfile.NamedTemporaryFile("w", delete=True, dir=str(candidate), encoding="utf-8"):
                     pass
-                return candidate
+                return candidate.resolve()
             except Exception:
                 continue
         raise RuntimeError("No writable local folder was available for staging the GitHub update.")
+
+    def create_update_session_dir(self, repo: Path) -> Path:
+        root = self.update_work_dir(repo)
+        self.cleanup_stale_update_folders(repo)
+        for _attempt in range(20):
+            session = root / uuid.uuid4().hex[:8]
+            try:
+                session.mkdir(parents=False, exist_ok=False)
+                return session
+            except FileExistsError:
+                continue
+        raise RuntimeError("Could not create a unique short update staging folder.")
+
+    @staticmethod
+    def safe_remove_update_path(path: Path, approved_roots: list[Path]) -> bool:
+        """Delete only a child of an approved updater root; never delete the root itself."""
+        try:
+            target = path.resolve()
+        except OSError:
+            return False
+        for root in approved_roots:
+            try:
+                approved = root.resolve()
+                target.relative_to(approved)
+            except (OSError, ValueError):
+                continue
+            if target == approved:
+                return False
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+                return True
+            except OSError:
+                return False
+        return False
+
+    def cleanup_stale_update_folders(
+        self,
+        repo: Path,
+        active_dir: Path | None = None,
+        max_age_hours: int | float | None = None,
+    ) -> list[Path]:
+        """Remove abandoned updater sessions without touching active or unrelated folders."""
+        age_hours = float(max_age_hours if max_age_hours is not None else self.UPDATE_STALE_HOURS)
+        cutoff = time.time() - max(0.0, age_hours) * 3600.0
+        active = active_dir.resolve() if active_dir is not None else None
+        removed: list[Path] = []
+        roots = self.update_root_candidates(repo)
+        for root in roots:
+            try:
+                root_resolved = root.resolve()
+                children = list(root.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                try:
+                    target = child.resolve()
+                    target.relative_to(root_resolved)
+                    if target == root_resolved or (active is not None and target == active):
+                        continue
+                    modified = child.stat().st_mtime
+                except (OSError, ValueError):
+                    continue
+                if modified > cutoff:
+                    continue
+                if self.safe_remove_update_path(child, roots):
+                    removed.append(child)
+        return removed
 
     @staticmethod
     def format_file_size(byte_count: int | float) -> str:
@@ -8960,57 +9251,147 @@ a {{ color: #1f4e79; }}
         return f"{size:.1f} GB"
 
     @staticmethod
+    def windows_extended_path(path: Path) -> str:
+        """Return a Windows extended-length path while leaving display paths readable."""
+        value = os.path.abspath(str(path))
+        if os.name != "nt" or value.startswith("\\\\?\\"):
+            return value
+        if value.startswith("\\\\"):
+            return "\\\\?\\UNC\\" + value.lstrip("\\")
+        if re.match(r"^[A-Za-z]:\\", value):
+            return "\\\\?\\" + value
+        return value
+
+    @classmethod
+    def find_update_bundle_prefix_in_archive(cls, archive_path: Path, exe_name: str) -> str | None:
+        """Find one valid application bundle prefix without extracting repository clutter."""
+        with zipfile.ZipFile(archive_path) as archive:
+            names = [member.filename.replace("\\", "/").strip("/") for member in archive.infolist()]
+        lowered = {name.casefold() for name in names}
+        candidates: list[tuple[tuple[int, int], str]] = []
+        for name in names:
+            if name.casefold() != exe_name.casefold() and not name.casefold().endswith("/" + exe_name.casefold()):
+                continue
+            prefix = name.rsplit("/", 1)[0] if "/" in name else ""
+            internal_prefix = f"{prefix}/_internal/" if prefix else "_internal/"
+            has_internal = any(value.startswith(internal_prefix.casefold()) for value in lowered)
+            has_pdfium = any(
+                value.startswith(internal_prefix.casefold()) and value.endswith("pdfium.dll")
+                for value in lowered
+            )
+            if not has_internal or not has_pdfium:
+                continue
+            folder_name = prefix.rsplit("/", 1)[-1] if prefix else ""
+            score = (0 if folder_name.casefold() == "shower programmer" or not prefix else 1, len([p for p in prefix.split("/") if p]))
+            candidates.append((score, prefix))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1].casefold()))
+        best_score = candidates[0][0]
+        best = sorted({prefix for score, prefix in candidates if score == best_score})
+        if len(best) != 1:
+            raise RuntimeError(
+                "The update ZIP contains multiple equally valid Shower Programmer application bundles. "
+                "Publish one clean update-only ZIP."
+            )
+        return best[0]
+
+    @classmethod
     def extract_update_archive(
+        cls,
         archive_path: Path,
         extract_dir: Path,
         progress_callback: Callable[[int, int, str], None] | None = None,
+        *,
+        member_prefix: str | None = None,
+        strip_prefix: bool = False,
     ) -> None:
-        """Safely extract every ZIP member atomically and verify its final size."""
+        """Safely extract selected ZIP members atomically and verify every final size."""
         callback = progress_callback or (lambda _done, _total, _name: None)
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        extract_root = extract_dir.resolve()
+        os.makedirs(cls.windows_extended_path(extract_dir), exist_ok=True)
+        extract_root = Path(os.path.abspath(str(extract_dir)))
+        normalized_prefix = None if member_prefix is None else member_prefix.replace("\\", "/").strip("/")
+
         with zipfile.ZipFile(archive_path) as archive:
             bad_member = archive.testzip()
             if bad_member:
                 raise RuntimeError(f"The downloaded ZIP failed its integrity test at: {bad_member}")
-            members = archive.infolist()
-            file_members = [member for member in members if not member.is_dir()]
-            total = max(1, len(file_members))
-            completed = 0
-            for member in members:
+
+            selected: list[tuple[zipfile.ZipInfo, str]] = []
+            for member in archive.infolist():
                 raw_name = member.filename.replace("\\", "/")
                 if not raw_name or raw_name.startswith("/") or re.match(r"^[A-Za-z]:", raw_name):
                     raise RuntimeError(f"The update ZIP contains an unsafe path: {member.filename}")
-                relative = Path(raw_name)
-                if any(part in {"..", ""} for part in relative.parts):
+                archive_relative = Path(raw_name)
+                if any(part == ".." for part in archive_relative.parts):
                     raise RuntimeError(f"The update ZIP contains an unsafe path: {member.filename}")
-                target = (extract_dir / relative).resolve()
+                clean_name = raw_name.rstrip("/")
+                if normalized_prefix is not None:
+                    if normalized_prefix:
+                        if clean_name == normalized_prefix:
+                            continue
+                        prefix_with_slash = normalized_prefix + "/"
+                        if not clean_name.startswith(prefix_with_slash):
+                            continue
+                        selected_name = clean_name[len(prefix_with_slash):] if strip_prefix else clean_name
+                    else:
+                        selected_name = clean_name
+                else:
+                    selected_name = clean_name
+                if not selected_name:
+                    continue
+                selected.append((member, selected_name))
+
+            file_members = [(member, name) for member, name in selected if not member.is_dir()]
+            if not file_members:
+                raise RuntimeError("The downloaded update package did not contain any files to extract.")
+            total = len(file_members)
+            longest_path = 0
+            for _member, selected_name in selected:
+                if selected_name.startswith("/") or re.match(r"^[A-Za-z]:", selected_name):
+                    raise RuntimeError(f"The update ZIP contains an unsafe path: {selected_name}")
+                relative = Path(selected_name)
+                if any(part in {"..", ""} for part in relative.parts):
+                    raise RuntimeError(f"The update ZIP contains an unsafe path: {selected_name}")
+                target = Path(os.path.abspath(str(extract_dir / relative)))
                 try:
                     target.relative_to(extract_root)
                 except ValueError as exc:
-                    raise RuntimeError(f"The update ZIP tried to write outside the staging folder: {member.filename}") from exc
+                    raise RuntimeError(f"The update ZIP tried to write outside the staging folder: {selected_name}") from exc
+                longest_path = max(longest_path, len(str(target)))
+            if os.name == "nt" and longest_path >= 32000:
+                raise RuntimeError("The update package contains a Windows path that is too long.")
+
+            completed = 0
+            for member, selected_name in selected:
+                target = Path(os.path.abspath(str(extract_dir / Path(selected_name))))
                 if member.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    os.makedirs(cls.windows_extended_path(target), exist_ok=True)
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
+                os.makedirs(cls.windows_extended_path(target.parent), exist_ok=True)
                 temporary = target.with_name(target.name + ".part")
+                temp_value = cls.windows_extended_path(temporary)
+                target_value = cls.windows_extended_path(target)
                 try:
-                    with archive.open(member, "r") as source, temporary.open("wb") as destination:
+                    with archive.open(member, "r") as source, open(temp_value, "wb") as destination:
                         shutil.copyfileobj(source, destination, length=1024 * 1024)
-                    if temporary.stat().st_size != member.file_size:
+                    actual_size = os.path.getsize(temp_value)
+                    if actual_size != member.file_size:
                         raise RuntimeError(
                             f"Extracted file size did not match the ZIP for {member.filename}: "
-                            f"expected {member.file_size}, received {temporary.stat().st_size}."
+                            f"expected {member.file_size}, received {actual_size}."
                         )
-                    os.replace(temporary, target)
+                    os.replace(temp_value, target_value)
+                    if not os.path.isfile(target_value) or os.path.getsize(target_value) != member.file_size:
+                        raise RuntimeError(f"The extracted update file could not be verified: {selected_name}")
                 finally:
                     try:
-                        if temporary.exists():
-                            temporary.unlink()
+                        if os.path.exists(temp_value):
+                            os.unlink(temp_value)
                     except OSError:
                         pass
                 completed += 1
-                callback(completed, total, member.filename)
+                callback(completed, total, selected_name)
 
     @staticmethod
     def validate_replacement_app_bundle(app_dir: Path, exe_name: str) -> None:
@@ -12630,6 +13011,11 @@ def validate_runtime_contracts() -> None:
         "worker_check_for_updates",
         "begin_update_install",
         "extract_update_archive",
+        "find_update_bundle_prefix_in_archive",
+        "create_update_session_dir",
+        "cleanup_stale_update_folders",
+        "safe_remove_update_path",
+        "github_update_package_descriptor",
         "on_orders_tree_selection",
         "output_was_skipped_for_order",
         "remove_order_sketch_files",
@@ -12698,7 +13084,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {
         "ok": False,
-        "version": "FIXED_SIDEBAR_NO_SCROLL_V37",
+        "version": "SHORT_PATH_UPDATE_PACKAGE_V38",
         "executable": str(Path(sys.executable).resolve()),
     }
     try:
@@ -12940,20 +13326,66 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 raise RuntimeError("Saved sketch overrides were not committed.")
 
             archive_path = temp_root / "test_update.zip"
+            deep_member = (
+                "repo-main/build/release/Shower Programmer/_internal/lxml/isoschematron/resources/xsl/"
+                "iso-schematron-xslt1/iso_schematron_skeleton_for_xslt1.xslpart"
+            )
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr("repo-main/Shower Programmer.exe", b"test-exe")
-                archive.writestr("repo-main/_internal/pypdfium2_raw/pdfium.dll", b"test-dll")
-            extract_path = temp_root / "extracted"
+                archive.writestr("repo-main/build/release/Shower Programmer/Shower Programmer.exe", b"test-exe")
+                archive.writestr("repo-main/build/release/Shower Programmer/_internal/pypdfium2_raw/pdfium.dll", b"test-dll")
+                archive.writestr(deep_member, b"deep-test")
+                archive.writestr("repo-main/Backend/should_not_extract.py", b"not part of clean bundle")
+            prefix = ShowerProgrammerApp.find_update_bundle_prefix_in_archive(archive_path, "Shower Programmer.exe")
+            if prefix != "repo-main/build/release/Shower Programmer":
+                raise RuntimeError("Update application-bundle discovery self-test failed.")
+            extract_path = temp_root / "x"
             extraction_events: list[tuple[int, int, str]] = []
             ShowerProgrammerApp.extract_update_archive(
                 archive_path,
                 extract_path,
                 progress_callback=lambda done, total, name: extraction_events.append((done, total, name)),
+                member_prefix=prefix,
+                strip_prefix=True,
             )
-            if not (extract_path / "repo-main" / "Shower Programmer.exe").is_file():
-                raise RuntimeError("Safe update extraction self-test failed.")
+            if not (extract_path / "Shower Programmer.exe").is_file():
+                raise RuntimeError("Selective update extraction self-test failed.")
+            if not (extract_path / "_internal" / "lxml" / "isoschematron" / "resources" / "xsl" / "iso-schematron-xslt1" / "iso_schematron_skeleton_for_xslt1.xslpart").is_file():
+                raise RuntimeError("Deep lxml update extraction self-test failed.")
+            if (extract_path / "Backend" / "should_not_extract.py").exists():
+                raise RuntimeError("Repository clutter was included in selective update extraction.")
             if not extraction_events or extraction_events[-1][0] != extraction_events[-1][1]:
                 raise RuntimeError("Update extraction progress self-test failed.")
+
+            unsafe_archive = temp_root / "unsafe_update.zip"
+            with zipfile.ZipFile(unsafe_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("../escape.txt", b"unsafe")
+            try:
+                ShowerProgrammerApp.extract_update_archive(unsafe_archive, temp_root / "unsafe_x")
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError("ZIP traversal rejection self-test failed.")
+
+            cleanup_root = temp_root / "SPU"
+            cleanup_root.mkdir()
+            stale_dir = cleanup_root / "stale000"
+            stale_dir.mkdir()
+            (stale_dir / "old.part").write_text("old", encoding="utf-8")
+            old_time = time.time() - 48 * 3600
+            os.utime(stale_dir, (old_time, old_time))
+            active_dir = cleanup_root / "active00"
+            active_dir.mkdir()
+            cleanup_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
+            cleanup_app.update_root_candidates = lambda _repo: [cleanup_root]
+            removed = cleanup_app.cleanup_stale_update_folders(temp_root, active_dir=active_dir, max_age_hours=24)
+            if stale_dir not in removed or stale_dir.exists():
+                raise RuntimeError("Stale update-folder cleanup self-test failed.")
+            if not active_dir.exists():
+                raise RuntimeError("Active update folder was incorrectly removed.")
+            outside = temp_root / "outside"
+            outside.mkdir()
+            if ShowerProgrammerApp.safe_remove_update_path(outside, [cleanup_root]):
+                raise RuntimeError("Updater cleanup deleted outside an approved root.")
 
             input_root = temp_root / "input"
             input_root.mkdir()
@@ -13573,6 +14005,11 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "atomic_copy": True,
                 "required_methods": True,
                 "safe_update_extraction": True,
+                "short_update_staging": True,
+                "selective_bundle_extraction": True,
+                "deep_runtime_path_extraction": True,
+                "stale_update_cleanup": True,
+                "update_only_package_support": True,
                 "order_number_pdf_matching": True,
                 "unmarked_sketch_mapping": True,
                 "independent_output_controls": True,

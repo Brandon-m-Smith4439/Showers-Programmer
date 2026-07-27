@@ -3,14 +3,15 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 rem ================================================================
 rem Shower Programmer one-folder EXE rebuild
-rem BUILD_SCRIPT_V37
+rem BUILD_SCRIPT_V38
 rem
 rem Safe rebuild behavior:
 rem - Rebuilds the executable and _internal runtime.
 rem - Refreshes program Assets.
 rem - Preserves existing local Input, Output, history, manifests,
 rem   settings, archives, and user-created runtime data.
-rem - Verifies the V37 fixed-sidebar and current runtime contracts before building.
+rem - Verifies the V38 short-path updater and update-package contracts before building.
+rem - Creates release\Shower-Programmer-Windows.zip for automatic updates.
 rem - BUILD FIX V28.1: uses Windows CRLF and inline file checks; no CALL subroutine labels.
 rem - Runs a self-test inside the staged EXE before deployment.
 rem ================================================================
@@ -26,12 +27,16 @@ set "SOURCE_GUI=Backend\shower_programmer_gui.py"
 set "SOURCE_BATCH=Backend\shower_batch.py"
 set "SOURCE_PROGRAMMER=Backend\shower_programmer.py"
 set "SOURCE_CONFIG=Backend\shower_programmer_config.json"
+set "SOURCE_PACKAGE_BUILDER=Backend\build_update_package.py"
 set "ICON_FILE=Assets\ShowersProgrammer.ico"
 set "PNG_FILE=Assets\ShowersProgrammer.png"
 set "STAGED_DIR=build\release\%APP_NAME%"
 set "FINAL_DIR=%APP_NAME%"
 set "STAGED_EXE=%STAGED_DIR%\%APP_NAME%.exe"
 set "FINAL_EXE=%FINAL_DIR%\%APP_NAME%.exe"
+set "UPDATE_RELEASE_DIR=release"
+set "UPDATE_ZIP=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.zip"
+set "UPDATE_METADATA=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.json"
 
 echo.
 echo ========================================
@@ -95,6 +100,11 @@ if not exist "%SOURCE_CONFIG%" (
     echo   %SOURCE_CONFIG%
     goto failed
 )
+if not exist "%SOURCE_PACKAGE_BUILDER%" (
+    echo ERROR: Missing required file:
+    echo   %SOURCE_PACKAGE_BUILDER%
+    goto failed
+)
 if not exist "%ICON_FILE%" (
     echo ERROR: Missing required file:
     echo   %ICON_FILE%
@@ -134,14 +144,14 @@ echo Validating configuration JSON...
 if errorlevel 1 goto failed
 
 echo Checking Python syntax for all backend modules...
-%PY_CMD% -m py_compile "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%"
+%PY_CMD% -m py_compile "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%" "%SOURCE_PACKAGE_BUILDER%"
 if errorlevel 1 goto failed
 
-echo Verifying integrated GUI version and fixed-sidebar runtime contracts...
-findstr /C:"FIXED_SIDEBAR_NO_SCROLL_V37" "%SOURCE_GUI%" >NUL
+echo Verifying integrated GUI version and short-path updater contracts...
+findstr /C:"SHORT_PATH_UPDATE_PACKAGE_V38" "%SOURCE_GUI%" >NUL
 if errorlevel 1 (
-    echo ERROR: Backend\shower_programmer_gui.py is not the fixed-sidebar V37 file.
-    echo Replace it with the supplied V37 GUI before rebuilding.
+    echo ERROR: Backend\shower_programmer_gui.py is not the short-path updater V38 file.
+    echo Replace it with the supplied V38 GUI before rebuilding.
     goto failed
 )
 %PY_CMD% -c "import sys; sys.path.insert(0, r'%CD%\Backend'); import shower_programmer_gui as gui; gui.validate_runtime_contracts(); print('  GUI runtime contracts passed.')"
@@ -194,7 +204,7 @@ if not exist "%SELF_TEST_REPORT%" (
     echo ERROR: The staged EXE did not create its self-test report.
     goto failed
 )
-%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'FIXED_SIDEBAR_NO_SCROLL_V37', d; print('  Packaged EXE self-test passed.')"
+%PY_CMD% -c "import json, pathlib; p=pathlib.Path(r'%SELF_TEST_REPORT%'); d=json.loads(p.read_text(encoding='utf-8')); assert d.get('ok') is True, d; assert d.get('version') == 'SHORT_PATH_UPDATE_PACKAGE_V38', d; print('  Packaged EXE self-test passed.')"
 if errorlevel 1 (
     type "%SELF_TEST_REPORT%"
     goto failed
@@ -235,9 +245,9 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "(Get-FileHash
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK'"`) do set "BUILD_TIME=%%I"
 
 if defined BUILD_SHA (
-    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"FIXED_SIDEBAR_NO_SCROLL_V37","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"sha":"%BUILD_SHA%","exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"SHORT_PATH_UPDATE_PACKAGE_V38","built_at":"%BUILD_TIME%","method":"build"}
 ) else if defined EXE_SHA256 (
-    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"FIXED_SIDEBAR_NO_SCROLL_V37","built_at":"%BUILD_TIME%","method":"build"}
+    >"%STAGED_DIR%\.shower_update.json" echo {"exe_sha256":"%EXE_SHA256%","gui_sha256":"%GUI_SHA256%","gui_version":"SHORT_PATH_UPDATE_PACKAGE_V38","built_at":"%BUILD_TIME%","method":"build"}
 )
 
 rem Refresh only program-controlled build files. Do not remove Input, Output,
@@ -289,6 +299,34 @@ if not exist "%FINAL_DIR%\Output\Runs" mkdir "%FINAL_DIR%\Output\Runs"
 if not exist "%FINAL_DIR%\Output\Updates" mkdir "%FINAL_DIR%\Output\Updates"
 
 echo.
+echo Creating clean update-only ZIP...
+if not exist "%UPDATE_RELEASE_DIR%" mkdir "%UPDATE_RELEASE_DIR%"
+%PY_CMD% "%SOURCE_PACKAGE_BUILDER%" ^
+  --app-dir "%STAGED_DIR%" ^
+  --zip "%UPDATE_ZIP%" ^
+  --metadata "%UPDATE_METADATA%" ^
+  --version "SHORT_PATH_UPDATE_PACKAGE_V38" ^
+  --commit "%BUILD_SHA%"
+if errorlevel 1 (
+    echo ERROR: Could not create or validate the clean update-only ZIP.
+    goto failed
+)
+if not exist "%UPDATE_ZIP%" (
+    echo ERROR: Missing clean update ZIP after packaging:
+    echo   %UPDATE_ZIP%
+    goto failed
+)
+if not exist "%UPDATE_METADATA%" (
+    echo ERROR: Missing update metadata after packaging:
+    echo   %UPDATE_METADATA%
+    goto failed
+)
+
+rem Remove only PyInstaller's temporary work folder after every validated build.
+rem The staged release and final application remain available for inspection.
+if exist "build\pyinstaller" rmdir /S /Q "build\pyinstaller"
+
+echo.
 echo ========================================
 echo   Build complete
 echo ========================================
@@ -301,8 +339,16 @@ if defined GUI_SHA256 echo GUI SHA-256: %GUI_SHA256%
 if defined BUILD_SHA echo Git commit: %BUILD_SHA%
 if defined BUILD_TIME echo Built at: %BUILD_TIME%
 echo.
-echo When giving this to another user, send the whole folder:
+echo When giving this to another user manually, send the whole folder:
 echo   %CD%\%FINAL_DIR%
+echo.
+echo Clean automatic-update package:
+echo   %CD%\%UPDATE_ZIP%
+echo Update metadata to publish beside it:
+echo   %CD%\%UPDATE_METADATA%
+echo.
+echo Commit both files under the repository release folder, or upload the ZIP
+echo as a GitHub Release asset named Shower-Programmer-Windows.zip.
 echo.
 echo Python is required only on the computer performing this build.
 echo Users running the completed EXE do not need Python installed.

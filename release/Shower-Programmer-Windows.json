@@ -1,0 +1,14 @@
+{
+  "built_at": "2026-07-27T18:27:35.118318+00:00",
+  "commit": "c03400920cf1c6625ad198ad1c2061350e9c47f3",
+  "exe_sha256": "179741b3bd9b36b146ef17052958d2b0964ee9ca1230c82ae30b6c4bc625bea7",
+  "file_count": 1136,
+  "gui_sha256": "a1a941de3b2fef9a1b4fd0833cc31b3d8799ac6d14bcd0b17548ba11e917ff5f",
+  "sha256": "a6d7d4ab4154211240ca664af606ff01fd8674ba8eab53f0df046286b2ab9551",
+  "size": 45630711,
+  "source_size": 105250364,
+  "validated_file_count": 1136,
+  "version": "SHORT_PATH_UPDATE_PACKAGE_V38",
+  "zip_name": "Shower-Programmer-Windows.zip",
+  "zip_path": "release/Shower-Programmer-Windows.zip"
+}

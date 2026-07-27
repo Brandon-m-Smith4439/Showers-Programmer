@@ -281,3 +281,23 @@ This is a strong first pass, not a fully trusted lights-out production system ye
 - Square-corner preference is still mostly handled by the chosen default/override corner. Exact square-corner detection from the drawing is not fully automatic yet.
 - PDF label/dot placement is based on the sample layout and estimated panel geometry. Check the generated PDF before using it in production.
 - DXF output should be opened once in CAD/machine software during testing to confirm the machine accepts the rotated files.
+
+## Clean Automatic Update Package (V38)
+
+Running `Rebuild Shower Programmer EXE.bat` now creates these two publishable files:
+
+```text
+release\Shower-Programmer-Windows.zip
+release\Shower-Programmer-Windows.json
+```
+
+The ZIP contains only the program-controlled application bundle:
+
+- `Shower Programmer.exe`
+- `_internal\`
+- `Assets\`
+- `.shower_update.json`
+
+It intentionally excludes `Input`, `Output`, processing history, archives, source code, build folders, and user data. Commit both files under the repository `release` folder, or upload the ZIP as a GitHub Release asset named `Shower-Programmer-Windows.zip`.
+
+Packaged computers stage updates under `C:\SPU\<short-id>` when allowed, otherwise `%TEMP%\SPU\<short-id>`. The updater extracts only the valid application bundle, validates `pdfium.dll` and file sizes, rejects unsafe ZIP paths, and preserves the installed application if validation fails.
