@@ -30,6 +30,8 @@ Then:
 3. Click `Process Selected` or `Process All` when ready.
 4. Click `Open Last Report` to inspect the final HTML report.
 
+The home page displays the current application version beside **Production Dashboard**. Click the version badge to open `CHANGELOG.md` on GitHub. Use **Report Bug** in the bottom status panel to open a prefilled GitHub issue containing the running version.
+
 The table shows every A&W order from `Process List Per Machine.xlsx`, the matching job, PDF, status, and issues.
 It also shows the delivery date, whether the order has been processed, and the last processed time recorded by the GUI.
 The `Process Lists` path can be either one workbook or a folder. When it is a folder, every immediate `.xlsx` file in that folder is loaded together, so split lists such as `6.4.26.xlsx`, `6.4.26A.xlsx`, `6.4.26B.xlsx`, and `6.4.26C.xlsx` can be used at the same time.

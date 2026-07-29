@@ -21,7 +21,9 @@
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: confirm ambiguous PPH hinge sides from paired DXF radii.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: flip proven symmetric four-slot panels to the top-right marker.
 # FIXED_SIDEBAR_NO_SCROLL_V37: keep all main sidebar controls in one fixed, non-scrolling panel.
-# ATOMIC_RUNTIME_SWAP_V39: pre-copy and self-test updates before a fast runtime swap with rollback and visible progress. Testing Test TEST
+# ATOMIC_RUNTIME_SWAP_V39: pre-copy and self-test updates before a fast runtime swap with rollback and visible progress.
+# REPORT_BUGS_VERSIONING_V40: visible app version, GitHub bug reporting, centralized release metadata, and changelog tracking.
+# PRODUCTION_SKETCH_RECONCILIATION: recognize orders sent by another workstation from the shared Sketches folder.
 
 from __future__ import annotations
 
@@ -76,6 +78,39 @@ def _gui_project_root() -> Path:
 
 
 programmer.project_root = _gui_project_root
+
+
+def load_app_version_info() -> dict[str, object]:
+    """Load the single release-version record in source and packaged builds."""
+    candidates: list[Path] = [
+        Path(__file__).resolve().with_name("version.json"),
+        _SCRIPT_PROJECT_ROOT / "Backend" / "version.json",
+        _SCRIPT_PROJECT_ROOT / "version.json",
+    ]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.insert(0, Path(bundle_root) / "Backend" / "version.json")
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / ".shower_update.json")
+
+    for candidate in candidates:
+        try:
+            if not candidate.is_file():
+                continue
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and str(data.get("version", "")).strip():
+                return data
+        except (OSError, ValueError, TypeError):
+            continue
+    return {
+        "version": "V40",
+        "marker": "REPORT_BUGS_VERSIONING_V40",
+        "release_name": "Bug Reporting and Version Tracking",
+        "release_date": "2026-07-27",
+    }
+
+
+APP_VERSION_INFO = load_app_version_info()
 
 try:
     import customtkinter as ctk
@@ -323,9 +358,16 @@ class ShowerProgrammerApp:
     SIDEBAR_MUTED = "#98a2b3"
     SIDEBAR_BORDER = "#344054"
     REVIEW_RENDER_DPI = 96
+    APP_VERSION = str(APP_VERSION_INFO.get("version", "V40")).strip() or "V40"
+    APP_VERSION_MARKER = str(APP_VERSION_INFO.get("marker", "REPORT_BUGS_VERSIONING_V40")).strip() or "REPORT_BUGS_VERSIONING_V40"
+    APP_RELEASE_NAME = str(APP_VERSION_INFO.get("release_name", "Bug Reporting and Version Tracking")).strip()
+    APP_RELEASE_DATE = str(APP_VERSION_INFO.get("release_date", "")).strip()
     GITHUB_UPDATE_OWNER = "Brandon-m-Smith4439"
     GITHUB_UPDATE_REPO = "Showers-Programmer"
     GITHUB_UPDATE_BRANCH = "main"
+    GITHUB_REPOSITORY_URL = "https://github.com/Brandon-m-Smith4439/Showers-Programmer"
+    GITHUB_ISSUES_URL = GITHUB_REPOSITORY_URL + "/issues/new"
+    GITHUB_CHANGELOG_URL = GITHUB_REPOSITORY_URL + "/blob/main/CHANGELOG.md"
     GITHUB_UPDATE_PACKAGE_NAME = "Shower-Programmer-Windows.zip"
     GITHUB_UPDATE_PACKAGE_PATH = "release/Shower-Programmer-Windows.zip"
     GITHUB_UPDATE_PACKAGE_METADATA_PATH = "release/Shower-Programmer-Windows.json"
@@ -358,7 +400,7 @@ class ShowerProgrammerApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Shower Programmer")
+        self.root.title(f"Shower Programmer {self.APP_VERSION}")
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
         self.set_window_icon(self.root)
@@ -1272,9 +1314,17 @@ class ShowerProgrammerApp:
             dialog.geometry(f"{width}x{height}")
         self.bring_window_to_front(dialog, make_transient=True)
 
-    def show_no_updates_dialog(self, latest_sha: str = "", latest_date: str = "", packaged: bool = False) -> None:
+    def show_no_updates_dialog(
+        self,
+        latest_sha: str = "",
+        latest_date: str = "",
+        packaged: bool = False,
+        latest_version: str = "",
+    ) -> None:
         checked_at = datetime.now().strftime("%m/%d/%Y %I:%M %p")
         details = [
+            ("Installed version", self.current_installed_version()),
+            ("Published version", latest_version or self.APP_VERSION),
             ("Update channel", "GitHub main"),
             ("Checked", checked_at),
         ]
@@ -2098,6 +2148,16 @@ class ShowerProgrammerApp:
             poly([(12, 3.7), (21, 20), (3, 20)], outline=color, width=stroke)
             line([(12, 9), (12, 14.4)], stroke)
             circle(12, 17.0, 0.85, fill=color, width=thin)
+        elif icon == "bug":
+            circle(12, 12.5, 5.0, width=stroke)
+            line([(12, 7.5), (12, 18.2)], thin)
+            line([(7.2, 10.0), (4.2, 8.2)], thin)
+            line([(16.8, 10.0), (19.8, 8.2)], thin)
+            line([(7.0, 13.0), (3.8, 13.0)], thin)
+            line([(17.0, 13.0), (20.2, 13.0)], thin)
+            line([(7.4, 16.0), (4.7, 18.2)], thin)
+            line([(16.6, 16.0), (19.3, 18.2)], thin)
+            arc(8.5, 3.8, 15.5, 10.0, 190, 350, width=thin)
         elif icon == "minus_circle":
             circle(12, 12, 8.5)
             line([(8, 12), (16, 12)], stroke)
@@ -2394,13 +2454,31 @@ class ShowerProgrammerApp:
 
         title_stack = ctk.CTkFrame(top_bar, fg_color="transparent")
         title_stack.grid(row=0, column=0, sticky="ew")
+        title_row = ctk.CTkFrame(title_stack, fg_color="transparent")
+        title_row.pack(anchor=tk.W, fill=tk.X)
         ctk.CTkLabel(
-            title_stack,
+            title_row,
             text="Production Dashboard",
             font=("Segoe UI", 25, "bold"),
             text_color=self.TEXT,
             anchor="w",
-        ).pack(anchor=tk.W)
+        ).pack(side=tk.LEFT)
+        version_badge = ctk.CTkButton(
+            title_row,
+            text=self.APP_VERSION,
+            command=self.open_changelog,
+            width=58,
+            height=26,
+            corner_radius=13,
+            fg_color=self.ACCENT_LIGHT,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.ACCENT,
+            text_color=self.ACCENT_DARK,
+            font=("Segoe UI", 10, "bold"),
+        )
+        version_badge.pack(side=tk.LEFT, padx=(10, 0), pady=(3, 0))
+        self.attach_tooltip(version_badge, f"View the {self.APP_VERSION} changelog")
         ctk.CTkLabel(
             title_stack,
             text="Import orders, process CNC files, review output, and send to the shop from one screen.",
@@ -2568,7 +2646,15 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 10),
             width=520,
         )
-        self.activity_detail_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 10))
+        self.activity_detail_label.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
+        self.make_tool_button(
+            bottom,
+            "Report Bug",
+            "bug",
+            self.open_bug_report,
+            width=126,
+        ).grid(row=1, column=1, rowspan=2, sticky="e", padx=(8, 14), pady=(9, 10))
+
     def make_sidebar_button(
         self,
         parent: Any,
@@ -3210,6 +3296,78 @@ class ShowerProgrammerApp:
                 f"Reading {len(process_list_files)} process-list batch(es)...",
             )
             all_batches = self.load_process_list_batches(process_list, config)
+            self.queue_scan_progress(
+                progress_value,
+                max(progress_max, progress_value + 3),
+                "Checking Production Sketches for orders sent by another workstation...",
+            )
+            (
+                production_sent_orders,
+                _production_sketch_matches,
+                production_reconciliation_warnings,
+                production_sketch_files_checked,
+            ) = self.reconcile_orders_sent_from_production(
+                all_batches,
+                output_dir,
+                self.SHOP_SKETCHES_DIR,
+            )
+            production_aw_orders = {
+                str(order.aw_order)
+                for order in production_sent_orders
+            }
+            production_input_archived: list[Path] = []
+            if production_sent_orders:
+                production_order_files = self.matching_order_files(
+                    folder,
+                    production_sent_orders,
+                    root_only=True,
+                    inspect_pdf_text=True,
+                )
+                if production_order_files:
+                    production_input_archived, production_archive_warnings = (
+                        self.archive_sent_input_files_for_orders(
+                            production_sent_orders,
+                            folder,
+                            process_list,
+                            include_process_lists=False,
+                        )
+                    )
+                    production_reconciliation_warnings.extend(production_archive_warnings)
+            retired_batch_plans = self.completed_process_list_batches_from_history(
+                all_batches,
+                folder,
+                output_dir,
+            )
+            retired_process_lists: list[Path] = []
+            retired_process_list_warnings: list[str] = []
+            if retired_batch_plans:
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 3),
+                    f"Archiving {len(retired_batch_plans)} completed process-list batch(es)...",
+                )
+                retired_process_lists, archive_warnings = self.archive_completed_process_list_batches(
+                    process_list,
+                    retired_batch_plans,
+                )
+                retired_process_list_warnings.extend(archive_warnings)
+            if retired_batch_plans or production_sent_orders:
+                _retired_shared_files, shared_cleanup_warnings = self.clear_import_staging_folder(
+                    production_sent_orders,
+                    include_process_lists=False,
+                    completed_process_batches=retired_batch_plans,
+                )
+                production_reconciliation_warnings.extend(shared_cleanup_warnings)
+            if retired_batch_plans:
+                all_batches = [
+                    batch
+                    for batch in all_batches
+                    if (
+                        isinstance(batch.get("path"), Path)
+                        and Path(batch["path"]).exists()
+                    )
+                ]
+                process_list_files = shower_batch.process_list_files(process_list)
             shared_process_paths = process_list_import_summary.get("source_files", [])
             shared_process_names = {
                 Path(str(source)).name.casefold()
@@ -3230,7 +3388,10 @@ class ShowerProgrammerApp:
             gateway_orders = [
                 order
                 for order in shared_gateway_orders
-                if str(order.aw_order) not in present_aw_orders
+                if (
+                    str(order.aw_order) not in present_aw_orders
+                    and str(order.aw_order) not in production_aw_orders
+                )
             ]
 
             def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
@@ -3274,6 +3435,12 @@ class ShowerProgrammerApp:
                         "process_list_import_summary": process_list_import_summary,
                         "import_summary": import_summary,
                         "retired_sent_orders": [],
+                        "retired_process_lists": retired_process_lists,
+                        "retired_process_list_warnings": retired_process_list_warnings,
+                        "production_sent_orders": sorted(production_aw_orders),
+                        "production_input_archived": production_input_archived,
+                        "production_reconciliation_warnings": production_reconciliation_warnings,
+                        "production_sketch_files_checked": production_sketch_files_checked,
                         "hidden_missing_orders": hidden_missing_orders,
                     },
                 )
@@ -3459,6 +3626,160 @@ class ShowerProgrammerApp:
         payload = ShowerProgrammerApp.process_order_signature(order)
         encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def production_sketch_process_times(
+        cls,
+        batches: list[dict[str, object]],
+    ) -> tuple[list[shower_batch.ProcessOrder], dict[str, float]]:
+        """Return unique process orders and the earliest current batch timestamp for each."""
+        orders: dict[str, shower_batch.ProcessOrder] = {}
+        process_times: dict[str, float] = {}
+        for batch in batches:
+            raw_orders = batch.get("all_orders", batch.get("orders", []))
+            batch_orders = [
+                order
+                for order in raw_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            ] if isinstance(raw_orders, list) else []
+            if not batch_orders:
+                continue
+            source_value = batch.get("path")
+            try:
+                source = source_value if isinstance(source_value, Path) else Path(str(source_value))
+            except (TypeError, ValueError):
+                source = None
+            source_times: list[float] = []
+            if source is not None:
+                for companion in cls.process_list_companion_files(source) or [source]:
+                    try:
+                        source_times.append(companion.stat().st_mtime)
+                    except OSError:
+                        continue
+            batch_time = min(source_times) if source_times else 0.0
+            for order in batch_orders:
+                aw_order = str(order.aw_order)
+                orders.setdefault(aw_order, order)
+                if batch_time > 0:
+                    prior = process_times.get(aw_order)
+                    process_times[aw_order] = max(prior, batch_time) if prior else batch_time
+        return list(orders.values()), process_times
+
+    @classmethod
+    def production_sketch_matches(
+        cls,
+        production_dir: Path,
+        candidate_aw_orders: set[str],
+        process_times: dict[str, float],
+    ) -> tuple[dict[str, list[Path]], list[str], int, int]:
+        """Probe exact production sketch names for the current process-list orders."""
+        matches: dict[str, list[Path]] = {}
+        warnings: list[str] = []
+        files_checked = 0
+        stale_matches = 0
+        if not candidate_aw_orders:
+            return matches, warnings, files_checked, stale_matches
+        try:
+            with os.scandir(production_dir):
+                pass
+        except OSError as exc:
+            warnings.append(f"Production Sketches check unavailable: {exc}")
+            return matches, warnings, files_checked, stale_matches
+
+        for aw_order in sorted(candidate_aw_orders):
+            files_checked += 1
+            production_path = production_dir / f"{aw_order}.pdf"
+            try:
+                modified = production_path.stat().st_mtime
+            except OSError:
+                continue
+            process_time = process_times.get(aw_order, 0.0)
+            if process_time and modified + 2.0 < process_time:
+                stale_matches += 1
+                continue
+            matches[aw_order] = [production_path]
+        return matches, warnings, files_checked, stale_matches
+
+    @classmethod
+    def reconcile_orders_sent_from_production(
+        cls,
+        batches: list[dict[str, object]],
+        output_dir: Path,
+        production_dir: Path,
+    ) -> tuple[
+        list[shower_batch.ProcessOrder],
+        dict[str, list[Path]],
+        list[str],
+        int,
+    ]:
+        """Persist current-signature sent receipts for sketches found in production."""
+        orders, process_times = cls.production_sketch_process_times(batches)
+        try:
+            history = cls.load_processing_history_for_output(output_dir)
+        except Exception as exc:
+            return [], {}, [f"Could not read sent history for production reconciliation: {exc}"], 0
+        pending = [
+            order
+            for order in orders
+            if not cls.order_is_terminal_in_history(order, history)
+        ]
+        candidate_aw_orders = {str(order.aw_order) for order in pending}
+        matches, warnings, files_checked, stale_matches = cls.production_sketch_matches(
+            production_dir,
+            candidate_aw_orders,
+            process_times,
+        )
+        if stale_matches:
+            warnings.append(
+                f"Ignored {stale_matches} older production sketch match(es) from before the current process list."
+            )
+        reconciled = [
+            order
+            for order in pending
+            if str(order.aw_order) in matches
+        ]
+        if not reconciled:
+            return [], matches, warnings, files_checked
+
+        history_orders = history.setdefault("orders", {})
+        if not isinstance(history_orders, dict):
+            history_orders = {}
+            history["orders"] = history_orders
+        reconciled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for order in reconciled:
+            aw_order = str(order.aw_order)
+            production_paths = matches[aw_order]
+            modified_times: list[float] = []
+            for path in production_paths:
+                try:
+                    modified_times.append(path.stat().st_mtime)
+                except OSError:
+                    continue
+            sent_at = (
+                datetime.fromtimestamp(max(modified_times)).strftime("%Y-%m-%d %H:%M:%S")
+                if modified_times
+                else reconciled_at
+            )
+            entry = history_orders.setdefault(aw_order, {})
+            if not isinstance(entry, dict):
+                entry = {}
+                history_orders[aw_order] = entry
+            entry["sent_at"] = sent_at
+            entry["sent_process_signature"] = cls.sent_process_signature(order)
+            entry["sent_files"] = [path.name for path in production_paths]
+            entry["sent_source"] = "production_sketch_folder"
+            entry["sent_reconciled_at"] = reconciled_at
+            entry.pop("deleted_at", None)
+            entry.pop("deleted_process_signature", None)
+
+        history_path = output_dir / "processing_history.json"
+        try:
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            with history_path.open("w", encoding="utf-8") as handle:
+                json.dump(history, handle, indent=2, sort_keys=True)
+        except OSError as exc:
+            return [], matches, [*warnings, f"Could not save production sent receipts: {exc}"], files_checked
+        return reconciled, matches, warnings, files_checked
 
     @classmethod
     def filter_retired_sent_orders(
@@ -5389,11 +5710,12 @@ class ShowerProgrammerApp:
                     latest_sha = str(data.get("latest_sha", ""))
                     latest_date = str(data.get("latest_date", ""))
                     packaged = bool(data.get("packaged", False))
+                    latest_version = str(data.get("latest_version", ""))
                     self.set_update_progress_ui(100, "No updates found", "This installation matches the latest published version.")
                     self.finish_background_activity()
                     self.close_update_progress_window()
-                    self.status_var.set("No updates found. Shower Programmer is up to date.")
-                    self.show_no_updates_dialog(latest_sha, latest_date, packaged)
+                    self.status_var.set(f"No updates found. Shower Programmer {self.current_installed_version()} is up to date.")
+                    self.show_no_updates_dialog(latest_sha, latest_date, packaged, latest_version)
                 elif kind == "update_available":
                     data = payload
                     assert isinstance(data, dict)
@@ -5527,10 +5849,18 @@ class ShowerProgrammerApp:
                     process_list_import_summary = data.get("process_list_import_summary", {})
                     import_summary = data.get("import_summary", {})
                     retired_sent_orders = data.get("retired_sent_orders", [])
+                    retired_process_lists = data.get("retired_process_lists", [])
+                    retired_process_list_warnings = data.get("retired_process_list_warnings", [])
+                    production_sent_orders = data.get("production_sent_orders", [])
+                    production_reconciliation_warnings = data.get("production_reconciliation_warnings", [])
                     assert isinstance(orders, list)
                     assert isinstance(batches, list)
                     assert isinstance(previews, list)
                     assert isinstance(retired_sent_orders, list)
+                    assert isinstance(retired_process_lists, list)
+                    assert isinstance(retired_process_list_warnings, list)
+                    assert isinstance(production_sent_orders, list)
+                    assert isinstance(production_reconciliation_warnings, list)
                     self.orders = orders
                     self.order_by_aw = {str(order.aw_order): order for order in self.orders}
                     self.tree.delete(*self.tree.get_children())
@@ -5552,6 +5882,18 @@ class ShowerProgrammerApp:
                     )
                     if retired_sent_orders:
                         scan_message += f" Kept {len(retired_sent_orders)} previously sent order(s) retired."
+                    if retired_process_lists:
+                        scan_message += f" Archived {len(retired_process_lists)} completed process-list file(s)."
+                    if retired_process_list_warnings:
+                        scan_message += f" Process-list cleanup notes: {len(retired_process_list_warnings)}."
+                    if production_sent_orders:
+                        scan_message += (
+                            f" Recognized {len(production_sent_orders)} order(s) already in Production Sketches."
+                        )
+                    if production_reconciliation_warnings:
+                        scan_message += (
+                            f" Production reconciliation notes: {len(production_reconciliation_warnings)}."
+                        )
                     hidden_missing_orders = int(data.get("hidden_missing_orders", 0) or 0)
                     if hidden_missing_orders:
                         scan_message += f" Hid {hidden_missing_orders} process-list order(s) with no local PDF/DXF."
@@ -6447,6 +6789,13 @@ a {{ color: #1f4e79; }}
             redraw()
 
         def ensure_sketch_editing_enabled() -> None:
+            returned_to_editor = reset_sketch_to_editable_preview()
+            if returned_to_editor:
+                status.set(
+                    "Returned to the editable sketch layout. The refreshed saved PDF remains unchanged "
+                    "until Save Sketch Edits is clicked."
+                )
+                redraw()
             if not bool(state.get("show_sketch_marks", True)):
                 enable_sketch_editing()
 
@@ -6642,8 +6991,15 @@ a {{ color: #1f4e79; }}
             self.clear_review_context_cache(process_order.aw_order)
             redraw()
             if bool(state.get("embedded_sketch_preview")):
-                suffix = " Unsaved GUI edits are preserved but hidden in this saved-file preview." if has_pending_item_edits() else ""
-                status.set(f"Refreshed saved sketch from {target.name}.{suffix}")
+                suffix = (
+                    " Unsaved GUI edits are preserved but hidden in this saved-file preview."
+                    if has_pending_item_edits()
+                    else ""
+                )
+                status.set(
+                    f"Refreshed saved sketch from {target.name}; external PDF edits are visible."
+                    f" Use a markup tool to return to the editable layout.{suffix}"
+                )
             else:
                 status.set(f"Refreshed source sketch from {target.name}.")
 
@@ -7476,7 +7832,7 @@ a {{ color: #1f4e79; }}
                 x + 12,
                 y + 12,
                 anchor=tk.NW,
-                text="REFRESHED SAVED SKETCH - READ ONLY",
+                text="REFRESHED SKETCH FROM DISK - EXTERNAL EDITS VISIBLE",
                 fill=self.SUCCESS,
                 font=("Segoe UI", 10, "bold"),
             )
@@ -8535,7 +8891,7 @@ a {{ color: #1f4e79; }}
                 base = subprocess.run([git, "merge-base", "HEAD", "origin/main"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
                 self.queue_update_progress(100, "GitHub check complete", "The local project and GitHub main were compared successfully.")
                 if current == remote:
-                    self.worker_queue.put(("update_no_updates", {"latest_sha": remote, "latest_date": "", "packaged": False}))
+                    self.worker_queue.put(("update_no_updates", {"latest_sha": remote, "latest_date": "", "latest_version": self.APP_VERSION, "packaged": False}))
                 elif status:
                     self.worker_queue.put(("update_information", {
                         "title": "Updates available",
@@ -8574,10 +8930,26 @@ a {{ color: #1f4e79; }}
             owner, repo_name = self.github_update_repo(repo)
             self.queue_update_progress(10, "Checking GitHub main...", f"Requesting the latest revision for {owner}/{repo_name}.")
             latest_sha, latest_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
-            self.queue_update_progress(28, "Comparing installed version...", f"Latest revision: {latest_sha[:12]}")
+            package_descriptor: dict[str, object] = {}
+            if getattr(sys, "frozen", False):
+                try:
+                    package_descriptor = self.github_update_package_descriptor(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+                except Exception:
+                    package_descriptor = {}
+            latest_version = str(package_descriptor.get("version", "")).strip()
+            latest_release_name = str(package_descriptor.get("release_name", "")).strip()
+            comparison_detail = f"Latest revision: {latest_sha[:12]}"
+            if latest_version:
+                comparison_detail = f"Published version: {latest_version}  |  Revision: {latest_sha[:12]}"
+            self.queue_update_progress(28, "Comparing installed version...", comparison_detail)
             current_sha = self.current_update_revision(repo)
             if current_sha and current_sha == latest_sha:
-                self.worker_queue.put(("update_no_updates", {"latest_sha": latest_sha, "latest_date": latest_date, "packaged": bool(getattr(sys, "frozen", False))}))
+                self.worker_queue.put(("update_no_updates", {
+                    "latest_sha": latest_sha,
+                    "latest_date": latest_date,
+                    "latest_version": latest_version,
+                    "packaged": bool(getattr(sys, "frozen", False)),
+                }))
                 return
 
             if getattr(sys, "frozen", False):
@@ -8586,10 +8958,16 @@ a {{ color: #1f4e79; }}
                 local_exe_hash = self.current_packaged_exe_hash()
                 if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
                     self.write_update_metadata(repo, latest_sha, "bundle-match")
-                    self.worker_queue.put(("update_no_updates", {"latest_sha": latest_sha, "latest_date": latest_date, "packaged": True}))
+                    self.worker_queue.put(("update_no_updates", {
+                        "latest_sha": latest_sha,
+                        "latest_date": latest_date,
+                        "latest_version": latest_version,
+                        "packaged": True,
+                    }))
                     return
 
-            self.queue_update_progress(100, "Update available", "A newer GitHub version is ready to download.")
+            available_detail = f"{latest_version} is ready to download." if latest_version else "A newer GitHub version is ready to download."
+            self.queue_update_progress(100, "Update available", available_detail)
             self.worker_queue.put(("update_available", {
                 "mode": "zip",
                 "repo": str(repo),
@@ -8598,6 +8976,9 @@ a {{ color: #1f4e79; }}
                 "branch": self.GITHUB_UPDATE_BRANCH,
                 "latest_sha": latest_sha,
                 "latest_date": latest_date,
+                "latest_version": latest_version,
+                "latest_release_name": latest_release_name,
+                "current_version": self.current_installed_version(),
                 "current_sha": current_sha,
             }))
         except Exception as exc:
@@ -8608,6 +8989,9 @@ a {{ color: #1f4e79; }}
         latest_date = str(data.get("latest_date", ""))
         latest_sha = str(data.get("latest_sha", ""))
         current_sha = str(data.get("current_sha", ""))
+        current_version = str(data.get("current_version", self.current_installed_version())).strip()
+        latest_version = str(data.get("latest_version", "")).strip()
+        latest_release_name = str(data.get("latest_release_name", "")).strip()
         if mode == "git":
             message = "A newer revision is available on GitHub main. Pull it into this development project now?"
         elif current_sha:
@@ -8615,6 +8999,12 @@ a {{ color: #1f4e79; }}
         else:
             message = "This computer has no saved update revision. Download, validate, install, and restart with the latest published version now?"
         details = []
+        if current_version:
+            details.append(("Installed version", current_version))
+        if latest_version:
+            details.append(("Available version", latest_version))
+        if latest_release_name:
+            details.append(("Release", latest_release_name))
         if current_sha:
             details.append(("Installed revision", current_sha[:12]))
         if latest_sha:
@@ -8768,6 +9158,9 @@ a {{ color: #1f4e79; }}
                         "url": cls.github_raw_url(owner, repo_name, branch, zip_path),
                         "sha256": str(data.get("sha256", "")).strip().lower(),
                         "size": int(data.get("size", 0) or 0),
+                        "version": str(data.get("version", "")).strip(),
+                        "release_name": str(data.get("release_name", "")).strip(),
+                        "changelog_url": str(data.get("changelog_url", cls.GITHUB_CHANGELOG_URL)).strip(),
                         "source": "branch update package",
                     }
         except Exception:
@@ -8781,6 +9174,9 @@ a {{ color: #1f4e79; }}
             "url": cls.github_raw_url(owner, repo_name, branch, cls.GITHUB_UPDATE_PACKAGE_PATH),
             "sha256": "",
             "size": 0,
+            "version": "",
+            "release_name": "",
+            "changelog_url": cls.GITHUB_CHANGELOG_URL,
             "source": "branch update ZIP",
         }
 
@@ -8811,6 +9207,9 @@ a {{ color: #1f4e79; }}
                     "url": url,
                     "sha256": digest,
                     "size": int(asset.get("size", 0) or 0),
+                    "version": str(release.get("tag_name", "")).strip(),
+                    "release_name": str(release.get("name", "")).strip(),
+                    "changelog_url": str(release.get("html_url", cls.GITHUB_CHANGELOG_URL)).strip(),
                     "source": "GitHub Release asset",
                 }
         except Exception:
@@ -8908,10 +9307,12 @@ a {{ color: #1f4e79; }}
                 continue
         return None
 
-    @staticmethod
-    def update_metadata_payload(sha: str, method: str) -> dict[str, str]:
+    @classmethod
+    def update_metadata_payload(cls, sha: str, method: str) -> dict[str, str]:
         return {
             "sha": sha,
+            "version": cls.APP_VERSION,
+            "release_name": cls.APP_RELEASE_NAME,
             "method": method,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -10010,18 +10411,23 @@ try {{
         return bool(selected_aw_orders) and bool(all_aw_orders) and all_aw_orders.issubset(selected_aw_orders)
 
     @staticmethod
+    def process_list_batch_key(source: Path) -> str:
+        """Identify companion exports even when spacing or punctuation differs."""
+        return re.sub(r"[^a-z0-9]+", "", source.stem.casefold())
+
+    @staticmethod
     def process_list_companion_files(source: Path) -> list[Path]:
         """Return all same-name process-list exports, such as Batch 6144.xls and .xlsx."""
         try:
             parent = source.parent
             if not parent.exists() or not parent.is_dir():
                 return [source] if source.exists() and source.is_file() else []
-            stem_key = source.stem.casefold()
+            stem_key = ShowerProgrammerApp.process_list_batch_key(source)
             companions = [
                 candidate
                 for candidate in parent.iterdir()
                 if shower_batch.is_process_list_file(candidate)
-                and candidate.stem.casefold() == stem_key
+                and ShowerProgrammerApp.process_list_batch_key(candidate) == stem_key
             ]
             return sorted(companions, key=lambda candidate: candidate.name.lower())
         except OSError:
@@ -10069,7 +10475,7 @@ try {{
                 source = source_value if isinstance(source_value, Path) else Path(str(source_value))
             except (TypeError, ValueError):
                 continue
-            stem = source.stem.casefold()
+            stem = self.process_list_batch_key(source)
             plan = plans_by_stem.setdefault(
                 stem,
                 {
@@ -10125,17 +10531,160 @@ try {{
         return sorted(files.values(), key=lambda candidate: candidate.name.lower())
 
     @classmethod
+    def completed_process_list_batches_from_history(
+        cls,
+        batches: list[dict[str, object]],
+        order_folder: Path,
+        output_dir: Path,
+    ) -> list[dict[str, object]]:
+        """Find fully sent/deleted batches that were copied back without new order inputs."""
+        try:
+            history = cls.load_processing_history_for_output(output_dir)
+        except Exception:
+            return []
+
+        plans_by_key: dict[str, dict[str, object]] = {}
+        for batch in batches:
+            source_value = batch.get("path")
+            try:
+                source = source_value if isinstance(source_value, Path) else Path(str(source_value))
+            except (TypeError, ValueError):
+                continue
+            raw_orders = batch.get("all_orders", batch.get("orders", []))
+            if not isinstance(raw_orders, list):
+                continue
+            batch_orders = [
+                order for order in raw_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            ]
+            if not batch_orders:
+                continue
+
+            key = cls.process_list_batch_key(source)
+            plan = plans_by_key.setdefault(
+                key,
+                {
+                    "stem": source.stem,
+                    "name": source.stem,
+                    "files": [],
+                    "orders": [],
+                    "batch_ids": [],
+                },
+            )
+            plan_files = plan["files"]
+            plan_orders = plan["orders"]
+            plan_batch_ids = plan["batch_ids"]
+            assert isinstance(plan_files, list)
+            assert isinstance(plan_orders, list)
+            assert isinstance(plan_batch_ids, list)
+            for companion in cls.process_list_companion_files(source) or [source]:
+                if companion not in plan_files:
+                    plan_files.append(companion)
+            existing_aw = {
+                str(order.aw_order)
+                for order in plan_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            }
+            for order in batch_orders:
+                if str(order.aw_order) not in existing_aw:
+                    plan_orders.append(order)
+                    existing_aw.add(str(order.aw_order))
+            batch_id = str(batch.get("id", ""))
+            if batch_id and batch_id not in plan_batch_ids:
+                plan_batch_ids.append(batch_id)
+
+        completed: list[dict[str, object]] = []
+        for plan in plans_by_key.values():
+            raw_orders = plan.get("orders", [])
+            orders = [
+                order for order in raw_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            ] if isinstance(raw_orders, list) else []
+            if not orders or not all(cls.order_is_terminal_in_history(order, history) for order in orders):
+                continue
+            remaining = cls.matching_order_files(
+                order_folder,
+                orders,
+                root_only=True,
+                inspect_pdf_text=True,
+            )
+            if remaining:
+                continue
+            files = plan.get("files", [])
+            if isinstance(files, list):
+                files.sort(
+                    key=lambda candidate: (
+                        candidate.name.lower()
+                        if isinstance(candidate, Path)
+                        else str(candidate).lower()
+                    )
+                )
+            completed.append(plan)
+        return sorted(completed, key=lambda plan: str(plan.get("stem", "")).casefold())
+
+    @classmethod
+    def archive_completed_process_list_batches(
+        cls,
+        process_list_path: Path,
+        plans: list[dict[str, object]],
+    ) -> tuple[list[Path], list[str]]:
+        """Archive verified terminal process lists, deduplicating prior identical copies."""
+        if not plans:
+            return [], []
+        target_dir = cls.process_list_archive_dir(
+            process_list_path,
+            cls.dated_archive_folder_name(),
+        )
+        archived: list[Path] = []
+        warnings: list[str] = []
+        sources: dict[str, Path] = {}
+        for plan in plans:
+            files = plan.get("files", [])
+            if not isinstance(files, list):
+                continue
+            for source in files:
+                if not isinstance(source, Path):
+                    continue
+                try:
+                    key = str(source.resolve()).casefold()
+                except OSError:
+                    key = str(source).casefold()
+                sources[key] = source
+
+        for source in sorted(sources.values(), key=lambda candidate: candidate.name.lower()):
+            if not source.exists() or not source.is_file():
+                continue
+            try:
+                if source.parent.resolve() == target_dir.resolve():
+                    continue
+                target = target_dir / source.name
+                if target.exists() and target.is_file():
+                    source_stat = source.stat()
+                    target_stat = target.stat()
+                    if (
+                        source_stat.st_size == target_stat.st_size
+                        and cls.sha256_file(source) == cls.sha256_file(target)
+                    ):
+                        source.unlink()
+                        archived.append(target)
+                        continue
+                archived.append(cls.move_file_to_folder(source, target_dir))
+            except OSError as exc:
+                warnings.append(f"Could not archive completed process list {source.name}: {exc}")
+        return archived, warnings
+
+    @classmethod
     def process_list_files_for_sources(cls, folder: Path, sources: list[Path]) -> list[Path]:
         """Map local process-list companions to matching exports in another input folder."""
         if not folder.exists() or not folder.is_dir() or not sources:
             return []
-        stems = {source.stem.casefold() for source in sources}
+        stems = {cls.process_list_batch_key(source) for source in sources}
         return sorted(
             [
                 candidate
                 for candidate in folder.iterdir()
                 if shower_batch.is_process_list_file(candidate)
-                and candidate.stem.casefold() in stems
+                and cls.process_list_batch_key(candidate) in stems
             ],
             key=lambda candidate: candidate.name.lower(),
         )
@@ -13048,6 +13597,66 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             canvas.tag_bind(tag, "<Button-3>", lambda event, object_key=object_key: show_mark_menu(event, object_key))
             canvas.tag_bind(tag, "<Double-Button-1>", lambda event, object_key=object_key: show_mark_menu(event, object_key))
 
+    @classmethod
+    def bug_report_url(cls) -> str:
+        """Return a GitHub issue URL prefilled with the running app version."""
+        body = (
+            f"**Shower Programmer version:** {cls.APP_VERSION}\n"
+            f"**Release:** {cls.APP_RELEASE_NAME}\n\n"
+            "**What happened?**\n\n"
+            "**What did you expect to happen?**\n\n"
+            "**Steps to reproduce:**\n1. \n2. \n3. \n\n"
+            "**Screenshots or error text:**\n"
+        )
+        query = urllib.parse.urlencode({"title": "[Bug] ", "body": body})
+        return f"{cls.GITHUB_ISSUES_URL}?{query}"
+
+    def open_bug_report(self) -> None:
+        """Open the Shower Programmer GitHub issue form in the default browser."""
+        try:
+            opened = webbrowser.open_new_tab(self.bug_report_url())
+        except Exception as exc:
+            messagebox.showerror("Could not open GitHub", str(exc), parent=self.root)
+            return
+        if not opened:
+            messagebox.showerror(
+                "Could not open GitHub",
+                "Windows could not open the GitHub bug-report page in the default browser.",
+                parent=self.root,
+            )
+            return
+        self.status_var.set(f"Opened the GitHub bug-report page for {self.APP_VERSION}.")
+
+    def open_changelog(self) -> None:
+        """Open the repository changelog from the visible version badge."""
+        try:
+            opened = webbrowser.open_new_tab(self.GITHUB_CHANGELOG_URL)
+        except Exception as exc:
+            messagebox.showerror("Could not open changelog", str(exc), parent=self.root)
+            return
+        if not opened:
+            messagebox.showerror(
+                "Could not open changelog",
+                "Windows could not open the Shower Programmer changelog in the default browser.",
+                parent=self.root,
+            )
+            return
+        self.status_var.set(f"Opened the {self.APP_VERSION} changelog on GitHub.")
+
+    def current_installed_version(self) -> str:
+        """Read the installed package version, falling back to the compiled version."""
+        app_dir = self.frozen_app_dir()
+        if app_dir is not None:
+            metadata_path = app_dir / ".shower_update.json"
+            try:
+                data = json.loads(metadata_path.read_text(encoding="utf-8"))
+                version = str(data.get("version", "")).strip() if isinstance(data, dict) else ""
+                if version:
+                    return version
+            except (OSError, ValueError, TypeError):
+                pass
+        return self.APP_VERSION
+
     def open_last_report(self) -> None:
         if not self.last_reports:
             messagebox.showinfo("No report yet", "Run a batch first.")
@@ -13138,6 +13747,10 @@ def validate_runtime_contracts() -> None:
         "sent_summary_for_order",
         "order_tree_tags_for_values",
         "show_no_updates_dialog",
+        "bug_report_url",
+        "open_bug_report",
+        "open_changelog",
+        "current_installed_version",
         "worker_check_for_updates",
         "begin_update_install",
         "extract_update_archive",
@@ -13169,8 +13782,14 @@ def validate_runtime_contracts() -> None:
         "bring_page_window_to_front",
         "focus_existing_page_window",
         "review_send_row_starts_open",
+        "production_sketch_process_times",
+        "production_sketch_matches",
+        "reconcile_orders_sent_from_production",
+        "process_list_batch_key",
         "completed_process_list_batches_for_orders",
         "completed_process_list_files_for_orders",
+        "completed_process_list_batches_from_history",
+        "archive_completed_process_list_batches",
         "mark_orders_deleted",
         "order_is_terminal_in_history",
         "process_list_files_for_sources",
@@ -13217,11 +13836,21 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     result: dict[str, object] = {
         "ok": False,
-        "version": "ATOMIC_RUNTIME_SWAP_V39",
+        "version": ShowerProgrammerApp.APP_VERSION_MARKER,
+        "display_version": ShowerProgrammerApp.APP_VERSION,
         "executable": str(Path(sys.executable).resolve()),
     }
     try:
         validate_runtime_contracts()
+        if ShowerProgrammerApp.APP_VERSION != "V40":
+            raise RuntimeError(f"Unexpected application version: {ShowerProgrammerApp.APP_VERSION}")
+        if ShowerProgrammerApp.APP_VERSION_MARKER != "REPORT_BUGS_VERSIONING_V40":
+            raise RuntimeError("The V40 release marker is missing or inconsistent.")
+        bug_url = ShowerProgrammerApp.bug_report_url()
+        if "/issues/new?" not in bug_url or urllib.parse.quote(ShowerProgrammerApp.APP_VERSION) not in bug_url:
+            raise RuntimeError("The GitHub bug-report link does not include the running version.")
+        if not ShowerProgrammerApp.GITHUB_CHANGELOG_URL.endswith("/CHANGELOG.md"):
+            raise RuntimeError("The visible version badge does not target the GitHub changelog.")
         display_columns = ShowerProgrammerApp.ORDER_TREE_DISPLAY_COLUMNS
         if not display_columns or display_columns[0] != "review":
             raise RuntimeError("Mark Checked is not directly to the right of Batch / Process List.")
@@ -13699,6 +14328,64 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             if scu4_panel.indicator_corner != "bottom_left" or scu4_panel.rotation_degrees != 90.0:
                 raise RuntimeError("Bilateral SCU4 rule overrode a manual orientation.")
 
+            class SelfTestTextPage:
+                def __init__(self, text: str) -> None:
+                    self.text = text
+
+                def extract_text(self) -> str:
+                    return self.text
+
+            class SelfTestTextReader:
+                def __init__(self, *page_texts: str) -> None:
+                    self.pages = [SelfTestTextPage(text) for text in page_texts]
+
+            transom_order = shower_batch.ProcessOrder(
+                aw_order="236781",
+                job_name="89265311 TRANSOM ONLY",
+                items={3: shower_batch.ProcessItem(item=3, width_text="28", height_text="13")},
+            )
+            transom_panels = [
+                programmer.Panel(item=1, page_index=1, text="P1", width=30.0, height=100.0, machine=""),
+                programmer.Panel(item=2, page_index=2, text="P2", width=28.0, height=86.0, machine=""),
+            ]
+            transom_remaps = shower_batch.match_process_items_to_sketch_pages(
+                SelfTestTextReader(
+                    "cover",
+                    "P1",
+                    "P2",
+                    'TRN2 28" x 13" Tempered logo in Bottom Right Corner',
+                ),
+                transom_panels,
+                transom_order,
+                {},
+            )
+            transom_panel = next((panel for panel in transom_panels if panel.item == 3), None)
+            if transom_remaps or transom_panel is None or transom_panel.page_index != 3:
+                raise RuntimeError("Transom page was not matched to the final A&W process-list item.")
+            if not any("transom sketch label TRN2 mapped to P3" in reason for reason in transom_panel.reasons):
+                raise RuntimeError("Transom-to-A&W mapping evidence was not preserved.")
+
+            compressed_order = shower_batch.ProcessOrder(
+                aw_order="234568",
+                job_name="87654322 COMPRESSED PANELS",
+                items={
+                    1: shower_batch.ProcessItem(item=1),
+                    2: shower_batch.ProcessItem(item=2),
+                },
+            )
+            compressed_panels = [
+                programmer.Panel(item=1, page_index=1, text="P1", width=30.0, height=70.0, machine=""),
+                programmer.Panel(item=3, page_index=2, text="P3", width=30.0, height=70.0, machine=""),
+            ]
+            compressed_remaps = shower_batch.match_process_items_to_sketch_pages(
+                SelfTestTextReader("cover", "P1", "P3"),
+                compressed_panels,
+                compressed_order,
+                {},
+            )
+            if compressed_remaps != {2: 3} or sorted(compressed_order.items) != [1, 3]:
+                raise RuntimeError("Ordinary missing-panel process-list remapping regressed.")
+
             process_item = shower_batch.ProcessItem(
                 item=1,
                 width_text="30",
@@ -14003,6 +14690,97 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 job_name="89156453 35 EIGHTY TOWNS 38",
                 items={1: shower_batch.ProcessItem(item=1)},
             )
+            production_process_file = temp_root / "Batch production.xlsx"
+            production_process_file.write_text("process-list", encoding="utf-8")
+            production_sketch_root = temp_root / "production_sketches"
+            production_sketch_root.mkdir()
+            production_match_a = production_sketch_root / "236505.pdf"
+            production_stale_b = production_sketch_root / "236506.pdf"
+            production_named_c = production_sketch_root / "236507.pdf"
+            for production_path in (
+                production_match_a,
+                production_stale_b,
+                production_named_c,
+            ):
+                production_path.write_text("sketch", encoding="utf-8")
+            production_time = time.time() - 3600
+            os.utime(production_process_file, (production_time + 100, production_time + 100))
+            os.utime(production_match_a, (production_time + 200, production_time + 200))
+            os.utime(production_stale_b, (production_time, production_time))
+            os.utime(production_named_c, (production_time + 200, production_time + 200))
+            production_output_root = temp_root / "production_reconciliation_output"
+            production_batch = {
+                "id": "production-batch",
+                "path": production_process_file,
+                "name": production_process_file.name,
+                "orders": [cleanup_order_a, cleanup_order_b, unrelated_order],
+            }
+            newer_production_process_file = temp_root / "Batch production newer.xlsx"
+            newer_production_process_file.write_text("newer process-list", encoding="utf-8")
+            os.utime(
+                newer_production_process_file,
+                (production_time + 250, production_time + 250),
+            )
+            _duplicate_orders, duplicate_process_times = (
+                ShowerProgrammerApp.production_sketch_process_times(
+                    [
+                        production_batch,
+                        {
+                            "id": "production-batch-newer",
+                            "path": newer_production_process_file,
+                            "name": newer_production_process_file.name,
+                            "orders": [cleanup_order_a],
+                        },
+                    ]
+                )
+            )
+            if duplicate_process_times.get(cleanup_order_a.aw_order) != production_time + 250:
+                raise RuntimeError("Newest duplicate-order process-list timestamp was not authoritative.")
+            (
+                production_reconciled,
+                production_matches,
+                production_warnings,
+                production_files_checked,
+            ) = ShowerProgrammerApp.reconcile_orders_sent_from_production(
+                [production_batch],
+                production_output_root,
+                production_sketch_root,
+            )
+            if [order.aw_order for order in production_reconciled] != ["236505", "236507"]:
+                raise RuntimeError("Production sketch reconciliation did not match current order PDFs.")
+            if set(production_matches) != {"236505", "236507"} or production_files_checked != 3:
+                raise RuntimeError("Production sketch targeted lookup self-test failed.")
+            if not any("older production sketch" in warning for warning in production_warnings):
+                raise RuntimeError("Older production sketch remake guard self-test failed.")
+            production_history = ShowerProgrammerApp.load_processing_history_for_output(
+                production_output_root,
+            )
+            for production_order in (cleanup_order_a, unrelated_order):
+                production_entry = ShowerProgrammerApp.history_entry_from_data(
+                    production_history,
+                    production_order.aw_order,
+                )
+                if (
+                    production_entry.get("sent_source") != "production_sketch_folder"
+                    or production_entry.get("sent_process_signature")
+                    != ShowerProgrammerApp.sent_process_signature(production_order)
+                ):
+                    raise RuntimeError("Production sketch sent receipt self-test failed.")
+            if ShowerProgrammerApp.history_entry_from_data(
+                production_history,
+                cleanup_order_b.aw_order,
+            ):
+                raise RuntimeError("A stale production sketch was incorrectly marked sent.")
+            os.utime(production_stale_b, (production_time + 300, production_time + 300))
+            second_reconciled, _second_matches, second_warnings, _second_checked = (
+                ShowerProgrammerApp.reconcile_orders_sent_from_production(
+                    [production_batch],
+                    production_output_root,
+                    production_sketch_root,
+                )
+            )
+            if [order.aw_order for order in second_reconciled] != ["236506"] or second_warnings:
+                raise RuntimeError("Updated production sketch reconciliation self-test failed.")
             if ShowerProgrammerApp.leading_job_number_from_filename("87576307.2 AMARA 8_1") != "87576307.2":
                 raise RuntimeError("Leading Job Nr extraction self-test failed.")
             revision_jobs = ("88893379.2R", "88893379.2.2R")
@@ -14047,8 +14825,9 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             local_process_lists.mkdir()
             batch_6144_xls = local_process_lists / "Batch 6144.xls"
             batch_6144_xlsx = local_process_lists / "Batch 6144.xlsx"
+            batch_6144_rtf = local_process_lists / "Batch6144.rtf"
             batch_7000_xlsx = local_process_lists / "Batch 7000.xlsx"
-            for process_file in (batch_6144_xls, batch_6144_xlsx, batch_7000_xlsx):
+            for process_file in (batch_6144_xls, batch_6144_xlsx, batch_6144_rtf, batch_7000_xlsx):
                 process_file.write_text("process-list", encoding="utf-8")
 
             cleanup_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
@@ -14079,10 +14858,39 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             cleanup_app.save_processing_history(cleanup_history)
             completed_batches = cleanup_app.completed_process_list_batches_for_orders([cleanup_order_b])
             completed_lists = cleanup_app.completed_process_list_files_for_orders([cleanup_order_b])
-            if [item.name for item in completed_lists] != ["Batch 6144.xls", "Batch 6144.xlsx"]:
+            if [item.name for item in completed_lists] != ["Batch 6144.xls", "Batch 6144.xlsx", "Batch6144.rtf"]:
                 raise RuntimeError("Full-batch sent/deleted process-list selection self-test failed.")
             if len(completed_batches) != 1:
                 raise RuntimeError("Completed batch cleanup plan self-test failed.")
+
+            cleanup_orders_history[cleanup_order_b.aw_order] = {
+                "sent_at": "2026-07-20 15:12:00",
+                "sent_process_signature": cleanup_app.sent_process_signature(cleanup_order_b),
+            }
+            cleanup_app.save_processing_history(cleanup_history)
+            historical_batches = cleanup_app.completed_process_list_batches_from_history(
+                list(cleanup_app.process_batches.values()),
+                temp_root / "empty_order_input",
+                output_root,
+            )
+            if len(historical_batches) != 1 or historical_batches[0].get("stem") != "Batch 6144":
+                raise RuntimeError("Previously sent process-list batch was not selected for scan-time archival.")
+            process_archive_dir = cleanup_app.process_list_archive_dir(
+                local_process_lists,
+                cleanup_app.dated_archive_folder_name(),
+            )
+            process_archive_dir.mkdir(parents=True, exist_ok=True)
+            (process_archive_dir / batch_6144_xlsx.name).write_text("process-list", encoding="utf-8")
+            archived_process_lists, process_archive_warnings = cleanup_app.archive_completed_process_list_batches(
+                local_process_lists,
+                historical_batches,
+            )
+            if process_archive_warnings:
+                raise RuntimeError("Scan-time process-list archival returned warnings.")
+            if any(path.exists() for path in (batch_6144_xls, batch_6144_xlsx, batch_6144_rtf)):
+                raise RuntimeError("Scan-time process-list archival left a completed companion in the input root.")
+            if not batch_7000_xlsx.exists() or len(archived_process_lists) != 3:
+                raise RuntimeError("Scan-time process-list archival changed a pending batch.")
 
             staging_root = temp_root / ShowerProgrammerApp.IMPORT_STAGING_FOLDER_NAME
             staging_root.mkdir()
@@ -14092,6 +14900,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "89156453 35 EIGHTY TOWNS 38_1.dxf": "unrelated",
                 "Batch 6144.xls": "batch-a-old",
                 "Batch 6144.xlsx": "batch-a-new",
+                "Batch6144.rtf": "batch-a-rich-text",
                 "Batch 7000.xlsx": "batch-b",
             }
             for name, content in staging_files.items():
@@ -14147,6 +14956,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "customer_export_without_order_in_filename.pdf",
                 "Batch 6144.xls",
                 "Batch 6144.xlsx",
+                "Batch6144.rtf",
             }
             if not expected_deleted.issubset(deleted_names):
                 raise RuntimeError("Completed-batch cleanup did not remove all matching files.")
@@ -14173,8 +14983,13 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "atomic_runtime_swap": True,
                 "tcl_tk_runtime_validation": True,
                 "visible_update_progress": True,
+                "visible_version_badge": True,
+                "github_bug_report_link": True,
+                "github_changelog_link": True,
+                "centralized_release_version": True,
                 "order_number_pdf_matching": True,
                 "unmarked_sketch_mapping": True,
+                "transom_process_item_mapping": True,
                 "independent_output_controls": True,
                 "stale_sketch_skip_protection": True,
                 "recursive_sketch_memory_clear": True,
@@ -14205,6 +15020,11 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "fixed_sidebar_no_scroll": True,
                 "skipped_output_cleanup": True,
                 "batch_specific_process_list_cleanup": True,
+                "scan_time_process_list_archival": True,
+                "normalized_process_list_companions": True,
+                "production_sketch_sent_reconciliation": True,
+                "production_sketch_remake_timestamp_guard": True,
+                "production_sketch_targeted_lookup": True,
                 "job_number_dxf_cleanup_matching": True,
                 "separate_aw_and_job_number_identity": True,
                 "mark_checked_column_position": True,

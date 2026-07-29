@@ -1129,6 +1129,21 @@ def remap_process_items_to_sketch_pages(
     return remaps
 
 
+def match_process_items_to_sketch_pages(
+    reader: PdfReader,
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    config: dict[str, object],
+    remake_items: set[int] | None = None,
+) -> dict[int, int]:
+    # A transom's sketch label identifies the panel below it (TRN2), not its
+    # A+W item number. Attach explicit transom pages to the highest unmatched
+    # process-list items before generic P-number gap reconciliation can claim
+    # those rows for an ordinary panel.
+    attach_transom_panels(reader, panels, process_order, config)
+    return remap_process_items_to_sketch_pages(panels, process_order, remake_items)
+
+
 def choose_sketch_item_for_process_gap(
     process_item: int,
     extra_sketch_items: list[int],
@@ -1349,10 +1364,9 @@ def prepare_job(
     pdf_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
     reader = PdfReader(str(pdf_path))
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
-    item_remaps = remap_process_items_to_sketch_pages(panels, process_order, remake_items)
+    item_remaps = match_process_items_to_sketch_pages(reader, panels, process_order, config, remake_items)
     if remake_items:
         remake_items = {item_remaps.get(item, item) for item in remake_items}
-    attach_transom_panels(reader, panels, process_order, config)
     attach_unlabeled_process_pages(reader, panels, process_order, config)
     attach_unmarked_process_pages(reader, panels, process_order, config)
     reconcile_process_list_item_gaps(panels, process_order)

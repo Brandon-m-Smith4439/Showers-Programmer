@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate the clean Shower Programmer update-only ZIP."""
+"""Build and validate the clean, versioned Shower Programmer update-only ZIP."""
 
 from __future__ import annotations
 
@@ -118,25 +118,64 @@ def validate_zip(zip_path: Path) -> list[str]:
     return names
 
 
+def load_version_info(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        raise RuntimeError(f"Missing release version file: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("The release version file must contain a JSON object.")
+    required = ("version", "version_number", "marker", "release_name", "release_date")
+    missing = [name for name in required if not str(data.get(name, "")).strip()]
+    if missing:
+        raise RuntimeError("The release version file is missing: " + ", ".join(missing))
+    return data
+
+
+def validate_changelog(changelog_path: Path, version: str) -> None:
+    if not changelog_path.is_file():
+        raise RuntimeError(f"Missing changelog: {changelog_path}")
+    text = changelog_path.read_text(encoding="utf-8")
+    if f"## [{version}]" not in text:
+        raise RuntimeError(f"CHANGELOG.md does not contain a release heading for {version}.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app-dir", required=True)
     parser.add_argument("--zip", required=True, dest="zip_path")
     parser.add_argument("--metadata", required=True)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version-file", required=True)
+    parser.add_argument("--changelog", required=True)
     parser.add_argument("--commit", default="")
     args = parser.parse_args()
 
     app_dir = Path(args.app_dir).resolve()
     zip_path = Path(args.zip_path).resolve()
     metadata_path = Path(args.metadata).resolve()
+    version_file = Path(args.version_file).resolve()
+    changelog_path = Path(args.changelog).resolve()
+    version_info = load_version_info(version_file)
+    version = str(version_info["version"]).strip()
+    validate_changelog(changelog_path, version)
     validate_app_dir(app_dir)
     file_count, source_bytes = build_zip(app_dir, zip_path)
     names = validate_zip(zip_path)
 
     app_metadata = json.loads((app_dir / ".shower_update.json").read_text(encoding="utf-8"))
+    app_version = str(app_metadata.get("version", "")).strip()
+    app_marker = str(app_metadata.get("gui_version", "")).strip()
+    if app_version != version:
+        raise RuntimeError(f"The staged app version {app_version or '(missing)'} does not match {version}.")
+    expected_marker = str(version_info.get("marker", "")).strip()
+    if app_marker != expected_marker:
+        raise RuntimeError(f"The staged GUI marker {app_marker or '(missing)'} does not match {expected_marker}.")
+
     metadata = {
-        "version": args.version,
+        "version": version,
+        "version_number": int(version_info.get("version_number", 0) or 0),
+        "marker": expected_marker,
+        "release_name": str(version_info.get("release_name", "")).strip(),
+        "release_date": str(version_info.get("release_date", "")).strip(),
         "commit": str(args.commit or app_metadata.get("sha", "")).strip(),
         "zip_name": zip_path.name,
         "zip_path": "release/" + zip_path.name,
@@ -147,12 +186,14 @@ def main() -> int:
         "validated_file_count": len(names),
         "exe_sha256": str(app_metadata.get("exe_sha256", "")).strip().lower(),
         "gui_sha256": str(app_metadata.get("gui_sha256", "")).strip().lower(),
+        "changelog_path": str(version_info.get("changelog_path", "CHANGELOG.md")).strip() or "CHANGELOG.md",
+        "changelog_url": "https://github.com/Brandon-m-Smith4439/Showers-Programmer/blob/main/CHANGELOG.md",
         "built_at": datetime.now(timezone.utc).isoformat(),
     }
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    print(f"Created clean update ZIP: {zip_path}")
+    print(f"Created clean update ZIP for {version}: {zip_path}")
     print(f"Files: {file_count}")
     print(f"ZIP size: {zip_path.stat().st_size}")
     print(f"SHA-256: {metadata['sha256']}")
