@@ -1207,26 +1207,21 @@ def apply_process_hints(
         panel.process_text = process_item.text_blob()
         apply_process_dimensions(panel, process_item)
 
-        is_mirror_order = process_order.is_mirror(config)
-        if is_mirror_order:
-            if process_item.has_mirror_fabrication(config):
-                set_panel_machine(panel, "WJ", "mirror fabrication uses WJ")
-                panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
-                panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
-            else:
-                panel.machine = ""
-                panel.label_only = True
-                panel.skip_dxf = True
-                panel.indicator_corner = None
-                panel.rotation_degrees = None
-                panel.reasons.append("mirror without fabrication skipped")
-                continue
+        process_glass_text = "\n".join((process_item.processing_text, process_item.machine_text))
+        is_mirror_glass = (
+            programmer.has_mirror_glass_type(panel.text, config)
+            or programmer.has_mirror_glass_type(process_glass_text, config)
+        )
+        if is_mirror_glass:
+            set_panel_machine(panel, "WJ", "mirror glass type always uses WJ")
+            panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
+            panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
 
         desired_machine = process_item.desired_machine()
         processing_machine = process_item.inferred_denver_machine(config)
         strong_process_wj = process_item.has_strong_waterjet_fabrication(config)
         strong_pdf_wj = programmer.has_pdf_waterjet_evidence(panel.text, config)
-        if not is_mirror_order and desired_machine:
+        if not is_mirror_glass and desired_machine:
             original_machine = panel.machine
             if desired_machine == "WJ":
                 if strong_process_wj or strong_pdf_wj or denver_minimum_forces_wj(panel, config):
@@ -1240,12 +1235,12 @@ def apply_process_hints(
                     set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
             else:
                 set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
-        elif not is_mirror_order and processing_machine:
+        elif not is_mirror_glass and processing_machine:
             if panel.machine != processing_machine and (not panel.machine or panel.label_only):
                 set_panel_machine(panel, processing_machine, f"process-list fabrication suggests {processing_machine}")
             else:
                 panel.reasons.append(f"process-list fabrication confirms {processing_machine}")
-        elif not is_mirror_order:
+        elif not is_mirror_glass:
             panel.machine = ""
             panel.label_only = True
             panel.skip_dxf = True
@@ -1274,7 +1269,8 @@ def set_panel_machine(panel: programmer.Panel, machine: str, reason: str) -> Non
     panel.machine = machine
     panel.label_only = False
     panel.skip_dxf = False
-    panel.reasons.append(reason)
+    if reason not in panel.reasons:
+        panel.reasons.append(reason)
 
 
 def apply_process_dimensions(panel: programmer.Panel, process_item: ProcessItem) -> None:

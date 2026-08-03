@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 0.61 entry point for source, batch, single-order, and packaged GUI runs."""
+"""Version 0.62 entry point for source, batch, single-order, and packaged GUI runs."""
 
 from __future__ import annotations
 

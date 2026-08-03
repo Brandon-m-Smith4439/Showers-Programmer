@@ -67,6 +67,10 @@ When the longer dimension is at least 113 inches, the two short end edges requir
 
 When both dimensions exceed 75 inches, the piece is outside the configured Waterjet envelope. A clear warning is added and DXF output is skipped for review. A long, narrow piece can still fit when one dimension is 75 inches or less.
 
+### Mirror glass
+
+Any individual glass type containing the configured `MIRROR` keyword is assigned to Water Jet. The rule reads the piece sketch and its process-list material text, overrides automatic Denver hints, and does not trigger from project, customer, location, or address names containing the word `Mirror`. Manual machine overrides remain available for operator corrections.
+
 ### Waterjet internal radius
 
 The validator extracts glass thickness from the sketch/process text, reads internal ARC and polyline-bulge radii from the source DXF, converts DXF units to inches, and compares every detected radius with the thickness. Equality passes. A tolerance of 0.002 inch is used for CAD rounding.
@@ -147,6 +151,7 @@ A successful integrated report includes the existing core checks and the current
 - `version_0_6_fps_rake_orientation`
 - `version_0_6_dynamic_release_self_test`
 - `version_0_61_fps_short_cut_hinges_up`
+- `version_0_62_mirror_glass_waterjet`
 
 ## Troubleshooting
 

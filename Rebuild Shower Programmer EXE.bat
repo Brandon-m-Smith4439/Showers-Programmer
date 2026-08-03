@@ -37,7 +37,7 @@ set "UPDATE_ZIP=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.zip"
 set "UPDATE_METADATA=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.json"
 set "SOURCE_SELF_TEST=build\source_release_self_test.json"
 set "PACKAGED_SELF_TEST=build\release\packaged_release_self_test.json"
-set "REQUIRED_FLAGS=v4_conflict_safe_send,v4_existing_file_keep_or_replace,v4_per_file_send_failure_continuation,v4_radius_preview_callouts,v4_long_glass_se_validation,v4_waterjet_oversize_flag,v4_waterjet_thickness_radius_validation,v4_split_batch_order_merge,version_0_5_radius_label_spacing,version_0_5_oos_callout_avoidance,version_0_5_radius_header_removed,version_0_6_fps_rake_orientation,version_0_6_dynamic_release_self_test"
+set "REQUIRED_FLAGS=v4_conflict_safe_send,v4_existing_file_keep_or_replace,v4_per_file_send_failure_continuation,v4_radius_preview_callouts,v4_long_glass_se_validation,v4_waterjet_oversize_flag,v4_waterjet_thickness_radius_validation,v4_split_batch_order_merge,version_0_5_radius_label_spacing,version_0_5_oos_callout_avoidance,version_0_5_radius_header_removed,version_0_6_fps_rake_orientation,version_0_6_dynamic_release_self_test,version_0_61_fps_short_cut_hinges_up,version_0_62_mirror_glass_waterjet"
 
 echo.
 echo ========================================

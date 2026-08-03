@@ -116,6 +116,7 @@
       "weak_waterjet_keywords": "These words alone are not enough to force WJ because they also appear on Denver pieces.",
       "waterjet_fp_min_count": "If the sketch shows this many plain FP side labels, treat it as WJ shape evidence. FP-S is excluded because it can run Denver or WJ.",
       "waterjet_keywords": "These force WJ unless the item also matches a Denver-allowed fabrication keyword.",
+      "mirror_keywords": "Glass-type words that force the individual piece to Water Jet, regardless of fabrication or process-list machine hints.",
       "label_only_allow_keywords": "These may appear on plain label-only panels without forcing DXF output."
     },
     "denver_min_inches": 6.125,

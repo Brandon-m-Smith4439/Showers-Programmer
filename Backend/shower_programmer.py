@@ -665,6 +665,7 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
     has_fabrication = any(k in fabrication_upper for k in fabrication_keywords)
     has_denver_fabrication = any(k in fabrication_upper for k in denver_fabrication_keywords)
     has_only_allowed_extra = any(k in upper for k in label_only_allow)
+    has_mirror = has_mirror_glass_type(panel.text, config)
     panel.diamon_fusion = "DIAMON" in upper or "DIAMOND FUSION" in upper
 
     if panel.width is None or panel.height is None:
@@ -675,7 +676,10 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
         and min(panel.width, panel.height) < denver_min
     )
 
-    if small_piece:
+    if has_mirror:
+        panel.machine = "WJ"
+        panel.reasons.append("mirror glass type always uses WJ")
+    elif small_piece:
         panel.machine = "WJ"
         panel.reasons.append(f"minimum side below {denver_min:g} in")
     elif has_door:
@@ -728,6 +732,39 @@ def has_pdf_waterjet_evidence(text: str, config: dict[str, Any]) -> bool:
     if count_fp_marks(upper) >= minimum_fp:
         return True
     return has_radius_text(upper)
+
+
+def has_mirror_glass_type(text: str, config: dict[str, Any]) -> bool:
+    """Return true when an individual piece describes mirror glass.
+
+    The line-level context prevents a project or customer name containing
+    ``Mirror`` from changing an unrelated clear-glass piece to Water Jet.
+    """
+    keywords = upper_set(config, "rules", "mirror_keywords") or {"MIRROR"}
+    glass_context = re.compile(
+        r"(?:\b\d+(?:[- ]\d+)?/\d+\b|\b\d+(?:\.\d+)?\s*(?:MM|IN(?:CH(?:ES)?)?)\b|"
+        r"\b(?:ANNEALED|TEMPERED|GLASS|CLEAR|BRONZE|GRAY|GREY|SAFETY\s+BACKED|VINYL\s+BACKED)\b)"
+    )
+    lines = [re.sub(r"\s+", " ", line.upper()).strip() for line in text.splitlines()]
+    non_glass_labels = ("PROJECT", "CUSTOMER", "LOCATION", "ADDRESS", "JOB NAME")
+    for index, line in enumerate(lines):
+        matching = [keyword for keyword in keywords if keyword and keyword in line]
+        if not matching:
+            continue
+        if glass_context.search(line):
+            return True
+        if any(label in line for label in non_glass_labels):
+            continue
+        # PDF extraction can put a bare material name on its own line. Require
+        # adjacent glass context and reject values belonging to labeled fields.
+        if any(line == keyword for keyword in matching):
+            previous = lines[index - 1] if index else ""
+            if any(label in previous for label in non_glass_labels):
+                continue
+            adjacent = " ".join(lines[max(0, index - 1):index + 2])
+            if glass_context.search(adjacent):
+                return True
+    return False
 
 
 def strip_non_fabrication_edge_text(text: str) -> str:

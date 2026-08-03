@@ -2,7 +2,7 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 0.61 — FP-S Short Cut Hinges-Up Detection**
+Current release: **Version 0.62 — Mirror Glass Waterjet Detection**
 
 ## Main Workflow
 
@@ -130,12 +130,12 @@ Do not publish a new source revision without rebuilding and publishing matching 
 
 ## Versioning
 
-The project uses a pre-1.0 release series. The current release is **Version 0.61**. Each revision advances by `0.01`:
+The project uses a pre-1.0 release series. The current release is **Version 0.62**. Each revision advances by `0.01`:
 
 ```text
-Version 0.62
 Version 0.63
 Version 0.64
+Version 0.65
 ```
 
 For every release:

@@ -2,6 +2,17 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 0.62] - 2026-08-03
+
+### Added
+- Added individual glass-type detection for mirror material, including `1/4 Mirror Annealed` and `1/4 Mirror Clear Annealed`.
+- Mirror glass now always selects Water Jet, even when it has no fabrication keywords or a process-list machine hint says Denver.
+- Added regression coverage for PDF mirror descriptions, process-list mirror descriptions, conflicting Denver hints, and project names containing `Mirror`.
+
+### Changed
+- Mirror detection is evaluated per piece rather than treating every piece in an order as mirror glass.
+- A project or customer name containing `Mirror` does not change ordinary clear glass to Water Jet.
+
 ## [Version 0.61] - 2026-08-03
 
 ### Fixed
