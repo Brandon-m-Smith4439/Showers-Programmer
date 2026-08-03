@@ -1187,8 +1187,7 @@ def has_door_cut_in(panel: Panel, config: dict[str, Any]) -> bool:
 
 def needs_manual_review_for_fps_cut(panel: Panel, config: dict[str, Any]) -> bool:
     upper = panel_combined_text(panel).upper()
-    has_fps = bool(re.search(r"\bFP\s*-\s*S\b|\bFPS\b", upper))
-    if not has_fps:
+    if not has_fps_edgework(panel):
         return False
     cut_keywords = set(upper_set(config, "rules", "door_cut_in_keywords"))
     cut_keywords.update(
@@ -1206,6 +1205,11 @@ def needs_manual_review_for_fps_cut(panel: Panel, config: dict[str, Any]) -> boo
         }
     )
     return any(keyword in upper for keyword in cut_keywords)
+
+
+def has_fps_edgework(panel: Panel) -> bool:
+    """Return whether the sketch/process text explicitly identifies FP-S edgework."""
+    return bool(re.search(r"\bFP\s*-\s*S\b|\bFPS\b", panel_combined_text(panel).upper()))
 
 
 def panel_combined_text(panel: Panel) -> str:
@@ -1340,7 +1344,7 @@ def denver_door_orientation_for_indicator_corner(
         cut_in = True
     if panel.source_dxf is not None:
         candidate_side = panel.hinge_side if panel.hinge_side in {"left", "right"} else dxf_hinge_side_candidate(panel.source_dxf)
-        if candidate_side in {"left", "right"} and dxf_hinge_side_has_cut_in(panel.source_dxf, candidate_side, config):
+        if candidate_side in {"left", "right"} and fps_hinge_side_has_cut_in(panel, candidate_side, config):
             cut_in = True
     if cut_in:
         hinge_side = "right" if corner == "bottom_left" else "left"
@@ -1700,11 +1704,11 @@ def apply_dxf_manual_review_warning(panel: Panel, config: dict[str, Any]) -> Non
 def needs_manual_review_for_fps_dxf_cut(panel: Panel, config: dict[str, Any]) -> bool:
     if panel.source_dxf is None:
         return False
-    upper = panel_combined_text(panel).upper()
-    has_fps = bool(re.search(r"\bFP\s*-\s*S\b|\bFPS\b", upper))
-    if not has_fps:
+    if not has_fps_edgework(panel):
         return False
-    return any(dxf_side_has_cut_in(panel.source_dxf, side, config) for side in ("left", "right", "bottom", "top"))
+    if any(dxf_side_has_cut_in(panel.source_dxf, side, config) for side in ("left", "right", "bottom", "top")):
+        return True
+    return any(dxf_side_has_short_cut_transition(panel.source_dxf, side, config) for side in ("left", "right"))
 
 
 def apply_dxf_angle_correction(panel: Panel, config: dict[str, Any]) -> None:
@@ -1736,6 +1740,14 @@ def apply_dxf_angle_correction(panel: Panel, config: dict[str, Any]) -> None:
         return
     panel.angle_correction_degrees = correction
     panel.angle_correction_reason = f"auto DXF {reason} {amount:g} over {side_length:g}"
+    if has_fps_edgework(panel):
+        source_side = side_for_rotation(panel.rotation_degrees)
+        fps_reason = (
+            f"FP-S raked {source_side} edge detected from DXF; "
+            f"CNC bottom flattened by {abs(correction):g} deg"
+        )
+        if fps_reason not in panel.reasons:
+            panel.reasons.append(fps_reason)
 
 
 def dxf_hinge_angle_correction(panel: Panel, config: dict[str, Any]) -> tuple[float, float, float] | None:
@@ -2075,7 +2087,13 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
         pph_radius_confirmation = side is not None
     if side is None:
         return
-    dxf_cut_in = dxf_hinge_side_has_cut_in(panel.source_dxf, side, config)
+    standard_dxf_cut_in = dxf_hinge_side_has_cut_in(panel.source_dxf, side, config)
+    fps_short_transition = has_fps_edgework(panel) and dxf_side_has_short_cut_transition(
+        panel.source_dxf,
+        side,
+        config,
+    )
+    dxf_cut_in = standard_dxf_cut_in or fps_short_transition
     previous = panel.hinge_side or "unknown"
     side_changed = panel.hinge_side != side
     if side_changed:
@@ -2095,7 +2113,10 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
     if dxf_cut_in and not panel.hinges_up:
         panel.hinges_up = True
         remove_hinge_side_reasons(panel)
-        panel.reasons.append(f"hinge side {side}; hinges up from DXF K-cut/kick-in/jut-out")
+        if fps_short_transition:
+            panel.reasons.append(f"hinge side {side}; hinges up from DXF FP-S cut transition")
+        else:
+            panel.reasons.append(f"hinge side {side}; hinges up from DXF K-cut/kick-in/jut-out")
         moved_off_hinge = True
     elif dxf_cut_in:
         moved_off_hinge = True
@@ -2175,6 +2196,59 @@ def dxf_hinge_side_has_cut_in(path: Path, side: str, config: dict[str, Any]) -> 
     if side not in {"left", "right"}:
         return False
     return dxf_side_has_cut_in(path, side, config)
+
+
+def fps_hinge_side_has_cut_in(panel: Panel, side: str, config: dict[str, Any]) -> bool:
+    if panel.source_dxf is None or side not in {"left", "right"}:
+        return False
+    if dxf_hinge_side_has_cut_in(panel.source_dxf, side, config):
+        return True
+    return has_fps_edgework(panel) and dxf_side_has_short_cut_transition(panel.source_dxf, side, config)
+
+
+def dxf_side_has_short_cut_transition(path: Path, side: str, config: dict[str, Any]) -> bool:
+    """Detect an FP-S cut transition whose short square run is below the general cut threshold."""
+    if side not in {"left", "right"}:
+        return False
+    segments = dxf_side_segments(path, side)
+    if len(segments) < 2:
+        return False
+    points = [point for start, end in segments for point in (start, end)]
+    span = max(y for _x, y in points) - min(y for _x, y in points)
+    if span <= 0:
+        return False
+
+    rules = config.get("rules", {})
+    min_ratio = parse_float(rules.get("auto_dxf_fps_cut_min_segment_ratio", 0.12), 0.12)
+    min_coverage = parse_float(rules.get("auto_dxf_fps_cut_min_coverage_ratio", 0.45), 0.45)
+    min_degrees = parse_float(rules.get("auto_dxf_cut_in_min_degrees", 0.05), 0.05)
+    min_offset = parse_float(rules.get("auto_dxf_cut_in_min_offset", 0.03125), 0.03125)
+
+    candidates: list[tuple[tuple[float, float], tuple[float, float], float, float]] = []
+    for start, end in segments:
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length < span * min_ratio or abs(dy) < length * 0.80:
+            continue
+        if abs(dy) >= span * 0.90 and abs(dx) >= min_offset:
+            continue
+        deviation = abs(normalize_axis_deviation(math.degrees(math.atan2(dy, dx)) - 90))
+        candidates.append((start, end, (start[0] + end[0]) / 2, deviation))
+
+    if len(candidates) < 2:
+        return False
+    has_angled_run = any(deviation >= min_degrees for _start, _end, _offset, deviation in candidates)
+    has_square_run = any(deviation < min_degrees for _start, _end, _offset, deviation in candidates)
+    offsets = [offset for _start, _end, offset, _deviation in candidates]
+    candidate_y = [point[1] for start, end, _offset, _deviation in candidates for point in (start, end)]
+    coverage = max(candidate_y) - min(candidate_y)
+    return (
+        has_angled_run
+        and has_square_run
+        and max(offsets) - min(offsets) >= min_offset
+        and coverage >= span * min_coverage
+    )
 
 
 def dxf_side_has_cut_in(path: Path, side: str, config: dict[str, Any]) -> bool:

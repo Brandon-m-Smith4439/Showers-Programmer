@@ -13842,12 +13842,16 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     }
     try:
         validate_runtime_contracts()
-        if ShowerProgrammerApp.APP_VERSION != "V40":
+        expected_version = str(APP_VERSION_INFO.get("version", "")).strip()
+        expected_marker = str(APP_VERSION_INFO.get("marker", "")).strip()
+        if not expected_version or ShowerProgrammerApp.APP_VERSION != expected_version:
             raise RuntimeError(f"Unexpected application version: {ShowerProgrammerApp.APP_VERSION}")
-        if ShowerProgrammerApp.APP_VERSION_MARKER != "REPORT_BUGS_VERSIONING_V40":
-            raise RuntimeError("The V40 release marker is missing or inconsistent.")
+        if not expected_marker or ShowerProgrammerApp.APP_VERSION_MARKER != expected_marker:
+            raise RuntimeError("The release marker is missing or inconsistent.")
         bug_url = ShowerProgrammerApp.bug_report_url()
-        if "/issues/new?" not in bug_url or urllib.parse.quote(ShowerProgrammerApp.APP_VERSION) not in bug_url:
+        bug_query = urllib.parse.parse_qs(urllib.parse.urlparse(bug_url).query)
+        bug_body = "\n".join(bug_query.get("body", []))
+        if "/issues/new?" not in bug_url or ShowerProgrammerApp.APP_VERSION not in bug_body:
             raise RuntimeError("The GitHub bug-report link does not include the running version.")
         if not ShowerProgrammerApp.GITHUB_CHANGELOG_URL.endswith("/CHANGELOG.md"):
             raise RuntimeError("The visible version badge does not target the GitHub changelog.")

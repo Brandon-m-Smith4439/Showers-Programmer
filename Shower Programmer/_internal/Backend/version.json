@@ -1,9 +1,9 @@
 {
-  "version": "V40",
-  "version_number": 40,
-  "marker": "REPORT_BUGS_VERSIONING_V40",
-  "release_name": "Bug Reporting and Version Tracking",
-  "release_date": "2026-07-27",
+  "version": "Version 0.61",
+  "version_number": 61,
+  "marker": "VERSION_0_61_FPS_SHORT_CUT_HINGES_UP",
+  "release_name": "FP-S Short Cut Hinges-Up Detection",
+  "release_date": "2026-08-03",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

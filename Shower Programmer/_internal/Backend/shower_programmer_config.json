@@ -109,6 +109,8 @@
       "auto_dxf_hinge_side_detection": "When true, clear cut-in/kink evidence in the matched Denver 1 DXF can correct the detected hinge side.",
       "auto_dxf_cut_in_min_degrees": "Smallest kicked hinge-side angle that can make a split Denver 1 hinge side orient hinges up.",
       "auto_dxf_cut_in_min_offset": "Smallest hinge-side offset, in inches, that can make a split Denver 1 hinge side orient hinges up. This also catches K-cut/jut-out hinge sides with parallel offset vertical runs.",
+      "auto_dxf_fps_cut_min_segment_ratio": "Smallest short square or angled hinge-side run used by the FP-S cut-transition fallback. This is narrower than the general cut detector and only applies when FP-S is present.",
+      "auto_dxf_fps_cut_min_coverage_ratio": "Minimum combined hinge-side coverage required before the FP-S short-transition fallback can orient hinges up.",
       "waterjet_tall_rotation_by_indicator": "For tall WJ pieces, maps the chosen WJ marker corner to the DXF rotation that keeps the program aligned with the sketch marker.",
       "hinge_label_keywords": "Text labels next to hinge cutouts. These help decide which side of a door the hinges are on.",
       "weak_waterjet_keywords": "These words alone are not enough to force WJ because they also appear on Denver pieces.",
@@ -125,6 +127,8 @@
     "auto_dxf_angle_min_degrees": 0.02,
     "auto_dxf_angle_max_degrees": 1,
     "auto_dxf_hinge_side_detection": true,
+    "auto_dxf_fps_cut_min_segment_ratio": 0.12,
+    "auto_dxf_fps_cut_min_coverage_ratio": 0.45,
     "waterjet_tall_rotation_by_indicator": {
       "top_left": 90,
       "bottom_left": 90,
