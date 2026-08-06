@@ -23,6 +23,7 @@ set "SOURCE_FEATURES=Backend\shower_v4_features.py"
 set "SOURCE_GUI=Backend\shower_programmer_gui.py"
 set "SOURCE_BATCH=Backend\shower_batch.py"
 set "SOURCE_PROGRAMMER=Backend\shower_programmer.py"
+set "SOURCE_CACHE=Backend\shower_cache.py"
 set "SOURCE_CONFIG=Backend\shower_programmer_config.json"
 set "SOURCE_VERSION=Backend\version.json"
 set "SOURCE_CHANGELOG=CHANGELOG.md"
@@ -37,7 +38,7 @@ set "UPDATE_ZIP=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.zip"
 set "UPDATE_METADATA=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.json"
 set "SOURCE_SELF_TEST=build\source_release_self_test.json"
 set "PACKAGED_SELF_TEST=build\release\packaged_release_self_test.json"
-set "REQUIRED_FLAGS=v4_conflict_safe_send,v4_existing_file_keep_or_replace,v4_per_file_send_failure_continuation,v4_radius_preview_callouts,v4_long_glass_se_validation,v4_waterjet_oversize_flag,v4_waterjet_thickness_radius_validation,v4_split_batch_order_merge,version_0_5_radius_label_spacing,version_0_5_oos_callout_avoidance,version_0_5_radius_header_removed,version_0_6_fps_rake_orientation,version_0_6_dynamic_release_self_test,version_0_61_fps_short_cut_hinges_up,version_0_62_mirror_glass_waterjet"
+set "REQUIRED_FLAGS=v4_conflict_safe_send,v4_existing_file_keep_or_replace,v4_per_file_send_failure_continuation,v4_radius_preview_callouts,v4_long_glass_se_validation,v4_waterjet_oversize_flag,v4_waterjet_thickness_radius_validation,v4_split_batch_order_merge,version_0_5_radius_label_spacing,version_0_5_oos_callout_avoidance,version_0_5_radius_header_removed,version_0_6_fps_rake_orientation,version_0_6_dynamic_release_self_test,version_0_61_fps_short_cut_hinges_up,version_0_62_mirror_glass_waterjet,version_0_63_machine_decision_inspector,version_0_63_process_list_normalization,version_0_63_known_order_regressions,version_0_63_incremental_scan_cache,version_0_64_dxf_first_review_layout,version_0_65_smart_network_import,version_0_66_mirror_waterjet_batch_scope,version_0_67_duplicate_job_order_identity,version_0_68_hidden_xls_conversion,version_0_69_fast_accurate_scanning"
 
 echo.
 echo ========================================
@@ -91,6 +92,7 @@ for %%F in (
     "%SOURCE_GUI%"
     "%SOURCE_BATCH%"
     "%SOURCE_PROGRAMMER%"
+    "%SOURCE_CACHE%"
     "%SOURCE_CONFIG%"
     "%SOURCE_VERSION%"
     "%SOURCE_CHANGELOG%"
@@ -136,7 +138,7 @@ if errorlevel 1 (
 echo   Release %APP_VERSION%: %APP_RELEASE_NAME%
 
 echo Checking Python syntax...
-"%PYTHON_EXE%" %PYTHON_ARGS% -m py_compile "%SOURCE_ENTRY%" "%SOURCE_FEATURES%" "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%" "%SOURCE_PACKAGE_BUILDER%"
+"%PYTHON_EXE%" %PYTHON_ARGS% -m py_compile "%SOURCE_ENTRY%" "%SOURCE_FEATURES%" "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%" "%SOURCE_CACHE%" "%SOURCE_PACKAGE_BUILDER%"
 if errorlevel 1 goto failed
 
 echo Running focused release unit tests...
@@ -252,18 +254,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$final=[IO.Path]::GetFullPath('%FINAL_DIR%');" ^
   "$backup=[IO.Path]::GetFullPath('build\deploy_backup');" ^
   "$names=@('_internal','Assets','Shower Programmer.exe','.shower_update.json');" ^
+  "$finalExe=Join-Path $final 'Shower Programmer.exe';" ^
+  "$running=@(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -eq $finalExe) } catch { $false } });" ^
+  "if($running){throw 'Close Shower Programmer before rebuilding so its runtime files can be replaced safely.'};" ^
   "New-Item -ItemType Directory -Force -Path $final | Out-Null;" ^
   "if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Recurse -Force};" ^
   "New-Item -ItemType Directory -Force -Path $backup | Out-Null;" ^
   "try {" ^
   " foreach($name in $names){$old=Join-Path $final $name; if(Test-Path -LiteralPath $old){Move-Item -LiteralPath $old -Destination (Join-Path $backup $name) -Force}};" ^
   " foreach($name in $names){$src=Join-Path $stage $name; $dst=Join-Path $final $name; if(Test-Path -LiteralPath $src){Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force}};" ^
-  " Remove-Item -LiteralPath $backup -Recurse -Force;" ^
   "} catch {" ^
   " foreach($name in $names){$dst=Join-Path $final $name; if(Test-Path -LiteralPath $dst){Remove-Item -LiteralPath $dst -Recurse -Force}};" ^
   " foreach($name in $names){$old=Join-Path $backup $name; if(Test-Path -LiteralPath $old){Move-Item -LiteralPath $old -Destination (Join-Path $final $name) -Force}};" ^
   " throw" ^
-  "}"
+  "};" ^
+  "try { Remove-Item -LiteralPath $backup -Recurse -Force } catch { Write-Warning ('New runtime is installed, but the old backup could not be removed: '+$_.Exception.Message) }"
 if errorlevel 1 (
     echo ERROR: Runtime deployment failed. The previous runtime was restored.
     goto failed

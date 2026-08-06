@@ -57,6 +57,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from pypdf import PdfReader, PdfWriter
 
 import shower_batch
+import shower_cache
 import shower_programmer as programmer
 
 _SCRIPT_PROJECT_ROOT = programmer.project_root()
@@ -442,6 +443,7 @@ class ShowerProgrammerApp:
         self.process_batches: dict[str, dict[str, object]] = {}
         self.order_batch_ids: dict[str, list[str]] = {}
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._ignored_import_duplicate_signatures: set[tuple[str, ...]] = set()
         self.last_reports: shower_batch.BatchRunResult | None = None
         self.last_run_folder: Path | None = None
         self.is_busy = False
@@ -472,6 +474,8 @@ class ShowerProgrammerApp:
         self.recent_external_page_launches: dict[str, float] = {}
         self._manual_overrides_session_output: Path | None = None
         self._manual_overrides_session_data: dict[str, object] | None = None
+
+        shower_cache.configure(Path(self.output_dir_var.get()).resolve() / ".scan_cache")
 
         self.configure_styles()
         self.build_ui()
@@ -1162,6 +1166,210 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
         return result["value"]
+
+    def show_import_duplicate_dialog(
+        self,
+        groups: list[dict[str, object]],
+    ) -> dict[str, object]:
+        """Let the operator choose exactly which detected duplicate files to remove."""
+        suggested = [
+            path
+            for group in groups
+            for path in group.get("duplicates", [])
+            if isinstance(path, Path)
+        ]
+        if ctk is None:
+            preview = "\n".join(path.name for path in suggested[:14])
+            if len(suggested) > 14:
+                preview += f"\n...and {len(suggested) - 14} more"
+            remove = messagebox.askyesno(
+                "Duplicate files detected",
+                "Duplicate PDF/DXF files were found in the shared import folder.\n\n"
+                f"Suggested duplicates:\n{preview}\n\nRemove these suggested copies?",
+                parent=self.root,
+            )
+            return {
+                "remove": suggested if remove else [],
+                "ignore": [] if remove else [self.import_duplicate_signature(group) for group in groups],
+            }
+
+        result: dict[str, object] = {"remove": [], "ignore": []}
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Duplicate files detected")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.geometry("820x640")
+        dialog.minsize(680, 480)
+        self.set_window_icon(dialog)
+        try:
+            dialog.transient(self.root)
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            dialog,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(shell, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 4))
+        header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="",
+            width=38,
+            **self.ctk_button_icon("warning", 25, self.WARNING, "left"),
+        ).grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 10))
+        ctk.CTkLabel(
+            header,
+            text="Duplicate files detected",
+            font=("Segoe UI", 20, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(
+            header,
+            text=(
+                "Choose the files to remove from the shared import folder. "
+                "The obvious copy-suffixed versions are selected by default."
+            ),
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=690,
+        ).grid(row=1, column=1, sticky="ew", pady=(2, 0))
+
+        ctk.CTkLabel(
+            shell,
+            text=f"{len(groups)} duplicate set(s)   |   {len(suggested)} suggested removal(s)",
+            font=("Segoe UI", 11, "bold"),
+            text_color=self.ACCENT_DARK,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=20, pady=(8, 8))
+
+        scroll = ctk.CTkScrollableFrame(
+            shell,
+            fg_color=self.PANEL_BG,
+            corner_radius=10,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        scroll.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 14))
+        scroll.grid_columnconfigure(0, weight=1)
+
+        selections: dict[Path, tk.BooleanVar] = {}
+        group_files: list[list[Path]] = []
+        row = 0
+        for index, group in enumerate(groups, start=1):
+            canonical = group.get("canonical")
+            duplicates = group.get("duplicates", [])
+            files = ([canonical] if isinstance(canonical, Path) else []) + (
+                [path for path in duplicates if isinstance(path, Path)]
+                if isinstance(duplicates, list)
+                else []
+            )
+            if len(files) < 2:
+                continue
+            group_files.append(files)
+            ctk.CTkLabel(
+                scroll,
+                text=f"Duplicate set {index}",
+                font=("Segoe UI", 12, "bold"),
+                text_color=self.TEXT,
+                anchor="w",
+            ).grid(row=row, column=0, sticky="ew", padx=12, pady=(12 if row else 8, 4))
+            row += 1
+            for file_index, path in enumerate(files):
+                is_suggested_duplicate = file_index > 0
+                variable = tk.BooleanVar(value=is_suggested_duplicate)
+                selections[path] = variable
+                badge = "Suggested original" if file_index == 0 else "Suggested duplicate"
+                ctk.CTkCheckBox(
+                    scroll,
+                    text=f"{path.name}    ({badge})",
+                    variable=variable,
+                    onvalue=True,
+                    offvalue=False,
+                    checkbox_width=20,
+                    checkbox_height=20,
+                    corner_radius=5,
+                    border_width=1,
+                    fg_color=self.DANGER,
+                    hover_color="#b42318",
+                    text_color=self.TEXT,
+                    font=("Segoe UI", 11),
+                ).grid(row=row, column=0, sticky="w", padx=20, pady=4)
+                row += 1
+
+        footer = ctk.CTkFrame(shell, fg_color="transparent")
+        footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 18))
+        footer.grid_columnconfigure(0, weight=1)
+
+        def keep_all() -> None:
+            result["remove"] = []
+            result["ignore"] = [self.import_duplicate_signature(group) for group in groups]
+            dialog.destroy()
+
+        def remove_selected() -> None:
+            selected = [path for path, variable in selections.items() if variable.get()]
+            for files in group_files:
+                if files and all(path in selected for path in files):
+                    messagebox.showwarning(
+                        "Keep one file",
+                        f"Keep at least one file in this duplicate set:\n\n{files[0].name}",
+                        parent=dialog,
+                    )
+                    return
+            result["remove"] = selected
+            result["ignore"] = []
+            dialog.destroy()
+
+        ctk.CTkButton(
+            footer,
+            text="Keep All",
+            command=keep_all,
+            width=112,
+            height=38,
+            corner_radius=8,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=1, padx=(0, 8))
+        ctk.CTkButton(
+            footer,
+            text="Remove Selected",
+            command=remove_selected,
+            width=156,
+            height=38,
+            corner_radius=8,
+            fg_color=self.DANGER,
+            hover_color="#b42318",
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("trash", 16, "#ffffff", "left"),
+        ).grid(row=0, column=2)
+
+        dialog.protocol("WM_DELETE_WINDOW", keep_all)
+        dialog.bind("<Escape>", lambda _event: keep_all())
+        dialog.update_idletasks()
+        try:
+            x = self.root.winfo_rootx() + max(20, (self.root.winfo_width() - dialog.winfo_width()) // 2)
+            y = self.root.winfo_rooty() + max(20, (self.root.winfo_height() - dialog.winfo_height()) // 2)
+            dialog.geometry(f"{dialog.winfo_width()}x{dialog.winfo_height()}+{x}+{y}")
+        except tk.TclError:
+            pass
+        dialog.wait_window()
+        return result
 
 
 
@@ -2536,7 +2744,7 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 10, "italic"),
             anchor="e",
         )
-        resize_hint.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        resize_hint.grid(row=0, column=0, columnspan=2, sticky="e", pady=(0, 5))
 
         columns = self.ORDER_TREE_COLUMNS
         self.tree = ttk.Treeview(
@@ -3163,12 +3371,13 @@ class ShowerProgrammerApp:
         cls,
         process_list_path: Path,
         config: dict[str, object],
+        progress_callback: shower_batch.ProcessListProgress | None = None,
     ) -> list[dict[str, object]]:
         """Load each process-list file independently so it remains a visible batch."""
         batches: list[dict[str, object]] = []
         for source in shower_batch.process_list_files(process_list_path):
             try:
-                loaded = shower_batch.load_process_orders_from_file(source)
+                loaded = shower_batch.load_process_orders_from_file(source, progress_callback)
             except Exception as exc:
                 raise RuntimeError(f"Could not read process list {source.name}: {exc}") from exc
             orders = shower_batch.visible_orders(loaded, config)
@@ -3267,11 +3476,17 @@ class ShowerProgrammerApp:
     def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
         try:
             self.ensure_workflow_folders(folder, process_list, output_dir)
+            shower_cache.configure(output_dir / ".scan_cache")
+            shower_cache.reset_stats()
             progress_value = 0
             progress_max = 5
             self.queue_scan_progress(progress_value, progress_max, "Loading configuration...")
             config = self.config_with_manual_overrides(folder, output_dir)
             progress_value += 1
+            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared input folder...")
+            import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
+                self.prepare_import_source_snapshot()
+            )
             self.queue_scan_progress(progress_value, progress_max, "Checking shared process lists...")
 
             def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
@@ -3286,6 +3501,7 @@ class ShowerProgrammerApp:
             process_list_import_summary = self.copy_process_lists_from_import_folder(
                 process_list,
                 progress_callback=process_list_progress,
+                import_snapshot=import_snapshot,
             )
             progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             process_list_files = shower_batch.process_list_files(process_list)
@@ -3295,7 +3511,22 @@ class ShowerProgrammerApp:
                 max(progress_max, progress_value + 3),
                 f"Reading {len(process_list_files)} process-list batch(es)...",
             )
-            all_batches = self.load_process_list_batches(process_list, config)
+            def normalization_progress(stage: str, source: Path, detail: str) -> None:
+                stage_label = {
+                    "cached": "Reusing",
+                    "loading": "Reading",
+                    "loaded": "Indexed",
+                    "normalizing": "Normalizing",
+                    "normalized": "Normalized",
+                    "retry": "Retrying",
+                }.get(stage, "Reading")
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 3),
+                    f"{stage_label} {source.name}: {detail}",
+                )
+
+            all_batches = self.load_process_list_batches(process_list, config, normalization_progress)
             self.queue_scan_progress(
                 progress_value,
                 max(progress_max, progress_value + 3),
@@ -3356,6 +3587,10 @@ class ShowerProgrammerApp:
                     production_sent_orders,
                     include_process_lists=False,
                     completed_process_batches=retired_batch_plans,
+                    source_files=[
+                        path for path in import_snapshot.get("files", [])
+                        if isinstance(path, Path)
+                    ],
                 )
                 production_reconciliation_warnings.extend(shared_cleanup_warnings)
             if retired_batch_plans:
@@ -3368,30 +3603,17 @@ class ShowerProgrammerApp:
                     )
                 ]
                 process_list_files = shower_batch.process_list_files(process_list)
-            shared_process_paths = process_list_import_summary.get("source_files", [])
-            shared_process_names = {
-                Path(str(source)).name.casefold()
-                for source in shared_process_paths
-                if str(source)
-            } if isinstance(shared_process_paths, list) else set()
-            shared_batches = [
-                batch
-                for batch in all_batches
-                if str(batch.get("name", "")).casefold() in shared_process_names
+            active_process_orders = self.unique_orders_from_batches(all_batches)
+            import_candidates = [
+                order
+                for order in active_process_orders
+                if str(order.aw_order) not in production_aw_orders
             ]
-            shared_gateway_orders = self.unique_orders_from_batches(shared_batches)
-            _present_batches, present_shared_orders, _missing_count = self.filter_batches_to_local_inputs(
-                shared_batches,
-                folder,
-            )
-            present_aw_orders = {str(order.aw_order) for order in present_shared_orders}
+            missing_requirements = self.missing_order_input_requirements(folder, import_candidates)
             gateway_orders = [
                 order
-                for order in shared_gateway_orders
-                if (
-                    str(order.aw_order) not in present_aw_orders
-                    and str(order.aw_order) not in production_aw_orders
-                )
+                for order in import_candidates
+                if str(order.aw_order) in missing_requirements
             ]
 
             def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
@@ -3407,16 +3629,17 @@ class ShowerProgrammerApp:
                 progress_value,
                 max(progress_max, progress_value + 2),
                 (
-                    f"Checking {len(gateway_orders)} missing order(s) authorized by "
-                    f"{len(shared_batches)} shared process-list batch(es)..."
-                    if shared_batches
-                    else "No shared process lists found; using current local batches only."
+                    f"Checking the shared index for missing PDFs/DXFs on {len(gateway_orders)} order(s)..."
+                    if gateway_orders
+                    else "All active order PDFs/DXFs are already current locally."
                 ),
             )
             import_summary = self.copy_edi_orders_for_process_orders(
                 folder,
                 gateway_orders,
                 progress_callback=order_file_progress,
+                import_snapshot=import_snapshot,
+                missing_requirements=missing_requirements,
             )
             active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
             progress_value += int(import_summary.get("considered", 0) or 0)
@@ -3442,6 +3665,10 @@ class ShowerProgrammerApp:
                         "production_reconciliation_warnings": production_reconciliation_warnings,
                         "production_sketch_files_checked": production_sketch_files_checked,
                         "hidden_missing_orders": hidden_missing_orders,
+                        "cache_stats": shower_cache.stats(),
+                        "duplicate_files_removed": duplicate_files_removed,
+                        "duplicate_cleanup_warnings": duplicate_cleanup_warnings,
+                        "network_entries_indexed": int(import_snapshot.get("entry_count", 0) or 0),
                     },
                 )
             )
@@ -3452,6 +3679,10 @@ class ShowerProgrammerApp:
         try:
             progress_value = 0
             progress_max = 4
+            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared input folder...")
+            import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
+                self.prepare_import_source_snapshot()
+            )
 
             def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
                 action = "Copying" if copied is None else ("Copied" if copied else "Already local")
@@ -3466,6 +3697,7 @@ class ShowerProgrammerApp:
             process_list_import_summary = self.copy_process_lists_from_import_folder(
                 process_list,
                 progress_callback=process_list_progress,
+                import_snapshot=import_snapshot,
             )
             progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             if self.orders:
@@ -3488,11 +3720,22 @@ class ShowerProgrammerApp:
                     f"{action} order file {display_done}/{total}: {source.name}",
                 )
 
-            self.queue_scan_progress(progress_value, max(progress_max, progress_value + 1), f"Copying matching order PDFs/DXFs for {len(orders)} order(s)...")
+            missing_requirements = self.missing_order_input_requirements(folder, orders)
+            missing_orders = [
+                order for order in orders
+                if str(order.aw_order) in missing_requirements
+            ]
+            self.queue_scan_progress(
+                progress_value,
+                max(progress_max, progress_value + 1),
+                f"Importing missing PDFs/DXFs for {len(missing_orders)} order(s)...",
+            )
             import_summary = self.copy_edi_orders_for_process_orders(
                 folder,
-                orders,
+                missing_orders,
                 progress_callback=order_file_progress,
+                import_snapshot=import_snapshot,
+                missing_requirements=missing_requirements,
             )
             progress_value += int(import_summary.get("considered", 0) or 0)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Import complete.")
@@ -3504,6 +3747,8 @@ class ShowerProgrammerApp:
                         "process_list_count": process_list_count,
                         "process_list_import_summary": process_list_import_summary,
                         "import_summary": import_summary,
+                        "duplicate_files_removed": duplicate_files_removed,
+                        "duplicate_cleanup_warnings": duplicate_cleanup_warnings,
                     },
                 )
             )
@@ -4019,7 +4264,10 @@ class ShowerProgrammerApp:
                 "",
                 tk.END,
                 text=f"{label}  ({count} order{'s' if count != 1 else ''})",
-                values=("BATCH", "", "", "", "", "", "", "", str(count), ""),
+                values=tuple(
+                    "BATCH" if column == "status" else str(count) if column == "items" else ""
+                    for column in self.ORDER_TREE_COLUMNS
+                ),
                 tags=("BATCH",),
                 open=True,
             )
@@ -5817,6 +6065,20 @@ class ShowerProgrammerApp:
                             self.send_review_progress = None
                     if self.send_review_status_var is not None:
                         self.send_review_status_var.set(message)
+                elif kind == "import_duplicates":
+                    data = payload
+                    assert isinstance(data, dict)
+                    groups_value = data.get("groups", [])
+                    groups = [group for group in groups_value if isinstance(group, dict)] if isinstance(groups_value, list) else []
+                    completed = data.get("completed")
+                    result = data.get("result")
+                    try:
+                        decision = self.show_import_duplicate_dialog(groups)
+                        if isinstance(result, dict):
+                            result.update(decision)
+                    finally:
+                        if isinstance(completed, threading.Event):
+                            completed.set()
                 elif kind == "done":
                     run, run_folder = payload
                     assert isinstance(run, shower_batch.BatchRunResult)
@@ -5853,6 +6115,9 @@ class ShowerProgrammerApp:
                     retired_process_list_warnings = data.get("retired_process_list_warnings", [])
                     production_sent_orders = data.get("production_sent_orders", [])
                     production_reconciliation_warnings = data.get("production_reconciliation_warnings", [])
+                    cache_stats = data.get("cache_stats", {})
+                    duplicate_files_removed = data.get("duplicate_files_removed", [])
+                    duplicate_cleanup_warnings = data.get("duplicate_cleanup_warnings", [])
                     assert isinstance(orders, list)
                     assert isinstance(batches, list)
                     assert isinstance(previews, list)
@@ -5861,6 +6126,8 @@ class ShowerProgrammerApp:
                     assert isinstance(retired_process_list_warnings, list)
                     assert isinstance(production_sent_orders, list)
                     assert isinstance(production_reconciliation_warnings, list)
+                    assert isinstance(duplicate_files_removed, list)
+                    assert isinstance(duplicate_cleanup_warnings, list)
                     self.orders = orders
                     self.order_by_aw = {str(order.aw_order): order for order in self.orders}
                     self.tree.delete(*self.tree.get_children())
@@ -5894,9 +6161,17 @@ class ShowerProgrammerApp:
                         scan_message += (
                             f" Production reconciliation notes: {len(production_reconciliation_warnings)}."
                         )
+                    if duplicate_files_removed:
+                        scan_message += f" Removed {len(duplicate_files_removed)} selected duplicate file(s)."
+                    if duplicate_cleanup_warnings:
+                        scan_message += f" Duplicate cleanup notes: {len(duplicate_cleanup_warnings)}."
                     hidden_missing_orders = int(data.get("hidden_missing_orders", 0) or 0)
                     if hidden_missing_orders:
                         scan_message += f" Hid {hidden_missing_orders} process-list order(s) with no local PDF/DXF."
+                    if isinstance(cache_stats, dict):
+                        reused = int(cache_stats.get("hits", 0) or 0) + int(cache_stats.get("hash_hits", 0) or 0)
+                        refreshed = int(cache_stats.get("writes", 0) or 0)
+                        scan_message += f" Cache reused {reused}; refreshed {refreshed}."
                     self.status_var.set(scan_message)
                     self.start_review_cache_warmup(self.orders)
                 elif kind == "import_done":
@@ -5906,6 +6181,8 @@ class ShowerProgrammerApp:
                     process_list_count = int(data.get("process_list_count", 0))
                     process_list_import_summary = data.get("process_list_import_summary", {})
                     import_summary = data.get("import_summary", {})
+                    duplicate_files_removed = data.get("duplicate_files_removed", [])
+                    duplicate_cleanup_warnings = data.get("duplicate_cleanup_warnings", [])
                     if orders:
                         assert isinstance(orders, list)
                         self.orders = orders
@@ -5915,6 +6192,10 @@ class ShowerProgrammerApp:
                         self.process_list_import_status_message(process_list_import_summary),
                         self.import_status_message(import_summary, process_list_count),
                     ]
+                    if isinstance(duplicate_files_removed, list) and duplicate_files_removed:
+                        messages.append(f"Removed {len(duplicate_files_removed)} selected duplicate file(s).")
+                    if isinstance(duplicate_cleanup_warnings, list) and duplicate_cleanup_warnings:
+                        messages.append(f"Duplicate cleanup notes: {len(duplicate_cleanup_warnings)}.")
                     self.status_var.set(" ".join(message for message in messages if message))
                 elif kind == "scan_error":
                     self.finish_background_activity()
@@ -6655,17 +6936,20 @@ a {{ color: #1f4e79; }}
         reference_panel = ctk.CTkFrame(workspace, fg_color="transparent")
         reference_panel.grid(row=0, column=2, sticky="nsew")
         reference_panel.grid_columnconfigure(0, weight=1)
-        reference_panel.grid_rowconfigure(1, weight=1)
+        reference_panel.grid_rowconfigure(0, weight=1)
+        reference_panel.grid_rowconfigure(1, weight=0)
 
         details_card = ctk.CTkFrame(reference_panel, fg_color=self.CARD_BG, corner_radius=16, border_width=1, border_color=self.BORDER)
-        details_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        details_card.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        decision_header = ctk.CTkFrame(details_card, fg_color="transparent")
+        decision_header.pack(fill=tk.X, padx=14, pady=(12, 4))
         ctk.CTkLabel(
-            details_card,
-            text="Piece Details",
+            decision_header,
+            text="Machine Decision",
             font=("Segoe UI", 14, "bold"),
             text_color=self.TEXT,
             anchor="w",
-        ).pack(fill=tk.X, padx=14, pady=(12, 4))
+        ).pack(side=tk.LEFT)
         ctk.CTkLabel(
             details_card,
             textvariable=review_info_var,
@@ -6674,10 +6958,24 @@ a {{ color: #1f4e79; }}
             anchor="w",
             justify="left",
             wraplength=310,
-        ).pack(fill=tk.X, padx=14, pady=(0, 14))
+        ).pack(fill=tk.X, padx=14, pady=(0, 8))
+        decision_textbox = ctk.CTkTextbox(
+            details_card,
+            height=155,
+            corner_radius=10,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.PANEL_BG,
+            text_color=self.TEXT,
+            font=("Consolas", 10),
+            wrap="word",
+            activate_scrollbars=True,
+        )
+        decision_textbox.pack(fill=tk.X, padx=14, pady=(0, 14))
+        decision_textbox.configure(state="disabled")
 
         dxf_frame = ctk.CTkFrame(reference_panel, fg_color=self.CARD_BG, corner_radius=16, border_width=1, border_color=self.BORDER)
-        dxf_frame.grid(row=1, column=0, sticky="nsew")
+        dxf_frame.grid(row=0, column=0, sticky="nsew")
         dxf_frame.grid_columnconfigure(0, weight=1)
         dxf_frame.grid_rowconfigure(1, weight=1)
         dxf_header = ctk.CTkFrame(dxf_frame, fg_color="transparent", height=48)
@@ -7655,6 +7953,10 @@ a {{ color: #1f4e79; }}
                     ]
                 )
             )
+            decision_textbox.configure(state="normal")
+            decision_textbox.delete("1.0", tk.END)
+            decision_textbox.insert("1.0", programmer.format_machine_decision_evidence(panel))
+            decision_textbox.configure(state="disabled")
             if not bool(state.get("show_sketch_marks", True)):
                 status.set(
                     f"{job.aw_order}.{panel.item}  Original sketch preview  |  "
@@ -8059,6 +8361,32 @@ a {{ color: #1f4e79; }}
         if cache is not None and key in cache:
             return cache[key]
 
+        persistent = shower_cache.load("dxf_preview_geometry_v1", path)
+        if isinstance(persistent, dict) and isinstance(persistent.get("segments"), list):
+            normalized_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+            for segment in persistent["segments"]:
+                if not isinstance(segment, (list, tuple)) or len(segment) != 2:
+                    continue
+                start, end = segment
+                if not isinstance(start, (list, tuple)) or not isinstance(end, (list, tuple)):
+                    continue
+                if len(start) < 2 or len(end) < 2:
+                    continue
+                normalized_segments.append(
+                    ((float(start[0]), float(start[1])), (float(end[0]), float(end[1])))
+                )
+            persistent["segments"] = normalized_segments
+            samples = persistent.get("internal_radius_samples", [])
+            if isinstance(samples, list):
+                persistent["internal_radius_samples"] = [
+                    (float(sample[0]), float(sample[1]), float(sample[2]))
+                    for sample in samples
+                    if isinstance(sample, (list, tuple)) and len(sample) >= 3
+                ]
+            if cache is not None:
+                cache[key] = persistent
+            return persistent
+
         segments = programmer.collect_dxf_preview_segments(path)
         internal_radius_samples = programmer.collect_dxf_internal_cut_radius_samples(path)
         internal_radii = programmer.unique_dxf_internal_cut_radii(internal_radius_samples)
@@ -8084,6 +8412,7 @@ a {{ color: #1f4e79; }}
             "unit_label": unit_label,
             "inches_per_unit": inches_per_unit,
         }
+        shower_cache.store("dxf_preview_geometry_v1", path, data)
         if cache is not None:
             if len(cache) > 80:
                 cache.clear()
@@ -10674,16 +11003,28 @@ try {{
         return archived, warnings
 
     @classmethod
-    def process_list_files_for_sources(cls, folder: Path, sources: list[Path]) -> list[Path]:
+    def process_list_files_for_sources(
+        cls,
+        folder: Path,
+        sources: list[Path],
+        candidate_files: list[Path] | None = None,
+    ) -> list[Path]:
         """Map local process-list companions to matching exports in another input folder."""
-        if not folder.exists() or not folder.is_dir() or not sources:
+        if not sources:
+            return []
+        if candidate_files is None and (not folder.exists() or not folder.is_dir()):
             return []
         stems = {cls.process_list_batch_key(source) for source in sources}
+        candidates = candidate_files if candidate_files is not None else list(folder.iterdir())
         return sorted(
             [
                 candidate
-                for candidate in folder.iterdir()
-                if shower_batch.is_process_list_file(candidate)
+                for candidate in candidates
+                if (
+                    candidate.suffix.lower() in cls.PROCESS_LIST_FILE_EXTENSIONS
+                    if candidate_files is not None
+                    else shower_batch.is_process_list_file(candidate)
+                )
                 and cls.process_list_batch_key(candidate) in stems
             ],
             key=lambda candidate: candidate.name.lower(),
@@ -11786,20 +12127,21 @@ try {{
         process_list_files: list[Path] | None = None,
         completed_process_batches: list[dict[str, object]] | None = None,
         progress_callback: Callable[[int, int, Path], None] | None = None,
+        source_files: list[Path] | None = None,
     ) -> tuple[list[Path], list[str]]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         deleted: list[Path] = []
         warnings: list[str] = []
-        if not source_dir.exists():
+        if source_files is None and not source_dir.exists():
             return deleted, [f"Input staging folder was not found: {source_dir}"]
-        if not source_dir.is_dir():
+        if source_files is None and not source_dir.is_dir():
             return deleted, [f"Input staging path is not a folder: {source_dir}"]
         if source_dir.name.lower() != cls.IMPORT_STAGING_FOLDER_NAME.lower():
             return deleted, [f"Skipped input cleanup because the configured folder is not named {cls.IMPORT_STAGING_FOLDER_NAME}."]
 
         plans = completed_process_batches or []
         if not orders and process_list_files is None and completed_process_batches is None and not include_process_lists:
-            entries = sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower())
+            entries = sorted(source_files if source_files is not None else source_dir.iterdir(), key=lambda candidate: candidate.name.lower())
             order_targets = [path for path in entries if path.is_file() and not path.is_symlink()]
         else:
             cleanup_orders: dict[str, shower_batch.ProcessOrder] = {
@@ -11816,18 +12158,21 @@ try {{
                 list(cleanup_orders.values()),
                 root_only=True,
                 inspect_pdf_text=True,
+                candidate_files=source_files,
             ) if cleanup_orders else []
 
         planned_process_sources: list[Path] = []
         if process_list_files is not None:
-            planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, process_list_files))
+            planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, process_list_files, source_files))
         elif include_process_lists and not plans:
-            planned_process_sources.extend(cls.importable_process_list_files(source_dir))
+            planned_process_sources.extend(
+                cls.importable_process_list_files(source_dir, source_files)
+            )
         for plan in plans:
             files = plan.get("files", [])
             if isinstance(files, list):
                 typed_files = [path for path in files if isinstance(path, Path)]
-                planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, typed_files))
+                planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, typed_files, source_files))
 
         total = len(order_targets) + len(planned_process_sources)
         done = 0
@@ -11858,6 +12203,7 @@ try {{
                 list(verification_orders.values()),
                 root_only=True,
                 inspect_pdf_text=True,
+                candidate_files=source_files,
             ) if verification_orders else []
             for remaining in remaining_order_files:
                 warnings.append(f"Still present after input cleanup: {remaining.name}")
@@ -11875,6 +12221,7 @@ try {{
                     typed_orders,
                     root_only=True,
                     inspect_pdf_text=True,
+                    candidate_files=source_files,
                 ) if typed_orders else []
                 if remaining:
                     names = ", ".join(path.name for path in remaining[:6])
@@ -11888,6 +12235,7 @@ try {{
                         cls.process_list_files_for_sources(
                             source_dir,
                             [path for path in files if isinstance(path, Path)],
+                            source_files,
                         )
                     )
         else:
@@ -11913,7 +12261,7 @@ try {{
                 progress_callback(done, max(total, 1), path)
 
         if process_list_files is not None:
-            remaining_process_lists = cls.process_list_files_for_sources(source_dir, process_list_files)
+            remaining_process_lists = cls.process_list_files_for_sources(source_dir, process_list_files, source_files)
             for remaining in remaining_process_lists:
                 warnings.append(f"Still present after process-list cleanup: {remaining.name}")
         return deleted, warnings
@@ -11923,6 +12271,7 @@ try {{
         cls,
         process_list_path: Path,
         progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
+        import_snapshot: dict[str, object] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -11934,13 +12283,17 @@ try {{
             "considered": 0,
             "source_files": [],
         }
-        if not source_dir.exists():
+        snapshot = import_snapshot or cls.index_import_source_folder(source_dir)
+        if bool(snapshot.get("source_missing", False)):
             summary["source_missing"] = True
+            summary["source_error"] = str(snapshot.get("source_error", ""))
             return summary
 
-        sources = cls.importable_process_list_files(source_dir)
+        raw_sources = snapshot.get("process_list_files", [])
+        sources = [path for path in raw_sources if isinstance(path, Path)] if isinstance(raw_sources, list) else []
         summary["source_files"] = [str(source.resolve()) for source in sources]
         summary["considered"] = len(sources)
+        summary["network_entries"] = int(snapshot.get("entry_count", 0) or 0)
         target_dir = cls.process_list_import_target_dir(process_list_path)
         if cls.same_path(source_dir, target_dir):
             summary["direct"] = True
@@ -11950,8 +12303,6 @@ try {{
         skipped = 0
         for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
-            if progress_callback is not None:
-                progress_callback(index - 1, len(sources), source, None)
             did_copy = cls.copy_file_if_needed(source, target)
             if did_copy:
                 copied.append(target)
@@ -11964,11 +12315,203 @@ try {{
         return summary
 
     @classmethod
-    def importable_process_list_files(cls, source_dir: Path) -> list[Path]:
+    def index_import_source_folder(cls, source_dir: Path | None = None) -> dict[str, object]:
+        """Read the shared import directory once and reuse that snapshot for the scan."""
+        source_dir = Path(source_dir or cls.EDI_IMPORT_ORDERS_DIR)
+        snapshot: dict[str, object] = {
+            "source": str(source_dir),
+            "source_missing": False,
+            "source_error": "",
+            "entry_count": 0,
+            "files": [],
+            "process_list_files": [],
+            "order_files": [],
+            "hardware_files": [],
+            "duplicate_groups": [],
+        }
+        files: list[Path] = []
+        try:
+            with os.scandir(source_dir) as entries:
+                for entry in entries:
+                    if entry.name.startswith("~$"):
+                        continue
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    files.append(Path(entry.path))
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            snapshot["source_missing"] = True
+            snapshot["source_error"] = str(exc)
+            return snapshot
+        except OSError as exc:
+            snapshot["source_missing"] = True
+            snapshot["source_error"] = str(exc)
+            return snapshot
+
+        files.sort(key=lambda candidate: candidate.name.casefold())
+        process_lists = [
+            path for path in files
+            if path.suffix.lower() in cls.PROCESS_LIST_FILE_EXTENSIONS
+        ]
+        hardware = [
+            path for path in files
+            if path.suffix.lower() == ".pdf"
+            and path.name.casefold().startswith(cls.HARDWARE_LIST_PREFIX)
+        ]
+        hardware_keys = {str(path).casefold() for path in hardware}
+        order_files = [
+            path for path in files
+            if path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+            and str(path).casefold() not in hardware_keys
+        ]
+        snapshot.update(
+            {
+                "entry_count": len(files),
+                "files": files,
+                "process_list_files": process_lists,
+                "order_files": order_files,
+                "hardware_files": hardware,
+                "duplicate_groups": cls.import_duplicate_groups(order_files),
+            }
+        )
+        return snapshot
+
+    @classmethod
+    def import_duplicate_groups(cls, files: list[Path]) -> list[dict[str, object]]:
+        """Find copy-suffixed PDFs/DXFs only when the sibling content is identical."""
+        by_name = {path.name.casefold(): path for path in files}
+        grouped: dict[str, dict[str, object]] = {}
+        for path in files:
+            match = re.match(r"^(?P<base>.+)_1$", path.stem, flags=re.IGNORECASE)
+            if not match:
+                continue
+            canonical_name = f"{match.group('base')}{path.suffix}".casefold()
+            canonical = by_name.get(canonical_name)
+            if canonical is None or cls.same_path(canonical, path):
+                continue
+            try:
+                if canonical.stat().st_size != path.stat().st_size:
+                    continue
+                if shower_cache.cached_file_sha256(
+                    "import_duplicate_sha256_v1",
+                    canonical,
+                ) != shower_cache.cached_file_sha256(
+                    "import_duplicate_sha256_v1",
+                    path,
+                ):
+                    continue
+            except OSError:
+                continue
+            key = canonical.name.casefold()
+            group = grouped.setdefault(
+                key,
+                {"canonical": canonical, "duplicates": []},
+            )
+            duplicates = group["duplicates"]
+            if isinstance(duplicates, list):
+                duplicates.append(path)
+        groups = list(grouped.values())
+        for group in groups:
+            duplicates = group.get("duplicates", [])
+            if isinstance(duplicates, list):
+                duplicates.sort(key=lambda candidate: candidate.name.casefold())
+        return sorted(
+            groups,
+            key=lambda group: str(group.get("canonical", "")).casefold(),
+        )
+
+    @staticmethod
+    def import_duplicate_signature(group: dict[str, object]) -> tuple[str, ...]:
+        paths: list[Path] = []
+        canonical = group.get("canonical")
+        if isinstance(canonical, Path):
+            paths.append(canonical)
+        duplicates = group.get("duplicates", [])
+        if isinstance(duplicates, list):
+            paths.extend(path for path in duplicates if isinstance(path, Path))
+        return tuple(sorted(path.name.casefold() for path in paths))
+
+    @classmethod
+    def remove_import_duplicate_files(cls, paths: list[Path]) -> tuple[list[Path], list[str]]:
+        deleted: list[Path] = []
+        warnings: list[str] = []
+        source_dir = cls.EDI_IMPORT_ORDERS_DIR
+        try:
+            source_parent = source_dir.resolve()
+        except OSError:
+            source_parent = source_dir
+        for path in paths:
+            try:
+                resolved = path.resolve()
+                if resolved.parent != source_parent:
+                    warnings.append(f"Skipped duplicate outside the configured import folder: {path.name}")
+                    continue
+                if path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
+                    warnings.append(f"Skipped unsupported duplicate file: {path.name}")
+                    continue
+                path.unlink()
+                deleted.append(path)
+            except OSError as exc:
+                warnings.append(f"Could not remove duplicate {path.name}: {exc}")
+        return deleted, warnings
+
+    def prepare_import_source_snapshot(self) -> tuple[dict[str, object], list[Path], list[str]]:
+        """Index the network folder once, then pause for any duplicate decision."""
+        snapshot = self.index_import_source_folder(self.EDI_IMPORT_ORDERS_DIR)
+        groups_value = snapshot.get("duplicate_groups", [])
+        groups = [group for group in groups_value if isinstance(group, dict)] if isinstance(groups_value, list) else []
+        groups = [
+            group for group in groups
+            if self.import_duplicate_signature(group) not in self._ignored_import_duplicate_signatures
+        ]
+        selected: list[Path] = []
+        if groups:
+            completed = threading.Event()
+            result: dict[str, object] = {"remove": [], "ignore": []}
+            self.worker_queue.put(
+                (
+                    "import_duplicates",
+                    {"groups": groups, "completed": completed, "result": result},
+                )
+            )
+            completed.wait()
+            raw_selected = result.get("remove", [])
+            if isinstance(raw_selected, list):
+                selected = [path for path in raw_selected if isinstance(path, Path)]
+            raw_ignored = result.get("ignore", [])
+            if isinstance(raw_ignored, list):
+                self._ignored_import_duplicate_signatures.update(
+                    signature for signature in raw_ignored if isinstance(signature, tuple)
+                )
+
+        deleted, warnings = self.remove_import_duplicate_files(selected)
+        if deleted:
+            deleted_keys = {str(path).casefold() for path in deleted}
+            for key in ("files", "order_files", "hardware_files"):
+                values = snapshot.get(key, [])
+                if isinstance(values, list):
+                    snapshot[key] = [
+                        path for path in values
+                        if not isinstance(path, Path) or str(path).casefold() not in deleted_keys
+                    ]
+            snapshot["duplicate_groups"] = self.import_duplicate_groups(
+                [path for path in snapshot.get("order_files", []) if isinstance(path, Path)]
+            )
+        return snapshot, deleted, warnings
+
+    @classmethod
+    def importable_process_list_files(
+        cls,
+        source_dir: Path,
+        candidate_files: list[Path] | None = None,
+    ) -> list[Path]:
+        candidates = candidate_files if candidate_files is not None else list(source_dir.iterdir())
         files = [
             candidate
-            for candidate in source_dir.iterdir()
-            if candidate.is_file()
+            for candidate in candidates
+            if (candidate_files is not None or candidate.is_file())
             and not candidate.name.startswith("~$")
             and candidate.suffix.lower() in cls.PROCESS_LIST_FILE_EXTENSIONS
         ]
@@ -11981,11 +12524,117 @@ try {{
         return process_list_path
 
     @classmethod
+    def missing_order_input_requirements(
+        cls,
+        target_dir: Path,
+        orders: list[shower_batch.ProcessOrder],
+    ) -> dict[str, dict[str, object]]:
+        """Report missing order PDFs and individual process-list DXF items."""
+        try:
+            local_files = [
+                path
+                for path in target_dir.iterdir()
+                if path.is_file()
+                and not path.is_symlink()
+                and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                and not cls.is_hardware_list_pdf(path)
+            ]
+        except OSError:
+            local_files = []
+        local_pdfs = [path for path in local_files if path.suffix.lower() == ".pdf"]
+        local_dxfs = [path for path in local_files if path.suffix.lower() == ".dxf"]
+        requirements: dict[str, dict[str, object]] = {}
+        for order in orders:
+            aw_order = str(order.aw_order)
+            job_number = cls.job_number_for_order(order)
+            normalized_job = programmer.normalize_lookup(order.job_name)
+            pdf_match_args = (
+                [normalized_job] if normalized_job else [],
+                {aw_order} if aw_order else set(),
+                {job_number} if job_number else set(),
+            )
+            has_pdf = any(
+                cls.pdf_file_matches_jobs(
+                    path,
+                    *pdf_match_args,
+                    inspect_pdf_text=False,
+                )
+                for path in local_pdfs
+            )
+            if not has_pdf:
+                has_pdf = any(
+                    cls.pdf_file_matches_jobs(
+                        path,
+                        *pdf_match_args,
+                        inspect_pdf_text=True,
+                    )
+                    for path in local_pdfs
+                )
+            missing_items: list[int] = []
+            for item_number in order.item_numbers:
+                matched = any(
+                    programmer.dxf_match_score(
+                        path,
+                        normalized_job,
+                        item_number,
+                        aw_order=aw_order,
+                        job_number=job_number,
+                    ) is not None
+                    for path in local_dxfs
+                )
+                if not matched:
+                    missing_items.append(item_number)
+            if not has_pdf or missing_items:
+                requirements[aw_order] = {
+                    "pdf": not has_pdf,
+                    "dxf_items": missing_items,
+                }
+        return requirements
+
+    @classmethod
+    def file_matches_missing_order_requirement(
+        cls,
+        path: Path,
+        order: shower_batch.ProcessOrder,
+        requirement: dict[str, object],
+    ) -> bool:
+        suffix = path.suffix.lower()
+        aw_order = str(order.aw_order)
+        job_number = cls.job_number_for_order(order)
+        normalized_job = programmer.normalize_lookup(order.job_name)
+        if suffix == ".pdf":
+            if not bool(requirement.get("pdf", False)):
+                return False
+            return cls.pdf_file_matches_jobs(
+                path,
+                [normalized_job] if normalized_job else [],
+                {aw_order} if aw_order else set(),
+                {job_number} if job_number else set(),
+                inspect_pdf_text=True,
+            )
+        if suffix != ".dxf":
+            return False
+        raw_items = requirement.get("dxf_items", [])
+        missing_items = [int(item) for item in raw_items if str(item).isdigit()] if isinstance(raw_items, list) else []
+        return any(
+            programmer.dxf_match_score(
+                path,
+                normalized_job,
+                item_number,
+                aw_order=aw_order,
+                job_number=job_number,
+            ) is not None
+            for item_number in missing_items
+        )
+
+    @classmethod
     def copy_edi_orders_for_process_orders(
         cls,
         target_dir: Path,
         orders: list[shower_batch.ProcessOrder],
         progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
+        import_snapshot: dict[str, object] | None = None,
+        missing_requirements: dict[str, dict[str, object]] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -11997,13 +12646,18 @@ try {{
             "considered": 0,
             "hardware_deleted": [],
             "hardware_warnings": [],
+            "missing_requests": len(missing_requirements or {}),
         }
         if not orders:
             return summary
-        if not source_dir.exists():
+        snapshot = import_snapshot or cls.index_import_source_folder(source_dir)
+        if bool(snapshot.get("source_missing", False)):
             summary["source_missing"] = True
+            summary["source_error"] = str(snapshot.get("source_error", ""))
             return summary
-        hardware_deleted, hardware_warnings = cls.delete_hardware_list_pdfs(source_dir)
+        hardware_values = snapshot.get("hardware_files", [])
+        hardware_files = [path for path in hardware_values if isinstance(path, Path)] if isinstance(hardware_values, list) else []
+        hardware_deleted, hardware_warnings = cls.delete_hardware_list_pdfs(source_dir, hardware_files)
         summary["hardware_deleted"] = hardware_deleted
         summary["hardware_warnings"] = hardware_warnings
         if cls.same_path(source_dir, target_dir):
@@ -12013,12 +12667,33 @@ try {{
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
-        sources = cls.matching_order_files(source_dir, orders, root_only=True, inspect_pdf_text=True)
+        order_values = snapshot.get("order_files", [])
+        order_files = [path for path in order_values if isinstance(path, Path)] if isinstance(order_values, list) else []
+        if missing_requirements is None:
+            sources = cls.matching_order_files(
+                source_dir,
+                orders,
+                root_only=True,
+                inspect_pdf_text=True,
+                candidate_files=order_files,
+            )
+        else:
+            sources = []
+            for source in order_files:
+                if any(
+                    cls.file_matches_missing_order_requirement(
+                        source,
+                        order,
+                        missing_requirements.get(str(order.aw_order), {}),
+                    )
+                    for order in orders
+                    if str(order.aw_order) in missing_requirements
+                ):
+                    sources.append(source)
+            sources.sort(key=lambda candidate: candidate.name.casefold())
         summary["considered"] = len(sources)
         for index, source in enumerate(sources, start=1):
             target = target_dir / source.name
-            if progress_callback is not None:
-                progress_callback(index - 1, len(sources), source, None)
             did_copy = cls.copy_file_if_needed(source, target)
             if did_copy:
                 copied.append(target)
@@ -12031,12 +12706,20 @@ try {{
         return summary
 
     @classmethod
-    def delete_hardware_list_pdfs(cls, source_dir: Path) -> tuple[list[Path], list[str]]:
+    def delete_hardware_list_pdfs(
+        cls,
+        source_dir: Path,
+        candidate_files: list[Path] | None = None,
+    ) -> tuple[list[Path], list[str]]:
         deleted: list[Path] = []
         warnings: list[str] = []
-        if not source_dir.exists() or not source_dir.is_dir():
-            return deleted, warnings
-        for path in sorted(source_dir.iterdir(), key=lambda candidate: candidate.name.lower()):
+        if candidate_files is None:
+            if not source_dir.exists() or not source_dir.is_dir():
+                return deleted, warnings
+            candidates = list(source_dir.iterdir())
+        else:
+            candidates = candidate_files
+        for path in sorted(candidates, key=lambda candidate: candidate.name.lower()):
             if not cls.is_hardware_list_pdf(path):
                 continue
             try:
@@ -12058,8 +12741,9 @@ try {{
         *,
         root_only: bool,
         inspect_pdf_text: bool,
+        candidate_files: list[Path] | None = None,
     ) -> list[Path]:
-        if not folder.exists():
+        if candidate_files is None and not folder.exists():
             return []
         normalized_jobs = [
             programmer.normalize_lookup(order.job_name)
@@ -12072,12 +12756,15 @@ try {{
             for order in orders
             if (job_number := programmer.extract_job_number(order.job_name))
         }
-        candidates = folder.glob("*") if root_only else folder.rglob("*")
+        if candidate_files is not None:
+            candidates = candidate_files
+        else:
+            candidates = folder.glob("*") if root_only else folder.rglob("*")
         matched: list[Path] = []
         for path in candidates:
             if not path.is_file() or path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
                 continue
-            if cls.is_hardware_list_pdf(path):
+            if path.suffix.lower() == ".pdf" and path.name.casefold().startswith(cls.HARDWARE_LIST_PREFIX):
                 continue
             suffix = path.suffix.lower()
             if suffix == ".dxf":
@@ -12270,6 +12957,17 @@ try {{
                 source_stat = source.stat()
                 target_stat = target.stat()
                 if source_stat.st_size == target_stat.st_size and target_stat.st_mtime >= source_stat.st_mtime:
+                    return False
+                if (
+                    source_stat.st_size == target_stat.st_size
+                    and cls.sha256_file(source) == cls.sha256_file(target)
+                ):
+                    # An upstream export can refresh only the timestamp. Align the
+                    # local timestamp once so later scans can skip all file reads.
+                    os.utime(
+                        target,
+                        ns=(target_stat.st_atime_ns, source_stat.st_mtime_ns),
+                    )
                     return False
             except OSError:
                 pass

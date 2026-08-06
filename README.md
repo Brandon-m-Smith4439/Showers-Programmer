@@ -2,7 +2,7 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 0.62 — Mirror Glass Waterjet Detection**
+Current release: **Version 0.69 - Fast Accurate Scanning**
 
 ## Main Workflow
 
@@ -23,8 +23,14 @@ Current release: **Version 0.62 — Mirror Glass Waterjet Detection**
 - **Waterjet envelope:** A Waterjet piece larger than 75 inches in both dimensions is flagged and its DXF is skipped for review.
 - **Waterjet radius versus thickness:** Detected internal radii must be at least the glass thickness. For example, 3/8-inch glass with a 1/4-inch internal radius is flagged; a 3/8-inch radius passes.
 - **Split process-list batches:** Pieces for the same A&W order are merged even when different thicknesses or glass types place them in separate batch files.
+- **Mirror process-list batches:** Only items carrying a Waterjet route are treated as programming work; Packing/Shipping-only mirror entries do not block completion or archival.
+- **Duplicate Job Nrs:** A&W order-item values remain the production identity when two orders share one Job Nr. Distinct copy-suffixed source files are preserved and matched by piece dimensions.
 - **FP-S raked edges:** Full-edge rakes use matched DXF geometry for a signed angle correction that leaves the CNC bottom flat. `FP-S` cut-ins and cut-outs remain flagged for manual review.
 - **FP-S short cut transitions:** A confirmed hinge-side profile with an angled run and a shorter square run orients hinges up and keeps the square opposite edge on the CNC bottom.
+- **Machine Decision inspector:** Review Order shows the evidence behind each machine, indicator, orientation, and OOS decision without altering established processing rules.
+- **Incremental scan cache:** Unchanged PDF text, piece-dimension evidence, process-list rows, DXF preview geometry, and duplicate-file hashes are reused between scans and application sessions. Local PDFs are enumerated once per scan and filename matches are exhausted before PDF content is opened.
+- **Legacy XLS conversion:** Excel 97-2003 process lists are converted through a hidden, non-interactive PowerShell/Excel helper while normal scan progress and error reporting remain visible in the application.
+- **Smart network import:** Each scan indexes the shared input folder once, reuses unchanged local process lists, offers selective cleanup for copy-suffixed PDF/DXF duplicates, and retrieves only missing order PDFs or DXF items.
 
 ## Project Structure
 
@@ -130,12 +136,12 @@ Do not publish a new source revision without rebuilding and publishing matching 
 
 ## Versioning
 
-The project uses a pre-1.0 release series. The current release is **Version 0.62**. Each revision advances by `0.01`:
+The project uses a pre-1.0 release series. The current release is **Version 0.69**. Each revision advances by `0.01`:
 
 ```text
-Version 0.63
-Version 0.64
-Version 0.65
+Version 0.69
+Version 0.70
+Version 0.71
 ```
 
 For every release:

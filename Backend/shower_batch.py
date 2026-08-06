@@ -9,6 +9,7 @@ import argparse
 import csv
 import hashlib
 import html
+import os
 import re
 import subprocess
 import sys
@@ -23,11 +24,21 @@ from openpyxl import load_workbook
 from pypdf import PdfReader
 
 import shower_programmer as programmer
+import shower_cache
 
 
 DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
 PROCESS_LIST_EXTENSIONS = {".xlsx", ".xml", ".rtf", ".xls"}
 PROCESS_LIST_EXTENSION_PRIORITY = {".xlsx": 0, ".xml": 1, ".rtf": 2, ".xls": 3}
+PROCESS_LIST_CACHE_NAMESPACE = "process_orders_v1"
+PROCESS_LIST_CACHE_SCHEMA = 2
+ProcessListProgress = Callable[[str, Path, str], None]
+PDF_DIMENSION_MATCH_TOLERANCE = 0.20
+
+GLASS_MATERIAL_PATTERN = re.compile(
+    r'^\s*(?:\d+-\d+/\d+|\d+/\d+|0?\.\d+)\s*(?:"|IN(?:CH(?:ES)?)?)?\s+[A-Z].*$',
+    re.IGNORECASE,
+)
 
 
 def upper_config_list(config: dict[str, object], key: str, default: list[str]) -> set[str]:
@@ -299,7 +310,38 @@ def load_process_orders(path: Path) -> list[ProcessOrder]:
     return sorted(merged.values(), key=lambda order: (int(order.aw_order), order.job_name))
 
 
-def load_process_orders_from_file(path: Path) -> list[ProcessOrder]:
+def load_process_orders_from_file(
+    path: Path,
+    progress_callback: ProcessListProgress | None = None,
+) -> list[ProcessOrder]:
+    path = Path(path).resolve()
+    cached = shower_cache.load(PROCESS_LIST_CACHE_NAMESPACE, path)
+    if isinstance(cached, dict) and cached.get("schema") == PROCESS_LIST_CACHE_SCHEMA:
+        try:
+            orders = process_orders_from_cache(cached.get("orders", []))
+        except Exception:
+            orders = []
+        if orders:
+            if progress_callback:
+                progress_callback("cached", path, f"Reused {len(orders)} cached order(s)")
+            return orders
+    if progress_callback:
+        progress_callback("loading", path, "Reading process-list rows")
+    orders = load_process_orders_from_file_uncached(path, progress_callback)
+    shower_cache.store(
+        PROCESS_LIST_CACHE_NAMESPACE,
+        path,
+        {"schema": PROCESS_LIST_CACHE_SCHEMA, "orders": process_orders_to_cache(orders)},
+    )
+    if progress_callback:
+        progress_callback("loaded", path, f"Loaded {len(orders)} order(s)")
+    return orders
+
+
+def load_process_orders_from_file_uncached(
+    path: Path,
+    progress_callback: ProcessListProgress | None = None,
+) -> list[ProcessOrder]:
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
         return load_process_orders_from_workbook(path)
@@ -314,10 +356,81 @@ def load_process_orders_from_file(path: Path) -> list[ProcessOrder]:
             return orders
         return load_process_orders_from_rows(load_rows_from_crystal_rtf(path))
     if suffix == ".xls":
-        return load_process_orders_from_legacy_xls(path)
+        return load_process_orders_from_legacy_xls(path, progress_callback)
     raise RuntimeError(
         f"Unsupported process-list file type: {path.name}. Use one of: {process_list_extension_text()}."
     )
+
+
+def process_orders_to_cache(orders: list[ProcessOrder]) -> list[dict[str, object]]:
+    return [
+        {
+            "aw_order": order.aw_order,
+            "job_name": order.job_name,
+            "customer": order.customer,
+            "items": [
+                {
+                    "item": item.item,
+                    "width_text": item.width_text,
+                    "height_text": item.height_text,
+                    "delivery_date": item.delivery_date,
+                    "customer": item.customer,
+                    "processing": list(item.processing),
+                    "machine_hints": list(item.machine_hints),
+                    "rows": list(item.rows),
+                }
+                for item in order.items.values()
+            ],
+        }
+        for order in orders
+    ]
+
+
+def process_orders_from_cache(records: object) -> list[ProcessOrder]:
+    if not isinstance(records, list):
+        return []
+    orders: list[ProcessOrder] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        aw_order = str(record.get("aw_order", "")).strip()
+        job_name = str(record.get("job_name", "")).strip()
+        if not aw_order or not job_name:
+            continue
+        order = ProcessOrder(aw_order, job_name, str(record.get("customer", "")))
+        raw_items = record.get("items", [])
+        if isinstance(raw_items, list):
+            for raw_item in raw_items:
+                if not isinstance(raw_item, dict):
+                    continue
+                try:
+                    item_number = int(raw_item.get("item", 0))
+                except (TypeError, ValueError):
+                    continue
+                if item_number <= 0:
+                    continue
+                raw_processing = raw_item.get("processing", [])
+                raw_machine_hints = raw_item.get("machine_hints", [])
+                raw_rows = raw_item.get("rows", [])
+                if not isinstance(raw_processing, list):
+                    raw_processing = []
+                if not isinstance(raw_machine_hints, list):
+                    raw_machine_hints = []
+                if not isinstance(raw_rows, list):
+                    raw_rows = []
+                item = ProcessItem(
+                    item=item_number,
+                    width_text=str(raw_item.get("width_text", "")),
+                    height_text=str(raw_item.get("height_text", "")),
+                    delivery_date=str(raw_item.get("delivery_date", "")),
+                    customer=str(raw_item.get("customer", "")),
+                    processing=[str(value) for value in raw_processing if str(value)],
+                    machine_hints=[str(value) for value in raw_machine_hints if str(value)],
+                    rows=[int(value) for value in raw_rows if str(value).isdigit()],
+                )
+                order.items[item_number] = item
+        orders.append(order)
+    return orders
 
 
 def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
@@ -330,10 +443,13 @@ def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
         workbook.close()
 
 
-def load_process_orders_from_legacy_xls(path: Path) -> list[ProcessOrder]:
+def load_process_orders_from_legacy_xls(
+    path: Path,
+    progress_callback: ProcessListProgress | None = None,
+) -> list[ProcessOrder]:
     raw_prefix = path.read_bytes()[:512]
     if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
-        converted = convert_legacy_xls_to_xlsx(path)
+        converted = convert_legacy_xls_to_xlsx(path, progress_callback)
         return load_process_orders_from_workbook(converted)
 
     text_prefix = decode_text_file(path)[:2048].lstrip().lower()
@@ -349,24 +465,38 @@ def load_process_orders_from_legacy_xls(path: Path) -> list[ProcessOrder]:
     )
 
 
-def convert_legacy_xls_to_xlsx(path: Path) -> Path:
+def convert_legacy_xls_to_xlsx(
+    path: Path,
+    progress_callback: ProcessListProgress | None = None,
+) -> Path:
     target = converted_xlsx_path(path)
     try:
         if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
+            if progress_callback:
+                progress_callback("normalized", path, f"Using cached {target.name}")
             return target
     except OSError:
         pass
 
     target.parent.mkdir(parents=True, exist_ok=True)
     source_text = str(path.resolve())
-    target_text = str(target.resolve())
-    script = (
-        "$Source = @'\n"
-        + source_text
-        + "\n'@\n$Target = @'\n"
-        + target_text
-        + "\n'@\n"
-        + r"""
+    timeout_seconds = 75
+    attempts = 2
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        staging = target.with_name(f".{target.stem}.attempt{attempt}.xlsx")
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        target_text = str(staging.resolve())
+        script = (
+            "$Source = @'\n"
+            + source_text
+            + "\n'@\n$Target = @'\n"
+            + target_text
+            + "\n'@\n"
+            + r"""
 $ErrorActionPreference = 'Stop'
 $excel = $null
 $workbook = $null
@@ -387,60 +517,97 @@ try {
   }
 }
 """
-    )
-    excel_processes_before = excel_process_ids()
-    timeout_seconds = 45
-    try:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
         )
-    except subprocess.TimeoutExpired as exc:
-        stop_excel_processes(excel_process_ids() - excel_processes_before)
-        raise RuntimeError(
-            f"{path.name} is a binary Excel 97-2003 .xls file and Excel did not finish "
-            f"auto-converting it within {timeout_seconds} seconds. Use the Crystal Reports XML "
-            "export or save the workbook as .xlsx."
-        ) from exc
-    except Exception as exc:
-        stop_excel_processes(excel_process_ids() - excel_processes_before)
-        raise RuntimeError(
-            f"{path.name} is a binary Excel 97-2003 .xls file and could not be auto-converted. "
-            "Use the Crystal Reports XML export or save the workbook as .xlsx."
-        ) from exc
-    if not target.exists():
-        raise RuntimeError(f"Excel did not create the converted workbook for {path.name}.")
-    return target
+        if progress_callback:
+            progress_callback(
+                "normalizing",
+                path,
+                f"Converting legacy XLS to XLSX (attempt {attempt}/{attempts})",
+            )
+        excel_processes_before = excel_process_ids()
+        try:
+            subprocess.run(
+                hidden_powershell_command(script, bypass_execution_policy=True),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                **hidden_windows_subprocess_options(),
+            )
+            if not staging.exists():
+                raise RuntimeError("Excel completed without creating the converted workbook")
+            staging.replace(target)
+            if progress_callback:
+                progress_callback("normalized", path, f"Created {target.name}")
+            return target
+        except Exception as exc:
+            last_error = exc
+            stop_excel_processes(excel_process_ids() - excel_processes_before)
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if progress_callback:
+                progress_callback("retry", path, f"Conversion attempt {attempt} did not finish")
+
+    detail = (
+        f"Excel did not finish auto-converting it after {attempts} attempts of {timeout_seconds} seconds"
+        if isinstance(last_error, subprocess.TimeoutExpired)
+        else "Excel could not auto-convert it"
+    )
+    raise RuntimeError(
+        f"{path.name} is a binary Excel 97-2003 .xls file and {detail}. "
+        "Use the Crystal Reports XML export or save the workbook as .xlsx."
+    ) from last_error
 
 
 def converted_xlsx_path(path: Path) -> Path:
     digest = hashlib.sha1(str(path.resolve()).encode("utf-8", errors="ignore")).hexdigest()[:10]
-    return programmer.default_output_dir() / "Converted Process Lists" / f"{path.stem}_{digest}.xlsx"
+    cache_root = shower_cache.configured_root()
+    output_root = cache_root.parent if cache_root is not None else programmer.default_output_dir()
+    return output_root / "Converted Process Lists" / f"{path.stem}_{digest}.xlsx"
+
+
+def hidden_powershell_command(script: str, *, bypass_execution_policy: bool = False) -> list[str]:
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+    ]
+    if bypass_execution_policy:
+        command.extend(["-ExecutionPolicy", "Bypass"])
+    command.extend(["-Command", script])
+    return command
+
+
+def hidden_windows_subprocess_options() -> dict[str, object]:
+    if os.name != "nt":
+        return {}
+    options: dict[str, object] = {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+    }
+    startupinfo_type = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_type is not None:
+        startupinfo = startupinfo_type()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        startupinfo.wShowWindow = 0
+        options["startupinfo"] = startupinfo
+    return options
 
 
 def excel_process_ids() -> set[int]:
     try:
         result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-Process EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }",
-            ],
+            hidden_powershell_command(
+                "Get-Process EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }"
+            ),
             check=True,
             capture_output=True,
             text=True,
             timeout=5,
+            **hidden_windows_subprocess_options(),
         )
     except Exception:
         return set()
@@ -458,26 +625,52 @@ def stop_excel_processes(process_ids: set[int]) -> None:
     id_text = ",".join(str(process_id) for process_id in sorted(process_ids))
     try:
         subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"Stop-Process -Id {id_text} -Force -ErrorAction SilentlyContinue",
-            ],
+            hidden_powershell_command(
+                f"Stop-Process -Id {id_text} -Force -ErrorAction SilentlyContinue"
+            ),
             check=False,
             capture_output=True,
             text=True,
             timeout=10,
+            **hidden_windows_subprocess_options(),
         )
     except Exception:
         pass
 
 
+def process_list_is_mirror_batch(rows: Iterable[Iterable[object]]) -> bool:
+    """Identify a mirror-only material list without matching customer or job names."""
+    material_descriptions: list[str] = []
+    for row in rows:
+        for value in row:
+            text = cell_text(value)
+            if GLASS_MATERIAL_PATTERN.fullmatch(text):
+                material_descriptions.append(text.upper())
+    return bool(material_descriptions) and all("MIRROR" in text for text in material_descriptions)
+
+
+def mirror_waterjet_orders(orders: Iterable[ProcessOrder]) -> list[ProcessOrder]:
+    """Keep only items routed through the Waterjet section of a mirror batch."""
+    waterjet_orders: list[ProcessOrder] = []
+    for order in orders:
+        waterjet_items = {
+            item_number: item
+            for item_number, item in order.items.items()
+            if item.desired_machine() == "WJ"
+        }
+        if not waterjet_items:
+            continue
+        order.items = waterjet_items
+        waterjet_orders.append(order)
+    return waterjet_orders
+
+
 def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[ProcessOrder]:
+    materialized_rows = [list(row) for row in rows]
+    mirror_batch = process_list_is_mirror_batch(materialized_rows)
     orders: dict[tuple[str, str], ProcessOrder] = {}
     last_key: tuple[str, str, int] | None = None
-    for row_number, row in enumerate(rows, start=1):
-        values = list(row)
+    for row_number, values in enumerate(materialized_rows, start=1):
         order_item = cell_at(values, 6)
         job_name = programmer.clean_job_name(cell_at(values, 13))
         customer = cell_at(values, 10)
@@ -512,7 +705,8 @@ def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[Proc
             order = orders[(aw_order, previous_job)]
             order.items[item_number].add_row(row_number, width_text, height_text, delivery_date, customer, processing, machine_hint)
 
-    return sorted(orders.values(), key=lambda order: int(order.aw_order))
+    loaded_orders = sorted(orders.values(), key=lambda order: int(order.aw_order))
+    return mirror_waterjet_orders(loaded_orders) if mirror_batch else loaded_orders
 
 
 def load_rows_from_spreadsheet_xml(path: Path) -> list[list[str]]:
@@ -1347,6 +1541,299 @@ def process_list_fabrication_keywords(config: dict[str, object]) -> set[str]:
     return keywords
 
 
+def process_order_dimensions(process_order: ProcessOrder) -> list[tuple[int, float, float]]:
+    dimensions: list[tuple[int, float, float]] = []
+    for item_number, item in sorted(process_order.items.items()):
+        width = programmer.parse_measurement(item.width_text)
+        height = programmer.parse_measurement(item.height_text)
+        if width is None or height is None:
+            return []
+        dimensions.append((item_number, width, height))
+    return dimensions
+
+
+def pdf_piece_dimensions(reader: PdfReader) -> list[tuple[int, float, float]]:
+    dimensions: list[tuple[int, float, float]] = []
+    for page_index, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if programmer.looks_like_template_page(text):
+            continue
+        width, height = programmer.extract_dimensions(text)
+        if width is not None and height is not None:
+            dimensions.append((page_index, width, height))
+    return dimensions
+
+
+def cached_pdf_piece_dimensions(pdf_path: Path) -> list[tuple[int, float, float]]:
+    """Reuse exact piece dimensions for an unchanged sketch PDF."""
+    cached = shower_cache.load("pdf_piece_dimensions_v1", pdf_path)
+    if isinstance(cached, list):
+        try:
+            return [
+                (int(page), float(width), float(height))
+                for page, width, height in cached
+            ]
+        except (TypeError, ValueError):
+            pass
+    reader = PdfReader(str(pdf_path))
+    dimensions = pdf_piece_dimensions(reader)
+    shower_cache.store(
+        "pdf_piece_dimensions_v1",
+        pdf_path,
+        [[page, width, height] for page, width, height in dimensions],
+    )
+    return dimensions
+
+
+def dimensions_match(
+    expected: tuple[float, float],
+    actual: tuple[float, float],
+    tolerance: float = PDF_DIMENSION_MATCH_TOLERANCE,
+) -> bool:
+    expected_width, expected_height = expected
+    actual_width, actual_height = actual
+    direct = (
+        abs(expected_width - actual_width) <= tolerance
+        and abs(expected_height - actual_height) <= tolerance
+    )
+    swapped = (
+        abs(expected_width - actual_height) <= tolerance
+        and abs(expected_height - actual_width) <= tolerance
+    )
+    return direct or swapped
+
+
+def process_dimensions_fit_pdf(
+    process_order: ProcessOrder,
+    reader: PdfReader,
+) -> bool | None:
+    return process_dimensions_fit_values(process_order, pdf_piece_dimensions(reader))
+
+
+def process_dimensions_fit_values(
+    process_order: ProcessOrder,
+    actual: list[tuple[int, float, float]],
+) -> bool | None:
+    """Apply the existing PDF dimension rules to pre-extracted dimensions."""
+    expected = process_order_dimensions(process_order)
+    if not expected or not actual:
+        return None
+    if len(expected) > len(actual):
+        return False
+
+    candidates = [
+        [
+            actual_index
+            for actual_index, (_page, actual_width, actual_height) in enumerate(actual)
+            if dimensions_match((width, height), (actual_width, actual_height))
+        ]
+        for _item, width, height in expected
+    ]
+    if any(not matches for matches in candidates):
+        return False
+
+    order = sorted(range(len(expected)), key=lambda index: len(candidates[index]))
+
+    def assign(position: int, used: set[int]) -> bool:
+        if position >= len(order):
+            return True
+        expected_index = order[position]
+        for actual_index in candidates[expected_index]:
+            if actual_index in used:
+                continue
+            used.add(actual_index)
+            if assign(position + 1, used):
+                return True
+            used.remove(actual_index)
+        return False
+
+    return assign(0, set())
+
+
+def format_dimension_pairs(dimensions: Iterable[tuple[int, float, float]]) -> str:
+    return ", ".join(f"P{item} {width:g} x {height:g}" for item, width, height in dimensions)
+
+
+def validate_process_order_pdf_dimensions(
+    reader: PdfReader,
+    process_order: ProcessOrder,
+    pdf_path: Path,
+) -> None:
+    fit = process_dimensions_fit_pdf(process_order, reader)
+    if fit is not False:
+        return
+    expected = format_dimension_pairs(process_order_dimensions(process_order))
+    actual = ", ".join(
+        f"{width:g} x {height:g}"
+        for _page, width, height in pdf_piece_dimensions(reader)
+    )
+    raise RuntimeError(
+        f"A&W {process_order.aw_order} does not match the piece dimensions in {pdf_path.name}. "
+        f"Process list: {expected or 'unknown'}; sketch: {actual or 'unknown'}. "
+        "This Job Nr may belong to multiple A&W orders; locate the separate matching sketch instead of reusing this PDF."
+    )
+
+
+def validate_process_order_pdf_dimension_values(
+    actual: list[tuple[int, float, float]],
+    process_order: ProcessOrder,
+    pdf_path: Path,
+) -> None:
+    fit = process_dimensions_fit_values(process_order, actual)
+    if fit is not False:
+        return
+    expected = format_dimension_pairs(process_order_dimensions(process_order))
+    actual_text = ", ".join(
+        f"{width:g} x {height:g}"
+        for _page, width, height in actual
+    )
+    raise RuntimeError(
+        f"A&W {process_order.aw_order} does not match the piece dimensions in {pdf_path.name}. "
+        f"Process list: {expected or 'unknown'}; sketch: {actual_text or 'unknown'}. "
+        "This Job Nr may belong to multiple A&W orders; locate the separate matching sketch instead of reusing this PDF."
+    )
+
+
+def job_number_pdf_candidates(
+    folder: Path,
+    process_order: ProcessOrder,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> list[Path]:
+    job_number = programmer.extract_job_number(process_order.job_name)
+    if not job_number:
+        return []
+    candidates = folder.rglob("*.pdf") if candidate_pdfs is None else candidate_pdfs
+    return sorted(
+        (
+            Path(path)
+            for path in candidates
+            if Path(path).suffix.lower() == ".pdf"
+            and not programmer.is_archived_input_file(Path(path), folder)
+            and programmer.text_contains_job_number(Path(path).stem, job_number)
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+
+
+def dimension_matched_pdf(
+    folder: Path,
+    process_order: ProcessOrder,
+    *,
+    exclude: Path | None = None,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> tuple[Path, PdfReader] | None:
+    matches: list[tuple[Path, PdfReader]] = []
+    for candidate in job_number_pdf_candidates(folder, process_order, candidate_pdfs):
+        if exclude is not None and candidate.resolve() == exclude.resolve():
+            continue
+        try:
+            reader = PdfReader(str(candidate))
+        except Exception:
+            continue
+        if process_dimensions_fit_pdf(process_order, reader) is True:
+            matches.append((candidate.resolve(), reader))
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def dimension_matched_pdf_path(
+    folder: Path,
+    process_order: ProcessOrder,
+    *,
+    exclude: Path | None = None,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> Path | None:
+    """Resolve duplicate Job Nr sketches using cached dimension evidence."""
+    matches: list[Path] = []
+    for candidate in job_number_pdf_candidates(folder, process_order, candidate_pdfs):
+        if exclude is not None and candidate.resolve() == exclude.resolve():
+            continue
+        try:
+            actual = cached_pdf_piece_dimensions(candidate)
+        except Exception:
+            continue
+        if process_dimensions_fit_values(process_order, actual) is True:
+            matches.append(candidate.resolve())
+    return matches[0] if len(matches) == 1 else None
+
+
+def preview_process_order_pdf(
+    folder: Path,
+    process_order: ProcessOrder,
+    candidate_pdfs: list[Path],
+) -> Path:
+    """Resolve and validate a scan preview without reparsing unchanged PDFs."""
+    try:
+        pdf_path = programmer.find_pdf(
+            folder,
+            process_order.job_name,
+            process_order.aw_order,
+            candidate_pdfs=candidate_pdfs,
+        ).resolve()
+    except RuntimeError:
+        matched = dimension_matched_pdf_path(
+            folder,
+            process_order,
+            candidate_pdfs=candidate_pdfs,
+        )
+        if matched is None:
+            raise
+        pdf_path = matched
+        validate_process_order_pdf_dimension_values(
+            cached_pdf_piece_dimensions(pdf_path),
+            process_order,
+            pdf_path,
+        )
+        return pdf_path
+
+    try:
+        validate_process_order_pdf_dimension_values(
+            cached_pdf_piece_dimensions(pdf_path),
+            process_order,
+            pdf_path,
+        )
+    except RuntimeError:
+        matched = dimension_matched_pdf_path(
+            folder,
+            process_order,
+            exclude=pdf_path,
+            candidate_pdfs=candidate_pdfs,
+        )
+        if matched is None:
+            raise
+        pdf_path = matched
+        validate_process_order_pdf_dimension_values(
+            cached_pdf_piece_dimensions(pdf_path),
+            process_order,
+            pdf_path,
+        )
+    return pdf_path
+
+
+def open_process_order_pdf(folder: Path, process_order: ProcessOrder) -> tuple[Path, PdfReader]:
+    try:
+        pdf_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
+    except RuntimeError:
+        matched = dimension_matched_pdf(folder, process_order)
+        if matched is None:
+            raise
+        pdf_path, reader = matched
+        validate_process_order_pdf_dimensions(reader, process_order, pdf_path)
+        return pdf_path, reader
+
+    reader = PdfReader(str(pdf_path))
+    try:
+        validate_process_order_pdf_dimensions(reader, process_order, pdf_path)
+    except RuntimeError:
+        matched = dimension_matched_pdf(folder, process_order, exclude=pdf_path)
+        if matched is None:
+            raise
+        pdf_path, reader = matched
+        validate_process_order_pdf_dimensions(reader, process_order, pdf_path)
+    return pdf_path, reader
+
+
 def prepare_job(
     folder: Path,
     sketch_output_dir: Path,
@@ -1357,8 +1844,7 @@ def prepare_job(
     remake_items: set[int] | None = None,
 ) -> tuple[programmer.Job, PdfReader, list[str]]:
     process_order = clone_process_order(process_order)
-    pdf_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
-    reader = PdfReader(str(pdf_path))
+    pdf_path, reader = open_process_order_pdf(folder, process_order)
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
     item_remaps = match_process_items_to_sketch_pages(reader, panels, process_order, config, remake_items)
     if remake_items:
@@ -1475,7 +1961,6 @@ def process_one_order(
         result.output_pdf = job.output_pdf
         result.report_path = job.report_path
         result.issues.extend(issues)
-
         if apply:
             if not force and not skip_pdf and job.output_pdf.exists():
                 result.status = "SKIPPED"
@@ -1688,6 +2173,14 @@ def count_statuses(results: list[BatchJobResult]) -> dict[str, int]:
 
 
 def preview_orders(orders: list[ProcessOrder], folder: Path) -> list[BatchJobResult]:
+    candidate_pdfs = sorted(
+        (
+            path
+            for path in folder.rglob("*.pdf")
+            if path.is_file() and not programmer.is_archived_input_file(path, folder)
+        ),
+        key=lambda path: path.name.casefold(),
+    )
     results: list[BatchJobResult] = []
     for order in orders:
         result = BatchJobResult(
@@ -1699,7 +2192,7 @@ def preview_orders(orders: list[ProcessOrder], folder: Path) -> list[BatchJobRes
             delivery_date=order.delivery_date,
         )
         try:
-            result.input_pdf = programmer.find_pdf(folder, order.job_name, order.aw_order).resolve()
+            result.input_pdf = preview_process_order_pdf(folder, order, candidate_pdfs)
         except Exception as exc:
             result.status = "ISSUES"
             result.issues.append(str(exc))
@@ -1754,6 +2247,8 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     if not output_dir.is_absolute():
         output_dir = programmer.project_root() / output_dir
+    shower_cache.configure(output_dir.resolve() / ".scan_cache")
+    shower_cache.reset_stats()
     sketch_output_dir = Path(args.sketch_dir) if args.sketch_dir else output_dir / "Sketches"
     if not sketch_output_dir.is_absolute():
         sketch_output_dir = programmer.project_root() / sketch_output_dir

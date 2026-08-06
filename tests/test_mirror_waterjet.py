@@ -82,6 +82,67 @@ class MirrorWaterjetTests(unittest.TestCase):
         self.assertTrue(panel.label_only)
         self.assertTrue(panel.skip_dxf)
 
+    @staticmethod
+    def process_row(
+        order_item: str,
+        job_name: str,
+        machine: str,
+        processing: str = "Flat Polish side(s) 1/2/3/4",
+    ) -> list[str]:
+        row = [""] * 22
+        row[2] = '42"'
+        row[3] = '83"'
+        row[6] = order_item
+        row[7] = processing
+        row[10] = "Customer"
+        row[13] = job_name
+        row[21] = machine
+        return row
+
+    def test_mirror_batch_keeps_only_waterjet_section_orders(self) -> None:
+        rows = [
+            ['1/4" Mirror'],
+            self.process_row("900001-1", "12345678 MIRROR JOB", "Waterjet"),
+            self.process_row("900002-1", "12345679 PACKING ONLY", "Packing / Shipping"),
+            self.process_row(
+                "900001-1",
+                "12345678 MIRROR JOB",
+                "Packing / Shipping",
+                "INTERNAL CUTOUT MACRO",
+            ),
+        ]
+
+        orders = shower_batch.load_process_orders_from_rows(rows)
+
+        self.assertEqual([order.aw_order for order in orders], ["900001"])
+        self.assertEqual(
+            orders[0].items[1].machine_hints,
+            ["Waterjet", "Packing / Shipping"],
+        )
+
+    def test_customer_job_named_mirror_does_not_scope_a_clear_glass_batch(self) -> None:
+        rows = [
+            ['3/8" Clear Annealed'],
+            self.process_row("900001-1", "12345678 MIRROR LAKE", "Waterjet"),
+            self.process_row("900002-1", "12345679 STANDARD JOB", "Denver 1 (CNC)"),
+        ]
+
+        orders = shower_batch.load_process_orders_from_rows(rows)
+
+        self.assertEqual([order.aw_order for order in orders], ["900001", "900002"])
+
+    def test_mixed_material_batch_is_not_treated_as_mirror_only(self) -> None:
+        rows = [
+            ['1/4" Mirror'],
+            ['3/8" Clear Annealed'],
+            self.process_row("900001-1", "12345678 MIRROR JOB", "Waterjet"),
+            self.process_row("900002-1", "12345679 SHOWER JOB", "Denver 2 (CNC)"),
+        ]
+
+        orders = shower_batch.load_process_orders_from_rows(rows)
+
+        self.assertEqual([order.aw_order for order in orders], ["900001", "900002"])
+
 
 if __name__ == "__main__":
     unittest.main()

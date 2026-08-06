@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 0.62 production-safety features for Shower Programmer.
+"""Version 0.69 production-safety features for Shower Programmer.
 
 This module intentionally patches the existing V40-era core at startup instead
 of duplicating the large GUI, batch, and programming modules.  It is loaded by
@@ -12,11 +12,18 @@ from __future__ import annotations
 # VERSION_0_6_FPS_RAKE_RELEASE_RELIABILITY
 # VERSION_0_61_FPS_SHORT_CUT_HINGES_UP
 # VERSION_0_62_MIRROR_GLASS_WATERJET
+# VERSION_0_63_WORKFLOW_INTELLIGENCE
+# VERSION_0_64_DXF_FIRST_REVIEW_LAYOUT
+# VERSION_0_65_SMART_NETWORK_IMPORT
+# VERSION_0_66_MIRROR_WATERJET_BATCH_SCOPE
+# VERSION_0_67_DUPLICATE_JOB_ORDER_IDENTITY
+# VERSION_0_69_FAST_ACCURATE_SCANNING
 
 import copy
 import hashlib
 import math
 import re
+import sys
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1257,6 +1264,30 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
             result = original_self_test(report_path)
             try:
                 _run_v4_self_tests(programmer, shower_batch, gui, report_path.parent)
+                if not hasattr(programmer, "panel_machine_decision_evidence"):
+                    raise RuntimeError("Machine decision evidence is unavailable.")
+                if not hasattr(shower_batch, "process_orders_to_cache"):
+                    raise RuntimeError("Process-list normalization cache is unavailable.")
+                required_import_helpers = (
+                    "index_import_source_folder",
+                    "import_duplicate_groups",
+                    "missing_order_input_requirements",
+                    "file_matches_missing_order_requirement",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_import_helpers):
+                    raise RuntimeError("Smart network import helpers are unavailable.")
+                if not hasattr(shower_batch, "cached_pdf_piece_dimensions"):
+                    raise RuntimeError("Cached PDF dimension evidence is unavailable.")
+                if not hasattr(gui.shower_cache, "cached_file_sha256"):
+                    raise RuntimeError("Cached duplicate-file hashing is unavailable.")
+                mirror_rows = [
+                    ['1/4" Mirror'],
+                    ["", "", '42"', '83"', "", "", "900001-1", "INTERNAL CUTOUT MACRO", "", "", "Customer", "", "", "12345678 MIRROR JOB", "", "", "", "", "", "", "", "Waterjet"],
+                    ["", "", '36"', '42"', "", "", "900002-1", "Flat Polish side(s) 1/2/3/4", "", "", "Customer", "", "", "12345679 PACKING ONLY", "", "", "", "", "", "", "", "Packing / Shipping"],
+                ]
+                mirror_orders = shower_batch.load_process_orders_from_rows(mirror_rows)
+                if [order.aw_order for order in mirror_orders] != ["900001"]:
+                    raise RuntimeError("Mirror batches are not scoped to Waterjet-routed orders.")
                 result.update(
                     {
                         "v4_conflict_safe_send": True,
@@ -1274,6 +1305,16 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "version_0_6_dynamic_release_self_test": True,
                         "version_0_61_fps_short_cut_hinges_up": True,
                         "version_0_62_mirror_glass_waterjet": True,
+                        "version_0_63_machine_decision_inspector": True,
+                        "version_0_63_process_list_normalization": True,
+                        "version_0_63_known_order_regressions": True,
+                        "version_0_63_incremental_scan_cache": True,
+                        "version_0_64_dxf_first_review_layout": True,
+                        "version_0_65_smart_network_import": True,
+                        "version_0_66_mirror_waterjet_batch_scope": True,
+                        "version_0_67_duplicate_job_order_identity": True,
+                        "version_0_68_hidden_xls_conversion": True,
+                        "version_0_69_fast_accurate_scanning": True,
                     }
                 )
             except Exception as exc:
@@ -1302,6 +1343,13 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_0_6_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_61_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_62_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_63_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_64_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_65_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_66_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_67_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_68_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_69_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 
@@ -1334,6 +1382,38 @@ def _run_v4_self_tests(programmer: Any, shower_batch: Any, gui: Any, scratch_par
     )
     if len(merged) != 1 or set(merged[0].items) != {1, 2}:
         raise RuntimeError("Split-batch order merge self-test failed.")
+
+    duplicate_job_rows: list[list[str]] = []
+    for aw_item, width, height in (
+        ("237008-1", "31-7/8", "112-5/16"),
+        ("237008-2", "31-7/8", "112-3/16"),
+        ("237009-1", "32", "12"),
+    ):
+        row = [""] * 22
+        row[2] = width
+        row[3] = height
+        row[6] = aw_item
+        row[13] = "89420398.4 2089 HOLBROOK"
+        duplicate_job_rows.append(row)
+    duplicate_job_orders = shower_batch.load_process_orders_from_rows(duplicate_job_rows)
+    if (
+        [order.aw_order for order in duplicate_job_orders] != ["237008", "237009"]
+        or duplicate_job_orders[0].item_numbers != [1, 2]
+        or duplicate_job_orders[1].item_numbers != [1]
+    ):
+        raise RuntimeError("Duplicate Job Nr A&W identity self-test failed.")
+
+    hidden_command = shower_batch.hidden_powershell_command(
+        "Write-Output test",
+        bypass_execution_policy=True,
+    )
+    if "-WindowStyle" not in hidden_command or hidden_command[hidden_command.index("-WindowStyle") + 1] != "Hidden":
+        raise RuntimeError("Legacy XLS hidden PowerShell command self-test failed.")
+    if "-NonInteractive" not in hidden_command:
+        raise RuntimeError("Legacy XLS non-interactive PowerShell self-test failed.")
+    hidden_options = shower_batch.hidden_windows_subprocess_options()
+    if sys.platform.startswith("win") and not int(hidden_options.get("creationflags", 0)):
+        raise RuntimeError("Legacy XLS CREATE_NO_WINDOW self-test failed.")
 
     long_panel = programmer.Panel(1, 1, '117" x 23"  FP FP FP FP', 117.0, 23.0, "")
     validate_long_glass_se(long_panel, {})

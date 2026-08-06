@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "id": "236972-mirror-glass-waterjet",
+      "kind": "classification",
+      "text": "1/4\" Mirror Annealed\nFlat Polish 2 Long 2 Short",
+      "width": 42.0,
+      "height": 83.0,
+      "expected_machine": "WJ",
+      "expected_reason": "mirror glass type always uses WJ"
+    },
+    {
+      "id": "mirror-lake-name-control",
+      "kind": "classification",
+      "text": "Project #: MIRROR LAKE\n1/4\" Clear Annealed\nFlat Polish 2 Long 2 Short",
+      "width": 42.0,
+      "height": 83.0,
+      "expected_machine": "",
+      "expected_label_only": true
+    },
+    {
+      "id": "denver-minimum-forces-waterjet",
+      "kind": "classification",
+      "text": "3/8\" Clear Tempered\nFlat Polish 2 Long 2 Short",
+      "width": 5.875,
+      "height": 80.0,
+      "expected_machine": "WJ"
+    },
+    {
+      "id": "236472-fps-short-transition",
+      "kind": "fps_short_transition",
+      "expected_hinges_up": true,
+      "expected_rotation": 90.0,
+      "expected_indicator": "bottom_left",
+      "expected_manual_review": true
+    },
+    {
+      "id": "pph-hinges-up",
+      "kind": "pph_orientation",
+      "text": "SRPPH01 PPH HINGE",
+      "hinge_side": "right",
+      "expected_hinges_up": true,
+      "expected_rotation": 90.0,
+      "expected_indicator": "bottom_left"
+    }
+  ]
+}

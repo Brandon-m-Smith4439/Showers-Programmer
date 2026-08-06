@@ -30,6 +30,8 @@ from reportlab.lib.colors import Color
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
+import shower_cache
+
 
 DEFAULT_CONFIG_NAME = "shower_programmer_config.json"
 TEMPLATE_PAGE_MARKERS = ("TEMPLATES FOR GLASS", "TEMPLATE A:", "TEMPLATE B:")
@@ -392,10 +394,15 @@ def extract_transom_label(text: str) -> str | None:
 
 def extract_first_page_text(pdf_path: Path) -> str:
     """Return normalized first-page text without guessing from the filename."""
+    cached = shower_cache.load("pdf_first_page_text_v1", pdf_path)
+    if isinstance(cached, str):
+        return cached
     reader = PdfReader(str(pdf_path))
     if not reader.pages:
         return ""
-    return re.sub(r"\s+", " ", reader.pages[0].extract_text() or "").strip()
+    text = re.sub(r"\s+", " ", reader.pages[0].extract_text() or "").strip()
+    shower_cache.store("pdf_first_page_text_v1", pdf_path, text)
+    return text
 
 
 def extract_job_number(value: str | None) -> str | None:
@@ -515,7 +522,13 @@ def clean_job_name(value: str) -> str:
     return value
 
 
-def find_pdf(folder: Path, job: str | None, aw_order: str | None = None) -> Path:
+def find_pdf(
+    folder: Path,
+    job: str | None,
+    aw_order: str | None = None,
+    *,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> Path:
     """Find an input PDF using the separate A&W order and Job Nr identities.
 
     The A&W order is the shorter production order value (for example ``236505``).
@@ -523,10 +536,21 @@ def find_pdf(folder: Path, job: str | None, aw_order: str | None = None) -> Path
     glass-order header (for example ``87576307.2``). Either identity may locate
     a PDF whose filename was changed.
     """
-    pdfs = sorted(
-        p for p in folder.rglob("*.pdf")
-        if p.is_file() and not is_archived_input_file(p, folder)
-    )
+    if candidate_pdfs is None:
+        pdfs = sorted(
+            p for p in folder.rglob("*.pdf")
+            if p.is_file() and not is_archived_input_file(p, folder)
+        )
+    else:
+        pdfs = sorted(
+            (
+                Path(path)
+                for path in candidate_pdfs
+                if Path(path).suffix.lower() == ".pdf"
+                and not is_archived_input_file(Path(path), folder)
+            ),
+            key=lambda path: path.name.casefold(),
+        )
     if not pdfs:
         raise FileNotFoundError(f"No PDF files were found in the local orders folder: {folder}")
 
@@ -765,6 +789,96 @@ def has_mirror_glass_type(text: str, config: dict[str, Any]) -> bool:
             if glass_context.search(adjacent):
                 return True
     return False
+
+
+def extract_glass_type_description(text: str) -> str:
+    """Return the most likely glass/material description from piece text."""
+    candidates: list[tuple[int, str]] = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        upper = line.upper()
+        if not line or any(label in upper for label in ("PROJECT #", "CUSTOMER", "LOCATION", "ADDRESS")):
+            continue
+        score = 0
+        if re.search(r"\b(?:MIRROR|ANNEALED|TEMPERED|LAMINATED)\b", upper):
+            score += 5
+        if re.search(r"\b(?:CLEAR|BRONZE|GRAY|GREY|LOW IRON|GLASS)\b", upper):
+            score += 2
+        if re.search(r"\b\d+(?:[- ]\d+)?/\d+\s*(?:\"|IN)?\b", upper):
+            score += 3
+        if score:
+            candidates.append((score, line))
+    return max(candidates, default=(0, ""), key=lambda item: (item[0], -len(item[1])))[1]
+
+
+def process_machine_hint(text: str) -> str:
+    upper = text.upper()
+    if "WATERJET" in upper or "WATER JET" in upper or re.search(r"\bWJ\b", upper):
+        return "WJ"
+    match = re.search(r"\bDENVER\s*([12])\b", upper)
+    return f"DENVER {match.group(1)}" if match else ""
+
+
+def panel_machine_decision_evidence(panel: Panel) -> dict[str, Any]:
+    """Build operator-facing evidence for the selected machine and orientation."""
+    manual_fields = any(
+        (
+            panel.manual_indicator_override,
+            panel.manual_rotation_override,
+            panel.label_x is not None,
+            panel.indicator_x is not None,
+            panel.hide_label,
+            panel.hide_indicator,
+            bool(panel.additional_text_boxes),
+        )
+    )
+    return {
+        "piece": f"P{panel.item}",
+        "machine": panel.machine or "Label Only",
+        "glass_type": extract_glass_type_description("\n".join((panel.text, panel.process_text))) or "Not identified",
+        "dimensions": (
+            f"{panel.width:g} x {panel.height:g} in"
+            if panel.width is not None and panel.height is not None
+            else "Not identified"
+        ),
+        "process_hint": process_machine_hint(panel.process_text) or "None",
+        "source_dxf": panel.source_dxf.name if panel.source_dxf else "None",
+        "indicator": panel.indicator_corner or "None",
+        "rotation": panel.rotation_degrees,
+        "angle_correction": panel.angle_correction_degrees,
+        "hinge_side": panel.hinge_side or "Not applicable",
+        "hinges_up": bool(panel.hinges_up),
+        "manual_override": manual_fields,
+        "reasons": list(dict.fromkeys(panel.reasons)),
+        "warnings": list(dict.fromkeys(panel.warnings)),
+    }
+
+
+def format_machine_decision_evidence(panel: Panel) -> str:
+    evidence = panel_machine_decision_evidence(panel)
+    rotation = evidence["rotation"]
+    angle = float(evidence["angle_correction"] or 0.0)
+    lines = [
+        f"Machine: {evidence['machine']}",
+        f"Glass: {evidence['glass_type']}",
+        f"Size: {evidence['dimensions']}",
+        f"Process hint: {evidence['process_hint']}",
+        f"DXF: {evidence['source_dxf']}",
+        f"Orientation: {rotation:g} deg" if isinstance(rotation, (int, float)) else "Orientation: none",
+        f"Indicator: {evidence['indicator']}",
+    ]
+    if evidence["hinge_side"] != "Not applicable":
+        lines.append(f"Hinges: {evidence['hinge_side']} side, {'up' if evidence['hinges_up'] else 'down'}")
+    if abs(angle) >= 0.000001:
+        lines.append(f"OOS correction: {angle:+.6f} deg")
+    lines.append(f"Manual override: {'yes' if evidence['manual_override'] else 'no'}")
+    reasons = evidence["reasons"] or ["No machine evidence recorded."]
+    lines.append("Why:")
+    lines.extend(f"  - {reason}" for reason in reasons)
+    if evidence["warnings"]:
+        lines.append("Warnings:")
+        lines.extend(f"  - {warning}" for warning in evidence["warnings"])
+    return "\n".join(lines)
 
 
 def strip_non_fabrication_edge_text(text: str) -> str:
@@ -1627,9 +1741,37 @@ def find_source_dxf(
         if score is not None:
             candidates.append((score, path))
     if candidates:
+        if len(candidates) > 1 and panel.width is not None and panel.height is not None:
+            dimension_matches = [
+                candidate
+                for candidate in candidates
+                if dxf_dimensions_match_panel(candidate[1], panel)
+            ]
+            if dimension_matches:
+                candidates = dimension_matches
         candidates.sort(key=lambda entry: entry[0], reverse=True)
         return candidates[0][1]
     return None
+
+
+def dxf_dimensions_match_panel(path: Path, panel: Panel, tolerance: float = 0.35) -> bool:
+    if panel.width is None or panel.height is None:
+        return False
+    dimensions = dxf_outline_dimensions(path)
+    if dimensions is None:
+        return False
+    source_width, source_height = dimensions
+    expected = (float(panel.width), float(panel.height))
+    candidates = (
+        (source_width, source_height),
+        (source_width / 25.4, source_height / 25.4),
+    )
+    for width, height in candidates:
+        direct = abs(width - expected[0]) <= tolerance and abs(height - expected[1]) <= tolerance
+        swapped = abs(width - expected[1]) <= tolerance and abs(height - expected[0]) <= tolerance
+        if direct or swapped:
+            return True
+    return False
 
 
 def dxf_match_score(

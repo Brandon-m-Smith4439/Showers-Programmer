@@ -2,6 +2,97 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 0.69] - 2026-08-05
+
+### Changed
+- Each scan enumerates local sketch PDFs once, then reuses that candidate list for every active order instead of recursively searching the Orders tree per order.
+- Unchanged sketch piece dimensions are cached and reused for duplicate Job Nr validation, avoiding repeated PDF page extraction without removing the dimension check.
+- Local PDF filenames are checked across the full candidate set before any PDF content is opened.
+- Exact duplicate-file hashes are cached so unchanged shared-drive copy candidates are not reread on every scan.
+
+### Performance
+- On the current 24-active-order local benchmark, measured process-list loading, local input checks, filtering, and preview validation improved from approximately 2.10 seconds to 0.29 seconds on a repeat scan.
+
+### Safety
+- A&W order identity, Job Nr matching, process-list dimensions, duplicate-sketch disambiguation, DXF matching, and missing-file recovery rules are unchanged.
+- Cache entries are invalidated using file path, size, timestamp, and content verification when a timestamp changes.
+
+## [Version 0.68] - 2026-08-05
+
+### Changed
+- Legacy `.xls` to `.xlsx` conversion now launches PowerShell in hidden, non-interactive mode.
+- The Excel conversion, Excel process check, and timeout cleanup subprocesses all use the Windows `CREATE_NO_WINDOW` flag and hidden startup settings.
+
+### Safety
+- The application still displays conversion progress, retries, and actionable conversion errors in its own interface.
+- Excel remains invisible with alerts disabled; process-list parsing and normalized workbook output are unchanged.
+
+## [Version 0.67] - 2026-08-05
+
+### Fixed
+- A&W orders `237008` and `237009` remain separate even though both use Job Nr `89420398.4 2089 HOLBROOK`; the process-list order-item field is now explicitly protected as the production identity.
+- PDF selection validates process-list dimensions and uses them to distinguish separate copy-suffixed sketches sharing one Job Nr.
+- A missing second sketch is reported instead of silently relabeling a piece from the other A&W order.
+- DXF selection prefers the candidate whose outline dimensions match the process-list piece when same-Job/item filenames collide.
+
+### Safety
+- Copy-suffixed PDFs and DXFs are suggested as duplicates only when their file content is identical. Different source files are preserved even when Windows gave one an `_1` suffix.
+- Existing Job Nr, item remapping, machine classification, orientation, and manual overrides are unchanged when source identity is unambiguous.
+
+## [Version 0.66] - 2026-08-05
+
+### Fixed
+- Mirror-only process-list batches now load only orders and items carrying an actual Waterjet machine route. Packing/Shipping-only mirror entries no longer appear as work to program or prevent the batch from completing.
+- Completed legacy `.xls` batches now match their converted/local process-list companion by batch name and remove the original export from the shared Showers Programmer Input folder after verified archival.
+
+### Safety
+- Mirror-batch detection is based on mirror glass material descriptions, not customer, project, or job names containing `Mirror`.
+- Mixed-material process lists retain all machine sections. Ordinary shower batches, DXF orientation, and manual overrides are unchanged.
+
+## [Version 0.65] - 2026-08-04
+
+### Added
+- Added one-pass indexing of the shared Showers Programmer Input folder so process lists, order files, duplicate review, and missing-file recovery reuse the same network snapshot.
+- Added a duplicate-file review dialog for PDF/DXF copy variants such as `_1_1.dxf` and `_2_1.dxf`, with individual file selection and conservative suggested removals.
+- Added per-order input coverage checks so a newly supplied PDF is imported even when that order already has local DXFs, and missing process-list DXF items are recovered independently.
+
+### Changed
+- Unchanged process-list exports remain local and are not recopied or reparsed. Timestamp-only upstream refreshes are verified by content once, then their local timestamps are aligned for fast future scans.
+- Network matching now copies only the PDF or DXF items that are missing locally.
+
+### Safety
+- Duplicate detection only flags a copy-suffixed PDF/DXF when the corresponding unsuffixed sibling exists. Nothing is deleted without an operator selection.
+- Existing machine classification, DXF orientation, manual overrides, and send/archive rules are unchanged.
+
+## [Version 0.64] - 2026-08-04
+
+### Changed
+- Removed the production risk queue, Risk column, High Risk summary card, risk sorting, and Review Highest Risk action.
+- Removed risk fields from processing history and batch text, CSV, and HTML reports.
+- Moved the Machine Decision section below the DXF preview so the preview appears first and receives the larger workspace.
+- Kept the machine decision evidence for glass type, dimensions, process hints, matched DXF, orientation, OOS correction, manual overrides, reasons, and warnings.
+
+### Safety
+- This release changes review presentation only. It does not change machine classification, DXF orientation, process-list normalization, caching, or manual overrides.
+
+## [Version 0.63] - 2026-08-03
+
+### Added
+- Added a Machine Decision inspector to Review Order with glass type, dimensions, process hint, matched DXF, indicator, orientation, OOS correction, manual-override state, reasons, and warnings.
+- Added a production Risk column, High Risk summary count, automatic within-batch risk sorting, and a Review Highest Risk action.
+- Added resilient legacy `.xls` normalization with visible progress, one automatic retry, atomic output replacement, and normalized-file reuse.
+- Added persistent incremental caches for first-page PDF text, parsed process lists, and DXF preview geometry. Timestamp-only copies are verified by content hash before reparsing.
+- Added a data-driven known-order regression library covering mirror glass, project-name false positives, Denver minimum size, `FP-S` short transitions, and PPH hinges-up behavior.
+- Added risk detail to text, CSV, and HTML batch reports.
+
+### Changed
+- Scan completion now reports how many cached resources were reused and refreshed.
+- Review cache warmup now calculates production risk in the background without changing machining decisions.
+
+### Safety
+- Risk scoring and decision inspection are observational only; they do not override machine classification, orientation, or manual edits.
+- Legacy workbook conversion stages to a temporary file and replaces the normalized workbook only after Excel produces a complete result.
+
 ## [Version 0.62] - 2026-08-03
 
 ### Added

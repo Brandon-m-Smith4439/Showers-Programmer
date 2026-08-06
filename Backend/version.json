@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.62",
-  "version_number": 62,
-  "marker": "VERSION_0_62_MIRROR_GLASS_WATERJET",
-  "release_name": "Mirror Glass Waterjet Detection",
-  "release_date": "2026-08-03",
+  "version": "Version 0.69",
+  "version_number": 69,
+  "marker": "VERSION_0_69_FAST_ACCURATE_SCANNING",
+  "release_name": "Fast Accurate Scanning",
+  "release_date": "2026-08-05",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

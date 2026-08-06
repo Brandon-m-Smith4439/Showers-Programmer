@@ -71,6 +71,8 @@ When both dimensions exceed 75 inches, the piece is outside the configured Water
 
 Any individual glass type containing the configured `MIRROR` keyword is assigned to Water Jet. The rule reads the piece sketch and its process-list material text, overrides automatic Denver hints, and does not trigger from project, customer, location, or address names containing the word `Mirror`. Manual machine overrides remain available for operator corrections.
 
+Mirror-only process-list batches are scoped to items with an actual Waterjet machine route. Mirror entries routed only to Packing/Shipping are not displayed or programmed and do not prevent the completed batch, including a legacy `.xls` source, from being archived and removed from shared input staging.
+
 ### Waterjet internal radius
 
 The validator extracts glass thickness from the sketch/process text, reads internal ARC and polyline-bulge radii from the source DXF, converts DXF units to inches, and compares every detected radius with the thickness. Equality passes. A tolerance of 0.002 inch is used for CAD rounding.
@@ -152,6 +154,22 @@ A successful integrated report includes the existing core checks and the current
 - `version_0_6_dynamic_release_self_test`
 - `version_0_61_fps_short_cut_hinges_up`
 - `version_0_62_mirror_glass_waterjet`
+- `version_0_63_machine_decision_inspector`
+- `version_0_63_process_list_normalization`
+- `version_0_63_known_order_regressions`
+- `version_0_63_incremental_scan_cache`
+- `version_0_64_dxf_first_review_layout`
+- `version_0_65_smart_network_import`
+- `version_0_66_mirror_waterjet_batch_scope`
+- `version_0_67_duplicate_job_order_identity`
+- `version_0_68_hidden_xls_conversion`
+- `version_0_69_fast_accurate_scanning`
+
+Run the data-driven known-order regression library by itself:
+
+```bat
+py -3 -m unittest tests.test_known_order_regressions -v
+```
 
 ## Troubleshooting
 
