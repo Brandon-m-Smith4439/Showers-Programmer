@@ -6,6 +6,7 @@ import unittest
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 from reportlab.pdfgen import canvas
 
@@ -16,6 +17,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import shower_batch
+import shower_programmer as programmer
 
 
 JOB = "89420398.4 2089 HOLBROOK"
@@ -54,6 +56,22 @@ def write_sketch(path: Path, dimensions: list[tuple[str, str]]) -> None:
 
 
 class DuplicateJobNumberTests(unittest.TestCase):
+    def test_ambiguous_pdf_error_exposes_candidates_for_gui_resolution(self) -> None:
+        with writable_test_directory() as folder:
+            first = folder / f"Glass Order ALPHA_{JOB}.pdf"
+            second = folder / f"Glass Order BETA_{JOB}.pdf"
+            first.write_bytes(b"placeholder one")
+            second.write_bytes(b"placeholder two")
+            with mock.patch.object(
+                programmer,
+                "extract_first_page_text",
+                return_value=f"Job Nr {JOB}",
+            ):
+                with self.assertRaises(programmer.AmbiguousPdfError) as raised:
+                    programmer.find_pdf(folder, JOB, "237008")
+            self.assertEqual(set(raised.exception.candidates), {first, second})
+            self.assertEqual(raised.exception.aw_order, "237008")
+
     def test_process_list_keeps_same_job_as_separate_aw_orders(self) -> None:
         rows: list[list[str]] = []
         for aw_item, width, height in (

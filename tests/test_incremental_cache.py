@@ -247,7 +247,12 @@ class IncrementalCacheTests(unittest.TestCase):
                 (source / name).write_text(content_name, encoding="utf-8")
             snapshot = shower_programmer_gui.ShowerProgrammerApp.index_import_source_folder(source)
             self.assertEqual(snapshot["entry_count"], len(names))
-            groups = snapshot["duplicate_groups"]
+            name_groups = snapshot["duplicate_name_groups"]
+            self.assertEqual(len(name_groups), 4)
+            self.assertEqual(snapshot["duplicate_groups"], [])
+            groups = shower_programmer_gui.ShowerProgrammerApp.import_duplicate_groups(
+                snapshot["order_files"]
+            )
             self.assertEqual(len(groups), 3)
             duplicate_names = {
                 path.name
@@ -348,6 +353,57 @@ class IncrementalCacheTests(unittest.TestCase):
                 {pdf_name, second_dxf_name},
             )
             self.assertEqual(summary["considered"], 2)
+
+    def test_unlabeled_network_pdf_is_staged_before_text_inspection(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "Showers Programmer Input"
+            target = temp / "Input" / "Orders"
+            source.mkdir()
+            target.mkdir(parents=True)
+            network_pdf = source / "Unlabeled sketch.pdf"
+            network_pdf.write_bytes(b"network placeholder")
+            order = shower_batch.ProcessOrder("900001", "89124424 WATER LN 123", "Customer")
+            requirements = {"900001": {"pdf": True, "dxf_items": []}}
+            inspected: list[Path] = []
+
+            def local_pdf_text(path: Path) -> str:
+                inspected.append(Path(path))
+                return "A&W Order 900001 Job Nr 89124424 WATER LN 123"
+
+            original_source = shower_programmer_gui.ShowerProgrammerApp.EDI_IMPORT_ORDERS_DIR
+            try:
+                shower_programmer_gui.ShowerProgrammerApp.EDI_IMPORT_ORDERS_DIR = source
+                snapshot = shower_programmer_gui.ShowerProgrammerApp.index_import_source_folder(source)
+                with mock.patch.object(programmer, "extract_first_page_text", side_effect=local_pdf_text):
+                    summary = shower_programmer_gui.ShowerProgrammerApp.copy_edi_orders_for_process_orders(
+                        target,
+                        [order],
+                        import_snapshot=snapshot,
+                        missing_requirements=requirements,
+                    )
+            finally:
+                shower_programmer_gui.ShowerProgrammerApp.EDI_IMPORT_ORDERS_DIR = original_source
+
+            self.assertTrue((target / network_pdf.name).exists())
+            self.assertEqual(summary["staged_pdf_count"], 1)
+            self.assertTrue(inspected)
+            self.assertTrue(all(path.parent != source for path in inspected))
+
+    def test_dxf_side_measurements_convert_mm_geometry_to_fractional_inches(self) -> None:
+        segments = [
+            ((0.0, 0.0), (2540.0, 0.0)),
+            ((2540.0, 0.0), (2540.0, 1066.8)),
+            ((2540.0, 1066.8), (0.0, 1066.8)),
+            ((0.0, 1066.8), (0.0, 0.0)),
+        ]
+        measurements = shower_programmer_gui.ShowerProgrammerApp.dxf_cardinal_side_measurements(
+            segments,
+            1.0 / 25.4,
+        )
+        self.assertEqual(
+            {side: shower_programmer_gui.ShowerProgrammerApp.format_inches(value) for side, value in measurements.items()},
+            {"top": '100"', "bottom": '100"', "left": '42"', "right": '42"'},
+        )
 
     def test_completed_converted_batch_deletes_matching_network_xls(self) -> None:
         with writable_test_directory() as temp:

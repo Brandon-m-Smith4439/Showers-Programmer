@@ -238,6 +238,11 @@ def decode_text_file(path: Path) -> str:
     return data.decode("latin-1", errors="replace")
 
 
+def read_file_prefix(path: Path, size: int) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(size)
+
+
 def parse_order_item(value: str) -> tuple[str, int] | None:
     match = re.search(r"\b(?P<order>\d{5,})\s*[-_]\s*(?P<item>\d+)\b", value)
     if not match:
@@ -447,7 +452,7 @@ def load_process_orders_from_legacy_xls(
     path: Path,
     progress_callback: ProcessListProgress | None = None,
 ) -> list[ProcessOrder]:
-    raw_prefix = path.read_bytes()[:512]
+    raw_prefix = read_file_prefix(path, 512)
     if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
         converted = convert_legacy_xls_to_xlsx(path, progress_callback)
         return load_process_orders_from_workbook(converted)
@@ -559,6 +564,123 @@ try {
         f"{path.name} is a binary Excel 97-2003 .xls file and {detail}. "
         "Use the Crystal Reports XML export or save the workbook as .xlsx."
     ) from last_error
+
+
+def preconvert_legacy_xls_files(
+    paths: Iterable[Path],
+    progress_callback: ProcessListProgress | None = None,
+) -> dict[Path, Path]:
+    """Convert new local binary XLS exports in one hidden Excel session."""
+    converted: dict[Path, Path] = {}
+    pending: list[tuple[Path, Path, Path]] = []
+    for raw_path in paths:
+        path = Path(raw_path).resolve()
+        if path.suffix.lower() != ".xls":
+            continue
+        try:
+            if not read_file_prefix(path, 8).lstrip().startswith(b"\xd0\xcf\x11\xe0"):
+                continue
+        except OSError:
+            continue
+        cached_orders = shower_cache.load(PROCESS_LIST_CACHE_NAMESPACE, path)
+        if (
+            isinstance(cached_orders, dict)
+            and cached_orders.get("schema") == PROCESS_LIST_CACHE_SCHEMA
+            and cached_orders.get("orders")
+        ):
+            continue
+        target = converted_xlsx_path(path)
+        try:
+            if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
+                converted[path] = target
+                continue
+        except OSError:
+            pass
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.with_name(f".{target.stem}.batch.xlsx")
+        pending.append((path, target, staging))
+
+    if not pending:
+        return converted
+    if len(pending) == 1:
+        path, _target, _staging = pending[0]
+        converted[path] = convert_legacy_xls_to_xlsx(path, progress_callback)
+        return converted
+
+    def ps_literal(value: Path) -> str:
+        return str(value.resolve()).replace("'", "''")
+
+    jobs = ",\n".join(
+        "@{ Source = '" + ps_literal(path) + "'; Target = '" + ps_literal(staging) + "' }"
+        for path, _target, staging in pending
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$jobs = @(
+{jobs}
+)
+$excel = $null
+try {{
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = $false
+  foreach ($job in $jobs) {{
+    $workbook = $null
+    try {{
+      $workbook = $excel.Workbooks.Open($job.Source)
+      $workbook.SaveAs($job.Target, 51)
+      $workbook.Close($false)
+    }} finally {{
+      if ($workbook -ne $null) {{
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+      }}
+    }}
+  }}
+}} finally {{
+  if ($excel -ne $null) {{
+    $excel.Quit()
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+  }}
+}}
+"""
+    for path, _target, staging in pending:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if progress_callback:
+            progress_callback("normalizing", path, f"Queued local XLS conversion ({len(pending)} files, one Excel session)")
+
+    excel_processes_before = excel_process_ids()
+    try:
+        subprocess.run(
+            hidden_powershell_command(script, bypass_execution_policy=True),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=max(90, 35 * len(pending)),
+            **hidden_windows_subprocess_options(),
+        )
+        for path, target, staging in pending:
+            if not staging.exists():
+                raise RuntimeError(f"Excel did not create {staging.name}")
+            staging.replace(target)
+            converted[path] = target
+            if progress_callback:
+                progress_callback("normalized", path, f"Created {target.name} locally")
+        return converted
+    except Exception:
+        stop_excel_processes(excel_process_ids() - excel_processes_before)
+        for _path, _target, staging in pending:
+            try:
+                staging.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # Preserve the established per-file retry and error detail if the fast
+        # shared Excel session cannot normalize the complete batch.
+        for path, _target, _staging in pending:
+            converted[path] = convert_legacy_xls_to_xlsx(path, progress_callback)
+        return converted
 
 
 def converted_xlsx_path(path: Path) -> Path:

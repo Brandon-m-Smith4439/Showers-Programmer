@@ -47,10 +47,11 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -444,6 +445,7 @@ class ShowerProgrammerApp:
         self.order_batch_ids: dict[str, list[str]] = {}
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._ignored_import_duplicate_signatures: set[tuple[str, ...]] = set()
+        self.pending_import_duplicate_groups: dict[str, list[dict[str, object]]] = {}
         self.last_reports: shower_batch.BatchRunResult | None = None
         self.last_run_folder: Path | None = None
         self.is_busy = False
@@ -1263,6 +1265,7 @@ class ShowerProgrammerApp:
         )
         scroll.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 14))
         scroll.grid_columnconfigure(0, weight=1)
+        scroll.grid_columnconfigure(1, weight=0)
 
         selections: dict[Path, tk.BooleanVar] = {}
         group_files: list[list[Path]] = []
@@ -1284,7 +1287,7 @@ class ShowerProgrammerApp:
                 font=("Segoe UI", 12, "bold"),
                 text_color=self.TEXT,
                 anchor="w",
-            ).grid(row=row, column=0, sticky="ew", padx=12, pady=(12 if row else 8, 4))
+            ).grid(row=row, column=0, columnspan=2, sticky="ew", padx=12, pady=(12 if row else 8, 4))
             row += 1
             for file_index, path in enumerate(files):
                 is_suggested_duplicate = file_index > 0
@@ -1306,6 +1309,21 @@ class ShowerProgrammerApp:
                     text_color=self.TEXT,
                     font=("Segoe UI", 11),
                 ).grid(row=row, column=0, sticky="w", padx=20, pady=4)
+                ctk.CTkButton(
+                    scroll,
+                    text="Open",
+                    command=lambda candidate=path: os.startfile(str(candidate.resolve())),
+                    width=76,
+                    height=30,
+                    corner_radius=7,
+                    fg_color=self.BUTTON_BG,
+                    hover_color=self.BUTTON_HOVER,
+                    border_width=1,
+                    border_color=self.BORDER,
+                    text_color=self.BUTTON_TEXT,
+                    font=("Segoe UI", 10, "bold"),
+                    **self.ctk_button_icon("open_folder", 14, self.ACCENT_DARK, "left"),
+                ).grid(row=row, column=1, sticky="e", padx=(8, 16), pady=4)
                 row += 1
 
         footer = ctk.CTkFrame(shell, fg_color="transparent")
@@ -1370,6 +1388,259 @@ class ShowerProgrammerApp:
             pass
         dialog.wait_window()
         return result
+
+    @staticmethod
+    def suggested_pdf_name(process_order: shower_batch.ProcessOrder) -> str:
+        identity = programmer.extract_job_number(process_order.job_name) or process_order.job_name
+        identity = re.sub(r'[<>:"/\\|?*]+', " ", identity)
+        identity = re.sub(r"\s+", " ", identity).strip(" .-")
+        return f"Glass Order {process_order.aw_order} - {identity[:100]}.pdf"
+
+    def show_ambiguous_pdf_dialog(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        candidates: list[Path],
+    ) -> tuple[Path, str] | None:
+        """Let the operator inspect and rename one ambiguous sketch PDF."""
+        candidates = [path for path in candidates if path.exists()]
+        if not candidates:
+            return None
+        if ctk is None:
+            selected = candidates[0]
+            proposed = simpledialog.askstring(
+                "Resolve duplicate order PDF",
+                "Rename the intended PDF so it contains the A&W order number.\n\n"
+                f"Selected: {selected.name}\n\nNew filename:",
+                initialvalue=self.suggested_pdf_name(process_order),
+                parent=self.root,
+            )
+            return (selected, proposed) if proposed else None
+
+        result: dict[str, object] = {}
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(f"Resolve PDF - {process_order.aw_order}")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.geometry("900x560")
+        dialog.minsize(760, 480)
+        self.set_window_icon(dialog)
+        try:
+            dialog.transient(self.root)
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            dialog,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(
+            shell,
+            text=f"Multiple sketches match order {process_order.aw_order}",
+            font=("Segoe UI", 20, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 4))
+        ctk.CTkLabel(
+            shell,
+            text=(
+                "Open the files to inspect them, select the intended sketch, then give it the suggested "
+                "A&W-specific name. The next scan will use that name directly."
+            ),
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=820,
+        ).grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 12))
+
+        selected_var = tk.StringVar(value=str(candidates[0]))
+        rename_var = tk.StringVar(value=self.suggested_pdf_name(process_order))
+        scroll = ctk.CTkScrollableFrame(
+            shell,
+            fg_color=self.PANEL_BG,
+            corner_radius=10,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        scroll.grid(row=2, column=0, sticky="nsew", padx=20)
+        scroll.grid_columnconfigure(1, weight=1)
+        for row, path in enumerate(candidates):
+            ctk.CTkRadioButton(
+                scroll,
+                text="",
+                variable=selected_var,
+                value=str(path),
+                width=28,
+                radiobutton_width=19,
+                radiobutton_height=19,
+                fg_color=self.ACCENT,
+                hover_color=self.ACCENT_DARK,
+            ).grid(row=row, column=0, sticky="w", padx=(12, 2), pady=8)
+            ctk.CTkLabel(
+                scroll,
+                text=path.name,
+                font=("Segoe UI", 11),
+                text_color=self.TEXT,
+                anchor="w",
+            ).grid(row=row, column=1, sticky="ew", padx=4, pady=8)
+            ctk.CTkButton(
+                scroll,
+                text="Open",
+                command=lambda candidate=path: os.startfile(str(candidate.resolve())),
+                width=84,
+                height=32,
+                corner_radius=7,
+                fg_color=self.BUTTON_BG,
+                hover_color=self.BUTTON_HOVER,
+                border_width=1,
+                border_color=self.BORDER,
+                text_color=self.BUTTON_TEXT,
+                font=("Segoe UI", 10, "bold"),
+                **self.ctk_button_icon("open_folder", 14, self.ACCENT_DARK, "left"),
+            ).grid(row=row, column=2, sticky="e", padx=(8, 12), pady=8)
+
+        rename_row = ctk.CTkFrame(shell, fg_color="transparent")
+        rename_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(14, 8))
+        rename_row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            rename_row,
+            text="New filename",
+            font=("Segoe UI", 11, "bold"),
+            text_color=self.TEXT,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        rename_entry = ctk.CTkEntry(
+            rename_row,
+            textvariable=rename_var,
+            height=36,
+            corner_radius=8,
+            border_color=self.BORDER,
+            fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+            font=("Segoe UI", 11),
+        )
+        rename_entry.grid(row=0, column=1, sticky="ew")
+
+        footer = ctk.CTkFrame(shell, fg_color="transparent")
+        footer.grid(row=4, column=0, sticky="ew", padx=20, pady=(4, 18))
+        footer.grid_columnconfigure(0, weight=1)
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def accept() -> None:
+            selected = Path(selected_var.get())
+            proposed = rename_var.get().strip()
+            if not proposed:
+                messagebox.showwarning("Filename required", "Enter a filename for the selected PDF.", parent=dialog)
+                return
+            result["value"] = (selected, proposed)
+            dialog.destroy()
+
+        ctk.CTkButton(
+            footer,
+            text="Cancel",
+            command=cancel,
+            width=110,
+            height=38,
+            corner_radius=8,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=1, padx=(0, 8))
+        ctk.CTkButton(
+            footer,
+            text="Rename and Use",
+            command=accept,
+            width=154,
+            height=38,
+            corner_radius=8,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("check", 15, "#ffffff", "left"),
+        ).grid(row=0, column=2)
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.bind("<Escape>", lambda _event: cancel())
+        dialog.bind("<Return>", lambda _event: accept())
+        dialog.wait_window()
+        value = result.get("value")
+        return value if isinstance(value, tuple) and len(value) == 2 else None
+
+    def rename_ambiguous_pdf(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        selected: Path,
+        proposed_name: str,
+    ) -> Path:
+        """Rename the local sketch and its shared staging counterpart when present."""
+        name = Path(proposed_name).name.strip()
+        if not name.lower().endswith(".pdf"):
+            name += ".pdf"
+        if not name or re.search(r'[<>:"/\\|?*]', name):
+            raise ValueError("The PDF filename contains a character Windows does not allow.")
+        target = selected.with_name(name)
+        if target.exists() and not self.same_path(target, selected):
+            raise FileExistsError(f"A file named {target.name} already exists.")
+        selected.rename(target)
+
+        shared_source = self.EDI_IMPORT_ORDERS_DIR / selected.name
+        shared_target = self.EDI_IMPORT_ORDERS_DIR / target.name
+        if shared_source.exists() and not self.same_path(shared_source, shared_target):
+            try:
+                if shared_target.exists():
+                    raise FileExistsError(f"The shared input already contains {shared_target.name}.")
+                shared_source.rename(shared_target)
+            except OSError as exc:
+                messagebox.showwarning(
+                    "Local PDF renamed",
+                    f"The local PDF was renamed, but the shared copy could not be renamed:\n\n{exc}",
+                    parent=self.root,
+                )
+        self.clear_review_context_cache(process_order.aw_order)
+        return target
+
+    def resolve_exact_duplicate_order(self, process_order: shower_batch.ProcessOrder) -> bool:
+        groups = self.pending_import_duplicate_groups.get(str(process_order.aw_order), [])
+        if not groups:
+            return False
+        decision = self.show_import_duplicate_dialog(groups)
+        selected = decision.get("remove", [])
+        if not isinstance(selected, list) or not selected:
+            self.status_var.set(f"Duplicate files for {process_order.aw_order} were left unchanged.")
+            return True
+        local_root = Path(self.folder_var.get()).resolve()
+        warnings: list[str] = []
+        for path in selected:
+            if not isinstance(path, Path):
+                continue
+            try:
+                if path.resolve().parent != local_root:
+                    warnings.append(f"Skipped file outside the local Orders folder: {path.name}")
+                    continue
+                path.unlink(missing_ok=True)
+                shared = self.EDI_IMPORT_ORDERS_DIR / path.name
+                if shared.exists():
+                    shared.unlink()
+            except OSError as exc:
+                warnings.append(f"Could not remove {path.name}: {exc}")
+        self.pending_import_duplicate_groups.pop(str(process_order.aw_order), None)
+        self.clear_review_context_cache(process_order.aw_order)
+        if warnings:
+            messagebox.showwarning("Duplicate cleanup notes", "\n".join(warnings), parent=self.root)
+        self.status_var.set(f"Duplicate selection saved for {process_order.aw_order}; rescanning...")
+        self.root.after(50, self.scan_orders)
+        return True
 
 
 
@@ -2871,7 +3142,7 @@ class ShowerProgrammerApp:
         command: Callable[..., object],
         primary: bool = False,
         compact: bool = False,
-    ) -> Any:
+    ) -> Iterable[tuple[Path, Path, bool]]:
         dark = bool(self.dark_mode_var.get())
         return ctk.CTkButton(
             parent,
@@ -3375,7 +3646,12 @@ class ShowerProgrammerApp:
     ) -> list[dict[str, object]]:
         """Load each process-list file independently so it remains a visible batch."""
         batches: list[dict[str, object]] = []
-        for source in shower_batch.process_list_files(process_list_path):
+        sources = shower_batch.process_list_files(process_list_path)
+        # Network exports are copied into the local process-list folder before
+        # this point. Normalize all new binary XLS files through one local Excel
+        # session instead of repeatedly launching Excel against the shared drive.
+        shower_batch.preconvert_legacy_xls_files(sources, progress_callback)
+        for source in sources:
             try:
                 loaded = shower_batch.load_process_orders_from_file(source, progress_callback)
             except Exception as exc:
@@ -3404,6 +3680,37 @@ class ShowerProgrammerApp:
                 if isinstance(order, shower_batch.ProcessOrder):
                     unique.setdefault(str(order.aw_order), order)
         return list(unique.values())
+
+    @classmethod
+    def duplicate_groups_by_order(
+        cls,
+        groups: list[dict[str, object]],
+        orders: list[shower_batch.ProcessOrder],
+    ) -> dict[str, list[dict[str, object]]]:
+        """Associate local exact-duplicate sets with the affected process orders."""
+        matched: dict[str, list[dict[str, object]]] = {}
+        for order in orders:
+            order_groups: list[dict[str, object]] = []
+            for group in groups:
+                canonical = group.get("canonical")
+                duplicates = group.get("duplicates", [])
+                files = ([canonical] if isinstance(canonical, Path) else []) + (
+                    [path for path in duplicates if isinstance(path, Path)]
+                    if isinstance(duplicates, list)
+                    else []
+                )
+                if any(
+                    cls.file_matches_process_orders(
+                        path,
+                        [order],
+                        inspect_pdf_text=path.suffix.lower() == ".pdf",
+                    )
+                    for path in files
+                ):
+                    order_groups.append(group)
+            if order_groups:
+                matched[str(order.aw_order)] = order_groups
+        return matched
 
     @classmethod
     def filter_batches_to_local_inputs(
@@ -3642,10 +3949,25 @@ class ShowerProgrammerApp:
                 missing_requirements=missing_requirements,
             )
             active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
+            local_order_files = [
+                path for path in folder.iterdir()
+                if path.is_file()
+                and path.suffix.lower() in self.ORDER_FILE_EXTENSIONS
+                and not self.is_hardware_list_pdf(path)
+            ]
+            local_duplicate_groups = self.import_duplicate_groups(local_order_files)
+            duplicate_groups_by_aw = self.duplicate_groups_by_order(local_duplicate_groups, orders)
             progress_value += int(import_summary.get("considered", 0) or 0)
             progress_value += 1
             self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building grouped order list...")
             previews = shower_batch.preview_orders(orders, folder)
+            for result in previews:
+                if str(result.aw_order) not in duplicate_groups_by_aw:
+                    continue
+                result.status = "ISSUES"
+                result.issues.append(
+                    "Exact duplicate input files need review; double-click this order to choose which file to keep."
+                )
             self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} active order(s).")
             self.worker_queue.put(
                 (
@@ -3668,6 +3990,7 @@ class ShowerProgrammerApp:
                         "cache_stats": shower_cache.stats(),
                         "duplicate_files_removed": duplicate_files_removed,
                         "duplicate_cleanup_warnings": duplicate_cleanup_warnings,
+                        "duplicate_groups_by_aw": duplicate_groups_by_aw,
                         "network_entries_indexed": int(import_snapshot.get("entry_count", 0) or 0),
                     },
                 )
@@ -6118,6 +6441,7 @@ class ShowerProgrammerApp:
                     cache_stats = data.get("cache_stats", {})
                     duplicate_files_removed = data.get("duplicate_files_removed", [])
                     duplicate_cleanup_warnings = data.get("duplicate_cleanup_warnings", [])
+                    duplicate_groups_by_aw = data.get("duplicate_groups_by_aw", {})
                     assert isinstance(orders, list)
                     assert isinstance(batches, list)
                     assert isinstance(previews, list)
@@ -6128,8 +6452,14 @@ class ShowerProgrammerApp:
                     assert isinstance(production_reconciliation_warnings, list)
                     assert isinstance(duplicate_files_removed, list)
                     assert isinstance(duplicate_cleanup_warnings, list)
+                    assert isinstance(duplicate_groups_by_aw, dict)
                     self.orders = orders
                     self.order_by_aw = {str(order.aw_order): order for order in self.orders}
+                    self.pending_import_duplicate_groups = {
+                        str(aw_order): [group for group in groups if isinstance(group, dict)]
+                        for aw_order, groups in duplicate_groups_by_aw.items()
+                        if isinstance(groups, list)
+                    }
                     self.tree.delete(*self.tree.get_children())
                     self.tree_rows.clear()
                     self.tree_row_orders.clear()
@@ -6629,6 +6959,8 @@ a {{ color: #1f4e79; }}
             messagebox.showinfo("Select one order", "Select exactly one scanned order to review.")
             return
         process_order = selected[0]
+        if self.resolve_exact_duplicate_order(process_order):
+            return
         try:
             folder = Path(self.folder_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
@@ -6648,6 +6980,17 @@ a {{ color: #1f4e79; }}
             sketch_reader = context["sketch_reader"]
             sketch_output_skipped = bool(context.get("sketch_output_skipped", False))
             dxf_output_skipped = bool(context.get("dxf_output_skipped", False))
+        except programmer.AmbiguousPdfError as exc:
+            choice = self.show_ambiguous_pdf_dialog(process_order, list(exc.candidates))
+            if choice is not None:
+                try:
+                    renamed = self.rename_ambiguous_pdf(process_order, choice[0], choice[1])
+                except Exception as rename_exc:
+                    messagebox.showerror("Could not rename PDF", str(rename_exc), parent=self.root)
+                else:
+                    self.status_var.set(f"Renamed {renamed.name}; reopening order review...")
+                    self.root.after(75, self.open_order_review)
+            return
         except Exception as exc:
             if isinstance(exc, FileNotFoundError):
                 messagebox.showinfo("No sketch yet", str(exc))
@@ -8168,8 +8511,9 @@ a {{ color: #1f4e79; }}
         original_preview: bool = False,
     ) -> None:
         canvas.delete("all")
-        canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill=self.PREVIEW_CARD_BG, outline="")
         canvas_width = max(520, canvas.winfo_width())
+        canvas_height = max(360, canvas.winfo_height())
+        canvas.create_rectangle(0, 0, canvas_width, canvas_height, fill=self.PREVIEW_CARD_BG, outline="")
         rotation_text = "No output rotation applied" if original_preview else self.panel_rotation_summary(panel)
         col_1 = 18
         col_2 = max(190, int(canvas_width * 0.42))
@@ -8299,10 +8643,13 @@ a {{ color: #1f4e79; }}
         max_y = max(y for _, y in points)
         width = max(max_x - min_x, 0.001)
         height = max(max_y - min_y, 0.001)
-        margin = 34.0
+        # Reserve an exterior annotation lane for all four side measurements.
+        # Radius callouts remain inside the geometry and OOS labels are drawn
+        # inward, so the three annotation systems stay readable together.
+        margin = 74.0
         scale = min(
-            max(20, canvas.winfo_width() - margin * 2) / width,
-            max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
+            max(20, canvas_width - margin * 2) / width,
+            max(20, canvas_height - margin * 2 - header_height) / height,
         )
 
         def map_point(point: tuple[float, float]) -> tuple[float, float]:
@@ -8311,6 +8658,7 @@ a {{ color: #1f4e79; }}
 
         long_side = max(width, height)
         highlight_segments = self.out_of_square_preview_segments(segments, long_side, inches_per_unit)
+        mapped_center = map_point(((min_x + max_x) / 2, (min_y + max_y) / 2))
         for start, end in segments:
             x1, y1 = map_point(start)
             x2, y2 = map_point(end)
@@ -8326,14 +8674,51 @@ a {{ color: #1f4e79; }}
             if highlight:
                 mx = (x1 + x2) / 2
                 my = (y1 + y2) / 2
+                toward_x = mapped_center[0] - mx
+                toward_y = mapped_center[1] - my
+                toward_length = max(1.0, math.hypot(toward_x, toward_y))
                 canvas.create_text(
-                    mx,
-                    my - 12,
+                    mx + (toward_x / toward_length) * 18,
+                    my + (toward_y / toward_length) * 18,
                     anchor=tk.CENTER,
                     text=self.out_of_square_segment_label(start, end, inches_per_unit),
                     fill=self.WARNING,
                     font=("Arial", 9, "bold"),
+                    tags=("dxf_oos_label",),
                 )
+        side_measurements = self.dxf_cardinal_side_measurements(segments, inches_per_unit)
+        mapped_left, mapped_top = map_point((min_x, max_y))
+        mapped_right, mapped_bottom = map_point((max_x, min_y))
+        side_positions = {
+            "top": ((mapped_left + mapped_right) / 2, mapped_top - 25, 0),
+            "bottom": ((mapped_left + mapped_right) / 2, mapped_bottom + 25, 0),
+            "left": (mapped_left - 28, (mapped_top + mapped_bottom) / 2, 90),
+            "right": (mapped_right + 28, (mapped_top + mapped_bottom) / 2, 90),
+        }
+        for side, length_inches in side_measurements.items():
+            label_x, label_y, angle = side_positions[side]
+            text_id = canvas.create_text(
+                label_x,
+                label_y,
+                anchor=tk.CENTER,
+                text=self.format_inches(length_inches),
+                fill=self.TEXT,
+                font=("Segoe UI", 9, "bold"),
+                angle=angle,
+                tags=("dxf_side_dimension",),
+            )
+            bounds = canvas.bbox(text_id)
+            if bounds:
+                background = canvas.create_rectangle(
+                    bounds[0] - 4,
+                    bounds[1] - 2,
+                    bounds[2] + 4,
+                    bounds[3] + 2,
+                    fill=self.PREVIEW_CARD_BG,
+                    outline="",
+                    tags=("dxf_side_dimension_bg",),
+                )
+                canvas.tag_lower(background, text_id)
         if highlight_segments:
             canvas.create_text(
                 col_1,
@@ -8345,7 +8730,7 @@ a {{ color: #1f4e79; }}
             )
         canvas.create_text(
             col_1,
-            canvas.winfo_height() - 18,
+            canvas_height - 18,
             anchor=tk.SW,
             text=f"{self.dxf_dimension_text(width, height, unit_label, inches_per_unit)} | {len(segments)} segment(s)",
             fill=self.MUTED,
@@ -8503,6 +8888,60 @@ a {{ color: #1f4e79; }}
         if whole:
             return f'{whole}-{numerator}/{denominator}"'
         return f'{numerator}/{denominator}"'
+
+    @classmethod
+    def dxf_cardinal_side_measurements(
+        cls,
+        segments: list[tuple[tuple[float, float], tuple[float, float]]],
+        inches_per_unit: float = 1.0,
+    ) -> dict[str, float]:
+        """Return the four principal exterior side lengths in fractional inches."""
+        if not segments:
+            return {}
+        points = [point for segment in segments for point in segment]
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        width = max(max_x - min_x, 1e-9)
+        height = max(max_y - min_y, 1e-9)
+        band = max(min(width, height) * 0.08, 0.25 / max(inches_per_unit, 1e-9))
+        candidates: dict[str, list[tuple[float, float, float]]] = {
+            "top": [],
+            "bottom": [],
+            "left": [],
+            "right": [],
+        }
+        for start, end in segments:
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                continue
+            mx = (start[0] + end[0]) / 2
+            my = (start[1] + end[1]) / 2
+            if abs(dx) >= abs(dy):
+                if max_y - my <= band:
+                    candidates["top"].append((abs(dx), length, max_y - my))
+                if my - min_y <= band:
+                    candidates["bottom"].append((abs(dx), length, my - min_y))
+            if abs(dy) >= abs(dx):
+                if mx - min_x <= band:
+                    candidates["left"].append((abs(dy), length, mx - min_x))
+                if max_x - mx <= band:
+                    candidates["right"].append((abs(dy), length, max_x - mx))
+
+        measurements: dict[str, float] = {}
+        for side in ("top", "bottom", "left", "right"):
+            span = width if side in {"top", "bottom"} else height
+            options = candidates[side]
+            if options:
+                projected, actual, _distance = max(options, key=lambda value: (value[0], -value[2]))
+                native_length = actual if projected >= span * 0.80 else span
+            else:
+                native_length = span
+            measurements[side] = native_length * inches_per_unit
+        return measurements
 
     @staticmethod
     def is_out_of_square_preview_segment(
@@ -12291,7 +12730,7 @@ try {{
 
         raw_sources = snapshot.get("process_list_files", [])
         sources = [path for path in raw_sources if isinstance(path, Path)] if isinstance(raw_sources, list) else []
-        summary["source_files"] = [str(source.resolve()) for source in sources]
+        summary["source_files"] = [os.path.abspath(str(source)) for source in sources]
         summary["considered"] = len(sources)
         summary["network_entries"] = int(snapshot.get("entry_count", 0) or 0)
         target_dir = cls.process_list_import_target_dir(process_list_path)
@@ -12328,6 +12767,7 @@ try {{
             "order_files": [],
             "hardware_files": [],
             "duplicate_groups": [],
+            "duplicate_name_groups": [],
         }
         files: list[Path] = []
         try:
@@ -12373,14 +12813,16 @@ try {{
                 "process_list_files": process_lists,
                 "order_files": order_files,
                 "hardware_files": hardware,
-                "duplicate_groups": cls.import_duplicate_groups(order_files),
+                # Content hashing across the shared drive is deliberately deferred.
+                # Candidate copies are hashed only after they have been copied local.
+                "duplicate_name_groups": cls.import_duplicate_name_groups(order_files),
             }
         )
         return snapshot
 
     @classmethod
-    def import_duplicate_groups(cls, files: list[Path]) -> list[dict[str, object]]:
-        """Find copy-suffixed PDFs/DXFs only when the sibling content is identical."""
+    def import_duplicate_name_groups(cls, files: list[Path]) -> list[dict[str, object]]:
+        """Group copy-suffixed filenames without reading file contents."""
         by_name = {path.name.casefold(): path for path in files}
         grouped: dict[str, dict[str, object]] = {}
         for path in files:
@@ -12390,19 +12832,6 @@ try {{
             canonical_name = f"{match.group('base')}{path.suffix}".casefold()
             canonical = by_name.get(canonical_name)
             if canonical is None or cls.same_path(canonical, path):
-                continue
-            try:
-                if canonical.stat().st_size != path.stat().st_size:
-                    continue
-                if shower_cache.cached_file_sha256(
-                    "import_duplicate_sha256_v1",
-                    canonical,
-                ) != shower_cache.cached_file_sha256(
-                    "import_duplicate_sha256_v1",
-                    path,
-                ):
-                    continue
-            except OSError:
                 continue
             key = canonical.name.casefold()
             group = grouped.setdefault(
@@ -12421,6 +12850,37 @@ try {{
             groups,
             key=lambda group: str(group.get("canonical", "")).casefold(),
         )
+
+    @classmethod
+    def import_duplicate_groups(cls, files: list[Path]) -> list[dict[str, object]]:
+        """Find copy-suffixed PDFs/DXFs only when local content is identical."""
+        exact: list[dict[str, object]] = []
+        for group in cls.import_duplicate_name_groups(files):
+            canonical = group.get("canonical")
+            duplicates = group.get("duplicates", [])
+            if not isinstance(canonical, Path) or not isinstance(duplicates, list):
+                continue
+            matching: list[Path] = []
+            for path in duplicates:
+                if not isinstance(path, Path):
+                    continue
+                try:
+                    if canonical.stat().st_size != path.stat().st_size:
+                        continue
+                    if shower_cache.cached_file_sha256(
+                        "import_duplicate_sha256_v1",
+                        canonical,
+                    ) != shower_cache.cached_file_sha256(
+                        "import_duplicate_sha256_v1",
+                        path,
+                    ):
+                        continue
+                except OSError:
+                    continue
+                matching.append(path)
+            if matching:
+                exact.append({"canonical": canonical, "duplicates": matching})
+        return exact
 
     @staticmethod
     def import_duplicate_signature(group: dict[str, object]) -> tuple[str, ...]:
@@ -12458,48 +12918,9 @@ try {{
         return deleted, warnings
 
     def prepare_import_source_snapshot(self) -> tuple[dict[str, object], list[Path], list[str]]:
-        """Index the network folder once, then pause for any duplicate decision."""
+        """Index the network folder once without opening or hashing shared files."""
         snapshot = self.index_import_source_folder(self.EDI_IMPORT_ORDERS_DIR)
-        groups_value = snapshot.get("duplicate_groups", [])
-        groups = [group for group in groups_value if isinstance(group, dict)] if isinstance(groups_value, list) else []
-        groups = [
-            group for group in groups
-            if self.import_duplicate_signature(group) not in self._ignored_import_duplicate_signatures
-        ]
-        selected: list[Path] = []
-        if groups:
-            completed = threading.Event()
-            result: dict[str, object] = {"remove": [], "ignore": []}
-            self.worker_queue.put(
-                (
-                    "import_duplicates",
-                    {"groups": groups, "completed": completed, "result": result},
-                )
-            )
-            completed.wait()
-            raw_selected = result.get("remove", [])
-            if isinstance(raw_selected, list):
-                selected = [path for path in raw_selected if isinstance(path, Path)]
-            raw_ignored = result.get("ignore", [])
-            if isinstance(raw_ignored, list):
-                self._ignored_import_duplicate_signatures.update(
-                    signature for signature in raw_ignored if isinstance(signature, tuple)
-                )
-
-        deleted, warnings = self.remove_import_duplicate_files(selected)
-        if deleted:
-            deleted_keys = {str(path).casefold() for path in deleted}
-            for key in ("files", "order_files", "hardware_files"):
-                values = snapshot.get(key, [])
-                if isinstance(values, list):
-                    snapshot[key] = [
-                        path for path in values
-                        if not isinstance(path, Path) or str(path).casefold() not in deleted_keys
-                    ]
-            snapshot["duplicate_groups"] = self.import_duplicate_groups(
-                [path for path in snapshot.get("order_files", []) if isinstance(path, Path)]
-            )
-        return snapshot, deleted, warnings
+        return snapshot, [], []
 
     @classmethod
     def importable_process_list_files(
@@ -12597,6 +13018,8 @@ try {{
         path: Path,
         order: shower_batch.ProcessOrder,
         requirement: dict[str, object],
+        *,
+        inspect_pdf_text: bool = True,
     ) -> bool:
         suffix = path.suffix.lower()
         aw_order = str(order.aw_order)
@@ -12610,7 +13033,7 @@ try {{
                 [normalized_job] if normalized_job else [],
                 {aw_order} if aw_order else set(),
                 {job_number} if job_number else set(),
-                inspect_pdf_text=True,
+                inspect_pdf_text=inspect_pdf_text,
             )
         if suffix != ".dxf":
             return False
@@ -12626,6 +13049,37 @@ try {{
             ) is not None
             for item_number in missing_items
         )
+
+    @staticmethod
+    def local_network_pdf_cache_dir(target_dir: Path) -> Path:
+        """Keep network PDF inspection copies outside the active Orders folder."""
+        return target_dir.parent / ".Network PDF Cache"
+
+    @classmethod
+    def duplicate_companion_sources(
+        cls,
+        selected: list[Path],
+        snapshot: dict[str, object],
+    ) -> list[Path]:
+        """Include every copy-suffixed companion when one candidate is selected."""
+        selected_by_key = {str(path).casefold(): path for path in selected}
+        groups_value = snapshot.get("duplicate_name_groups", [])
+        groups = groups_value if isinstance(groups_value, list) else []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            canonical = group.get("canonical")
+            duplicates = group.get("duplicates", [])
+            files = ([canonical] if isinstance(canonical, Path) else []) + (
+                [path for path in duplicates if isinstance(path, Path)]
+                if isinstance(duplicates, list)
+                else []
+            )
+            if not any(str(path).casefold() in selected_by_key for path in files):
+                continue
+            for path in files:
+                selected_by_key.setdefault(str(path).casefold(), path)
+        return sorted(selected_by_key.values(), key=lambda candidate: candidate.name.casefold())
 
     @classmethod
     def copy_edi_orders_for_process_orders(
@@ -12674,33 +13128,98 @@ try {{
                 source_dir,
                 orders,
                 root_only=True,
-                inspect_pdf_text=True,
+                inspect_pdf_text=False,
                 candidate_files=order_files,
             )
+            unresolved_pdf_orders = [
+                order for order in orders
+                if not any(
+                    source.suffix.lower() == ".pdf"
+                    and cls.file_matches_process_orders(source, [order], inspect_pdf_text=False)
+                    for source in sources
+                )
+            ]
         else:
             sources = []
+            unresolved_pdf_orders: list[shower_batch.ProcessOrder] = []
             for source in order_files:
                 if any(
                     cls.file_matches_missing_order_requirement(
                         source,
                         order,
                         missing_requirements.get(str(order.aw_order), {}),
+                        inspect_pdf_text=False,
                     )
                     for order in orders
                     if str(order.aw_order) in missing_requirements
                 ):
                     sources.append(source)
+            for order in orders:
+                requirement = missing_requirements.get(str(order.aw_order), {})
+                if not bool(requirement.get("pdf", False)):
+                    continue
+                if not any(
+                    source.suffix.lower() == ".pdf"
+                    and cls.file_matches_missing_order_requirement(
+                        source,
+                        order,
+                        requirement,
+                        inspect_pdf_text=False,
+                    )
+                    for source in sources
+                ):
+                    unresolved_pdf_orders.append(order)
             sources.sort(key=lambda candidate: candidate.name.casefold())
-        summary["considered"] = len(sources)
-        for index, source in enumerate(sources, start=1):
-            target = target_dir / source.name
-            did_copy = cls.copy_file_if_needed(source, target)
+
+        sources = cls.duplicate_companion_sources(sources, snapshot)
+        staged_matches: list[Path] = []
+        network_pdfs = [path for path in order_files if path.suffix.lower() == ".pdf"]
+        staged_pdf_count = len(network_pdfs) if unresolved_pdf_orders and network_pdfs else 0
+        total_progress = max(1, len(sources) + staged_pdf_count)
+        progress_index = 0
+        if unresolved_pdf_orders and network_pdfs:
+            cache_dir = cls.local_network_pdf_cache_dir(target_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            staged: list[Path] = []
+            stage_pairs = [(source, cache_dir / source.name) for source in network_pdfs]
+            for source, local_copy, did_stage in cls.copy_file_pairs_concurrently(stage_pairs):
+                staged.append(local_copy)
+                progress_index += 1
+                if progress_callback is not None:
+                    progress_callback(progress_index, total_progress, source, did_stage)
+            for local_copy in staged:
+                if any(
+                    cls.file_matches_missing_order_requirement(
+                        local_copy,
+                        order,
+                        (missing_requirements or {}).get(
+                            str(order.aw_order),
+                            {"pdf": True, "dxf_items": []},
+                        ),
+                        inspect_pdf_text=True,
+                    )
+                    for order in unresolved_pdf_orders
+                ):
+                    staged_matches.append(local_copy)
+
+        summary["staged_pdf_count"] = staged_pdf_count
+        summary["considered"] = len(sources) + staged_pdf_count
+        direct_pairs = [(source, target_dir / source.name) for source in sources]
+        for source, target, did_copy in cls.copy_file_pairs_concurrently(direct_pairs):
             if did_copy:
                 copied.append(target)
             else:
                 skipped += 1
+            progress_index += 1
             if progress_callback is not None:
-                progress_callback(index, len(sources), source, did_copy)
+                progress_callback(progress_index, total_progress, source, did_copy)
+        for staged in staged_matches:
+            target = target_dir / staged.name
+            did_copy = cls.copy_file_if_needed(staged, target)
+            if did_copy:
+                copied.append(target)
+            else:
+                skipped += 1
         summary["copied"] = copied
         summary["skipped"] = skipped
         return summary
@@ -12762,7 +13281,9 @@ try {{
             candidates = folder.glob("*") if root_only else folder.rglob("*")
         matched: list[Path] = []
         for path in candidates:
-            if not path.is_file() or path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
+            if candidate_files is None and not path.is_file():
+                continue
+            if path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
                 continue
             if path.suffix.lower() == ".pdf" and path.name.casefold().startswith(cls.HARDWARE_LIST_PREFIX):
                 continue
@@ -12950,7 +13471,7 @@ try {{
 
     @classmethod
     def copy_file_if_needed(cls, source: Path, target: Path) -> bool:
-        if source.resolve() == target.resolve():
+        if os.path.normcase(os.path.abspath(str(source))) == os.path.normcase(os.path.abspath(str(target))):
             return False
         if target.exists():
             try:
@@ -12960,7 +13481,13 @@ try {{
                     return False
                 if (
                     source_stat.st_size == target_stat.st_size
-                    and cls.sha256_file(source) == cls.sha256_file(target)
+                    and shower_cache.cached_file_sha256(
+                        "copy_file_sha256_v1",
+                        source,
+                    ) == shower_cache.cached_file_sha256(
+                        "copy_file_sha256_v1",
+                        target,
+                    )
                 ):
                     # An upstream export can refresh only the timestamp. Align the
                     # local timestamp once so later scans can skip all file reads.
@@ -12973,6 +13500,28 @@ try {{
                 pass
         cls.copy_file_atomically(source, target)
         return True
+
+    @classmethod
+    def copy_file_pairs_concurrently(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        *,
+        max_workers: int = 4,
+    ) -> Any:
+        """Copy independent shared-drive files concurrently with atomic targets."""
+        if len(pairs) <= 1:
+            for source, target in pairs:
+                yield source, target, cls.copy_file_if_needed(source, target)
+            return
+        worker_count = max(1, min(max_workers, len(pairs)))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-import") as executor:
+            futures = {
+                executor.submit(cls.copy_file_if_needed, source, target): (source, target)
+                for source, target in pairs
+            }
+            for future in as_completed(futures):
+                source, target = futures[future]
+                yield source, target, bool(future.result())
 
     def autocad_save_as_programs(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()
@@ -14509,6 +15058,13 @@ def validate_runtime_contracts() -> None:
         "update_checked_action_button",
         "toggle_selected_orders_checked",
         "uncheck_selected_orders",
+        "show_ambiguous_pdf_dialog",
+        "rename_ambiguous_pdf",
+        "resolve_exact_duplicate_order",
+        "import_duplicate_name_groups",
+        "duplicate_groups_by_order",
+        "local_network_pdf_cache_dir",
+        "dxf_cardinal_side_measurements",
     }
     missing = sorted(name for name in required_methods if not callable(getattr(ShowerProgrammerApp, name, None)))
     if missing:
@@ -15742,6 +16298,9 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "pdf_first_page_job_number_correlation": True,
                 "full_batch_terminal_process_list_rule": True,
                 "prior_sent_leftover_cleanup": True,
+                "local_first_network_import": True,
+                "actionable_duplicate_resolution": True,
+                "fractional_dxf_side_dimensions": True,
                 "automatic_xout_deletion": True,
                 "original_dxf_skip_preview": True,
                 "job_number_source_dxf_matching": True,

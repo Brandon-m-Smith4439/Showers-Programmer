@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.69",
-  "version_number": 69,
-  "marker": "VERSION_0_69_FAST_ACCURATE_SCANNING",
-  "release_name": "Fast Accurate Scanning",
-  "release_date": "2026-08-05",
+  "version": "Version 0.70",
+  "version_number": 70,
+  "marker": "VERSION_0_70_LOCAL_FIRST_IMPORT_REVIEW",
+  "release_name": "Local-First Import and Review",
+  "release_date": "2026-08-07",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

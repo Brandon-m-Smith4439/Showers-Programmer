@@ -2,6 +2,25 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 0.70] - 2026-08-07
+
+### Added
+- Ambiguous sketch rows now open an order-specific resolver with every matching PDF, an Open button for each file, and an editable A&W-specific rename suggestion.
+- Exact local PDF/DXF duplicates now mark only the affected order as an issue. Double-clicking that order opens a keep/remove review with an Open button beside every candidate.
+- DXF Preview now labels the top, bottom, left, and right sides in fractional inches rounded to the nearest 1/16 inch. Metric Water Jet DXFs remain millimeter files while their review dimensions are shown in inches.
+
+### Performance
+- Shared-drive scans now index filenames without opening PDF content or hashing copy candidates on the network.
+- Nonstandard PDF names are copied into a local inspection cache before first-page extraction, and only confirmed matches enter the active Orders folder.
+- New binary `.xls` process lists are copied local first and batch-converted through one hidden Excel session instead of repeatedly launching Excel against the shared drive.
+- Independent PDF/DXF transfers use up to four atomic copy workers, reducing first-import latency while keeping each destination file all-or-nothing.
+- Timestamp-only file comparisons reuse locally cached hashes on later scans, and staging progress updates once per copied network file.
+
+### Safety
+- Existing A&W, Job Nr, dimension, DXF-item, machine, orientation, and manual-override rules remain authoritative.
+- Copy-suffixed files are not declared exact duplicates until their contents are compared locally.
+- OOS labels render inside the outline, side dimensions render outside it, and radius callouts retain their existing collision avoidance.
+
 ## [Version 0.69] - 2026-08-05
 
 ### Changed

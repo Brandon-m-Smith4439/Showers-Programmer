@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 0.69 production-safety features for Shower Programmer.
+"""Version 0.70 production-safety features for Shower Programmer.
 
 This module intentionally patches the existing V40-era core at startup instead
 of duplicating the large GUI, batch, and programming modules.  It is loaded by
@@ -18,6 +18,7 @@ from __future__ import annotations
 # VERSION_0_66_MIRROR_WATERJET_BATCH_SCOPE
 # VERSION_0_67_DUPLICATE_JOB_ORDER_IDENTITY
 # VERSION_0_69_FAST_ACCURATE_SCANNING
+# VERSION_0_70_LOCAL_FIRST_IMPORT_REVIEW
 
 import copy
 import hashlib
@@ -1350,6 +1351,7 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_0_67_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_68_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_69_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_70_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 

@@ -522,6 +522,23 @@ def clean_job_name(value: str) -> str:
     return value
 
 
+class AmbiguousPdfError(RuntimeError):
+    """Raised when more than one PDF remains equally valid for an order."""
+
+    def __init__(
+        self,
+        message: str,
+        candidates: Iterable[Path],
+        *,
+        aw_order: str = "",
+        job_number: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.candidates = tuple(Path(path) for path in candidates)
+        self.aw_order = str(aw_order)
+        self.job_number = str(job_number)
+
+
 def find_pdf(
     folder: Path,
     job: str | None,
@@ -614,9 +631,12 @@ def find_pdf(
             return glass_matches[0][0]
         names = "\n  ".join(entry[0].name for entry in top_matches[:12])
         identity = f"A&W order {order_text or '(unknown)'} / Job Nr {job_number or '(unknown)'}"
-        raise RuntimeError(
+        raise AmbiguousPdfError(
             f"Multiple PDFs match {identity}. Keep only the intended local PDF or rename it to include "
-            f"the A&W order or Job Nr:\n  {names}"
+            f"the A&W order or Job Nr:\n  {names}",
+            [entry[0] for entry in top_matches],
+            aw_order=order_text,
+            job_number=job_number or "",
         )
 
     glass_orders = [p for p in pdfs if p.name.lower().startswith("glass order")]
