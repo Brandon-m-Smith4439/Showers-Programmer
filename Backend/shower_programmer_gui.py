@@ -49,7 +49,7 @@ import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
 import tkinter as tk
@@ -130,6 +130,274 @@ except Exception:
     Image = None
     ImageDraw = None
     ImageTk = None
+
+
+_native_messagebox = messagebox
+
+
+class _ProgramMessageBox:
+    """Drop-in messagebox facade that keeps operator prompts inside the app theme."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_native_messagebox, name)
+
+    @staticmethod
+    def _owner(parent: Any = None) -> Any:
+        candidate = parent or getattr(tk, "_default_root", None)
+        try:
+            return candidate.winfo_toplevel() if candidate is not None else None
+        except Exception:
+            return candidate
+
+    @staticmethod
+    def _app_for(owner: Any) -> Any:
+        current = owner
+        while current is not None:
+            app = getattr(current, "_shower_programmer_app", None)
+            if app is not None:
+                return app
+            current = getattr(current, "master", None)
+        return None
+
+    def _show(
+        self,
+        method: str,
+        title: str,
+        message: str,
+        *,
+        parent: Any = None,
+        kind: str = "info",
+        buttons: list[tuple[str, Any]] | None = None,
+        default: Any = "ok",
+    ) -> Any:
+        owner = self._owner(parent)
+        if ctk is None or owner is None:
+            native_method = "askyesno" if method == "askyesnocancel" else method
+            return getattr(_native_messagebox, native_method)(title, message, parent=parent)
+
+        app = self._app_for(owner)
+        palette = {
+            "app_bg": getattr(app, "APP_BG", "#f4f7fb"),
+            "card": getattr(app, "CARD_BG", "#ffffff"),
+            "panel": getattr(app, "PANEL_BG", "#f6f8fb"),
+            "border": getattr(app, "BORDER", "#d8e0eb"),
+            "text": getattr(app, "TEXT", "#172033"),
+            "muted": getattr(app, "MUTED", "#667085"),
+            "accent": getattr(app, "ACCENT", "#1f6fd1"),
+            "accent_dark": getattr(app, "ACCENT_DARK", "#1657a5"),
+            "warning": getattr(app, "WARNING", "#d97706"),
+            "danger": getattr(app, "DANGER", "#c9362b"),
+            "success": getattr(app, "SUCCESS", "#138a4b"),
+        }
+        accent = {
+            "warning": palette["warning"],
+            "error": palette["danger"],
+            "question": palette["accent"],
+            "success": palette["success"],
+        }.get(kind, palette["accent"])
+        icon_name = {
+            "warning": "warning",
+            "error": "warning",
+            "question": "help",
+            "success": "check_circle",
+        }.get(kind, "info")
+        result = {"value": default}
+        dialog = ctk.CTkToplevel(owner)
+        dialog.title(str(title))
+        dialog.configure(fg_color=palette["app_bg"])
+        dialog.resizable(False, False)
+        if app is not None:
+            try:
+                app.set_window_icon(dialog)
+            except Exception:
+                pass
+        try:
+            dialog.transient(owner)
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            dialog,
+            fg_color=palette["card"],
+            corner_radius=16,
+            border_width=1,
+            border_color=palette["border"],
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        shell.grid_columnconfigure(1, weight=1)
+
+        icon_box = ctk.CTkFrame(
+            shell,
+            fg_color=palette["panel"],
+            corner_radius=14,
+            width=42,
+            height=42,
+            border_width=1,
+            border_color=palette["border"],
+        )
+        icon_box.grid(row=0, column=0, rowspan=2, sticky="n", padx=(12, 10), pady=(13, 0))
+        icon_box.grid_propagate(False)
+        icon_kwargs: dict[str, Any] = {}
+        if app is not None:
+            try:
+                icon_kwargs = app.ctk_button_icon(icon_name, 22, accent)
+                icon_kwargs.pop("compound", None)
+            except Exception:
+                icon_kwargs = {}
+        ctk.CTkLabel(
+            icon_box,
+            text="" if icon_kwargs else "!" if kind in {"warning", "error"} else "i",
+            text_color=accent,
+            font=("Segoe UI", 19, "bold"),
+            **icon_kwargs,
+        ).pack(expand=True)
+        ctk.CTkLabel(
+            shell,
+            text=str(title),
+            font=("Segoe UI", 15, "bold"),
+            text_color=palette["text"],
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=(13, 3))
+
+        message_text = str(message)
+        if len(message_text) > 700 or message_text.count("\n") > 9:
+            body = ctk.CTkTextbox(
+                shell,
+                width=420,
+                height=145,
+                corner_radius=10,
+                border_width=1,
+                border_color=palette["border"],
+                fg_color=palette["panel"],
+                text_color=palette["text"],
+                font=("Segoe UI", 10),
+                wrap="word",
+            )
+            body.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(0, 8))
+            body.insert("1.0", message_text)
+            body.configure(state="disabled")
+        else:
+            ctk.CTkLabel(
+                shell,
+                text=message_text,
+                font=("Segoe UI", 10),
+                text_color=palette["muted"],
+                justify="left",
+                anchor="w",
+                wraplength=400,
+            ).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(0, 8))
+
+        def finish(value: Any) -> None:
+            result["value"] = value
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+            if owner is not None:
+                def restore_owner() -> None:
+                    try:
+                        if app is not None and hasattr(app, "bring_page_window_to_front"):
+                            app.bring_page_window_to_front(owner)
+                        else:
+                            owner.lift()
+                            owner.focus_force()
+                    except (AttributeError, tk.TclError):
+                        pass
+                try:
+                    owner.after(25, restore_owner)
+                except tk.TclError:
+                    pass
+
+        choices = buttons or [("OK", "ok")]
+        button_row = ctk.CTkFrame(shell, fg_color="transparent")
+        button_row.grid(row=2, column=0, columnspan=2, sticky="e", padx=12, pady=(0, 12))
+        for index, (label, value) in enumerate(choices):
+            primary = index == len(choices) - 1
+            ctk.CTkButton(
+                button_row,
+                text=label,
+                command=lambda selected=value: finish(selected),
+                width=max(88, len(label) * 8 + 26),
+                height=32,
+                corner_radius=9,
+                fg_color=accent if primary else palette["panel"],
+                hover_color=palette["accent_dark"] if primary else palette["border"],
+                border_width=0 if primary else 1,
+                border_color=palette["border"],
+                text_color="#ffffff" if primary else palette["text"],
+                font=("Segoe UI", 10, "bold"),
+            ).pack(side=tk.LEFT, padx=(8 if index else 0, 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(default))
+        dialog.bind("<Escape>", lambda _event: finish(default))
+        dialog.bind("<Return>", lambda _event: finish(choices[-1][1]))
+        dialog.update_idletasks()
+        width = max(440, dialog.winfo_reqwidth())
+        height = max(170, dialog.winfo_reqheight())
+        try:
+            x = owner.winfo_rootx() + max(0, (owner.winfo_width() - width) // 2)
+            y = owner.winfo_rooty() + max(0, (owner.winfo_height() - height) // 2)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            dialog.geometry(f"{width}x{height}")
+        try:
+            dialog.lift()
+            dialog.focus_force()
+        except tk.TclError:
+            pass
+        dialog.wait_window()
+        return result["value"]
+
+    def showinfo(self, title: str, message: str, **options: Any) -> str:
+        return str(self._show("showinfo", title, message, parent=options.get("parent"), kind="info"))
+
+    def showwarning(self, title: str, message: str, **options: Any) -> str:
+        return str(self._show("showwarning", title, message, parent=options.get("parent"), kind="warning"))
+
+    def showerror(self, title: str, message: str, **options: Any) -> str:
+        return str(self._show("showerror", title, message, parent=options.get("parent"), kind="error"))
+
+    def askyesno(self, title: str, message: str, **options: Any) -> bool:
+        return bool(
+            self._show(
+                "askyesno",
+                title,
+                message,
+                parent=options.get("parent"),
+                kind="question",
+                buttons=[("No", False), ("Yes", True)],
+                default=False,
+            )
+        )
+
+    def askyesnocancel(self, title: str, message: str, **options: Any) -> bool:
+        return self._show(
+            "askyesnocancel",
+            title,
+            message,
+            parent=options.get("parent"),
+            kind="question",
+            buttons=[("Don't Save", False), ("Save", True)],
+            default=False,
+        )
+
+    def askretrycancel(self, title: str, message: str, **options: Any) -> bool:
+        return bool(
+            self._show(
+                "askretrycancel",
+                title,
+                message,
+                parent=options.get("parent"),
+                kind="warning",
+                buttons=[("Cancel", False), ("Retry", True)],
+                default=False,
+            )
+        )
+
+
+messagebox = _ProgramMessageBox()
 
 
 class SingleInstanceGuard:
@@ -386,6 +654,8 @@ class ShowerProgrammerApp:
     INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
     HARDWARE_LIST_PREFIX = "hardware list"
     UI_SETTINGS_FILE_NAME = "shower_programmer_ui_settings.json"
+    ACTION_HISTORY_RETENTION_DAYS = 7
+    ACTION_HISTORY_FILE_NAME = "action_history.jsonl"
     ORDER_TREE_COLUMNS = (
         "status", "processed", "delivery", "order", "review",
         "sent", "job", "customer", "items", "issues",
@@ -402,6 +672,7 @@ class ShowerProgrammerApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        setattr(self.root, "_shower_programmer_app", self)
         self.root.title(f"Shower Programmer {self.APP_VERSION}")
         self.root.geometry("1180x720")
         self.root.minsize(980, 560)
@@ -433,6 +704,13 @@ class ShowerProgrammerApp:
             "processed": tk.StringVar(value="0"),
             "checked": tk.StringVar(value="0"),
         }
+        self.order_search_var = tk.StringVar(value="")
+        self.order_tree_heading_labels: dict[str, str] = {}
+        self.order_tree_sort_column = ""
+        self.order_tree_sort_descending = False
+        self.order_search_last_query = ""
+        self.order_search_match_index = -1
+        self.action_history_lock = threading.RLock()
 
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -473,6 +751,7 @@ class ShowerProgrammerApp:
         self.update_progress_percent_var: tk.StringVar | None = None
         self.update_progress_bar: ModernProgressBar | None = None
         self.managed_page_windows: dict[str, tk.Toplevel] = {}
+        self.settings_tabview: Any | None = None
         self.recent_external_page_launches: dict[str, float] = {}
         self._manual_overrides_session_output: Path | None = None
         self._manual_overrides_session_data: dict[str, object] | None = None
@@ -484,6 +763,7 @@ class ShowerProgrammerApp:
         self.force_main_window_maximized()
         self.root.after(75, self.drain_worker_queue)
         self.root.after(1000, self.refresh_activity_heartbeat)
+        self.root.after(250, self.archive_old_action_history)
         self.root.after_idle(lambda: self.root.after(850, self.scan_orders))
 
     def force_main_window_maximized(self) -> None:
@@ -612,6 +892,22 @@ class ShowerProgrammerApp:
             root_h = max(self.root.winfo_height(), 1)
             x = root_x + max(24, min(80, root_w // 12))
             y = root_y + max(24, min(80, root_h // 12))
+            window.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            window.geometry(f"{width}x{height}")
+
+    def center_child_window(self, window: tk.Toplevel, width: int, height: int) -> None:
+        """Center a child on the same display area as the main application."""
+        try:
+            self.root.update_idletasks()
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = max(self.root.winfo_width(), 1)
+            root_h = max(self.root.winfo_height(), 1)
+            width = min(width, max(900, root_w - 64))
+            height = min(height, max(640, root_h - 64))
+            x = root_x + max(0, (root_w - width) // 2)
+            y = root_y + max(0, (root_h - height) // 2)
             window.geometry(f"{width}x{height}+{x}+{y}")
         except tk.TclError:
             window.geometry(f"{width}x{height}")
@@ -1215,7 +1511,7 @@ class ShowerProgrammerApp:
             border_width=1,
             border_color=self.BORDER,
         )
-        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
         shell.grid_columnconfigure(0, weight=1)
         shell.grid_rowconfigure(2, weight=1)
 
@@ -1690,36 +1986,36 @@ class ShowerProgrammerApp:
         icon_box = ctk.CTkFrame(
             shell,
             fg_color=self.ACCENT_LIGHT if accent in {self.ACCENT, self.ACCENT_DARK} else self.PANEL_BG,
-            corner_radius=18,
-            width=64,
-            height=64,
+            corner_radius=15,
+            width=52,
+            height=52,
             border_width=1,
             border_color=self.BORDER,
         )
-        icon_box.grid(row=0, column=0, rowspan=2, sticky="n", padx=(18, 14), pady=(20, 0))
+        icon_box.grid(row=0, column=0, rowspan=2, sticky="n", padx=(14, 12), pady=(16, 0))
         icon_box.grid_propagate(False)
         ctk.CTkLabel(
             icon_box,
             text="",
-            image=self.ctk_button_icon(icon_name, 30, accent).get("image"),
+            image=self.ctk_button_icon(icon_name, 24, accent).get("image"),
         ).pack(expand=True)
 
         ctk.CTkLabel(
             shell,
             text=heading,
-            font=("Segoe UI", 21, "bold"),
+            font=("Segoe UI", 18, "bold"),
             text_color=self.TEXT,
             anchor="w",
-        ).grid(row=0, column=1, sticky="ew", padx=(0, 20), pady=(20, 4))
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=(16, 3))
         ctk.CTkLabel(
             shell,
             text=message,
-            font=("Segoe UI", 11),
+            font=("Segoe UI", 10),
             text_color=self.MUTED,
             justify="left",
             anchor="w",
-            wraplength=470,
-        ).grid(row=1, column=1, sticky="ew", padx=(0, 20), pady=(0, 12))
+            wraplength=420,
+        ).grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 10))
 
         next_row = 2
         if details:
@@ -1730,7 +2026,7 @@ class ShowerProgrammerApp:
                 border_width=1,
                 border_color=self.BORDER,
             )
-            detail_card.grid(row=next_row, column=0, columnspan=2, sticky="ew", padx=18, pady=(4, 14))
+            detail_card.grid(row=next_row, column=0, columnspan=2, sticky="ew", padx=14, pady=(3, 10))
             detail_card.grid_columnconfigure(1, weight=1)
             for row, (label, value) in enumerate(details):
                 ctk.CTkLabel(
@@ -1739,7 +2035,7 @@ class ShowerProgrammerApp:
                     font=("Segoe UI", 10, "bold"),
                     text_color=self.MUTED,
                     anchor="w",
-                    width=120,
+                    width=105,
                 ).grid(row=row, column=0, sticky="w", padx=(12, 8), pady=(9 if row == 0 else 4, 9 if row == len(details) - 1 else 4))
                 ctk.CTkLabel(
                     detail_card,
@@ -1748,7 +2044,7 @@ class ShowerProgrammerApp:
                     text_color=self.TEXT,
                     anchor="w",
                     justify="left",
-                    wraplength=360,
+                    wraplength=320,
                 ).grid(row=row, column=1, sticky="ew", padx=(0, 12), pady=(9 if row == 0 else 4, 9 if row == len(details) - 1 else 4))
             next_row += 1
 
@@ -1758,36 +2054,44 @@ class ShowerProgrammerApp:
             except tk.TclError:
                 pass
             dialog.destroy()
+            def restore_owner() -> None:
+                try:
+                    if self.managed_page_window("settings") is owner:
+                        self.bring_page_window_to_front(owner)
+                    else:
+                        owner.lift()
+                        owner.focus_force()
+                except (AttributeError, tk.TclError):
+                    pass
             try:
-                owner.lift()
-                owner.focus_force()
+                owner.after(25, restore_owner)
             except tk.TclError:
                 pass
 
         button_row = ctk.CTkFrame(shell, fg_color="transparent")
-        button_row.grid(row=next_row, column=0, columnspan=2, sticky="e", padx=18, pady=(0, 18))
+        button_row.grid(row=next_row, column=0, columnspan=2, sticky="e", padx=14, pady=(0, 14))
         ctk.CTkButton(
             button_row,
             text=button_text,
             command=close_dialog,
             width=112,
-            height=38,
+            height=34,
             corner_radius=10,
             fg_color=accent,
             hover_color=self.ACCENT_DARK if accent in {self.ACCENT, self.ACCENT_DARK} else accent,
             text_color="#ffffff",
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("check", 15, "#ffffff", "left"),
         ).pack(side=tk.RIGHT)
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         dialog.bind("<Escape>", lambda _event: close_dialog())
         dialog.update_idletasks()
-        width = max(570, dialog.winfo_reqwidth())
-        height = max(250, dialog.winfo_reqheight())
+        width = max(450, dialog.winfo_reqwidth())
+        height = max(180, dialog.winfo_reqheight())
         try:
-            x = owner.winfo_rootx() + max(20, (owner.winfo_width() - width) // 2)
-            y = owner.winfo_rooty() + max(20, (owner.winfo_height() - height) // 3)
+            x = owner.winfo_rootx() + max(0, (owner.winfo_width() - width) // 2)
+            y = owner.winfo_rooty() + max(0, (owner.winfo_height() - height) // 2)
             dialog.geometry(f"{width}x{height}+{x}+{y}")
         except tk.TclError:
             dialog.geometry(f"{width}x{height}")
@@ -2553,6 +2857,20 @@ class ShowerProgrammerApp:
         elif icon == "refresh":
             arc(4.7, 5.0, 19.3, 19.6, 35, 305)
             poly([(17.8, 5.3), (20.8, 5.5), (19.2, 8.2)], fill=color)
+        elif icon in {"settings", "gear"}:
+            circle(12, 12, 4.0, width=stroke)
+            circle(12, 12, 1.5, fill=color, width=thin)
+            for x1, y1, x2, y2 in (
+                (12, 3, 12, 6),
+                (12, 18, 12, 21),
+                (3, 12, 6, 12),
+                (18, 12, 21, 12),
+                (5.6, 5.6, 7.7, 7.7),
+                (16.3, 16.3, 18.4, 18.4),
+                (18.4, 5.6, 16.3, 7.7),
+                (7.7, 16.3, 5.6, 18.4),
+            ):
+                line([(x1, y1), (x2, y2)], thin)
         elif icon == "rotate_left":
             arc(4.5, 4.5, 19.5, 19.5, 250, 360, width=stroke)
             arc(4.5, 4.5, 19.5, 19.5, 0, 205, width=stroke)
@@ -2585,6 +2903,9 @@ class ShowerProgrammerApp:
             rect(7.4, 5.7, 16.4, 10.0, radius=1.0, width=thin)
             line([(8, 17), (16, 17)], thin)
             line([(16.5, 4.8), (19.1, 7.4)], thin)
+        elif icon == "edit":
+            line([(6.0, 18.0), (7.2, 13.8), (15.8, 5.2), (18.8, 8.2), (10.2, 16.8), (6.0, 18.0)], thin)
+            line([(14.4, 6.6), (17.4, 9.6)], thin)
         elif icon == "indicator":
             circle(12, 12, 4.4, fill=color)
             line([(12, 3.8), (12, 7.0)], thin)
@@ -2623,6 +2944,11 @@ class ShowerProgrammerApp:
             circle(12, 12, 8.5)
             circle(12, 8.1, 0.9, fill=color, width=thin)
             line([(12, 11), (12, 16.4)], stroke)
+        elif icon == "help":
+            circle(12, 12, 8.5)
+            arc(8.5, 6.8, 15.5, 13.2, 205, 330, width=stroke)
+            line([(12, 12.8), (12, 15.0)], stroke)
+            circle(12, 17.4, 0.9, fill=color, width=thin)
         elif icon == "warning":
             poly([(12, 3.7), (21, 20), (3, 20)], outline=color, width=stroke)
             line([(12, 9), (12, 14.4)], stroke)
@@ -2776,7 +3102,7 @@ class ShowerProgrammerApp:
         sidebar.grid_rowconfigure(1, weight=1, minsize=0)
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.grid(row=0, column=0, sticky="ew", padx=16, pady=(18, 14))
+        brand.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 10))
         brand.grid_columnconfigure(1, weight=1)
 
         logo_box = ctk.CTkFrame(
@@ -2819,21 +3145,29 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 10, "bold"),
             text_color=self.SIDEBAR_MUTED,
             anchor="center",
-        ).pack(fill=tk.X, padx=18, pady=(0, 7))
+        ).pack(fill=tk.X, padx=18, pady=(0, 5))
 
         workflow = ctk.CTkFrame(center_stack, fg_color="transparent")
         workflow.pack(fill=tk.X, padx=12)
-        self.make_sidebar_button(workflow, "Scan Orders", "scan", self.scan_orders, primary=True).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(workflow, "Process Selected", "check_circle", self.process_selected).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(workflow, "Process All", "play", self.process_all_orders).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(workflow, "Review Order", "eye", self.open_order_review).pack(fill=tk.X, pady=(0, 6))
+        scan_button = self.make_sidebar_button(workflow, "Scan Orders", "scan", self.scan_orders, primary=True)
+        process_selected_button = self.make_sidebar_button(workflow, "Process Selected", "check_circle", self.process_selected)
+        process_all_button = self.make_sidebar_button(workflow, "Process All", "play", self.process_all_orders)
+        review_order_button = self.make_sidebar_button(workflow, "Review Order", "eye", self.open_order_review)
         self.checked_action_button = self.make_sidebar_button(
             workflow,
             "Mark Checked",
             "check",
             self.toggle_selected_orders_checked,
         )
-        self.checked_action_button.pack(fill=tk.X)
+        workflow_buttons = [
+            scan_button,
+            process_selected_button,
+            process_all_button,
+            review_order_button,
+            self.checked_action_button,
+        ]
+        for index, button in enumerate(workflow_buttons):
+            button.pack(fill=tk.X, pady=(0, 0 if index == len(workflow_buttons) - 1 else 6))
 
         options_card = ctk.CTkFrame(
             center_stack,
@@ -2842,17 +3176,17 @@ class ShowerProgrammerApp:
             border_width=1,
             border_color=self.SIDEBAR_BORDER,
         )
-        options_card.pack(fill=tk.X, padx=12, pady=(12, 0))
+        options_card.pack(fill=tk.X, padx=12, pady=(8, 0))
         ctk.CTkLabel(
             options_card,
             text="Run Options",
             font=("Segoe UI", 12, "bold"),
             text_color=self.SIDEBAR_TEXT,
             anchor="w",
-        ).pack(fill=tk.X, padx=14, pady=(12, 8))
-        self.make_option_switch(options_card, "Skip Sketch output", self.skip_pdf_var).pack(fill=tk.X, padx=14, pady=(0, 8))
-        self.make_option_switch(options_card, "Skip DXF output", self.skip_dxf_var).pack(fill=tk.X, padx=14, pady=(0, 8))
-        self.make_option_switch(options_card, "REMAKE batch", self.remake_var).pack(fill=tk.X, padx=14, pady=(0, 14))
+        ).pack(fill=tk.X, padx=14, pady=(9, 6))
+        self.make_option_switch(options_card, "Skip Sketch output", self.skip_pdf_var).pack(fill=tk.X, padx=14, pady=(0, 6))
+        self.make_option_switch(options_card, "Skip DXF output", self.skip_dxf_var).pack(fill=tk.X, padx=14, pady=(0, 6))
+        self.make_option_switch(options_card, "REMAKE batch", self.remake_var).pack(fill=tk.X, padx=14, pady=(0, 10))
 
         ctk.CTkLabel(
             center_stack,
@@ -2864,10 +3198,14 @@ class ShowerProgrammerApp:
 
         tools = ctk.CTkFrame(center_stack, fg_color="transparent")
         tools.pack(fill=tk.X, padx=12)
-        self.make_sidebar_button(tools, "Clear Sketch Memory", "trash", self.clear_sketch_memory, compact=True).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(tools, "Clear Program Memory", "program", self.clear_program_memory, compact=True).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(tools, "Check for Updates", "refresh", self.check_for_updates, compact=True).pack(fill=tk.X, pady=(0, 6))
-        self.make_sidebar_button(tools, "Install Shortcut", "link", self.install_shortcut, compact=True).pack(fill=tk.X)
+        tool_buttons = [
+            self.make_sidebar_button(tools, "Clear Sketch Memory", "trash", self.clear_sketch_memory, compact=True),
+            self.make_sidebar_button(tools, "Clear Program Memory", "program", self.clear_program_memory, compact=True),
+            self.make_sidebar_button(tools, "Validate Selected", "check_circle", self.validate_selected_orders, compact=True),
+            self.make_sidebar_button(tools, "Settings", "settings", self.open_settings, compact=True),
+        ]
+        for index, button in enumerate(tool_buttons):
+            button.pack(fill=tk.X, pady=(0, 0 if index == len(tool_buttons) - 1 else 6))
 
         send_card = ctk.CTkFrame(
             sidebar,
@@ -2877,22 +3215,6 @@ class ShowerProgrammerApp:
             border_color="#2e90fa",
         )
         send_card.grid(row=2, column=0, sticky="ew", padx=12, pady=(10, 14))
-        ctk.CTkLabel(
-            send_card,
-            text="Ready for shop?",
-            font=("Segoe UI", 13, "bold"),
-            text_color="#ffffff",
-            anchor="w",
-        ).pack(fill=tk.X, padx=14, pady=(12, 2))
-        ctk.CTkLabel(
-            send_card,
-            text="Review generated sketches and send the selected batch.",
-            font=("Segoe UI", 10),
-            text_color="#dbeafe",
-            justify="left",
-            anchor="w",
-            wraplength=210,
-        ).pack(fill=tk.X, padx=14, pady=(0, 10))
         ctk.CTkButton(
             send_card,
             text="Select All Orders",
@@ -2907,7 +3229,7 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 12, "bold"),
             anchor="w",
             **self.ctk_button_icon("check_circle", 16, "#ffffff", "left"),
-        ).pack(fill=tk.X, padx=14, pady=(0, 8))
+        ).pack(fill=tk.X, padx=14, pady=(14, 8))
         ctk.CTkButton(
             send_card,
             text="Review / Send",
@@ -2922,10 +3244,26 @@ class ShowerProgrammerApp:
             **self.ctk_button_icon("send", 17, "#1849a9" if not self.dark_mode_var.get() else "#ffffff", "left"),
         ).pack(fill=tk.X, padx=14, pady=(0, 14))
 
+        sidebar_layout: dict[str, bool] = {"compact": False}
+
+        def arrange_sidebar(event: tk.Event | None = None) -> None:
+            compact = int(getattr(event, "height", sidebar.winfo_height())) < 950
+            if sidebar_layout["compact"] == compact and event is not None:
+                return
+            sidebar_layout["compact"] = compact
+            for index, button in enumerate(workflow_buttons):
+                button.configure(height=36 if compact else 44)
+                button.pack_configure(pady=(0, 0 if index == len(workflow_buttons) - 1 else (3 if compact else 6)))
+            for index, button in enumerate(tool_buttons):
+                button.configure(height=32 if compact else 38)
+                button.pack_configure(pady=(0, 0 if index == len(tool_buttons) - 1 else (3 if compact else 6)))
+
+        sidebar.bind("<Configure>", arrange_sidebar, add="+")
+
         content = ctk.CTkFrame(outer, fg_color="transparent")
         content.grid(row=0, column=1, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
-        content.grid_rowconfigure(4, weight=1)
+        content.grid_rowconfigure(1, weight=1)
 
         top_bar = ctk.CTkFrame(content, fg_color="transparent")
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -2983,23 +3321,8 @@ class ShowerProgrammerApp:
         self.make_tool_button(header_actions, "Open Input", "folder", self.open_input_folder, width=140).pack(side=tk.LEFT, padx=(0, 8))
         self.make_tool_button(header_actions, "Latest Batch", "clock", self.open_latest_batch, width=145).pack(side=tk.LEFT)
 
-        metrics = ctk.CTkFrame(content, fg_color="transparent")
-        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        self.add_metric_card(metrics, "orders", "Orders", "orders", self.ACCENT_DARK)
-        self.add_metric_card(metrics, "ready", "Ready", "check_circle", self.SUCCESS)
-        self.add_metric_card(metrics, "issues", "Issues", "warning", self.WARNING)
-        self.add_metric_card(metrics, "processed", "Processed", "refresh", "#7c3aed")
-        self.add_metric_card(metrics, "checked", "Checked", "checked", self.ACCENT_DARK)
-
-        paths, paths_body = self.make_collapsible_section(content, "Folder Setup", "folder", expanded=False)
-        paths.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.add_path_row(paths_body, 0, "Orders", self.folder_var, self.choose_folder)
-        self.add_path_row(paths_body, 1, "Import From", self.import_source_var, self.choose_import_source)
-        self.add_path_row(paths_body, 2, "Process Lists", self.process_list_var, self.choose_process_list)
-        self.add_path_row(paths_body, 3, "Output", self.output_dir_var, self.choose_output_dir)
-
         table_outer = self.make_section(content, "Orders", "orders")
-        table_outer.grid(row=4, column=0, sticky="nsew")
+        table_outer.grid(row=1, column=0, sticky="nsew")
         table_outer.grid_columnconfigure(0, weight=1)
         table_outer.grid_rowconfigure(1, weight=1)
 
@@ -3008,14 +3331,83 @@ class ShowerProgrammerApp:
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(1, weight=1)
 
+        table_toolbar = ctk.CTkFrame(table_frame, fg_color="transparent")
+        table_toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        table_toolbar.grid_columnconfigure(1, weight=1)
+
+        search_controls = ctk.CTkFrame(table_toolbar, fg_color="transparent")
+        search_controls.grid(row=0, column=0, sticky="w")
+
+        order_search = ctk.CTkEntry(
+            search_controls,
+            textvariable=self.order_search_var,
+            width=220,
+            height=32,
+            corner_radius=9,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            placeholder_text="Search order number",
+            font=("Segoe UI", 11),
+        )
+        order_search.pack(side=tk.LEFT)
+        order_search.bind("<Return>", lambda _event: self.find_order_from_search())
+        find_order_button = ctk.CTkButton(
+            search_controls,
+            text="Find",
+            command=self.find_order_from_search,
+            width=76,
+            height=32,
+            corner_radius=9,
+            fg_color=self.ACCENT_LIGHT,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.ACCENT,
+            text_color=self.ACCENT_DARK,
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("search", 14, self.ACCENT_DARK, "left"),
+        )
+        find_order_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.attach_tooltip(find_order_button, "Find and highlight an order in the current table")
+
+        orders_metrics = ctk.CTkFrame(table_toolbar, fg_color="transparent")
+        orders_metrics.grid(row=0, column=1)
+        self.add_compact_metric_badge(orders_metrics, "orders", "Orders", "orders", self.ACCENT_DARK, 112)
+        self.add_compact_metric_badge(orders_metrics, "ready", "Ready", "check_circle", self.SUCCESS, 106)
+        self.add_compact_metric_badge(orders_metrics, "issues", "Issues", "warning", self.WARNING, 106)
+        self.add_compact_metric_badge(orders_metrics, "processed", "Processed", "refresh", "#7c3aed", 132)
+        self.add_compact_metric_badge(orders_metrics, "checked", "Checked", "checked", self.ACCENT_DARK, 116)
+
         resize_hint = ctk.CTkLabel(
-            table_frame,
+            table_toolbar,
             text="Drag the ⋮ grips on either side of a header to resize that column",
             text_color=self.MUTED,
             font=("Segoe UI", 10, "italic"),
             anchor="e",
         )
-        resize_hint.grid(row=0, column=0, columnspan=2, sticky="e", pady=(0, 5))
+        resize_hint.grid(row=0, column=2, sticky="e")
+
+        toolbar_layout: dict[str, bool] = {"compact": False}
+
+        def arrange_orders_toolbar(event: tk.Event | None = None) -> None:
+            compact = int(getattr(event, "width", table_toolbar.winfo_width())) < 1380
+            if toolbar_layout["compact"] == compact and event is not None:
+                return
+            toolbar_layout["compact"] = compact
+            search_controls.grid_forget()
+            orders_metrics.grid_forget()
+            resize_hint.grid_forget()
+            if compact:
+                orders_metrics.grid(row=0, column=0, columnspan=3, pady=(0, 6))
+                search_controls.grid(row=1, column=0, sticky="w")
+                resize_hint.grid(row=1, column=2, sticky="e")
+            else:
+                search_controls.grid(row=0, column=0, sticky="w")
+                orders_metrics.grid(row=0, column=1)
+                resize_hint.grid(row=0, column=2, sticky="e")
+
+        table_toolbar.bind("<Configure>", arrange_orders_toolbar, add="+")
 
         columns = self.ORDER_TREE_COLUMNS
         self.tree = ttk.Treeview(
@@ -3038,6 +3430,7 @@ class ShowerProgrammerApp:
             "review": "Mark Checked",
             "issues": "Issues",
         }
+        self.order_tree_heading_labels = {"#0": "Batch / Process List", **headings}
         widths = {
             "status": 88,
             "processed": 190,
@@ -3054,10 +3447,16 @@ class ShowerProgrammerApp:
             "#0",
             text=self.order_tree_heading_text("Batch / Process List"),
             anchor=tk.CENTER,
+            command=lambda: self.sort_orders_by_column("#0"),
         )
         self.tree.column("#0", width=270, minwidth=210, anchor=tk.W, stretch=True)
         for col in columns:
-            self.tree.heading(col, text=self.order_tree_heading_text(headings[col]), anchor=tk.CENTER)
+            self.tree.heading(
+                col,
+                text=self.order_tree_heading_text(headings[col]),
+                anchor=tk.CENTER,
+                command=lambda column=col: self.sort_orders_by_column(column),
+            )
             min_width = {"status": 62, "processed": 150, "issues": 260}.get(col, 74)
             stretch = col in {"job", "customer", "issues"}
             self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=stretch)
@@ -3103,7 +3502,7 @@ class ShowerProgrammerApp:
             border_width=1,
             border_color=self.BORDER,
         )
-        bottom.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        bottom.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         bottom.columnconfigure(0, weight=1)
         bottom.columnconfigure(1, weight=0)
         self.progress = ModernProgressBar(bottom, self, height=14)
@@ -3358,6 +3757,7 @@ class ShowerProgrammerApp:
             anchor="w",
         ).pack(side=tk.LEFT)
         ctk.CTkFrame(frame, fg_color=self.DIVIDER, height=1, corner_radius=0).grid(row=0, column=0, sticky="sew", padx=14)
+        setattr(frame, "_section_header", header)
         return frame
 
     def make_collapsible_section(
@@ -3439,6 +3839,49 @@ class ShowerProgrammerApp:
         icon_color: str = "#1f5fa8",
     ) -> None:
         self.add_count_card(parent, self.summary_count_vars[key], caption, icon_name, icon_color)
+
+    def add_compact_metric_badge(
+        self,
+        parent: Any,
+        key: str,
+        caption: str,
+        icon_name: str,
+        icon_color: str,
+        width: int,
+    ) -> Any:
+        """Add a live count badge to the responsive Orders toolbar."""
+        tint, border = self.metric_tint(icon_color)
+        badge = ctk.CTkFrame(
+            parent,
+            fg_color=tint,
+            corner_radius=12,
+            border_width=1,
+            border_color=border,
+            width=width,
+            height=46,
+        )
+        badge.pack(side=tk.LEFT, padx=(8, 0), pady=2)
+        badge.pack_propagate(False)
+        ctk.CTkLabel(
+            badge,
+            text="",
+            image=self.ctk_button_icon(icon_name, 18, icon_color).get("image"),
+            width=22,
+        ).pack(side=tk.LEFT, padx=(10, 4))
+        ctk.CTkLabel(
+            badge,
+            textvariable=self.summary_count_vars[key],
+            font=("Segoe UI", 14, "bold"),
+            text_color=icon_color,
+            width=20,
+        ).pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            badge,
+            text=caption,
+            font=("Segoe UI", 11, "bold"),
+            text_color=self.MUTED if not self.dark_mode_var.get() else "#d0d5dd",
+        ).pack(side=tk.LEFT, padx=(3, 8))
+        return badge
 
     def metric_tint(self, icon_color: str) -> tuple[str, str]:
         color = icon_color.lower()
@@ -3579,6 +4022,7 @@ class ShowerProgrammerApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
 
+        self.record_action("Scan Orders", "Started scanning process lists and importing matching local inputs.", status="INFO")
         self.start_background_activity("Scanning process lists and importing matching EDI order files...", maximum=5)
         worker = threading.Thread(
             target=self.worker_scan_orders,
@@ -3681,6 +4125,60 @@ class ShowerProgrammerApp:
                     unique.setdefault(str(order.aw_order), order)
         return list(unique.values())
 
+    @staticmethod
+    def is_input_only_order(order: shower_batch.ProcessOrder) -> bool:
+        return bool(getattr(order, "process_list_missing", False))
+
+    @classmethod
+    def input_only_orders_from_pdfs(
+        cls,
+        pdfs: list[Path],
+        process_orders: list[shower_batch.ProcessOrder],
+    ) -> tuple[list[shower_batch.ProcessOrder], list[shower_batch.BatchJobResult]]:
+        """Create visible, non-processable rows for PDFs absent from active process lists."""
+        orders: list[shower_batch.ProcessOrder] = []
+        results: list[shower_batch.BatchJobResult] = []
+        used_ids = {str(order.aw_order) for order in process_orders}
+        for pdf in sorted(pdfs, key=lambda path: path.name.casefold()):
+            if cls.file_matches_process_orders(pdf, process_orders, inspect_pdf_text=True):
+                continue
+            try:
+                aw_guess = programmer.extract_aw_order_from_pdf(pdf) or ""
+            except Exception:
+                aw_guess = ""
+            try:
+                job_name = programmer.extract_job_from_pdf(pdf) or pdf.stem
+            except Exception:
+                job_name = programmer.job_from_filename(pdf.name) or pdf.stem
+            base_id = aw_guess if aw_guess and aw_guess not in used_ids else f"INPUT-{hashlib.sha1(pdf.name.casefold().encode('utf-8')).hexdigest()[:8].upper()}"
+            aw_order = base_id
+            suffix = 2
+            while aw_order in used_ids:
+                aw_order = f"{base_id}-{suffix}"
+                suffix += 1
+            used_ids.add(aw_order)
+            order = shower_batch.ProcessOrder(
+                aw_order=aw_order,
+                job_name=job_name,
+                customer="Input file only",
+                items={},
+            )
+            setattr(order, "process_list_missing", True)
+            setattr(order, "source_pdf", pdf)
+            orders.append(order)
+            results.append(
+                shower_batch.BatchJobResult(
+                    aw_order=aw_order,
+                    job_name=job_name,
+                    customer="Input file only",
+                    items="—",
+                    status="ISSUES",
+                    input_pdf=pdf,
+                    issues=["No matching order exists in the current process list; this input cannot be processed."],
+                )
+            )
+        return orders, results
+
     @classmethod
     def duplicate_groups_by_order(
         cls,
@@ -3781,6 +4279,7 @@ class ShowerProgrammerApp:
         return active_batches, cls.unique_orders_from_batches(active_batches), hidden_count
 
     def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
+        scan_stage = "initializing the scan"
         try:
             self.ensure_workflow_folders(folder, process_list, output_dir)
             shower_cache.configure(output_dir / ".scan_cache")
@@ -3833,12 +4332,14 @@ class ShowerProgrammerApp:
                     f"{stage_label} {source.name}: {detail}",
                 )
 
+            scan_stage = "reading local process lists"
             all_batches = self.load_process_list_batches(process_list, config, normalization_progress)
             self.queue_scan_progress(
                 progress_value,
                 max(progress_max, progress_value + 3),
                 "Checking Production Sketches for orders sent by another workstation...",
             )
+            scan_stage = "checking Production Sketches"
             (
                 production_sent_orders,
                 _production_sketch_matches,
@@ -3854,6 +4355,7 @@ class ShowerProgrammerApp:
                 for order in production_sent_orders
             }
             production_input_archived: list[Path] = []
+            production_validated_sources_by_aw: dict[str, Iterable[str]] = {}
             if production_sent_orders:
                 production_order_files = self.matching_order_files(
                     folder,
@@ -3871,6 +4373,11 @@ class ShowerProgrammerApp:
                         )
                     )
                     production_reconciliation_warnings.extend(production_archive_warnings)
+                    production_validated_sources_by_aw = getattr(
+                        self,
+                        "_last_archived_order_sources_by_aw",
+                        {},
+                    )
             retired_batch_plans = self.completed_process_list_batches_from_history(
                 all_batches,
                 folder,
@@ -3889,17 +4396,6 @@ class ShowerProgrammerApp:
                     retired_batch_plans,
                 )
                 retired_process_list_warnings.extend(archive_warnings)
-            if retired_batch_plans or production_sent_orders:
-                _retired_shared_files, shared_cleanup_warnings = self.clear_import_staging_folder(
-                    production_sent_orders,
-                    include_process_lists=False,
-                    completed_process_batches=retired_batch_plans,
-                    source_files=[
-                        path for path in import_snapshot.get("files", [])
-                        if isinstance(path, Path)
-                    ],
-                )
-                production_reconciliation_warnings.extend(shared_cleanup_warnings)
             if retired_batch_plans:
                 all_batches = [
                     batch
@@ -3941,6 +4437,7 @@ class ShowerProgrammerApp:
                     else "All active order PDFs/DXFs are already current locally."
                 ),
             )
+            scan_stage = "copying active order PDFs and DXFs"
             import_summary = self.copy_edi_orders_for_process_orders(
                 folder,
                 gateway_orders,
@@ -3948,6 +4445,35 @@ class ShowerProgrammerApp:
                 import_snapshot=import_snapshot,
                 missing_requirements=missing_requirements,
             )
+            scan_stage = "copying visible shared input files"
+            visible_import_summary = self.copy_visible_import_order_files(
+                folder,
+                import_snapshot,
+                progress_callback=order_file_progress,
+            )
+            targeted_copied = [path for path in import_summary.get("copied", []) if isinstance(path, Path)]
+            visible_copied = [path for path in visible_import_summary.get("copied", []) if isinstance(path, Path)]
+            import_summary["copied"] = list(dict.fromkeys(targeted_copied + visible_copied))
+            import_summary["considered"] = max(
+                int(import_summary.get("considered", 0) or 0),
+                int(visible_import_summary.get("considered", 0) or 0),
+            )
+            import_summary["skipped"] = int(visible_import_summary.get("skipped", 0) or 0)
+            if retired_batch_plans or production_sent_orders:
+                scan_stage = "clearing validated shared inputs"
+                _retired_shared_files, shared_cleanup_warnings = self.clear_import_staging_folder(
+                    production_sent_orders,
+                    include_process_lists=False,
+                    completed_process_batches=retired_batch_plans,
+                    source_files=[
+                        path for path in import_snapshot.get("files", [])
+                        if isinstance(path, Path)
+                    ],
+                    validated_order_sources_by_aw=production_validated_sources_by_aw,
+                    protected_orders=import_candidates,
+                )
+                production_reconciliation_warnings.extend(shared_cleanup_warnings)
+            scan_stage = "building the local order preview"
             active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
             local_order_files = [
                 path for path in folder.iterdir()
@@ -3968,6 +4494,20 @@ class ShowerProgrammerApp:
                 result.issues.append(
                     "Exact duplicate input files need review; double-click this order to choose which file to keep."
                 )
+            local_pdfs = [path for path in local_order_files if path.suffix.lower() == ".pdf"]
+            input_only_orders, input_only_previews = self.input_only_orders_from_pdfs(local_pdfs, orders)
+            if input_only_orders:
+                input_only_batch_id = "input-without-process-list"
+                active_batches.append(
+                    {
+                        "id": input_only_batch_id,
+                        "path": None,
+                        "name": "Input Without Process List",
+                        "orders": input_only_orders,
+                    }
+                )
+                orders.extend(input_only_orders)
+                previews.extend(input_only_previews)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} active order(s).")
             self.worker_queue.put(
                 (
@@ -3996,6 +4536,8 @@ class ShowerProgrammerApp:
                 )
             )
         except Exception as exc:
+            if isinstance(exc, FileNotFoundError):
+                exc = RuntimeError(f"Scan stopped while {scan_stage}: {exc}")
             self.worker_queue.put(("scan_error", exc))
 
     def worker_import_edi_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
@@ -4091,6 +4633,10 @@ class ShowerProgrammerApp:
         )
 
     def config_path(self, folder: Path) -> Path:
+        if getattr(sys, "frozen", False):
+            external = Path(sys.executable).resolve().parent / programmer.DEFAULT_CONFIG_NAME
+            if external.exists():
+                return external
         return programmer.resolve_config_path(programmer.DEFAULT_CONFIG_NAME, folder)
 
     def config_with_manual_overrides(self, folder: Path, output_dir: Path) -> dict[str, object]:
@@ -4188,6 +4734,228 @@ class ShowerProgrammerApp:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
+
+    def action_history_dir(self) -> Path:
+        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "History"
+
+    def action_history_path(self) -> Path:
+        return self.action_history_dir() / self.ACTION_HISTORY_FILE_NAME
+
+    def action_history_archive_dir(self) -> Path:
+        return self.action_history_dir() / "Archive"
+
+    @staticmethod
+    def parse_action_history_timestamp(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            stamp = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if stamp.tzinfo is not None:
+            return stamp.astimezone().replace(tzinfo=None)
+        return stamp
+
+    @classmethod
+    def partition_action_history_events(
+        cls,
+        events: list[dict[str, object]],
+        *,
+        now: datetime | None = None,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        """Split current and archive events using the configured seven-day window."""
+        reference = (now or datetime.now()).replace(tzinfo=None)
+        cutoff = reference - timedelta(days=cls.ACTION_HISTORY_RETENTION_DAYS)
+        current: list[dict[str, object]] = []
+        archived: list[dict[str, object]] = []
+        for event in events:
+            stamp = cls.parse_action_history_timestamp(event.get("timestamp"))
+            if stamp is not None and stamp < cutoff:
+                archived.append(event)
+            else:
+                current.append(event)
+        return current, archived
+
+    @staticmethod
+    def read_action_history_file(path: Path) -> tuple[list[dict[str, object]], list[str]]:
+        events: list[dict[str, object]] = []
+        invalid_lines: list[str] = []
+        if not path.exists():
+            return events, invalid_lines
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return events, invalid_lines
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except (ValueError, TypeError):
+                invalid_lines.append(line)
+                continue
+            if isinstance(value, dict):
+                events.append(value)
+            else:
+                invalid_lines.append(line)
+        return events, invalid_lines
+
+    @staticmethod
+    def write_action_history_file(path: Path, events: list[dict[str, object]], invalid_lines: list[str] | None = None) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+                for event in events:
+                    handle.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+                for line in invalid_lines or []:
+                    handle.write(line.rstrip("\r\n") + "\n")
+            os.replace(temp_path, path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def archive_old_action_history(self) -> int:
+        """Move records older than seven days into monthly local archive files."""
+        lock = getattr(self, "action_history_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self.action_history_lock = lock
+        with lock:
+            current_path = self.action_history_path()
+            events, invalid_lines = self.read_action_history_file(current_path)
+            current, archived = self.partition_action_history_events(events)
+            if not archived:
+                return 0
+            archive_groups: dict[str, list[dict[str, object]]] = {}
+            for event in archived:
+                stamp = self.parse_action_history_timestamp(event.get("timestamp")) or datetime.now()
+                archive_groups.setdefault(stamp.strftime("%Y-%m"), []).append(event)
+            archive_dir = self.action_history_archive_dir()
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            for month, month_events in archive_groups.items():
+                archive_path = archive_dir / f"actions-{month}.jsonl"
+                prior, prior_invalid = self.read_action_history_file(archive_path)
+                known_ids = {str(event.get("id", "")) for event in prior if event.get("id")}
+                prior.extend(event for event in month_events if str(event.get("id", "")) not in known_ids)
+                prior.sort(key=lambda event: str(event.get("timestamp", "")))
+                self.write_action_history_file(archive_path, prior, prior_invalid)
+            self.write_action_history_file(current_path, current, invalid_lines)
+            return len(archived)
+
+    def action_identity_for_orders(
+        self,
+        orders: Iterable[shower_batch.ProcessOrder | str] | None,
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        aw_orders: list[str] = []
+        job_numbers: list[str] = []
+        job_names: list[str] = []
+        customers: list[str] = []
+        for value in orders or []:
+            if isinstance(value, shower_batch.ProcessOrder):
+                order = value
+            else:
+                order = self.order_by_aw.get(str(value))
+            aw_order = str(order.aw_order if order is not None else value).strip()
+            if aw_order and aw_order not in aw_orders:
+                aw_orders.append(aw_order)
+            if order is None:
+                continue
+            job_name = str(order.job_name).strip()
+            job_number = self.job_number_for_order(order)
+            if job_name and job_name not in job_names:
+                job_names.append(job_name)
+            if job_number and job_number not in job_numbers:
+                job_numbers.append(job_number)
+            customer = str(order.customer).strip()
+            if customer and customer not in customers:
+                customers.append(customer)
+        return aw_orders, job_numbers, job_names, customers
+
+    def record_action(
+        self,
+        action: str,
+        message: str,
+        *,
+        status: str = "INFO",
+        orders: Iterable[shower_batch.ProcessOrder | str] | None = None,
+        details: object = "",
+    ) -> dict[str, object] | None:
+        """Append one major operator or workflow action without interrupting production work."""
+        try:
+            aw_orders, job_numbers, job_names, customers = self.action_identity_for_orders(orders)
+            event: dict[str, object] = {
+                "id": uuid.uuid4().hex,
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "action": str(action).strip() or "Action",
+                "status": str(status).strip().upper() or "INFO",
+                "orders": aw_orders,
+                "job_numbers": job_numbers,
+                "job_names": job_names,
+                "customers": customers,
+                "message": str(message).strip(),
+                "details": str(details).strip(),
+                "version": self.APP_VERSION,
+            }
+            lock = getattr(self, "action_history_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                self.action_history_lock = lock
+            with lock:
+                path = self.action_history_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+            return event
+        except Exception:
+            return None
+
+    @staticmethod
+    def action_history_matches(event: dict[str, object], query: str) -> bool:
+        terms = [term for term in re.split(r"\s+", str(query or "").casefold().strip()) if term]
+        if not terms:
+            return True
+        searchable = " ".join(
+            str(event.get(key, ""))
+            for key in (
+                "timestamp", "action", "status", "orders", "job_numbers", "job_names", "customers", "message", "details"
+            )
+        ).casefold()
+        return all(term in searchable for term in terms)
+
+    @staticmethod
+    def action_history_values(event: dict[str, object], key: str) -> list[str]:
+        """Normalize old or manually edited history fields for display."""
+        value = event.get(key, [])
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value or "").strip()
+        return [text] if text else []
+
+    def load_action_history_events(self, scope: str = "Last 7 Days") -> list[dict[str, object]]:
+        self.archive_old_action_history()
+        include_current = scope != "Archive"
+        include_archive = scope in {"Archive", "All"}
+        events: list[dict[str, object]] = []
+        if include_current:
+            current, _invalid = self.read_action_history_file(self.action_history_path())
+            events.extend(current)
+        if include_archive:
+            archive_dir = self.action_history_archive_dir()
+            if archive_dir.exists():
+                for path in sorted(archive_dir.glob("actions-*.jsonl"), reverse=True):
+                    archived, _invalid = self.read_action_history_file(path)
+                    events.extend(archived)
+        unique: dict[str, dict[str, object]] = {}
+        for event in events:
+            event_id = str(event.get("id", "")).strip() or hashlib.sha256(
+                json.dumps(event, ensure_ascii=True, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            unique[event_id] = event
+        return sorted(unique.values(), key=lambda event: str(event.get("timestamp", "")), reverse=True)
 
     @staticmethod
     def sent_process_signature(order: shower_batch.ProcessOrder) -> str:
@@ -4553,6 +5321,7 @@ class ShowerProgrammerApp:
             if len(values) > self.ORDER_TREE_INDEX["sent"]:
                 values[self.ORDER_TREE_INDEX["sent"]] = self.sent_summary_for_order(str(aw_order))
                 self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+        self.apply_order_tree_sort()
 
     def persisted_display_status(self, aw_order: str, current_status: str) -> str:
         """Restore the last processed color when a fresh scan only reports READY."""
@@ -4608,10 +5377,141 @@ class ShowerProgrammerApp:
         return ""
 
     @classmethod
-    def order_tree_heading_text(cls, label: str) -> str:
+    def order_tree_heading_text(cls, label: str, direction: str = "") -> str:
         """Wrap an Orders heading with visible drag grips on both sides."""
         grip = cls.ORDER_TREE_HEADER_GRIP
-        return f"{grip}  {label}  {grip}"
+        arrow = " \u25B2" if direction == "asc" else " \u25BC" if direction == "desc" else ""
+        return f"{grip}  {label}{arrow}  {grip}"
+
+    @staticmethod
+    def natural_sort_key(value: object) -> tuple[tuple[int, object], ...]:
+        """Return a case-insensitive key that keeps embedded numbers in numeric order."""
+        text = re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+        parts: list[tuple[int, object]] = []
+        for part in re.split(r"(\d+(?:\.\d+)?)", text):
+            if not part:
+                continue
+            if re.fullmatch(r"\d+(?:\.\d+)?", part):
+                parts.append((0, float(part)))
+            else:
+                parts.append((1, part))
+        return tuple(parts)
+
+    @classmethod
+    def order_sort_value(cls, value: object, column: str) -> tuple[int, object]:
+        """Normalize dates, status text, and natural text for stable Orders sorting."""
+        text = str(value or "").strip()
+        if column in {"processed", "delivery", "sent"}:
+            date_text = re.sub(r"^REMAKE\s+[^0-9]*", "", text, flags=re.IGNORECASE).strip()
+            date_text = re.sub(r"^Sent\s+", "", date_text, flags=re.IGNORECASE).strip()
+            for format_text in (
+                "%Y-%m-%d %H:%M:%S",
+                "%m/%d/%Y %I:%M %p",
+                "%m/%d/%y %I:%M %p",
+                "%m/%d/%Y",
+                "%m/%d/%y",
+            ):
+                try:
+                    return (0, datetime.strptime(date_text, format_text).timestamp())
+                except ValueError:
+                    continue
+        if column == "status":
+            rank = {"FAILED": 0, "ISSUES": 1, "SKIPPED": 2, "READY": 3, "OK": 4, "BATCH": 5}
+            return (0, rank.get(text.upper(), 99))
+        if not text or text.casefold() in {"no", "previous"}:
+            return (2, ())
+        return (1, cls.natural_sort_key(text))
+
+    def refresh_order_tree_headings(self) -> None:
+        for column, label in self.order_tree_heading_labels.items():
+            direction = ""
+            if column == self.order_tree_sort_column:
+                direction = "desc" if self.order_tree_sort_descending else "asc"
+            try:
+                self.tree.heading(
+                    column,
+                    text=self.order_tree_heading_text(label, direction),
+                    anchor=tk.CENTER,
+                    command=lambda selected=column: self.sort_orders_by_column(selected),
+                )
+            except tk.TclError:
+                continue
+
+    def apply_order_tree_sort(self) -> None:
+        column = self.order_tree_sort_column
+        if not column or not hasattr(self, "tree"):
+            return
+        reverse = self.order_tree_sort_descending
+
+        def row_key(row_id: str) -> tuple[int, object]:
+            if column == "#0":
+                return self.order_sort_value(self.tree.item(row_id, "text"), column)
+            values = self.tree.item(row_id, "values")
+            index = self.ORDER_TREE_INDEX.get(column)
+            value = values[index] if index is not None and len(values) > index else ""
+            return self.order_sort_value(value, column)
+
+        root_rows = list(self.tree.get_children(""))
+        batch_rows = [row_id for row_id in root_rows if row_id in self.tree_row_batches]
+        direct_orders = [row_id for row_id in root_rows if row_id in self.tree_row_orders]
+        if column == "#0":
+            for index, row_id in enumerate(sorted(batch_rows, key=row_key, reverse=reverse)):
+                self.tree.move(row_id, "", index)
+        for parent_id in batch_rows:
+            order_rows = [row_id for row_id in self.tree.get_children(parent_id) if row_id in self.tree_row_orders]
+            for index, row_id in enumerate(sorted(order_rows, key=row_key, reverse=reverse)):
+                self.tree.move(row_id, parent_id, index)
+        if direct_orders:
+            offset = len(batch_rows)
+            for index, row_id in enumerate(sorted(direct_orders, key=row_key, reverse=reverse), start=offset):
+                self.tree.move(row_id, "", index)
+
+    def sort_orders_by_column(self, column: str) -> None:
+        if column == self.order_tree_sort_column:
+            self.order_tree_sort_descending = not self.order_tree_sort_descending
+        else:
+            self.order_tree_sort_column = column
+            self.order_tree_sort_descending = False
+        self.refresh_order_tree_headings()
+        self.apply_order_tree_sort()
+        label = self.order_tree_heading_labels.get(column, column)
+        direction = "descending" if self.order_tree_sort_descending else "ascending"
+        self.status_var.set(f"Sorted Orders by {label}, {direction}.")
+
+    def find_order_from_search(self) -> None:
+        query = re.sub(r"\s+", "", self.order_search_var.get()).casefold()
+        if not query:
+            self.status_var.set("Enter an order number to find.")
+            return
+        exact: list[str] = []
+        partial: list[str] = []
+        for row_id in self.all_order_tree_rows():
+            order = self.order_for_tree_row(row_id)
+            aw_order = re.sub(r"\s+", "", str(order.aw_order if order is not None else "")).casefold()
+            if aw_order == query:
+                exact.append(row_id)
+            elif query in aw_order:
+                partial.append(row_id)
+        matches = exact or partial
+        if not matches:
+            self.status_var.set(f"No order matching {self.order_search_var.get().strip()} was found.")
+            return
+        if query == self.order_search_last_query:
+            self.order_search_match_index = (self.order_search_match_index + 1) % len(matches)
+        else:
+            self.order_search_last_query = query
+            self.order_search_match_index = 0
+        row_id = matches[self.order_search_match_index]
+        parent_id = self.tree.parent(row_id)
+        if parent_id:
+            self.tree.item(parent_id, open=True)
+        self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
+        self.tree.see(row_id)
+        order = self.order_for_tree_row(row_id)
+        aw_order = str(order.aw_order) if order is not None else self.order_search_var.get().strip()
+        suffix = f" ({self.order_search_match_index + 1} of {len(matches)})" if len(matches) > 1 else ""
+        self.status_var.set(f"Highlighted order {aw_order}{suffix}.")
 
     def update_orders_tree_resize_cursor(self, event: tk.Event) -> None:
         """Show a horizontal-resize cursor while hovering a column divider."""
@@ -5334,6 +6234,13 @@ class ShowerProgrammerApp:
                     self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
         self.update_summary_strip()
         self.update_checked_action_button()
+        self.apply_order_tree_sort()
+        self.record_action(
+            "Mark Checked" if checked else "Uncheck Orders",
+            f"{'Marked' if checked else 'Unchecked'} {len(orders)} order(s).",
+            status="SUCCESS",
+            orders=orders,
+        )
         if checked:
             self.status_var.set(f"Marked {len(orders)} order(s) checked.")
         else:
@@ -5669,6 +6576,16 @@ class ShowerProgrammerApp:
         if not orders:
             messagebox.showinfo("No selection", "Select one or more orders first.")
             return
+        input_only = [order for order in orders if self.is_input_only_order(order)]
+        orders = [order for order in orders if not self.is_input_only_order(order)]
+        if not orders:
+            messagebox.showwarning(
+                "Process list required",
+                "The selected input has no matching order in the current process list and cannot be processed.",
+            )
+            return
+        if input_only:
+            self.status_var.set(f"Skipped {len(input_only)} input-only order(s) with no process-list entry.")
         remake_items_by_order = None
         if self.remake_var.get():
             self.remake_items_var.set("")
@@ -5681,10 +6598,19 @@ class ShowerProgrammerApp:
         )
 
     def process_all_orders(self) -> None:
-        orders = list(self.orders)
+        input_only = [order for order in self.orders if self.is_input_only_order(order)]
+        orders = [order for order in self.orders if not self.is_input_only_order(order)]
         if not orders:
-            messagebox.showinfo("No orders", "Scan the process list first.")
+            if input_only:
+                messagebox.showwarning(
+                    "Process list required",
+                    "Input PDFs were found, but none have matching orders in the current process list.",
+                )
+            else:
+                messagebox.showinfo("No orders", "Scan the process list first.")
             return
+        if input_only:
+            self.status_var.set(f"Skipped {len(input_only)} input-only order(s) with no process-list entry.")
         remake_items_by_order = None
         if self.remake_var.get():
             self.remake_items_var.set("")
@@ -5696,6 +6622,134 @@ class ShowerProgrammerApp:
             force_override=True if remake_items_by_order is not None else None,
         )
 
+    def validate_selected_orders(self) -> None:
+        if self.is_busy:
+            messagebox.showinfo("Busy", "Wait for the current task to finish before validating orders.")
+            return
+        orders = self.selected_orders()
+        if not orders:
+            messagebox.showinfo("No selection", "Select one or more orders to validate first.")
+            return
+        input_only = [order for order in orders if self.is_input_only_order(order)]
+        orders = [order for order in orders if not self.is_input_only_order(order)]
+        if not orders:
+            messagebox.showwarning(
+                "Process list required",
+                "The selected input has no matching order in the current process list and cannot be validated.",
+            )
+            return
+        if input_only:
+            self.status_var.set(f"Skipped {len(input_only)} input-only order(s) during validation.")
+        try:
+            folder = Path(self.folder_var.get()).resolve()
+            output_dir = Path(self.output_dir_var.get()).resolve()
+            config = self.config_with_manual_overrides(folder, output_dir)
+        except Exception as exc:
+            messagebox.showerror("Validation could not start", str(exc))
+            return
+        row_state: dict[str, dict[str, str]] = {}
+        for order in orders:
+            values = self.tree_values_for_order(str(order.aw_order))
+            row_state[str(order.aw_order)] = {
+                "status": values[self.ORDER_TREE_INDEX["status"]] if len(values) > self.ORDER_TREE_INDEX["status"] else "",
+                "review": values[self.ORDER_TREE_INDEX["review"]] if len(values) > self.ORDER_TREE_INDEX["review"] else "",
+                "issues": values[self.ORDER_TREE_INDEX["issues"]] if len(values) > self.ORDER_TREE_INDEX["issues"] else "",
+            }
+        self.start_background_activity(f"Validating {len(orders)} selected order(s)...", maximum=len(orders))
+        self.record_action(
+            "Validate Selected",
+            f"Started validation for {len(orders)} selected order(s).",
+            status="INFO",
+            orders=orders,
+        )
+        threading.Thread(
+            target=self.worker_validate_selected_orders,
+            args=(orders, folder, output_dir, config, row_state),
+            daemon=True,
+        ).start()
+
+    def worker_validate_selected_orders(
+        self,
+        orders: list[shower_batch.ProcessOrder],
+        folder: Path,
+        output_dir: Path,
+        config: dict[str, object],
+        row_state: dict[str, dict[str, str]],
+    ) -> None:
+        try:
+            requirements = self.missing_order_input_requirements(folder, orders)
+            history_data = self.load_processing_history_for_output(output_dir)
+            validations: list[dict[str, object]] = []
+            for index, order in enumerate(orders, start=1):
+                aw_order = str(order.aw_order)
+                requirement = requirements.get(aw_order, {})
+                missing_pdf = bool(requirement.get("pdf", False))
+                raw_missing_items = requirement.get("dxf_items", [])
+                missing_items = [int(item) for item in raw_missing_items if str(item).isdigit()] if isinstance(raw_missing_items, list) else []
+                history = self.history_entry_from_data(history_data, aw_order)
+                processed = bool(str(history.get("last_processed", "")).strip())
+                sketch_skipped = bool(history.get("sketch_output_skipped", False))
+                dxf_skipped = bool(history.get("dxf_output_skipped", False))
+                sketch_path = self.find_order_sketch_path(aw_order, output_dir)
+                sketch_exists = sketch_path.exists()
+                dxf_paths = self.generated_dxf_paths_for_orders([aw_order], output_dir)
+                expected_dxf_count = len(order.item_numbers)
+                state = row_state.get(aw_order, {})
+                issue_text = str(state.get("issues", "")).strip()
+                checked = "checked" in str(state.get("review", "")).casefold()
+                machines: list[str] = []
+                for item_number in order.item_numbers:
+                    item = order.items[item_number]
+                    machine = item.desired_machine() or item.inferred_denver_machine(config) or "AUTO"
+                    machines.append(f"P{item_number} {machine}")
+
+                errors: list[str] = []
+                warnings: list[str] = []
+                if missing_pdf:
+                    errors.append("Missing source PDF")
+                if missing_items:
+                    errors.append("Missing source DXF: " + ", ".join(f"P{item}" for item in missing_items))
+                if processed and not sketch_skipped and not sketch_exists:
+                    errors.append("Processed sketch output missing")
+                if processed and not dxf_skipped and len(dxf_paths) < expected_dxf_count:
+                    errors.append(f"Generated DXFs {len(dxf_paths)}/{expected_dxf_count}")
+                if not processed:
+                    warnings.append("Not processed yet")
+                if issue_text:
+                    warnings.append(issue_text)
+                if not checked:
+                    warnings.append("Not marked checked")
+
+                result = "FAILED" if errors else "WARNING" if warnings else "PASS"
+                input_parts = ["PDF missing" if missing_pdf else "PDF OK"]
+                input_parts.append(
+                    f"DXFs {expected_dxf_count - len(missing_items)}/{expected_dxf_count}"
+                    if expected_dxf_count
+                    else "No DXF items"
+                )
+                output_parts = [
+                    "Sketch skipped" if sketch_skipped else "Sketch OK" if sketch_exists else "Sketch missing",
+                    "DXF skipped" if dxf_skipped else f"DXFs {len(dxf_paths)}/{expected_dxf_count}",
+                ]
+                notes = [*errors, *warnings]
+                validations.append(
+                    {
+                        "order": aw_order,
+                        "job_number": self.job_number_for_order(order) or "",
+                        "job_name": order.job_name,
+                        "customer": order.customer,
+                        "result": result,
+                        "inputs": "; ".join(input_parts),
+                        "outputs": "; ".join(output_parts),
+                        "machines": "; ".join(machines),
+                        "notes": "; ".join(notes) if notes else "Validation passed",
+                    }
+                )
+                self.queue_scan_progress(index, len(orders), f"Validated {aw_order} ({index}/{len(orders)})")
+            self.worker_queue.put(("validation_done", {"orders": orders, "validations": validations}))
+        except Exception as exc:
+            self.worker_queue.put(("validation_error", {"orders": orders, "error": exc}))
+
     def run_orders(
         self,
         orders: list[shower_batch.ProcessOrder],
@@ -5705,6 +6759,7 @@ class ShowerProgrammerApp:
         skip_pdf_override: bool | None = None,
         skip_dxf_override: bool | None = None,
     ) -> None:
+        orders = [order for order in orders if not self.is_input_only_order(order)]
         if self.is_busy:
             messagebox.showinfo("Batch running", "A batch is already running.")
             return
@@ -5748,6 +6803,13 @@ class ShowerProgrammerApp:
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=len(orders), value=0)
         self.status_var.set(("Processing" if apply else "Dry running") + f" {len(orders)} order(s)...")
+        self.record_action(
+            "Process Orders" if apply else "Validate Run",
+            f"Started {'REMAKE ' if remake_items_by_order is not None else ''}{'processing' if apply else 'dry run'} for {len(orders)} order(s).",
+            status="INFO",
+            orders=orders,
+            details=f"Skip sketch={skip_pdf}; skip DXF={skip_dxf}; overwrite={force}",
+        )
 
         worker = threading.Thread(
             target=self.worker_run_batch,
@@ -5846,7 +6908,9 @@ class ShowerProgrammerApp:
             "skip_sketch_output": bool(skip_pdf),
             "skip_dxf_output": bool(skip_dxf),
             "remake_items_by_order": {
-                order: sorted(items) for order, items in (remake_items_by_order or {}).items()
+                result.aw_order: list(result.remake_items)
+                for result in run.results
+                if result.remake_items is not None
             },
         }
         with (run_folder / "manifest.json").open("w", encoding="utf-8") as handle:
@@ -6253,8 +7317,11 @@ class ShowerProgrammerApp:
             entry["sketch_output_skipped"] = bool(skip_pdf)
             entry["dxf_output_skipped"] = bool(skip_dxf)
             entry["report_path"] = str(result.report_path or "")
+            detected_remake_items = result.remake_items
             if remake_items_by_order and result.aw_order in remake_items_by_order:
-                entry["remake_items"] = sorted(remake_items_by_order[result.aw_order])
+                detected_remake_items = sorted(remake_items_by_order[result.aw_order])
+            if detected_remake_items is not None:
+                entry["remake_items"] = list(detected_remake_items)
             else:
                 entry.pop("remake_items", None)
         self.save_processing_history(history)
@@ -6417,12 +7484,28 @@ class ShowerProgrammerApp:
                         self.insert_or_update_result(result)
                     counts = shower_batch.count_statuses(run.results)
                     self.status_var.set("Done. " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+                    self.apply_order_tree_sort()
+                    completed_orders = [
+                        self.order_by_aw[result.aw_order]
+                        for result in run.results
+                        if result.aw_order in self.order_by_aw
+                    ]
+                    failed_count = sum(count for status, count in counts.items() if status in {"FAILED", "ERROR"})
+                    issue_count = sum(count for status, count in counts.items() if status in {"ISSUES", "SKIPPED"})
+                    self.record_action(
+                        "Process Orders",
+                        "Processing complete. " + ", ".join(f"{key}={value}" for key, value in counts.items()),
+                        status="FAILED" if failed_count else "WARNING" if issue_count else "SUCCESS",
+                        orders=completed_orders,
+                        details=str(run_folder),
+                    )
                     self.clear_review_context_cache()
                     self.start_review_cache_warmup(self.orders)
                     messagebox.showinfo("Batch complete", "Processing complete.")
                 elif kind == "error":
                     self.finish_background_activity()
                     self.status_var.set("Error")
+                    self.record_action("Process Orders", "Batch processing failed.", status="FAILED", details=payload)
                     messagebox.showerror("Batch failed", friendly_error_message("Batch processing", payload))
                 elif kind == "scan_done":
                     data = payload
@@ -6470,6 +7553,7 @@ class ShowerProgrammerApp:
                     for result in previews:
                         assert isinstance(result, shower_batch.BatchJobResult)
                         self.insert_or_update_result(result)
+                    self.apply_order_tree_sort()
                     self.finish_background_activity()
                     scan_message = self.scan_status_message(
                         len(self.orders),
@@ -6503,6 +7587,15 @@ class ShowerProgrammerApp:
                         refreshed = int(cache_stats.get("writes", 0) or 0)
                         scan_message += f" Cache reused {reused}; refreshed {refreshed}."
                     self.status_var.set(scan_message)
+                    scan_status = "WARNING" if any(
+                        (retired_process_list_warnings, production_reconciliation_warnings, duplicate_cleanup_warnings)
+                    ) else "SUCCESS"
+                    self.record_action(
+                        "Scan Orders",
+                        scan_message,
+                        status=scan_status,
+                        orders=[order for order in orders if isinstance(order, shower_batch.ProcessOrder)],
+                    )
                     self.start_review_cache_warmup(self.orders)
                 elif kind == "import_done":
                     data = payload
@@ -6543,9 +7636,54 @@ class ShowerProgrammerApp:
                         self.order_batch_ids.clear()
                         self.update_summary_strip()
                         self.status_var.set(f"Scan complete: {message}")
+                        self.record_action("Scan Orders", f"Scan complete: {message}", status="WARNING")
                     else:
                         self.status_var.set("Scan failed")
+                        self.record_action("Scan Orders", "Order scan failed.", status="FAILED", details=payload)
                         messagebox.showerror("Scan failed", friendly_error_message("Order scan", payload))
+                elif kind == "validation_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    orders = data.get("orders", [])
+                    validations = data.get("validations", [])
+                    assert isinstance(orders, list)
+                    assert isinstance(validations, list)
+                    self.finish_background_activity()
+                    counts = {
+                        status: sum(1 for item in validations if isinstance(item, dict) and item.get("result") == status)
+                        for status in ("PASS", "WARNING", "FAILED")
+                    }
+                    summary = f"Validation complete: PASS={counts['PASS']}, WARNING={counts['WARNING']}, FAILED={counts['FAILED']}"
+                    self.status_var.set(summary)
+                    history_status = "FAILED" if counts["FAILED"] else "WARNING" if counts["WARNING"] else "SUCCESS"
+                    self.record_action(
+                        "Validate Selected",
+                        summary,
+                        status=history_status,
+                        orders=[order for order in orders if isinstance(order, shower_batch.ProcessOrder)],
+                        details="; ".join(
+                            f"{item.get('order')}: {item.get('notes')}"
+                            for item in validations
+                            if isinstance(item, dict)
+                        ),
+                    )
+                    self.open_validation_results(validations)
+                elif kind == "validation_error":
+                    data = payload
+                    assert isinstance(data, dict)
+                    orders = data.get("orders", [])
+                    error = data.get("error", "Unknown validation error")
+                    self.finish_background_activity()
+                    self.status_var.set("Validation failed")
+                    valid_orders = [order for order in orders if isinstance(order, shower_batch.ProcessOrder)] if isinstance(orders, list) else []
+                    self.record_action(
+                        "Validate Selected",
+                        "Selected-order validation failed.",
+                        status="FAILED",
+                        orders=valid_orders,
+                        details=error,
+                    )
+                    messagebox.showerror("Validation failed", friendly_error_message("Validate Selected", error))
                 elif kind == "send_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -6581,6 +7719,13 @@ class ShowerProgrammerApp:
                         input_cleanup_warnings,
                     )
                     self.status_var.set(details)
+                    self.record_action(
+                        "Send Output",
+                        f"Sent output for {len(sent_orders)} order(s).",
+                        status="WARNING" if archive_warnings or input_cleanup_warnings or missing else "SUCCESS",
+                        orders=[order for order in sent_orders if isinstance(order, shower_batch.ProcessOrder)],
+                        details=details,
+                    )
                     if self.send_review_status_var is not None:
                         self.send_review_status_var.set("Send complete.")
                     if self.send_review_progress is not None:
@@ -6596,11 +7741,15 @@ class ShowerProgrammerApp:
                         self.send_review_window = None
                         self.send_review_progress = None
                         self.send_review_status_var = None
-                    messagebox.showinfo("Send complete", details)
+                    if archive_warnings or input_cleanup_warnings:
+                        messagebox.showwarning("Sent with cleanup notes", details, parent=self.root)
+                    else:
+                        messagebox.showinfo("Send complete", details, parent=self.root)
                     self.root.after(100, self.scan_orders)
                 elif kind == "send_error":
                     self.finish_background_activity()
                     self.status_var.set("Send failed")
+                    self.record_action("Send Output", "Sending output failed.", status="FAILED", details=payload)
                     if self.send_review_status_var is not None:
                         self.send_review_status_var.set("Send failed.")
                     messagebox.showerror("Send failed", friendly_error_message("Review / Send", payload))
@@ -6959,6 +8108,16 @@ a {{ color: #1f4e79; }}
             messagebox.showinfo("Select one order", "Select exactly one scanned order to review.")
             return
         process_order = selected[0]
+        if self.is_input_only_order(process_order):
+            source_pdf = getattr(process_order, "source_pdf", None)
+            if isinstance(source_pdf, Path) and source_pdf.exists():
+                os.startfile(str(source_pdf.resolve()))
+            messagebox.showwarning(
+                "Process list required",
+                "This PDF is visible because it is in the input folder, but it has no matching order in the current process list. The source PDF was opened for review.",
+                parent=self.root,
+            )
+            return
         if self.resolve_exact_duplicate_order(process_order):
             return
         try:
@@ -7000,6 +8159,12 @@ a {{ color: #1f4e79; }}
         if not job.panels:
             messagebox.showinfo("No pieces", "No piece pages were found for this order.")
             return
+        self.record_action(
+            "Review Order",
+            f"Opened Review Order for {process_order.aw_order}.",
+            status="INFO",
+            orders=[process_order],
+        )
         try:
             self.begin_manual_overrides_session(output_dir)
         except Exception as exc:
@@ -7195,8 +8360,15 @@ a {{ color: #1f4e79; }}
         edit_grid.grid_columnconfigure((0, 1), weight=1)
         self.make_tool_button(edit_grid, "Indicator", "indicator", lambda: add_indicator_mark(), width=120).grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=(0, 7))
         self.make_tool_button(edit_grid, "Flip", "flip", lambda: flip_indicator_sides(), width=120).grid(row=0, column=1, sticky="ew", pady=(0, 7))
-        self.make_tool_button(edit_grid, "Text Box", "text", lambda: add_text_box(), width=120).grid(row=1, column=0, sticky="ew", padx=(0, 6))
-        self.make_tool_button(edit_grid, "Add X", "x", lambda: add_x_mark(), width=120).grid(row=1, column=1, sticky="ew")
+        self.make_tool_button(edit_grid, "Change Machine", "program", lambda: choose_machine_type(), width=250).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, 7),
+        )
+        self.make_tool_button(edit_grid, "Text Box", "text", lambda: add_text_box(), width=120).grid(row=2, column=0, sticky="ew", padx=(0, 6))
+        self.make_tool_button(edit_grid, "Add X", "x", lambda: add_x_mark(), width=120).grid(row=2, column=1, sticky="ew")
 
         status_card = ctk.CTkFrame(control_panel, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
         status_card.grid(row=4, column=0, sticky="ew", padx=14, pady=(0, 14))
@@ -7373,6 +8545,7 @@ a {{ color: #1f4e79; }}
             "current_item": job.panels[0].item,
             "viewed_items": {job.panels[0].item},
             "pending_items": set(),
+            "machine_changed_items": set(),
             "needs_output_save": False,
             "show_sketch_marks": not sketch_output_skipped,
             "sketch_output_skipped": sketch_output_skipped,
@@ -7396,10 +8569,11 @@ a {{ color: #1f4e79; }}
         def reset_sketch_to_editable_preview() -> bool:
             if not bool(state.get("embedded_sketch_preview")):
                 return False
-            state["sketch_preview_reader"] = source_reader
-            state["sketch_preview_path"] = job.pdf_path
-            state["embedded_sketch_preview"] = False
-            state["pdf_page_count"] = len(source_reader.pages)
+            self.configure_editable_sketch_preview_state(
+                state,
+                source_reader,
+                job.pdf_path,
+            )
             clear_sketch_preview_caches()
             return True
 
@@ -7454,6 +8628,7 @@ a {{ color: #1f4e79; }}
                 "positions": copy.deepcopy(state.get("positions", {})),
                 "dirty": set(state.get("dirty", set())),
                 "pending_items": set(state.get("pending_items", set())),
+                "machine_changed_items": set(state.get("machine_changed_items", set())),
                 "needs_output_save": bool(state.get("needs_output_save")),
                 "selected_key": state.get("selected_key"),
             }
@@ -7471,6 +8646,7 @@ a {{ color: #1f4e79; }}
             state["positions"] = copy.deepcopy(snapshot.get("positions", {}))
             state["dirty"] = set(snapshot.get("dirty", set()))
             state["pending_items"] = set(snapshot.get("pending_items", set()))
+            state["machine_changed_items"] = set(snapshot.get("machine_changed_items", set()))
             state["needs_output_save"] = bool(snapshot.get("needs_output_save"))
             state["selected_key"] = snapshot.get("selected_key")
             state["drag_key"] = None
@@ -7545,6 +8721,7 @@ a {{ color: #1f4e79; }}
                 state.get("dirty", set()).clear()
                 state.get("positions", {}).clear()
                 state.get("pending_items", set()).clear()
+                state.get("machine_changed_items", set()).clear()
                 state["needs_output_save"] = False
             else:
                 state["dirty"] = {entry for entry in state.get("dirty", set()) if entry[0] != item_number}
@@ -7554,6 +8731,7 @@ a {{ color: #1f4e79; }}
                     if entry[0] != item_number
                 }
                 state.get("pending_items", set()).discard(item_number)
+                state.get("machine_changed_items", set()).discard(item_number)
                 state["needs_output_save"] = bool(state.get("dirty") or state.get("pending_items"))
             state.setdefault("undo_stack", []).clear()
             state.setdefault("redo_stack", []).clear()
@@ -7569,8 +8747,6 @@ a {{ color: #1f4e79; }}
                 f"Save edits for {label} before leaving?",
                 parent=dialog,
             )
-            if answer is None:
-                return False
             if answer:
                 return save_review_edits(show_no_edits=False)
             discard_pending_item_edits(item_number)
@@ -7614,35 +8790,24 @@ a {{ color: #1f4e79; }}
             redraw()
 
         def refresh_sketch_preview() -> None:
-            target = (
-                generated_sketch_path
-                if generated_sketch_path.exists() and not bool(state.get("sketch_output_skipped", False))
-                else job.pdf_path
-            )
             try:
-                refreshed_reader = PdfReader(str(target))
+                refresh_prepared_job()
             except Exception as exc:
                 messagebox.showerror("Refresh Sketch failed", str(exc), parent=dialog)
                 return
-            state["sketch_preview_reader"] = refreshed_reader
-            state["sketch_preview_path"] = target
-            state["embedded_sketch_preview"] = not self.same_path(target, job.pdf_path)
-            state["pdf_page_count"] = len(refreshed_reader.pages)
+            self.configure_editable_sketch_preview_state(
+                state,
+                source_reader,
+                job.pdf_path,
+            )
+            state["show_sketch_marks"] = True
             clear_sketch_preview_caches()
             self.clear_review_context_cache(process_order.aw_order)
             redraw()
-            if bool(state.get("embedded_sketch_preview")):
-                suffix = (
-                    " Unsaved GUI edits are preserved but hidden in this saved-file preview."
-                    if has_pending_item_edits()
-                    else ""
-                )
-                status.set(
-                    f"Refreshed saved sketch from {target.name}; external PDF edits are visible."
-                    f" Use a markup tool to return to the editable layout.{suffix}"
-                )
-            else:
-                status.set(f"Refreshed source sketch from {target.name}.")
+            status.set(
+                f"Refreshed the editable sketch for {job.aw_order}. "
+                "You can continue moving or changing marks without reopening the order."
+            )
 
         def refresh_dxf_preview() -> None:
             panel = selected_panel()
@@ -7883,6 +9048,21 @@ a {{ color: #1f4e79; }}
             pending_output = bool(state.get("pending_items") or state.get("needs_output_save"))
             changed_items = {int(item) for item in state.get("pending_items", set())}
             changed_items.update(int(item) for item, _key in state.get("dirty", set()))
+            machine_changed_items = {
+                int(item) for item in state.get("machine_changed_items", set())
+            }
+            if (
+                machine_changed_items
+                and not bool(self.skip_dxf_var.get())
+                and not self.confirm_dxf_outputs_closed_for_reprocessing(
+                    dialog,
+                    process_order,
+                    programs_dir,
+                    job,
+                )
+            ):
+                status.set("Save cancelled. Close the generated program file and try again.")
+                return False
             if dirty and not self.save_editor_state_positions(job, state, config, dialog, show_no_edits=show_no_edits):
                 return False
             if dirty or pending_output:
@@ -7895,11 +9075,66 @@ a {{ color: #1f4e79; }}
                     state["needs_output_save"] = True
                     messagebox.showerror("Save sketch failed", f"Could not save the sketch edit settings:\n{exc}", parent=dialog)
                     return False
+                rewritten_dxfs: list[Path] = []
+                if machine_changed_items and not bool(self.skip_dxf_var.get()):
+                    try:
+                        rewritten_dxfs = self.write_machine_changed_dxfs(
+                            job.panels,
+                            machine_changed_items,
+                            config,
+                        )
+                        state["dxf_output_skipped"] = False
+                        state["dxf_preview_cache"] = {}
+                        result = shower_batch.BatchJobResult(
+                            aw_order=process_order.aw_order,
+                            job_name=process_order.job_name,
+                            customer=process_order.customer,
+                            items=", ".join(f"P{item}" for item in process_order.item_numbers),
+                            status="ISSUES" if issues else "OK",
+                            issues=list(issues),
+                            delivery_date=process_order.delivery_date,
+                            input_pdf=job.pdf_path,
+                            output_pdf=job.output_pdf,
+                            report_path=job.report_path,
+                        )
+                        self.record_direct_review_processing_result(
+                            result,
+                            run_folder,
+                            False,
+                            False,
+                        )
+                    except Exception as exc:
+                        state.get("pending_items", set()).update(machine_changed_items)
+                        state.get("machine_changed_items", set()).update(machine_changed_items)
+                        state["needs_output_save"] = True
+                        messagebox.showerror(
+                            "Program DXF update failed",
+                            "The sketch edit was saved, but the changed machine program could not be rewritten:\n"
+                            f"{exc}\n\nClose the DXF if it is open, then click Save Sketch Edits again.",
+                            parent=dialog,
+                        )
+                        return False
+                state.get("machine_changed_items", set()).difference_update(machine_changed_items)
                 state["saved_manual_overrides"] = copy.deepcopy(self._manual_overrides_session_data or {})
                 state.setdefault("undo_stack", []).clear()
                 state.setdefault("redo_stack", []).clear()
                 update_history_buttons()
-                status.set("Saved edits and overwrote the sketch PDF.")
+                if rewritten_dxfs:
+                    status.set(
+                        f"Saved edits and rewrote {len(rewritten_dxfs)} program DXF(s) using the selected machine units."
+                    )
+                else:
+                    status.set("Saved edits and overwrote the sketch PDF.")
+                self.record_action(
+                    "Save Sketch Edits",
+                    f"Saved review edits for {process_order.aw_order}.",
+                    status="SUCCESS",
+                    orders=[process_order],
+                    details=(
+                        f"Changed items={','.join(f'P{item}' for item in sorted(changed_items)) or 'none'}; "
+                        f"rewritten DXFs={len(rewritten_dxfs)}"
+                    ),
+                )
                 redraw()
                 return True
             if show_no_edits:
@@ -7967,8 +9202,22 @@ a {{ color: #1f4e79; }}
                     + ("original sketch preview retained" if review_skip_pdf else "sketch output refreshed")
                     + ("; DXF output skipped." if review_skip_dxf else "; DXF preview refreshed.")
                 )
+                self.record_action(
+                    "Process DXF Again",
+                    f"Reprocessed review output for {process_order.aw_order}.",
+                    status="WARNING" if result.issues else "SUCCESS",
+                    orders=[process_order],
+                    details="; ".join(result.issues),
+                )
                 redraw()
             except Exception as exc:
+                self.record_action(
+                    "Process DXF Again",
+                    f"Review reprocessing failed for {process_order.aw_order}.",
+                    status="FAILED",
+                    orders=[process_order],
+                    details=exc,
+                )
                 messagebox.showerror("Process DXF failed", str(exc), parent=dialog)
 
         def refresh_prepared_job() -> None:
@@ -8119,14 +9368,110 @@ a {{ color: #1f4e79; }}
             state["selected_key"] = f"{panel.item}_extra_text:{text_id}"
 
         def set_current_indicator_machine(machine_kind: str) -> None:
+            ensure_sketch_editing_enabled()
             panel = selected_panel()
             record_undo_state()
             self.set_indicator_machine_override(job.aw_order, panel.item, machine_kind, panel, config)
             refresh_prepared_job()
             state.get("pending_items", set()).add(panel.item)
+            state.get("machine_changed_items", set()).add(panel.item)
             state["needs_output_save"] = True
-            status.set(f"Changed indicator/machine for {job.aw_order}.{panel.item} to {machine_kind}. Click Save Edits to overwrite the sketch.")
+            unit_note = " and convert its program DXF to millimeters" if machine_kind.strip().upper() == "WJ" else ""
+            status.set(
+                f"Changed indicator/machine for {job.aw_order}.{panel.item} to {machine_kind}. "
+                f"Click Save Sketch Edits to overwrite the sketch{unit_note}."
+            )
             redraw()
+
+        def choose_machine_type() -> None:
+            panel = selected_panel()
+            current_machine = str(panel.machine or "DENVER 2").strip().upper()
+            if current_machine not in {"DENVER 1", "DENVER 2", "WJ"}:
+                current_machine = "DENVER 2"
+
+            chooser = ctk.CTkToplevel(dialog)
+            chooser.title("Change Machine Type")
+            chooser.configure(fg_color=self.APP_BG)
+            chooser.resizable(False, False)
+            self.set_window_icon(chooser)
+            self.position_child_window(chooser, 500, 300)
+            try:
+                chooser.transient(dialog)
+                chooser.grab_set()
+            except tk.TclError:
+                pass
+
+            card = ctk.CTkFrame(
+                chooser,
+                fg_color=self.CARD_BG,
+                corner_radius=16,
+                border_width=1,
+                border_color=self.BORDER,
+            )
+            card.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
+            ctk.CTkLabel(
+                card,
+                text=f"Change machine for {job.aw_order}.{panel.item}",
+                font=("Segoe UI", 19, "bold"),
+                text_color=self.TEXT,
+                anchor="w",
+            ).pack(fill=tk.X, padx=18, pady=(18, 4))
+            ctk.CTkLabel(
+                card,
+                text="Choose the machine that should receive this piece. Water Jet programs are saved in millimeters.",
+                font=("Segoe UI", 11),
+                text_color=self.MUTED,
+                justify="left",
+                anchor="w",
+                wraplength=430,
+            ).pack(fill=tk.X, padx=18, pady=(0, 14))
+            selected_machine = tk.StringVar(value=current_machine)
+            ctk.CTkSegmentedButton(
+                card,
+                values=["DENVER 1", "DENVER 2", "WJ"],
+                variable=selected_machine,
+                height=40,
+                corner_radius=9,
+                selected_color=self.ACCENT,
+                selected_hover_color=self.ACCENT_DARK,
+                unselected_color=self.PANEL_BG,
+                unselected_hover_color=self.BUTTON_HOVER,
+                text_color=self.TEXT,
+                font=("Segoe UI", 11, "bold"),
+            ).pack(fill=tk.X, padx=18)
+
+            actions = ctk.CTkFrame(card, fg_color="transparent")
+            actions.pack(fill=tk.X, padx=18, pady=(20, 18))
+
+            def close_chooser() -> None:
+                try:
+                    chooser.grab_release()
+                except tk.TclError:
+                    pass
+                chooser.destroy()
+
+            def confirm_machine() -> None:
+                choice = selected_machine.get().strip().upper()
+                close_chooser()
+                set_current_indicator_machine(choice)
+
+            self.make_tool_button(actions, "Cancel", "close", close_chooser, width=104).pack(side=tk.RIGHT)
+            ctk.CTkButton(
+                actions,
+                text="Confirm Machine",
+                command=confirm_machine,
+                width=164,
+                height=38,
+                corner_radius=9,
+                fg_color=self.ACCENT,
+                hover_color=self.ACCENT_DARK,
+                text_color="#ffffff",
+                font=("Segoe UI", 11, "bold"),
+                **self.ctk_button_icon("check", 15, "#ffffff", "left"),
+            ).pack(side=tk.RIGHT, padx=(0, 8))
+            chooser.protocol("WM_DELETE_WINDOW", close_chooser)
+            chooser.bind("<Escape>", lambda _event: close_chooser())
+            self.bring_window_to_front(chooser, make_transient=True)
 
         def resize_selected_mark(direction: int) -> None:
             key = state.get("selected_key")
@@ -8656,9 +10001,34 @@ a {{ color: #1f4e79; }}
             x, y = point
             return margin + (x - min_x) * scale, header_height + (max_y - y) * scale
 
+        if state is not None:
+            state["dxf_preview_transform"] = {
+                "min_x": min_x,
+                "max_x": max_x,
+                "min_y": min_y,
+                "max_y": max_y,
+                "margin": margin,
+                "header_height": header_height,
+                "scale": scale,
+            }
+
         long_side = max(width, height)
         highlight_segments = self.out_of_square_preview_segments(segments, long_side, inches_per_unit)
         mapped_center = map_point(((min_x + max_x) / 2, (min_y + max_y) / 2))
+        mapped_left, mapped_top = map_point((min_x, max_y))
+        mapped_right, mapped_bottom = map_point((max_x, min_y))
+        occupied_inside_labels: list[tuple[float, float, float, float]] = []
+        for radius_x, radius_y, radius in internal_radius_samples:
+            center_x, center_y = map_point((radius_x, radius_y))
+            ring_radius = max(9.0, min(24.0, abs(radius) * scale * 1.35 + 5.0))
+            occupied_inside_labels.append(
+                (
+                    center_x - ring_radius - 8.0,
+                    center_y - ring_radius - 8.0,
+                    center_x + ring_radius + 8.0,
+                    center_y + ring_radius + 8.0,
+                )
+            )
         for start, end in segments:
             x1, y1 = map_point(start)
             x2, y2 = map_point(end)
@@ -8677,18 +10047,77 @@ a {{ color: #1f4e79; }}
                 toward_x = mapped_center[0] - mx
                 toward_y = mapped_center[1] - my
                 toward_length = max(1.0, math.hypot(toward_x, toward_y))
-                canvas.create_text(
-                    mx + (toward_x / toward_length) * 18,
-                    my + (toward_y / toward_length) * 18,
+                inward_x = toward_x / toward_length
+                inward_y = toward_y / toward_length
+                segment_length = max(1.0, math.hypot(x2 - x1, y2 - y1))
+                segment_x = (x2 - x1) / segment_length
+                segment_y = (y2 - y1) / segment_length
+                label_text = self.out_of_square_segment_label(start, end, inches_per_unit)
+                label_angle = 90 if abs(y2 - y1) > abs(x2 - x1) else 0
+                label_x = mx + inward_x * 22.0
+                label_y = my + inward_y * 22.0
+                label_bounds: tuple[int, int, int, int] | None = None
+                for inward_distance in (22.0, 34.0, 46.0, 58.0):
+                    for segment_shift in (0.0, 0.18, -0.18, 0.32, -0.32):
+                        candidate_x = mx + inward_x * inward_distance + segment_x * segment_length * segment_shift
+                        candidate_y = my + inward_y * inward_distance + segment_y * segment_length * segment_shift
+                        probe = canvas.create_text(
+                            candidate_x,
+                            candidate_y,
+                            anchor=tk.CENTER,
+                            text=label_text,
+                            fill=self.WARNING,
+                            font=("Segoe UI", 9, "bold"),
+                            angle=label_angle,
+                        )
+                        bounds = canvas.bbox(probe)
+                        canvas.delete(probe)
+                        if not bounds:
+                            continue
+                        padded = (bounds[0] - 5, bounds[1] - 3, bounds[2] + 5, bounds[3] + 3)
+                        inside_outline = (
+                            padded[0] >= mapped_left + 3
+                            and padded[1] >= mapped_top + 3
+                            and padded[2] <= mapped_right - 3
+                            and padded[3] <= mapped_bottom - 3
+                        )
+                        if not inside_outline or any(
+                            self.preview_rects_overlap(padded, occupied)
+                            for occupied in occupied_inside_labels
+                        ):
+                            continue
+                        label_x = candidate_x
+                        label_y = candidate_y
+                        label_bounds = bounds
+                        break
+                    if label_bounds is not None:
+                        break
+                text_id = canvas.create_text(
+                    label_x,
+                    label_y,
                     anchor=tk.CENTER,
-                    text=self.out_of_square_segment_label(start, end, inches_per_unit),
+                    text=label_text,
                     fill=self.WARNING,
-                    font=("Arial", 9, "bold"),
+                    font=("Segoe UI", 9, "bold"),
+                    angle=label_angle,
                     tags=("dxf_oos_label",),
                 )
+                bounds = canvas.bbox(text_id)
+                if bounds:
+                    background = canvas.create_rectangle(
+                        bounds[0] - 4,
+                        bounds[1] - 2,
+                        bounds[2] + 4,
+                        bounds[3] + 2,
+                        fill=self.PREVIEW_CARD_BG,
+                        outline="",
+                        tags=("dxf_oos_label_bg",),
+                    )
+                    canvas.tag_lower(background, text_id)
+                    occupied_inside_labels.append(
+                        (bounds[0] - 7, bounds[1] - 5, bounds[2] + 7, bounds[3] + 5)
+                    )
         side_measurements = self.dxf_cardinal_side_measurements(segments, inches_per_unit)
-        mapped_left, mapped_top = map_point((min_x, max_y))
-        mapped_right, mapped_bottom = map_point((max_x, min_y))
         side_positions = {
             "top": ((mapped_left + mapped_right) / 2, mapped_top - 25, 0),
             "bottom": ((mapped_left + mapped_right) / 2, mapped_bottom + 25, 0),
@@ -8872,6 +10301,18 @@ a {{ color: #1f4e79; }}
         dx = abs(end[0] - start[0])
         dy = abs(end[1] - start[1])
         return min(dx, dy)
+
+    @staticmethod
+    def preview_rects_overlap(
+        first: tuple[float, float, float, float],
+        second: tuple[float, float, float, float],
+    ) -> bool:
+        return not (
+            first[2] <= second[0]
+            or second[2] <= first[0]
+            or first[3] <= second[1]
+            or second[3] <= first[1]
+        )
 
     @staticmethod
     def format_inches(value: float) -> str:
@@ -9501,6 +10942,31 @@ a {{ color: #1f4e79; }}
         item_override.pop("hinge_side", None)
         item_override.pop("hinges_up", None)
         self.save_manual_overrides(data)
+
+    @staticmethod
+    def write_machine_changed_dxfs(
+        panels: Iterable[programmer.Panel],
+        item_numbers: Iterable[int],
+        config: dict[str, object],
+    ) -> list[Path]:
+        """Rewrite manually reclassified programs with the selected machine's units."""
+        selected = {int(item) for item in item_numbers}
+        written: list[Path] = []
+        missing: list[int] = []
+        for panel in panels:
+            if panel.item not in selected:
+                continue
+            if panel.skip_dxf:
+                continue
+            if panel.source_dxf is None or panel.output_dxf is None:
+                missing.append(panel.item)
+                continue
+            programmer.write_panel_dxf(panel, force=True, config=config)
+            written.append(panel.output_dxf)
+        if missing:
+            labels = ", ".join(f"P{item}" for item in sorted(missing))
+            raise RuntimeError(f"No source DXF is available for {labels}.")
+        return written
 
     def set_mark_size_override(
         self,
@@ -11485,6 +12951,13 @@ try {{
         output_dir = Path(self.output_dir_var.get()).resolve()
         self.ensure_workflow_folders(order_folder, process_list_path, output_dir)
         send_steps = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
+        self.record_action(
+            "Send Output",
+            f"Started sending output for {len(orders)} order(s).",
+            status="INFO",
+            orders=orders,
+            details=f"Sketches={len(sketch_paths)}; programs={len(dxf_paths)}; archive inputs={archive_inputs}",
+        )
         self.start_background_activity("Sending generated files to shop folders...", maximum=send_steps)
         worker = threading.Thread(
             target=self.worker_send_outputs,
@@ -12089,6 +13562,18 @@ try {{
         return matched
 
     @staticmethod
+    def configure_editable_sketch_preview_state(
+        state: dict[str, Any],
+        reader: PdfReader,
+        source_path: Path,
+    ) -> None:
+        """Point a refreshed review back at the editable sketch model."""
+        state["sketch_preview_reader"] = reader
+        state["sketch_preview_path"] = source_path
+        state["embedded_sketch_preview"] = False
+        state["pdf_page_count"] = len(reader.pages)
+
+    @staticmethod
     def should_draw_sketch_overlays(state: dict[str, Any]) -> bool:
         """Return False for the clean original-sketch preview used by Skip Sketch output."""
         return bool(state.get("show_sketch_marks", True))
@@ -12268,6 +13753,11 @@ try {{
                     include_process_lists=False,
                     completed_process_batches=completed_process_batches,
                     progress_callback=cleanup_progress,
+                    validated_order_sources_by_aw=getattr(
+                        self,
+                        "_last_archived_order_sources_by_aw",
+                        {},
+                    ),
                 )
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
             self.worker_queue.put(
@@ -12412,6 +13902,7 @@ try {{
         completed_process_batches: list[dict[str, object]] | None = None,
         progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
+        self._last_archived_order_sources_by_aw = {}
         if not orders:
             return [], ["No matching scanned order records were available to archive."]
 
@@ -12438,6 +13929,91 @@ try {{
         if not order_files:
             warnings.append("No root-level order PDF/DXF input files matched the sent or completed-batch orders.")
 
+        def validated_names_for_order(item: tuple[str, shower_batch.ProcessOrder]) -> tuple[str, set[str]]:
+            aw_order, order = item
+            matched_names = {
+                path.name
+                for path in self.matching_order_files(
+                    order_folder,
+                    [order],
+                    root_only=True,
+                    inspect_pdf_text=True,
+                    candidate_files=order_files,
+                )
+            }
+            return aw_order, matched_names
+
+        validated_sources_by_aw: dict[str, set[str]] = {}
+        mapping_items = list(cleanup_orders.items())
+        if len(mapping_items) <= 1:
+            mapped_sources = [validated_names_for_order(item) for item in mapping_items]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(4, len(mapping_items)),
+                thread_name_prefix="shower-local-archive-map",
+            ) as executor:
+                mapped_sources = list(executor.map(validated_names_for_order, mapping_items))
+        for aw_order, matched_names in mapped_sources:
+            if matched_names:
+                validated_sources_by_aw[aw_order] = matched_names
+
+        # A final send can complete a process-list batch whose earlier orders
+        # were archived by previous sends. Reuse that local evidence instead
+        # of rediscovering those filenames by opening PDFs over the network.
+        missing_archive_orders = [
+            (aw_order, order)
+            for aw_order, order in cleanup_orders.items()
+            if aw_order not in validated_sources_by_aw
+        ]
+        if missing_archive_orders and order_archive_dir.exists():
+            try:
+                archive_candidates = [
+                    path for path in order_archive_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() in self.ORDER_FILE_EXTENSIONS
+                ]
+            except OSError:
+                archive_candidates = []
+            if archive_candidates:
+                prior_archive_matches = self.matching_order_files(
+                    order_archive_dir,
+                    [order for _aw_order, order in missing_archive_orders],
+                    root_only=True,
+                    inspect_pdf_text=True,
+                    candidate_files=archive_candidates,
+                )
+
+                def archived_names_for_order(
+                    item: tuple[str, shower_batch.ProcessOrder],
+                ) -> tuple[str, set[str]]:
+                    aw_order, order = item
+                    return aw_order, {
+                        path.name
+                        for path in self.matching_order_files(
+                            order_archive_dir,
+                            [order],
+                            root_only=True,
+                            inspect_pdf_text=True,
+                            candidate_files=prior_archive_matches,
+                        )
+                    }
+
+                if len(missing_archive_orders) <= 1:
+                    archived_mappings = [
+                        archived_names_for_order(item) for item in missing_archive_orders
+                    ]
+                else:
+                    with ThreadPoolExecutor(
+                        max_workers=min(4, len(missing_archive_orders)),
+                        thread_name_prefix="shower-prior-archive-map",
+                    ) as executor:
+                        archived_mappings = list(
+                            executor.map(archived_names_for_order, missing_archive_orders)
+                        )
+                for aw_order, matched_names in archived_mappings:
+                    if matched_names:
+                        validated_sources_by_aw[aw_order] = matched_names
+        self._last_archived_order_sources_by_aw = validated_sources_by_aw
+
         planned_process_files: list[Path] = []
         if process_list_files is not None:
             planned_process_files.extend(process_list_files)
@@ -12450,35 +14026,23 @@ try {{
 
         total_sources = len(order_files) + len(planned_process_files)
         done = 0
+        order_archive_failed = False
         for source in order_files:
-            archived.append(self.move_file_to_folder(source, order_archive_dir))
+            try:
+                archived.append(self.move_file_to_folder(source, order_archive_dir))
+            except (OSError, shutil.Error) as exc:
+                order_archive_failed = True
+                warnings.append(f"Could not archive input {source.name}: {exc}")
             done += 1
             if progress_callback is not None:
                 progress_callback(done, max(total_sources, 1), source)
 
         verified_process_files: list[Path] = []
         if plans:
-            for plan in plans:
-                batch_orders = plan.get("orders", [])
-                typed_orders = [
-                    order for order in batch_orders
-                    if isinstance(order, shower_batch.ProcessOrder)
-                ] if isinstance(batch_orders, list) else []
-                remaining = self.matching_order_files(
-                    order_folder,
-                    typed_orders,
-                    root_only=True,
-                    inspect_pdf_text=True,
-                ) if typed_orders else []
-                if remaining:
-                    names = ", ".join(path.name for path in remaining[:6])
-                    warnings.append(
-                        f"Kept process list {plan.get('name', 'batch')} because matching input files remain: {names}"
-                    )
-                    continue
-                files = plan.get("files", [])
-                if isinstance(files, list):
-                    verified_process_files.extend(path for path in files if isinstance(path, Path))
+            if order_archive_failed:
+                warnings.append("Kept completed process lists because one or more local order inputs could not be archived.")
+            else:
+                verified_process_files = planned_process_files
         else:
             verified_process_files = planned_process_files
 
@@ -12496,7 +14060,10 @@ try {{
                 continue
             if source.parent.resolve() == process_archive_dir.resolve():
                 continue
-            archived.append(self.move_file_to_folder(source, process_archive_dir))
+            try:
+                archived.append(self.move_file_to_folder(source, process_archive_dir))
+            except (OSError, shutil.Error) as exc:
+                warnings.append(f"Could not archive process list {source.name}: {exc}")
             done += 1
             if progress_callback is not None:
                 progress_callback(done, max(total_sources, 1), source)
@@ -12558,6 +14125,184 @@ try {{
                 return candidate
         raise RuntimeError(f"Could not choose a unique archive name for {path}")
 
+    @staticmethod
+    def unlink_import_path(path: Path) -> None:
+        """Delete one already-validated shared input, retrying one transient failure."""
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(0.15)
+            path.unlink()
+
+    @classmethod
+    def index_import_source_folder_bounded(
+        cls,
+        source_dir: Path,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> dict[str, object]:
+        """Index the shared folder without allowing SMB enumeration to hang cleanup."""
+        results: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
+
+        def index_worker() -> None:
+            try:
+                snapshot = cls.index_import_source_folder(source_dir)
+            except Exception as exc:
+                snapshot = {
+                    "source": str(source_dir),
+                    "source_missing": True,
+                    "source_error": str(exc),
+                    "files": [],
+                }
+            try:
+                results.put_nowait(snapshot)
+            except queue.Full:
+                pass
+
+        threading.Thread(
+            target=index_worker,
+            name="shower-input-cleanup-index",
+            daemon=True,
+        ).start()
+        try:
+            return results.get(timeout=max(0.01, float(timeout_seconds)))
+        except queue.Empty:
+            return {
+                "source": str(source_dir),
+                "source_missing": True,
+                "source_error": f"Network folder check timed out after {timeout_seconds:g} seconds",
+                "cleanup_timed_out": True,
+                "files": [],
+            }
+
+    @classmethod
+    def matching_order_files_bounded(
+        cls,
+        folder: Path,
+        orders: list[shower_batch.ProcessOrder],
+        candidate_files: list[Path],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> tuple[list[Path], str]:
+        """Correlate cleanup files with a timeout; uncertainty always means keep."""
+        results: queue.Queue[tuple[list[Path], str]] = queue.Queue(maxsize=1)
+
+        def match_worker() -> None:
+            try:
+                matched = cls.matching_order_files(
+                    folder,
+                    orders,
+                    root_only=True,
+                    inspect_pdf_text=True,
+                    candidate_files=candidate_files,
+                )
+                result = (matched, "")
+            except Exception as exc:
+                result = ([], str(exc))
+            try:
+                results.put_nowait(result)
+            except queue.Full:
+                pass
+
+        threading.Thread(
+            target=match_worker,
+            name="shower-input-cleanup-match",
+            daemon=True,
+        ).start()
+        try:
+            return results.get(timeout=max(0.01, float(timeout_seconds)))
+        except queue.Empty:
+            return [], f"Order-file correlation timed out after {timeout_seconds:g} seconds"
+
+    @classmethod
+    def delete_import_paths_bounded(
+        cls,
+        paths: Iterable[Path],
+        *,
+        timeout_seconds: float,
+        progress_callback: Callable[[int, int, Path], None] | None = None,
+        progress_start: int = 0,
+        progress_total: int | None = None,
+    ) -> tuple[list[Path], list[str], list[Path]]:
+        """Delete validated paths concurrently without letting an unavailable share stall the UI."""
+        unique: dict[str, Path] = {}
+        for path in paths:
+            key = os.path.normcase(os.path.abspath(str(path)))
+            unique.setdefault(key, path)
+        ordered = sorted(unique.values(), key=lambda candidate: candidate.name.casefold())
+        if not ordered:
+            return [], [], []
+
+        worker_count = min(4, len(ordered))
+        jobs: queue.Queue[Path] = queue.Queue()
+        results: queue.Queue[tuple[Path, OSError | None]] = queue.Queue()
+        for path in ordered:
+            jobs.put(path)
+
+        def delete_worker() -> None:
+            while True:
+                try:
+                    path = jobs.get_nowait()
+                except queue.Empty:
+                    return
+                error: OSError | None = None
+                try:
+                    cls.unlink_import_path(path)
+                except OSError as exc:
+                    error = exc
+                finally:
+                    results.put((path, error))
+                    jobs.task_done()
+
+        for index in range(worker_count):
+            threading.Thread(
+                target=delete_worker,
+                name=f"shower-input-cleanup-{index + 1}",
+                daemon=True,
+            ).start()
+
+        deleted: list[Path] = []
+        warnings: list[str] = []
+        completed_keys: set[str] = set()
+        result_index = progress_start
+        total = progress_total if progress_total is not None else progress_start + len(ordered)
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        while len(completed_keys) < len(ordered):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                path, error = results.get(timeout=remaining)
+            except queue.Empty:
+                break
+            key = os.path.normcase(os.path.abspath(str(path)))
+            completed_keys.add(key)
+            if error is None:
+                deleted.append(path)
+            else:
+                warnings.append(f"Could not delete {path.name}: {error}")
+            result_index += 1
+            if progress_callback is not None:
+                progress_callback(result_index, max(total, 1), path)
+
+        timed_out = [
+            path for key, path in unique.items()
+            if key not in completed_keys
+        ]
+
+        deleted.sort(key=lambda candidate: candidate.name.casefold())
+        timed_out.sort(key=lambda candidate: candidate.name.casefold())
+        if timed_out:
+            names = ", ".join(path.name for path in timed_out[:6])
+            extra = f" and {len(timed_out) - 6} more" if len(timed_out) > 6 else ""
+            warnings.append(
+                f"Network cleanup timed out before these validated files could be confirmed: {names}{extra}. "
+                "They will be checked again on the next scan."
+            )
+        return deleted, warnings, timed_out
+
     @classmethod
     def clear_import_staging_folder(
         cls,
@@ -12567,21 +14312,34 @@ try {{
         completed_process_batches: list[dict[str, object]] | None = None,
         progress_callback: Callable[[int, int, Path], None] | None = None,
         source_files: list[Path] | None = None,
+        delete_timeout_seconds: float | None = None,
+        validated_order_sources_by_aw: dict[str, Iterable[str]] | None = None,
+        protected_orders: list[shower_batch.ProcessOrder] | None = None,
     ) -> tuple[list[Path], list[str]]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         deleted: list[Path] = []
         warnings: list[str] = []
-        if source_files is None and not source_dir.exists():
-            return deleted, [f"Input staging folder was not found: {source_dir}"]
-        if source_files is None and not source_dir.is_dir():
-            return deleted, [f"Input staging path is not a folder: {source_dir}"]
         if source_dir.name.lower() != cls.IMPORT_STAGING_FOLDER_NAME.lower():
             return deleted, [f"Skipped input cleanup because the configured folder is not named {cls.IMPORT_STAGING_FOLDER_NAME}."]
 
+        if source_files is None:
+            initial_snapshot = cls.index_import_source_folder_bounded(source_dir)
+            if bool(initial_snapshot.get("source_missing", False)):
+                detail = str(initial_snapshot.get("source_error", "")).strip()
+                suffix = f" ({detail})" if detail else ""
+                return deleted, [f"Input staging folder could not be indexed: {source_dir}{suffix}"]
+            snapshot_values = initial_snapshot.get("files", [])
+            initial_files = [path for path in snapshot_values if isinstance(path, Path)] if isinstance(snapshot_values, list) else []
+        else:
+            initial_files = [path for path in source_files if isinstance(path, Path)]
+        initial_keys = {
+            os.path.normcase(os.path.abspath(str(path))): path
+            for path in initial_files
+        }
+
         plans = completed_process_batches or []
         if not orders and process_list_files is None and completed_process_batches is None and not include_process_lists:
-            entries = sorted(source_files if source_files is not None else source_dir.iterdir(), key=lambda candidate: candidate.name.lower())
-            order_targets = [path for path in entries if path.is_file() and not path.is_symlink()]
+            order_targets = list(initial_files)
         else:
             cleanup_orders: dict[str, shower_batch.ProcessOrder] = {
                 str(order.aw_order): order for order in (orders or [])
@@ -12592,41 +14350,120 @@ try {{
                     for order in batch_orders:
                         if isinstance(order, shower_batch.ProcessOrder):
                             cleanup_orders.setdefault(str(order.aw_order), order)
-            order_targets = cls.matching_order_files(
+            fast_targets = cls.matching_order_files(
                 source_dir,
                 list(cleanup_orders.values()),
                 root_only=True,
-                inspect_pdf_text=True,
-                candidate_files=source_files,
+                inspect_pdf_text=False,
+                candidate_files=initial_files,
             ) if cleanup_orders else []
+            has_validated_handoff = validated_order_sources_by_aw is not None
+            validated_names_by_aw = {
+                str(aw_order): {str(name).casefold() for name in names if str(name)}
+                for aw_order, names in (validated_order_sources_by_aw or {}).items()
+            }
+            validated_names = {
+                name
+                for names in validated_names_by_aw.values()
+                for name in names
+            }
+            named_targets = [
+                path for path in initial_files
+                if path.name.casefold() in validated_names
+            ]
+            initial_names = {path.name.casefold() for path in initial_files}
+            # A validated map is the record of exactly which source names were
+            # archived for that order. If none remain in the shared snapshot,
+            # that order is already clean; do not inspect unrelated PDFs.
+            covered_aw: set[str] = {
+                aw_order
+                for aw_order, names in validated_names_by_aw.items()
+                if aw_order in cleanup_orders and names
+            }
+            for aw_order, names in validated_names_by_aw.items():
+                if aw_order not in cleanup_orders:
+                    continue
+                if names.intersection(initial_names):
+                    covered_aw.add(aw_order)
+            for aw_order, order in cleanup_orders.items():
+                if any(
+                    path.suffix.lower() == ".pdf"
+                    and cls.file_matches_process_orders(path, [order], inspect_pdf_text=False)
+                    for path in fast_targets
+                ):
+                    covered_aw.add(aw_order)
+            unresolved_orders = [] if has_validated_handoff else [
+                order for aw_order, order in cleanup_orders.items()
+                if aw_order not in covered_aw
+            ]
+            slow_targets, correlation_error = cls.matching_order_files_bounded(
+                source_dir,
+                unresolved_orders,
+                initial_files,
+            ) if unresolved_orders else ([], "")
+            if correlation_error:
+                unresolved_aw = ", ".join(
+                    sorted(str(order.aw_order) for order in unresolved_orders)
+                )
+                return deleted, [
+                    "Shared input cleanup was skipped for unresolved order(s) "
+                    f"{unresolved_aw} because matching files could not be determined safely: "
+                    f"{correlation_error}"
+                ]
+            order_targets = sorted(
+                {
+                    os.path.normcase(os.path.abspath(str(path))): path
+                    for path in [*fast_targets, *named_targets, *slow_targets]
+                }.values(),
+                key=lambda candidate: candidate.name.casefold(),
+            )
+            if protected_orders:
+                protected_targets = cls.matching_order_files(
+                    source_dir,
+                    protected_orders,
+                    root_only=True,
+                    inspect_pdf_text=False,
+                    candidate_files=initial_files,
+                )
+                protected_keys = {
+                    os.path.normcase(os.path.abspath(str(path)))
+                    for path in protected_targets
+                }
+                order_targets = [
+                    path for path in order_targets
+                    if os.path.normcase(os.path.abspath(str(path))) not in protected_keys
+                ]
 
         planned_process_sources: list[Path] = []
         if process_list_files is not None:
-            planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, process_list_files, source_files))
+            planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, process_list_files, initial_files))
         elif include_process_lists and not plans:
             planned_process_sources.extend(
-                cls.importable_process_list_files(source_dir, source_files)
+                cls.importable_process_list_files(source_dir, initial_files)
             )
         for plan in plans:
             files = plan.get("files", [])
             if isinstance(files, list):
                 typed_files = [path for path in files if isinstance(path, Path)]
-                planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, typed_files, source_files))
+                planned_process_sources.extend(cls.process_list_files_for_sources(source_dir, typed_files, initial_files))
 
         total = len(order_targets) + len(planned_process_sources)
-        done = 0
-        for path in order_targets:
-            if not path.exists() or not path.is_file() or path.is_symlink():
-                continue
-            try:
-                path.unlink()
-                deleted.append(path)
-            except OSError as exc:
-                warnings.append(f"Could not delete {path.name}: {exc}")
-            done += 1
-            if progress_callback is not None:
-                progress_callback(done, max(total, 1), path)
+        timeout = delete_timeout_seconds
+        if timeout is None:
+            timeout = min(25.0, max(8.0, 4.0 + len(order_targets) * 0.35))
+        removed_orders, delete_warnings, timed_out_orders = cls.delete_import_paths_bounded(
+            order_targets,
+            timeout_seconds=timeout,
+            progress_callback=progress_callback,
+            progress_start=0,
+            progress_total=max(total, 1),
+        )
+        deleted.extend(removed_orders)
+        warnings.extend(delete_warnings)
+        done = len(order_targets) - len(timed_out_orders)
 
+        remaining_order_files: list[Path] = []
+        verification_indeterminate = False
         if orders or plans:
             verification_orders: dict[str, shower_batch.ProcessOrder] = {
                 str(order.aw_order): order for order in (orders or [])
@@ -12637,70 +14474,97 @@ try {{
                     for order in batch_orders:
                         if isinstance(order, shower_batch.ProcessOrder):
                             verification_orders.setdefault(str(order.aw_order), order)
-            remaining_order_files = cls.matching_order_files(
-                source_dir,
-                list(verification_orders.values()),
-                root_only=True,
-                inspect_pdf_text=True,
-                candidate_files=source_files,
-            ) if verification_orders else []
+            if plans and not verification_orders:
+                verification_indeterminate = True
+                warnings.append("Could not identify the orders owned by the completed process-list batch; its process list was kept.")
+            post_snapshot = cls.index_import_source_folder_bounded(source_dir)
+            if bool(post_snapshot.get("source_missing", False)):
+                verification_indeterminate = True
+                detail = str(post_snapshot.get("source_error", "")).strip()
+                suffix = f": {detail}" if detail else "."
+                warnings.append(f"Could not verify the shared input folder after cleanup{suffix}")
+                current_files: list[Path] = []
+            else:
+                current_values = post_snapshot.get("files", [])
+                current_files = [path for path in current_values if isinstance(path, Path)] if isinstance(current_values, list) else []
+                current_keys = {
+                    os.path.normcase(os.path.abspath(str(path))): path
+                    for path in current_files
+                }
+                known_target_keys = {
+                    os.path.normcase(os.path.abspath(str(path)))
+                    for path in order_targets
+                }
+                remaining_order_files.extend(
+                    current_keys[key]
+                    for key in known_target_keys
+                    if key in current_keys
+                )
+                new_candidates = [
+                    path for key, path in current_keys.items()
+                    if key not in initial_keys
+                ]
+                if new_candidates and verification_orders:
+                    new_matches, new_match_error = cls.matching_order_files_bounded(
+                        source_dir,
+                        list(verification_orders.values()),
+                        new_candidates,
+                    )
+                    if new_match_error:
+                        verification_indeterminate = True
+                        warnings.append(
+                            "Could not verify files added during cleanup; completed process lists were kept: "
+                            f"{new_match_error}"
+                        )
+                    else:
+                        remaining_order_files.extend(new_matches)
+            remaining_order_files = sorted(
+                {
+                    os.path.normcase(os.path.abspath(str(path))): path
+                    for path in remaining_order_files
+                }.values(),
+                key=lambda candidate: candidate.name.casefold(),
+            )
             for remaining in remaining_order_files:
                 warnings.append(f"Still present after input cleanup: {remaining.name}")
 
         verified_process_sources: list[Path] = []
         if plans:
-            for plan in plans:
-                batch_orders = plan.get("orders", [])
-                typed_orders = [
-                    order for order in batch_orders
-                    if isinstance(order, shower_batch.ProcessOrder)
-                ] if isinstance(batch_orders, list) else []
-                remaining = cls.matching_order_files(
-                    source_dir,
-                    typed_orders,
-                    root_only=True,
-                    inspect_pdf_text=True,
-                    candidate_files=source_files,
-                ) if typed_orders else []
-                if remaining:
-                    names = ", ".join(path.name for path in remaining[:6])
-                    warnings.append(
-                        f"Kept process list {plan.get('name', 'batch')} because matching shared input files remain: {names}"
-                    )
-                    continue
-                files = plan.get("files", [])
-                if isinstance(files, list):
-                    verified_process_sources.extend(
-                        cls.process_list_files_for_sources(
-                            source_dir,
-                            [path for path in files if isinstance(path, Path)],
-                            source_files,
-                        )
-                    )
+            if verification_indeterminate or remaining_order_files or timed_out_orders:
+                warnings.append("Kept completed process lists because shared input cleanup could not be fully verified.")
+            else:
+                verified_process_sources = planned_process_sources
         else:
-            verified_process_sources = planned_process_sources
+            if orders and (verification_indeterminate or remaining_order_files or timed_out_orders):
+                if planned_process_sources:
+                    warnings.append("Kept requested process lists because shared input cleanup could not be fully verified.")
+            else:
+                verified_process_sources = planned_process_sources
 
         unique_process_sources: dict[str, Path] = {}
         for path in verified_process_sources:
             try:
-                key = str(path.resolve()).casefold()
-            except OSError:
+                key = os.path.normcase(os.path.abspath(str(path)))
+            except (OSError, ValueError):
                 key = str(path).casefold()
             unique_process_sources[key] = path
-        for path in sorted(unique_process_sources.values(), key=lambda candidate: candidate.name.lower()):
-            if not path.exists() or not path.is_file() or path.is_symlink():
-                continue
-            try:
-                path.unlink()
-                deleted.append(path)
-            except OSError as exc:
-                warnings.append(f"Could not delete process list {path.name}: {exc}")
-            done += 1
-            if progress_callback is not None:
-                progress_callback(done, max(total, 1), path)
+        process_targets = sorted(unique_process_sources.values(), key=lambda candidate: candidate.name.casefold())
+        removed_process, process_warnings, timed_out_process = cls.delete_import_paths_bounded(
+            process_targets,
+            timeout_seconds=min(12.0, max(4.0, timeout / 2.0)),
+            progress_callback=progress_callback,
+            progress_start=done,
+            progress_total=max(total, 1),
+        )
+        deleted.extend(removed_process)
+        warnings.extend(process_warnings)
 
         if process_list_files is not None:
-            remaining_process_lists = cls.process_list_files_for_sources(source_dir, process_list_files, source_files)
+            remaining_process_lists = [
+                path for path in cls.process_list_files_for_sources(source_dir, process_list_files, initial_files)
+                if path not in removed_process
+            ]
+            remaining_process_lists.extend(timed_out_process)
             for remaining in remaining_process_lists:
                 warnings.append(f"Still present after process-list cleanup: {remaining.name}")
         return deleted, warnings
@@ -13080,6 +14944,34 @@ try {{
             for path in files:
                 selected_by_key.setdefault(str(path).casefold(), path)
         return sorted(selected_by_key.values(), key=lambda candidate: candidate.name.casefold())
+
+    @classmethod
+    def copy_visible_import_order_files(
+        cls,
+        target_dir: Path,
+        import_snapshot: dict[str, object],
+        progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
+    ) -> dict[str, object]:
+        """Mirror current shared PDFs/DXFs locally so unmatched inputs stay visible."""
+        raw_files = import_snapshot.get("order_files", [])
+        sources = [path for path in raw_files if isinstance(path, Path)] if isinstance(raw_files, list) else []
+        summary: dict[str, object] = {"copied": [], "skipped": 0, "considered": len(sources)}
+        if not sources or cls.same_path(Path(str(import_snapshot.get("source", ""))), target_dir):
+            return summary
+        target_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[Path] = []
+        skipped = 0
+        pairs = [(source, target_dir / source.name) for source in sources]
+        for index, (source, target, did_copy) in enumerate(cls.copy_file_pairs_concurrently(pairs), start=1):
+            if did_copy:
+                copied.append(target)
+            else:
+                skipped += 1
+            if progress_callback is not None:
+                progress_callback(index, len(pairs), source, did_copy)
+        summary["copied"] = copied
+        summary["skipped"] = skipped
+        return summary
 
     @classmethod
     def copy_edi_orders_for_process_orders(
@@ -13511,7 +15403,11 @@ try {{
         """Copy independent shared-drive files concurrently with atomic targets."""
         if len(pairs) <= 1:
             for source, target in pairs:
-                yield source, target, cls.copy_file_if_needed(source, target)
+                try:
+                    did_copy = cls.copy_file_if_needed(source, target)
+                except FileNotFoundError:
+                    did_copy = False
+                yield source, target, did_copy
             return
         worker_count = max(1, min(max_workers, len(pairs)))
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-import") as executor:
@@ -13521,7 +15417,11 @@ try {{
             }
             for future in as_completed(futures):
                 source, target = futures[future]
-                yield source, target, bool(future.result())
+                try:
+                    did_copy = bool(future.result())
+                except FileNotFoundError:
+                    did_copy = False
+                yield source, target, did_copy
 
     def autocad_save_as_programs(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()
@@ -13610,6 +15510,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         try:
             removed_files = self.clear_generated_sketch_artifacts(output_dir, aw_orders)
         except Exception as exc:
+            self.record_action(
+                "Clear Sketch Memory",
+                "Selected sketch-memory cleanup failed.",
+                status="FAILED",
+                orders=selected,
+                details=exc,
+            )
             messagebox.showerror("Clear Sketch Memory failed", friendly_error_message("Clear Sketch Memory", exc))
             return
         changed_fields = self.clear_manual_sketch_fields(aw_orders)
@@ -13629,9 +15536,20 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
         self.update_summary_strip()
         self.update_checked_action_button()
+        self.apply_order_tree_sort()
         self.status_var.set(
             f"Cleared sketch memory for {len(aw_orders)} selected order(s): {removed_files} file(s), "
             f"{changed_fields} saved field(s), and {history_entries} history entries."
+        )
+        self.record_action(
+            "Clear Sketch Memory",
+            f"Cleared sketch memory for {len(aw_orders)} selected order(s).",
+            status="SUCCESS",
+            orders=selected,
+            details=(
+                f"Deleted files={removed_files}; saved fields={changed_fields}; "
+                f"history entries={history_entries}"
+            ),
         )
         messagebox.showinfo(
             "Selected sketch memory cleared",
@@ -13668,6 +15586,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             changed_fields = self.clear_manual_program_fields(aw_orders)
             history_entries = self.clear_processing_history_program_fields(aw_orders)
         except Exception as exc:
+            self.record_action(
+                "Clear Program Memory",
+                "Selected program-memory cleanup failed.",
+                status="FAILED",
+                orders=selected,
+                details=exc,
+            )
             messagebox.showerror("Clear Program Memory failed", friendly_error_message("Clear Program Memory", exc))
             return
         for aw_order in aw_orders:
@@ -13687,9 +15612,20 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 )
                 self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
         self.update_summary_strip()
+        self.apply_order_tree_sort()
         self.status_var.set(
             f"Cleared program memory for {len(aw_orders)} selected order(s): "
             f"{removed_files} file(s), {changed_fields} saved field(s), and {history_entries} history entries."
+        )
+        self.record_action(
+            "Clear Program Memory",
+            f"Cleared program memory for {len(aw_orders)} selected order(s).",
+            status="SUCCESS",
+            orders=selected,
+            details=(
+                f"Deleted files={removed_files}; saved fields={changed_fields}; "
+                f"history entries={history_entries}"
+            ),
         )
         messagebox.showinfo(
             "Selected program memory cleared",
@@ -14923,6 +16859,345 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             return
         os.startfile(run_folder)
 
+    def open_validation_results(self, validations: list[dict[str, object]]) -> None:
+        existing = self.managed_page_window("validation_results")
+        if existing is not None:
+            try:
+                existing.destroy()
+            except tk.TclError:
+                pass
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Validation Results")
+        dialog.minsize(920, 520)
+        self.position_child_window(dialog, 1180, 680)
+        self.set_window_icon(dialog)
+        self.register_page_window("validation_results", dialog)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        title_stack = ctk.CTkFrame(header, fg_color="transparent")
+        title_stack.grid(row=0, column=0, sticky="ew", padx=22, pady=16)
+        ctk.CTkLabel(
+            title_stack,
+            text="Validate Selected",
+            font=("Segoe UI", 22, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            title_stack,
+            text="Read-only checks completed. No sketches, DXFs, inputs, or overrides were changed.",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        summary = ctk.CTkFrame(dialog, fg_color="transparent")
+        summary.grid(row=1, column=0, sticky="ew", padx=16, pady=(14, 10))
+        counts = {
+            status: sum(1 for item in validations if str(item.get("result", "")) == status)
+            for status in ("PASS", "WARNING", "FAILED")
+        }
+        for column, (status, color, icon_name) in enumerate(
+            (("PASS", self.SUCCESS, "check_circle"), ("WARNING", self.WARNING, "warning"), ("FAILED", self.DANGER, "minus_circle"))
+        ):
+            summary.grid_columnconfigure(column, weight=1)
+            card = ctk.CTkFrame(summary, fg_color=self.metric_tint(color)[0], corner_radius=12, border_width=1, border_color=self.metric_tint(color)[1])
+            card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 5, 0 if column == 2 else 5))
+            ctk.CTkLabel(
+                card,
+                text=f"{counts[status]}  {status.title()}",
+                image=self.ctk_button_icon(icon_name, 17, color).get("image"),
+                compound="left",
+                text_color=color,
+                font=("Segoe UI", 12, "bold"),
+            ).pack(pady=11)
+
+        body = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=14, border_width=1, border_color=self.BORDER)
+        body.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        columns = ("result", "order", "job", "inputs", "outputs", "machines", "notes")
+        tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", style="Orders.Treeview")
+        labels = {
+            "result": "Result", "order": "Order", "job": "Job Nr", "inputs": "Inputs",
+            "outputs": "Outputs", "machines": "Machine Routing", "notes": "Notes",
+        }
+        widths = {"result": 85, "order": 105, "job": 120, "inputs": 170, "outputs": 180, "machines": 220, "notes": 390}
+        for column in columns:
+            tree.heading(column, text=labels[column])
+            tree.column(column, width=widths[column], minwidth=75, stretch=column in {"machines", "notes"})
+        tree.tag_configure("PASS", foreground=self.SUCCESS)
+        tree.tag_configure("WARNING", foreground=self.WARNING)
+        tree.tag_configure("FAILED", foreground=self.DANGER)
+        rows: dict[str, dict[str, object]] = {}
+        for item in validations:
+            result = str(item.get("result", "WARNING"))
+            row_id = tree.insert(
+                "",
+                tk.END,
+                values=(
+                    result,
+                    str(item.get("order", "")),
+                    str(item.get("job_number", "")),
+                    str(item.get("inputs", "")),
+                    str(item.get("outputs", "")),
+                    str(item.get("machines", "")),
+                    str(item.get("notes", "")),
+                ),
+                tags=(result,),
+            )
+            rows[row_id] = item
+        y_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        x_scroll = ttk.Scrollbar(body, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=(10, 0))
+        y_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=(10, 0))
+        x_scroll.grid(row=1, column=0, sticky="ew", padx=(10, 0), pady=(0, 8))
+
+        details_var = tk.StringVar(value="Select an order to view its complete validation detail.")
+        ctk.CTkLabel(
+            dialog,
+            textvariable=details_var,
+            text_color=self.MUTED,
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=1100,
+        ).grid(row=3, column=0, sticky="ew", padx=22, pady=(0, 6))
+
+        def show_details(_event: tk.Event | None = None) -> None:
+            selection = tree.selection()
+            item = rows.get(selection[0]) if selection else None
+            if not item:
+                return
+            details_var.set(
+                f"{item.get('order')}  |  {item.get('job_name')}  |  {item.get('customer')}  |  {item.get('notes')}"
+            )
+
+        tree.bind("<<TreeviewSelect>>", show_details)
+        ctk.CTkButton(
+            dialog,
+            text="Close",
+            command=dialog.destroy,
+            width=110,
+            height=36,
+            corner_radius=9,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=4, column=0, sticky="e", padx=16, pady=(0, 14))
+        self.bring_window_to_front(dialog, make_transient=False)
+
+    @staticmethod
+    def action_history_display_time(value: object) -> str:
+        stamp = ShowerProgrammerApp.parse_action_history_timestamp(value)
+        return stamp.strftime("%m/%d/%Y %I:%M %p") if stamp is not None else str(value or "")
+
+    def open_action_history(self) -> None:
+        if self.focus_existing_page_window("action_history", "Action History", show_notice=False):
+            return
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Action History")
+        dialog.minsize(960, 560)
+        self.position_child_window(dialog, 1240, 720)
+        self.set_window_icon(dialog)
+        self.register_page_window("action_history", dialog)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        title_stack = ctk.CTkFrame(header, fg_color="transparent")
+        title_stack.grid(row=0, column=0, sticky="ew", padx=22, pady=16)
+        ctk.CTkLabel(
+            title_stack,
+            text="Action History",
+            font=("Segoe UI", 22, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            title_stack,
+            text="Search current and archived workflow activity by action, order number, Job Nr, customer, or result.",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        toolbar = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        toolbar.grid(row=1, column=0, sticky="ew", padx=16, pady=(14, 10))
+        toolbar.grid_columnconfigure(0, weight=1)
+        query_var = tk.StringVar(value="")
+        scope_var = tk.StringVar(value="Last 7 Days")
+        count_var = tk.StringVar(value="")
+        query_entry = ctk.CTkEntry(
+            toolbar,
+            textvariable=query_var,
+            height=36,
+            corner_radius=9,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            placeholder_text="Search actions, order numbers, Job Nrs, names, or details",
+            font=("Segoe UI", 11),
+        )
+        query_entry.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=12)
+        scope_control = ctk.CTkSegmentedButton(
+            toolbar,
+            values=["Last 7 Days", "Archive", "All"],
+            variable=scope_var,
+            height=36,
+            corner_radius=9,
+            selected_color=self.ACCENT,
+            selected_hover_color=self.ACCENT_DARK,
+            unselected_color=self.BUTTON_BG,
+            unselected_hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        )
+        scope_control.grid(row=0, column=1, padx=(0, 8), pady=12)
+
+        body = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=14, border_width=1, border_color=self.BORDER)
+        body.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        columns = ("time", "action", "status", "orders", "jobs", "message")
+        tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", style="Orders.Treeview")
+        tree.heading("time", text="Time")
+        tree.heading("action", text="Action")
+        tree.heading("status", text="Result")
+        tree.heading("orders", text="Orders")
+        tree.heading("jobs", text="Job Nrs")
+        tree.heading("message", text="Details")
+        tree.column("time", width=160, minwidth=135, stretch=False)
+        tree.column("action", width=150, minwidth=110, stretch=False)
+        tree.column("status", width=90, minwidth=75, stretch=False, anchor=tk.CENTER)
+        tree.column("orders", width=180, minwidth=120, stretch=False)
+        tree.column("jobs", width=180, minwidth=120, stretch=False)
+        tree.column("message", width=480, minwidth=260, stretch=True)
+        tree.tag_configure("SUCCESS", foreground=self.SUCCESS)
+        tree.tag_configure("WARNING", foreground=self.WARNING)
+        tree.tag_configure("FAILED", foreground=self.DANGER)
+        tree.tag_configure("ERROR", foreground=self.DANGER)
+        y_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        x_scroll = ttk.Scrollbar(body, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=(10, 0))
+        y_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=(10, 0))
+        x_scroll.grid(row=1, column=0, sticky="ew", padx=(10, 0), pady=(0, 8))
+
+        details_var = tk.StringVar(value="Select an action to view its full details.")
+        details_label = ctk.CTkLabel(
+            dialog,
+            textvariable=details_var,
+            text_color=self.MUTED,
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=1160,
+        )
+        details_label.grid(row=3, column=0, sticky="ew", padx=22, pady=(0, 5))
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 14))
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(footer, textvariable=count_var, text_color=self.MUTED, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w")
+        close_button = ctk.CTkButton(
+            footer,
+            text="Close",
+            command=dialog.destroy,
+            width=100,
+            height=36,
+            corner_radius=9,
+            fg_color=self.BUTTON_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.BUTTON_TEXT,
+            font=("Segoe UI", 11, "bold"),
+        )
+        close_button.grid(row=0, column=1, sticky="e")
+        event_rows: dict[str, dict[str, object]] = {}
+
+        def refresh_history(*_args: object) -> None:
+            query = query_var.get().strip()
+            events = [
+                event
+                for event in self.load_action_history_events(scope_var.get())
+                if self.action_history_matches(event, query)
+            ]
+            tree.delete(*tree.get_children())
+            event_rows.clear()
+            for event in events[:5000]:
+                orders = ", ".join(self.action_history_values(event, "orders"))
+                jobs = ", ".join(self.action_history_values(event, "job_numbers"))
+                status = str(event.get("status", "INFO")).upper()
+                row_id = tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        self.action_history_display_time(event.get("timestamp")),
+                        str(event.get("action", "")),
+                        status,
+                        orders,
+                        jobs,
+                        str(event.get("message", "")),
+                    ),
+                    tags=(status,),
+                )
+                event_rows[row_id] = event
+            shown = min(len(events), 5000)
+            suffix = " (first 5,000 shown)" if len(events) > 5000 else ""
+            count_var.set(f"{shown} matching action{'s' if shown != 1 else ''}{suffix}")
+            details_var.set("Select an action to view its full details.")
+
+        def show_selected_details(_event: tk.Event | None = None) -> None:
+            selection = tree.selection()
+            event = event_rows.get(selection[0]) if selection else None
+            if not event:
+                return
+            job_names = "; ".join(self.action_history_values(event, "job_names"))
+            customers = "; ".join(self.action_history_values(event, "customers"))
+            detail = str(event.get("details", "")).strip()
+            parts = [str(event.get("message", "")).strip()]
+            if job_names:
+                parts.append(f"Jobs: {job_names}")
+            if customers:
+                parts.append(f"Customers: {customers}")
+            if detail:
+                parts.append(detail)
+            details_var.set("  |  ".join(part for part in parts if part))
+
+        search_button = ctk.CTkButton(
+            toolbar,
+            text="Search",
+            command=refresh_history,
+            width=94,
+            height=36,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("search", 14, "#ffffff", "left"),
+        )
+        search_button.grid(row=0, column=2, padx=(0, 8), pady=12)
+        refresh_button = self.make_header_refresh_button(toolbar, refresh_history, "Reload action history from disk")
+        refresh_button.grid(row=0, column=3, padx=(0, 12), pady=12)
+        query_entry.bind("<Return>", lambda _event: refresh_history())
+        scope_control.configure(command=lambda _value: refresh_history())
+        tree.bind("<<TreeviewSelect>>", show_selected_details)
+        refresh_history()
+        self.bring_window_to_front(dialog, make_transient=False)
+
     def open_input_folder(self) -> None:
         path = Path(self.folder_var.get()).resolve()
         if path.name.lower() == "orders":
@@ -14975,8 +17250,1008 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         path.mkdir(parents=True, exist_ok=True)
         os.startfile(path)
 
+    @staticmethod
+    def normalize_hinge_detection_codes(values: str | Iterable[str]) -> list[str]:
+        source = [values] if isinstance(values, str) else list(values)
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in source:
+            for token in re.split(r"[\r\n,;]+", str(value)):
+                code = token.strip().upper()
+                if not code or code in seen:
+                    continue
+                if not re.fullmatch(r"[A-Z0-9][A-Z0-9._/-]*", code):
+                    raise ValueError(f"Invalid hinge code: {token.strip()}")
+                seen.add(code)
+                normalized.append(code)
+        return normalized
+
+    @classmethod
+    def hinge_detection_codes_with_core_pph(cls, values: str | Iterable[str]) -> list[str]:
+        """Compatibility name retained for older callers; all configured codes are editable."""
+        return cls.normalize_hinge_detection_codes(values)
+
+    @classmethod
+    def add_hinge_detection_code(
+        cls,
+        values: str | Iterable[str],
+        candidate: str,
+    ) -> list[str]:
+        codes = cls.normalize_hinge_detection_codes(values)
+        additions = cls.normalize_hinge_detection_codes([candidate])
+        if len(additions) != 1:
+            raise ValueError("Enter one hinge code.")
+        code = additions[0]
+        if code in codes:
+            raise ValueError(f"{code} is already in the hinge detection list.")
+        codes.append(code)
+        return codes
+
+    @classmethod
+    def remove_hinge_detection_code(
+        cls,
+        values: str | Iterable[str],
+        candidate: str,
+    ) -> list[str]:
+        codes = cls.normalize_hinge_detection_codes(values)
+        targets = cls.normalize_hinge_detection_codes([candidate])
+        if len(targets) != 1:
+            raise ValueError("Select one hinge code to remove.")
+        code = targets[0]
+        if code not in codes:
+            raise ValueError(f"{code} is not in the hinge detection list.")
+        return [existing for existing in codes if existing != code]
+
+    def editable_config_path(self) -> Path:
+        folder = Path(self.folder_var.get()).resolve()
+        if not getattr(sys, "frozen", False):
+            return self.config_path(folder)
+        external = Path(sys.executable).resolve().parent / programmer.DEFAULT_CONFIG_NAME
+        if not external.exists():
+            active = programmer.resolve_config_path(programmer.DEFAULT_CONFIG_NAME, folder)
+            external.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(active, external)
+        return external
+
+    @classmethod
+    def save_hinge_detection_codes(
+        cls,
+        path: Path,
+        values: str | Iterable[str],
+        orientations: dict[str, str] | None = None,
+    ) -> list[str]:
+        codes = cls.normalize_hinge_detection_codes(values)
+        if not codes:
+            raise ValueError("Add at least one hinge detection code.")
+        config = programmer.load_config(path)
+        rules = config.setdefault("rules", {})
+        if not isinstance(rules, dict):
+            raise ValueError("The rules section in the configuration is not valid.")
+        rules["hinge_label_keywords"] = codes
+        existing = rules.get("hinge_label_orientations", {})
+        existing_map = existing if isinstance(existing, dict) else {}
+        requested = orientations or existing_map
+        normalized_orientations: dict[str, str] = {}
+        for code in codes:
+            value = str(requested.get(code, requested.get(code.upper(), ""))).strip().lower()
+            if value not in {"up", "down"}:
+                value = programmer.DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code, "down")
+            normalized_orientations[code] = value
+        rules["hinge_label_orientations"] = normalized_orientations
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return codes
+
+    def open_hinge_detection_settings(self) -> None:
+        if ctk is None:
+            self.open_config()
+            return
+        try:
+            path = self.editable_config_path()
+            config = programmer.load_config(path)
+            current = config.get("rules", {}).get("hinge_label_keywords", [])
+            codes = self.hinge_detection_codes_with_core_pph(current)
+            if codes != self.normalize_hinge_detection_codes(current):
+                self.save_hinge_detection_codes(path, codes)
+        except Exception as exc:
+            messagebox.showerror("Hinge detection settings", str(exc), parent=self.root)
+            return
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Hinge Detection Settings")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.minsize(620, 500)
+        self.set_window_icon(dialog)
+        self.position_child_window(dialog, 660, 560)
+        try:
+            dialog.transient(self.root)
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+
+        shell = ctk.CTkFrame(
+            dialog,
+            fg_color=self.CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(3, weight=1)
+
+        header = ctk.CTkFrame(shell, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 4))
+        header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="",
+            image=self.ctk_button_icon("settings", 26, self.ACCENT_DARK).get("image"),
+            width=34,
+        ).grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 10))
+        ctk.CTkLabel(
+            header,
+            text="Door hinge detection",
+            font=("Segoe UI", 20, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(
+            header,
+            text="Codes found beside hinge cutouts classify the piece as a door and help locate its hinge side.",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=535,
+        ).grid(row=1, column=1, sticky="ew", pady=(3, 0))
+
+        ctk.CTkLabel(
+            shell,
+            text="HINGE CODES",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=18, pady=(18, 7))
+
+        list_shell = ctk.CTkFrame(
+            shell,
+            corner_radius=10,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+        )
+        list_shell.grid(row=3, column=0, sticky="nsew", padx=18, pady=(0, 12))
+        list_shell.grid_columnconfigure(0, weight=1)
+        list_shell.grid_rowconfigure(0, weight=1)
+        code_list = tk.Listbox(
+            list_shell,
+            activestyle="none",
+            background=self.ENTRY_BG,
+            foreground=self.TEXT,
+            selectbackground=self.ACCENT,
+            selectforeground="#ffffff",
+            highlightthickness=0,
+            relief=tk.FLAT,
+            borderwidth=0,
+            exportselection=False,
+            selectmode=tk.SINGLE,
+            font=("Segoe UI", 12),
+        )
+        code_list.grid(row=0, column=0, sticky="nsew", padx=(12, 4), pady=10)
+        code_scroll = ctk.CTkScrollbar(list_shell, command=code_list.yview, width=12)
+        code_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 7), pady=9)
+        code_list.configure(yscrollcommand=code_scroll.set)
+
+        add_panel = ctk.CTkFrame(
+            shell,
+            fg_color=self.PANEL_BG,
+            corner_radius=10,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        add_panel.grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 12))
+        add_panel.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            add_panel,
+            text="New hinge code",
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(10, 5))
+        new_code_var = tk.StringVar(value="")
+        new_code_entry = ctk.CTkEntry(
+            add_panel,
+            textvariable=new_code_var,
+            height=36,
+            corner_radius=8,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            font=("Segoe UI", 12),
+            placeholder_text="Example: NEW037",
+        )
+        new_code_entry.grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 12))
+        add_panel.grid_remove()
+
+        location = ctk.CTkFrame(shell, fg_color=self.PANEL_BG, corner_radius=9)
+        location.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 14))
+        ctk.CTkLabel(
+            location,
+            text=f"Saved configuration: {path}",
+            font=("Segoe UI", 9),
+            text_color=self.MUTED,
+            anchor="w",
+            wraplength=560,
+        ).pack(fill=tk.X, padx=12, pady=9)
+
+        actions = ctk.CTkFrame(shell, fg_color="transparent")
+        actions.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 18))
+        actions.grid_columnconfigure(0, weight=1)
+
+        pending_status_var = tk.StringVar(value="Select a code to remove it, or add a new code.")
+
+        def refresh_code_list(select_code: str | None = None) -> None:
+            code_list.delete(0, tk.END)
+            selected_index: int | None = None
+            for index, code in enumerate(codes):
+                code_list.insert(tk.END, code)
+                if code == select_code:
+                    selected_index = index
+            if selected_index is not None:
+                code_list.selection_set(selected_index)
+                code_list.see(selected_index)
+
+        def selected_code() -> str | None:
+            selection = code_list.curselection()
+            if not selection:
+                return None
+            index = int(selection[0])
+            return codes[index] if 0 <= index < len(codes) else None
+
+        def close_dialog() -> None:
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        def cancel_add() -> None:
+            new_code_var.set("")
+            add_panel.grid_remove()
+
+        def show_add() -> None:
+            new_code_var.set("")
+            add_panel.grid()
+            new_code_entry.focus_set()
+
+        def confirm_add() -> None:
+            try:
+                updated = self.add_hinge_detection_code(codes, new_code_var.get())
+                code = self.normalize_hinge_detection_codes([new_code_var.get()])[0]
+            except Exception as exc:
+                messagebox.showerror("Could not add hinge code", str(exc), parent=dialog)
+                return
+            codes[:] = updated
+            refresh_code_list(code)
+            cancel_add()
+            pending_status_var.set(f"Added {code}. Click Save Changes to apply it.")
+
+        def remove_selected() -> None:
+            code = selected_code()
+            if code is None:
+                messagebox.showinfo("Select a hinge code", "Select the hinge code you want to remove.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Remove hinge code?",
+                f"Remove {code} from hinge detection?\n\nThe change will not apply until Save Changes is clicked.",
+                parent=dialog,
+            ):
+                return
+            try:
+                codes[:] = self.remove_hinge_detection_code(codes, code)
+            except Exception as exc:
+                messagebox.showerror("Could not remove hinge code", str(exc), parent=dialog)
+                return
+            refresh_code_list()
+            pending_status_var.set(f"Removed {code}. Click Save Changes to apply it.")
+
+        def restore_defaults() -> None:
+            if not messagebox.askyesno(
+                "Restore hinge defaults?",
+                "Replace the pending hinge-code list with the program defaults?",
+                parent=dialog,
+            ):
+                return
+            codes[:] = self.hinge_detection_codes_with_core_pph(programmer.DEFAULT_HINGE_LABEL_KEYWORDS)
+            refresh_code_list()
+            pending_status_var.set("Defaults restored. Click Save Changes to apply them.")
+
+        def save_codes() -> None:
+            try:
+                saved = self.save_hinge_detection_codes(path, codes)
+            except Exception as exc:
+                messagebox.showerror("Could not save hinge codes", str(exc), parent=dialog)
+                return
+            close_dialog()
+            self.show_themed_notice(
+                "Hinge detection updated",
+                "Hinge codes saved",
+                "The updated codes will be used on the next scan and processing run.",
+                icon_name="check_circle",
+                accent_color=self.SUCCESS,
+                details=[("Codes", ", ".join(saved)), ("Configuration", str(path))],
+                parent=self.root,
+                button_text="Done",
+            )
+
+        list_actions = ctk.CTkFrame(shell, fg_color="transparent")
+        list_actions.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 8))
+        list_actions.grid_columnconfigure(2, weight=1)
+        self.make_tool_button(list_actions, "Add New", "plus", show_add, width=112).grid(row=0, column=0, sticky="w")
+        self.make_tool_button(list_actions, "Remove Selected", "trash", remove_selected, width=150).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(8, 0),
+        )
+        ctk.CTkLabel(
+            list_actions,
+            textvariable=pending_status_var,
+            font=("Segoe UI", 9),
+            text_color=self.MUTED,
+            anchor="e",
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
+
+        self.make_tool_button(add_panel, "Cancel", "close", cancel_add, width=88).grid(
+            row=1,
+            column=1,
+            padx=(0, 8),
+            pady=(0, 12),
+        )
+        ctk.CTkButton(
+            add_panel,
+            text="Confirm Add",
+            command=confirm_add,
+            width=118,
+            height=36,
+            corner_radius=8,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("check", 14, "#ffffff", "left"),
+        ).grid(row=1, column=2, padx=(0, 12), pady=(0, 12))
+
+        self.make_tool_button(
+            actions,
+            text="Restore Defaults",
+            icon_name="refresh",
+            command=restore_defaults,
+            width=142,
+        ).grid(row=0, column=0, sticky="w")
+        self.make_tool_button(actions, text="Cancel", icon_name="close", command=close_dialog, width=100).grid(
+            row=0, column=1, padx=(8, 0)
+        )
+        ctk.CTkButton(
+            actions,
+            text="Save Changes",
+            command=save_codes,
+            width=164,
+            height=38,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("save", 15, "#ffffff", "left"),
+        ).grid(row=0, column=2, padx=(8, 0))
+        refresh_code_list()
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        dialog.bind("<Delete>", lambda _event: remove_selected())
+        new_code_entry.bind("<Return>", lambda _event: confirm_add())
+        code_list.focus_set()
+        self.bring_window_to_front(dialog, make_transient=True)
+
+    def open_settings(self, initial_tab: str = "Preferences") -> None:
+        """Open the consolidated application settings workspace."""
+        if ctk is None:
+            self.open_config()
+            return
+        existing = self.managed_page_window("settings")
+        if existing is not None:
+            try:
+                if self.settings_tabview is not None:
+                    self.settings_tabview.set(initial_tab)
+            except (AttributeError, tk.TclError, ValueError):
+                pass
+            self.bring_page_window_to_front(existing)
+            return
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Shower Programmer Settings")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.minsize(1080, 700)
+        self.center_child_window(dialog, 1400, 840)
+        self.set_window_icon(dialog)
+        self.register_page_window("settings", dialog)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
+
+        header = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=0, border_width=0)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+        title_stack = ctk.CTkFrame(header, fg_color="transparent")
+        title_stack.grid(row=0, column=0, sticky="ew", padx=24, pady=(16, 14))
+        ctk.CTkLabel(
+            title_stack,
+            text="Settings",
+            font=("Segoe UI", 23, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(anchor=tk.W)
+        ctk.CTkLabel(
+            title_stack,
+            text="Application preferences, workflow folders, hinge detection, and operator history.",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(anchor=tk.W, pady=(2, 0))
+
+        tabview = ctk.CTkTabview(
+            dialog,
+            fg_color=self.APP_BG,
+            segmented_button_selected_color=self.ACCENT,
+            segmented_button_selected_hover_color=self.ACCENT_DARK,
+            segmented_button_unselected_color=self.PANEL_BG,
+            segmented_button_unselected_hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            corner_radius=12,
+        )
+        tabview.grid(row=1, column=0, sticky="nsew", padx=16, pady=(10, 16))
+        try:
+            tabview._segmented_button.configure(
+                width=640,
+                height=42,
+                dynamic_resizing=False,
+                font=("Segoe UI", 12, "bold"),
+            )
+        except (AttributeError, tk.TclError):
+            pass
+        self.settings_tabview = tabview
+        for tab_name in ("Preferences", "Folder Setup", "Hinge Detection", "Action History"):
+            tabview.add(tab_name)
+        self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog)
+        self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog)
+        self.build_hinge_settings_tab(tabview.tab("Hinge Detection"), dialog)
+        self.build_action_history_settings_tab(tabview.tab("Action History"))
+        try:
+            tabview.set(initial_tab)
+        except ValueError:
+            tabview.set("Preferences")
+
+        def clear_reference(event: tk.Event | None = None) -> None:
+            if event is not None and getattr(event, "widget", None) is not dialog:
+                return
+            self.settings_tabview = None
+
+        dialog.bind("<Destroy>", clear_reference, add="+")
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        self.bring_window_to_front(dialog, make_transient=False)
+
+    def build_preferences_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+
+        appearance = self.make_section(parent, "Appearance", "eye")
+        appearance.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 12))
+        appearance.grid_columnconfigure(0, weight=1)
+        appearance_row = ctk.CTkFrame(appearance, fg_color="transparent")
+        appearance_row.grid(row=1, column=0, sticky="ew", padx=18, pady=(2, 16))
+        appearance_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            appearance_row,
+            text="Color mode",
+            font=("Segoe UI", 12, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkSwitch(
+            appearance_row,
+            text="Dark mode",
+            variable=self.dark_mode_var,
+            command=self.toggle_color_mode,
+            progress_color=self.ACCENT,
+            text_color=self.TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=1, sticky="e")
+
+        application = self.make_section(parent, "Application", "settings")
+        application.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 12))
+        application.grid_columnconfigure((0, 1), weight=1)
+        buttons = (
+            ("Open Input Folder", "folder", self.open_input_folder),
+            ("Open Latest Batch", "clock", self.open_latest_batch),
+            ("Check for Updates", "refresh", self.check_for_updates),
+            ("Open Advanced Config", "settings", self.open_config),
+        )
+        for index, (label, icon, command) in enumerate(buttons):
+            self.make_tool_button(application, label, icon, command, width=190).grid(
+                row=1 + index // 2,
+                column=index % 2,
+                sticky="ew",
+                padx=(18 if index % 2 == 0 else 6, 6 if index % 2 == 0 else 18),
+                pady=(4, 8 if index < 2 else 16),
+            )
+
+        about = self.make_section(parent, "About", "info")
+        about.grid(row=2, column=0, sticky="new", padx=10)
+        ctk.CTkLabel(
+            about,
+            text=f"{self.APP_VERSION}  |  {self.APP_RELEASE_NAME}",
+            font=("Segoe UI", 12, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=18, pady=(4, 4))
+        ctk.CTkLabel(
+            about,
+            text=f"Released {self.APP_RELEASE_DATE or 'Not specified'}",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 16))
+
+    def build_folder_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        folder_card = self.make_section(parent, "Folder Setup", "folder")
+        folder_card.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 12))
+        folder_body = ctk.CTkFrame(folder_card, fg_color="transparent")
+        folder_body.grid(row=1, column=0, sticky="ew", padx=18, pady=(2, 10))
+        self.add_path_row(folder_body, 0, "Orders", self.folder_var, self.choose_folder)
+        self.add_path_row(folder_body, 1, "Import From", self.import_source_var, self.choose_import_source)
+        self.add_path_row(folder_body, 2, "Process Lists", self.process_list_var, self.choose_process_list)
+        self.add_path_row(folder_body, 3, "Output", self.output_dir_var, self.choose_output_dir)
+
+        status_var = tk.StringVar(value="")
+        footer = ctk.CTkFrame(parent, fg_color="transparent")
+        footer.grid(row=1, column=0, sticky="ew", padx=10)
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            footer,
+            textvariable=status_var,
+            font=("Segoe UI", 10),
+            text_color=self.SUCCESS,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=8)
+
+        def save_folders() -> None:
+            try:
+                order_folder = Path(self.folder_var.get()).resolve()
+                process_list = Path(self.process_list_var.get()).resolve()
+                output_dir = Path(self.output_dir_var.get()).resolve()
+                self.apply_import_source_dir()
+                created = self.ensure_workflow_folders(order_folder, process_list, output_dir)
+                shower_cache.configure(output_dir / ".scan_cache")
+            except Exception as exc:
+                messagebox.showerror("Folder setup", str(exc), parent=dialog)
+                return
+            status_var.set("Folder settings saved for the next scan.")
+            self.status_var.set(status_var.get())
+            self.show_themed_notice(
+                "Folder setup saved",
+                "Folder settings ready",
+                "The selected locations will be used on the next scan and processing run.",
+                icon_name="check_circle",
+                accent_color=self.SUCCESS,
+                details=[("Folders created", str(len(created)))],
+                parent=dialog,
+                button_text="Done",
+            )
+
+        ctk.CTkButton(
+            footer,
+            text="Save Folder Setup",
+            command=save_folders,
+            width=176,
+            height=36,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 11, "bold"),
+            **self.ctk_button_icon("save", 14, "#ffffff", "left"),
+        ).grid(row=0, column=1, sticky="e", padx=8)
+
+    def build_hinge_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+        try:
+            path = self.editable_config_path()
+            config = programmer.load_config(path)
+            current = config.get("rules", {}).get("hinge_label_keywords", [])
+            codes = self.normalize_hinge_detection_codes(current) or list(programmer.DEFAULT_HINGE_LABEL_KEYWORDS)
+            orientations = programmer.hinge_label_orientations(config)
+        except Exception as exc:
+            ctk.CTkLabel(parent, text=str(exc), text_color=self.DANGER, font=("Segoe UI", 11)).grid(
+                row=0, column=0, padx=18, pady=18
+            )
+            return
+
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Door hinge codes",
+            font=("Segoe UI", 17, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        status_var = tk.StringVar(value="Select a code to edit its name or default door orientation.")
+        ctk.CTkLabel(
+            header,
+            textvariable=status_var,
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="e",
+        ).grid(row=0, column=1, sticky="e")
+
+        toolbar = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=10, border_width=1, border_color=self.BORDER)
+        toolbar.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+        toolbar.grid_columnconfigure(3, weight=1)
+
+        list_shell = ctk.CTkFrame(parent, fg_color=self.ENTRY_BG, corner_radius=10, border_width=1, border_color=self.BORDER)
+        list_shell.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 10))
+        list_shell.grid_columnconfigure(0, weight=1)
+        list_shell.grid_rowconfigure(0, weight=1)
+        style = ttk.Style(dialog)
+        style.configure(
+            "Hinge.Treeview",
+            background=self.ENTRY_BG,
+            fieldbackground=self.ENTRY_BG,
+            foreground=self.TEXT,
+            rowheight=34,
+            font=("Segoe UI", 11),
+            borderwidth=0,
+        )
+        style.configure("Hinge.Treeview.Heading", font=("Segoe UI", 10, "bold"), foreground=self.TEXT)
+        style.map("Hinge.Treeview", background=[("selected", self.ACCENT)], foreground=[("selected", "#ffffff")])
+        code_list = ttk.Treeview(
+            list_shell,
+            columns=("code", "orientation"),
+            show="headings",
+            selectmode="browse",
+            style="Hinge.Treeview",
+        )
+        code_list.heading("code", text="Hinge Code")
+        code_list.heading("orientation", text="Default Door Orientation")
+        code_list.column("code", width=300, minwidth=180, anchor=tk.W, stretch=True)
+        code_list.column("orientation", width=260, minwidth=200, anchor=tk.W, stretch=True)
+        code_list.grid(row=0, column=0, sticky="nsew", padx=(10, 4), pady=10)
+        scrollbar = ctk.CTkScrollbar(list_shell, command=code_list.yview, width=12)
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 7), pady=9)
+        code_list.configure(yscrollcommand=scrollbar.set)
+
+        edit_panel = ctk.CTkFrame(parent, fg_color=self.PANEL_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        edit_panel.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        edit_panel.grid_columnconfigure(1, weight=1)
+        edit_panel.grid_remove()
+        editor_title_var = tk.StringVar(value="Add hinge code")
+        code_var = tk.StringVar(value="")
+        orientation_var = tk.StringVar(value="Hinges Down")
+        edit_mode: dict[str, str | None] = {"code": None}
+        ctk.CTkLabel(
+            edit_panel,
+            textvariable=editor_title_var,
+            font=("Segoe UI", 12, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=3, sticky="ew", padx=14, pady=(12, 8))
+        ctk.CTkLabel(edit_panel, text="Code", font=("Segoe UI", 10, "bold"), text_color=self.MUTED).grid(
+            row=1, column=0, sticky="w", padx=(14, 8), pady=(0, 12)
+        )
+        code_entry = ctk.CTkEntry(
+            edit_panel,
+            textvariable=code_var,
+            height=36,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            placeholder_text="Example: COL037",
+        )
+        code_entry.grid(row=1, column=1, sticky="ew", padx=(0, 12), pady=(0, 12))
+        orientation_control = ctk.CTkSegmentedButton(
+            edit_panel,
+            values=["Hinges Down", "Hinges Up"],
+            variable=orientation_var,
+            height=36,
+            selected_color=self.ACCENT,
+            selected_hover_color=self.ACCENT_DARK,
+            unselected_color=self.ENTRY_BG,
+            unselected_hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        )
+        orientation_control.grid(row=1, column=2, sticky="e", padx=(0, 14), pady=(0, 12))
+
+        def refresh_codes(select_code: str | None = None) -> None:
+            code_list.delete(*code_list.get_children())
+            for code in codes:
+                direction = orientations.get(code, programmer.DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code, "down"))
+                item_id = code_list.insert("", tk.END, values=(code, "Hinges Up" if direction == "up" else "Hinges Down"))
+                if code == select_code:
+                    code_list.selection_set(item_id)
+                    code_list.focus(item_id)
+                    code_list.see(item_id)
+
+        def selected_code() -> str | None:
+            selection = code_list.selection()
+            if not selection:
+                return None
+            values = code_list.item(selection[0], "values")
+            return str(values[0]) if values else None
+
+        def show_editor(code: str | None = None) -> None:
+            edit_mode["code"] = code
+            editor_title_var.set("Edit hinge code" if code else "Add hinge code")
+            code_var.set(code or "")
+            direction = orientations.get(code or "", programmer.DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code or "", "down"))
+            orientation_var.set("Hinges Up" if direction == "up" else "Hinges Down")
+            edit_panel.grid()
+            code_entry.focus_set()
+            code_entry.select_range(0, tk.END)
+
+        def cancel_editor() -> None:
+            code_var.set("")
+            edit_mode["code"] = None
+            edit_panel.grid_remove()
+
+        def persist(select_code: str | None, message: str) -> bool:
+            try:
+                self.save_hinge_detection_codes(path, codes, orientations)
+            except Exception as exc:
+                messagebox.showerror("Could not save hinge settings", str(exc), parent=dialog)
+                return False
+            refresh_codes(select_code)
+            status_var.set(message)
+            return True
+
+        def confirm_editor() -> None:
+            original = edit_mode.get("code")
+            try:
+                normalized = self.normalize_hinge_detection_codes([code_var.get()])
+                if len(normalized) != 1:
+                    raise ValueError("Enter one hinge code.")
+                code = normalized[0]
+                if code != original and code in codes:
+                    raise ValueError(f"{code} is already in the hinge detection list.")
+                direction = "up" if orientation_var.get() == "Hinges Up" else "down"
+                if original is None:
+                    codes.append(code)
+                else:
+                    index = codes.index(original)
+                    codes[index] = code
+                    orientations.pop(original, None)
+                orientations[code] = direction
+            except Exception as exc:
+                messagebox.showerror("Could not save hinge code", str(exc), parent=dialog)
+                return
+            action = "Updated" if original else "Added"
+            if persist(code, f"{action} {code}. Changes are active for the next scan and processing run."):
+                cancel_editor()
+
+        def remove_selected() -> None:
+            code = selected_code()
+            if code is None:
+                messagebox.showinfo("Select a hinge code", "Select the hinge code you want to remove.", parent=dialog)
+                return
+            if not messagebox.askyesno("Remove hinge code?", f"Remove {code} from hinge detection?", parent=dialog):
+                return
+            try:
+                codes[:] = self.remove_hinge_detection_code(codes, code)
+            except Exception as exc:
+                messagebox.showerror("Could not remove hinge code", str(exc), parent=dialog)
+                return
+            orientations.pop(code, None)
+            persist(None, f"Removed {code}. Changes are active for the next scan and processing run.")
+
+        def restore_defaults() -> None:
+            if not messagebox.askyesno("Restore hinge defaults?", "Replace all hinge codes and orientations with program defaults?", parent=dialog):
+                return
+            codes[:] = list(programmer.DEFAULT_HINGE_LABEL_KEYWORDS)
+            orientations.clear()
+            orientations.update({code: programmer.DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code, "down") for code in codes})
+            persist(None, "Default hinge codes and orientations restored.")
+
+        self.make_tool_button(toolbar, "Add Code", "plus", lambda: show_editor(None), width=118).grid(
+            row=0, column=0, sticky="w", padx=(10, 0), pady=10
+        )
+        self.make_tool_button(toolbar, "Edit Selected", "edit", lambda: show_editor(selected_code()) if selected_code() else messagebox.showinfo("Select a hinge code", "Select the hinge code you want to edit.", parent=dialog), width=142).grid(
+            row=0, column=1, padx=(8, 0), pady=10
+        )
+        self.make_tool_button(toolbar, "Remove Selected", "trash", remove_selected, width=148).grid(
+            row=0, column=2, padx=(8, 0), pady=10
+        )
+        self.make_tool_button(toolbar, "Restore Defaults", "refresh", restore_defaults, width=142).grid(
+            row=0, column=4, sticky="e", padx=10, pady=10
+        )
+        self.make_tool_button(edit_panel, "Cancel", "close", cancel_editor, width=88).grid(
+            row=2, column=1, sticky="e", padx=(0, 8), pady=(0, 12)
+        )
+        ctk.CTkButton(
+            edit_panel,
+            text="Confirm Changes",
+            command=confirm_editor,
+            width=146,
+            height=36,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("check", 14, "#ffffff", "left"),
+        ).grid(row=2, column=2, sticky="e", padx=(0, 14), pady=(0, 12))
+        refresh_codes()
+        code_entry.bind("<Return>", lambda _event: confirm_editor())
+        code_list.bind("<Double-1>", lambda _event: show_editor(selected_code()) if selected_code() else None)
+        code_list.bind("<Delete>", lambda _event: remove_selected())
+
+    def build_action_history_settings_tab(self, parent: tk.Widget) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        query_var = tk.StringVar(value="")
+        scope_var = tk.StringVar(value="Last 7 Days")
+        count_var = tk.StringVar(value="")
+        details_var = tk.StringVar(value="Select an action to view its full details.")
+
+        toolbar = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        toolbar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 10))
+        toolbar.grid_columnconfigure(0, weight=1)
+        query_entry = ctk.CTkEntry(
+            toolbar,
+            textvariable=query_var,
+            height=34,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            placeholder_text="Search actions, order numbers, Job Nrs, names, or details",
+            font=("Segoe UI", 11),
+        )
+        query_entry.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=10)
+        scope_control = ctk.CTkSegmentedButton(
+            toolbar,
+            values=["Last 7 Days", "Archive", "All"],
+            variable=scope_var,
+            height=34,
+            selected_color=self.ACCENT,
+            selected_hover_color=self.ACCENT_DARK,
+            unselected_color=self.BUTTON_BG,
+            unselected_hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        )
+        scope_control.grid(row=0, column=1, padx=(0, 8), pady=10)
+
+        body = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        body.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        columns = ("time", "action", "status", "orders", "jobs", "message")
+        tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", style="Orders.Treeview")
+        for column, label in zip(columns, ("Time", "Action", "Result", "Orders", "Job Nrs", "Details")):
+            tree.heading(column, text=label)
+        tree.column("time", width=155, minwidth=135, stretch=False)
+        tree.column("action", width=145, minwidth=110, stretch=False)
+        tree.column("status", width=85, minwidth=75, stretch=False, anchor=tk.CENTER)
+        tree.column("orders", width=170, minwidth=120, stretch=False)
+        tree.column("jobs", width=170, minwidth=120, stretch=False)
+        tree.column("message", width=420, minwidth=260, stretch=True)
+        for status, color in (("SUCCESS", self.SUCCESS), ("WARNING", self.WARNING), ("FAILED", self.DANGER), ("ERROR", self.DANGER)):
+            tree.tag_configure(status, foreground=color)
+        y_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        x_scroll = ttk.Scrollbar(body, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=(10, 0))
+        y_scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=(10, 0))
+        x_scroll.grid(row=1, column=0, sticky="ew", padx=(10, 0), pady=(0, 8))
+
+        event_rows: dict[str, dict[str, object]] = {}
+
+        def refresh_history(*_args: object) -> None:
+            events = [
+                event for event in self.load_action_history_events(scope_var.get())
+                if self.action_history_matches(event, query_var.get().strip())
+            ]
+            tree.delete(*tree.get_children())
+            event_rows.clear()
+            for event in events[:5000]:
+                status = str(event.get("status", "INFO")).upper()
+                row_id = tree.insert(
+                    "", tk.END,
+                    values=(
+                        self.action_history_display_time(event.get("timestamp")),
+                        str(event.get("action", "")),
+                        status,
+                        ", ".join(self.action_history_values(event, "orders")),
+                        ", ".join(self.action_history_values(event, "job_numbers")),
+                        str(event.get("message", "")),
+                    ),
+                    tags=(status,),
+                )
+                event_rows[row_id] = event
+            suffix = " (first 5,000 shown)" if len(events) > 5000 else ""
+            count_var.set(f"{min(len(events), 5000)} matching action(s){suffix}")
+            details_var.set("Select an action to view its full details.")
+
+        def show_details(_event: tk.Event | None = None) -> None:
+            selection = tree.selection()
+            event = event_rows.get(selection[0]) if selection else None
+            if not event:
+                return
+            parts = [str(event.get("message", "")).strip()]
+            jobs = "; ".join(self.action_history_values(event, "job_names"))
+            customers = "; ".join(self.action_history_values(event, "customers"))
+            detail = str(event.get("details", "")).strip()
+            if jobs:
+                parts.append(f"Jobs: {jobs}")
+            if customers:
+                parts.append(f"Customers: {customers}")
+            if detail:
+                parts.append(detail)
+            details_var.set("  |  ".join(part for part in parts if part))
+
+        search_button = ctk.CTkButton(
+            toolbar,
+            text="Search",
+            command=refresh_history,
+            width=92,
+            height=34,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("search", 13, "#ffffff", "left"),
+        )
+        search_button.grid(row=0, column=2, padx=(0, 8), pady=10)
+        self.make_header_refresh_button(toolbar, refresh_history, "Reload action history from disk").grid(
+            row=0, column=3, padx=(0, 12), pady=10
+        )
+        detail_row = ctk.CTkFrame(parent, fg_color="transparent")
+        detail_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
+        detail_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            detail_row,
+            textvariable=details_var,
+            text_color=self.MUTED,
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=900,
+        ).grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(detail_row, textvariable=count_var, text_color=self.MUTED, font=("Segoe UI", 10)).grid(
+            row=0, column=1, sticky="e", padx=(12, 0)
+        )
+        query_entry.bind("<Return>", lambda _event: refresh_history())
+        scope_control.configure(command=lambda _value: refresh_history())
+        tree.bind("<<TreeviewSelect>>", show_details)
+        refresh_history()
+
+    def open_action_history(self) -> None:
+        self.open_settings("Action History")
+
+    def open_hinge_detection_settings(self) -> None:
+        self.open_settings("Hinge Detection")
+
     def open_config(self) -> None:
-        path = self.config_path(Path(self.folder_var.get()).resolve())
+        path = self.editable_config_path()
         if not path.exists():
             messagebox.showerror("Config not found", f"Could not find:\n{path}")
             return
@@ -15017,7 +18292,10 @@ def validate_runtime_contracts() -> None:
         "clear_generated_program_artifacts",
         "clear_processing_history_program_fields",
         "clear_program_memory",
+        "configure_editable_sketch_preview_state",
         "should_draw_sketch_overlays",
+        "add_hinge_detection_code",
+        "remove_hinge_detection_code",
         "record_manual_sketch_output",
         "record_direct_review_processing_result",
         "dxf_file_is_open_for_replacement",
@@ -15065,6 +18343,11 @@ def validate_runtime_contracts() -> None:
         "duplicate_groups_by_order",
         "local_network_pdf_cache_dir",
         "dxf_cardinal_side_measurements",
+        "open_settings",
+        "build_preferences_settings_tab",
+        "build_folder_settings_tab",
+        "build_hinge_settings_tab",
+        "build_action_history_settings_tab",
     }
     missing = sorted(name for name in required_methods if not callable(getattr(ShowerProgrammerApp, name, None)))
     if missing:
@@ -15715,6 +18998,37 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 raise RuntimeError("Skip Sketch clean-preview overlay suppression self-test failed.")
             if not ShowerProgrammerApp.should_draw_sketch_overlays({"show_sketch_marks": True}):
                 raise RuntimeError("Sketch-edit overlay enable self-test failed.")
+            editable_reader = type("EditableReader", (), {"pages": [object(), object()]})()
+            editable_state = {
+                "embedded_sketch_preview": True,
+                "sketch_preview_path": Path("saved-output.pdf"),
+            }
+            editable_source = Path("editable-source.pdf")
+            ShowerProgrammerApp.configure_editable_sketch_preview_state(
+                editable_state,
+                editable_reader,
+                editable_source,
+            )
+            if (
+                editable_state.get("embedded_sketch_preview")
+                or editable_state.get("sketch_preview_path") != editable_source
+                or editable_state.get("pdf_page_count") != 2
+            ):
+                raise RuntimeError("Editable sketch refresh self-test failed.")
+            guarded_codes = ShowerProgrammerApp.add_hinge_detection_code(["GEN037"], "NEW037")
+            guarded_codes = ShowerProgrammerApp.remove_hinge_detection_code(guarded_codes, "NEW037")
+            if guarded_codes != ["GEN037"]:
+                raise RuntimeError("Guarded hinge-code editor self-test failed.")
+            if ShowerProgrammerApp.remove_hinge_detection_code(["GEN037", "PPH"], "PPH") != ["GEN037"]:
+                raise RuntimeError("Editable PPH hinge-code self-test failed.")
+            hinge_test_config = {
+                "rules": {
+                    "hinge_label_keywords": ["COL037", "PPH"],
+                    "hinge_label_orientations": {"COL037": "down", "PPH": "up"},
+                }
+            }
+            if programmer.matched_hinge_label_codes("AC0L037", hinge_test_config) != ["COL037"]:
+                raise RuntimeError("Hinge letter-O/zero matching self-test failed.")
 
             class TestVar:
                 def __init__(self, value: str) -> None:
@@ -16223,6 +19537,26 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             if not (staging_root / "Batch 7000.xlsx").exists():
                 raise RuntimeError("Cleanup removed an unrelated process-list batch.")
 
+        class RemakeLocationPage:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+            def extract_text(self) -> str:
+                return self.text
+
+        class RemakeLocationReader:
+            def __init__(self, text: str) -> None:
+                self.pages = [RemakeLocationPage(text)]
+
+        if not shower_batch.pdf_location_indicates_remake(
+            RemakeLocationReader("Location: DOOR REMAKE ONLY\nMarks: P2")
+        ):
+            raise RuntimeError("PDF Location REMAKE detection failed.")
+        if shower_batch.pdf_location_indicates_remake(
+            RemakeLocationReader("Location: MASTER\nMarks: P2\nNote: REMAKE hardware")
+        ):
+            raise RuntimeError("PDF Location REMAKE detection matched unrelated text.")
+
         result.update(
             {
                 "ok": True,
@@ -16269,6 +19603,30 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "unchecked_state_preserves_edits": True,
                 "selected_program_history_clear": True,
                 "clean_skipped_sketch_preview": True,
+                "editable_sketch_refresh": True,
+                "guarded_hinge_code_editor": True,
+                "review_machine_selector": True,
+                "compact_orders_summary": True,
+                "centered_orders_summary": True,
+                "shortcut_button_removed": True,
+                "sortable_order_columns": True,
+                "order_search_highlight": True,
+                "seven_day_action_history": True,
+                "searchable_action_history": True,
+                "validate_selected_action": True,
+                "simplified_send_card": True,
+                "responsive_sidebar_controls": True,
+                "responsive_orders_toolbar": True,
+                "settings_workspace": True,
+                "pdf_location_remake_detection": True,
+                "compact_message_dialogs": True,
+                "version_0_82_settings_remake_detection": True,
+                "settings_window_centered": True,
+                "version_0_83_maximized_settings": True,
+                "editable_hinge_orientations": True,
+                "input_only_order_visibility": True,
+                "compact_centered_popups": True,
+                "version_0_84_workflow_settings": True,
                 "manual_sketch_save_reenables_output": True,
                 "dxf_reprocess_lock_guard": True,
                 "single_page_window_guard": True,

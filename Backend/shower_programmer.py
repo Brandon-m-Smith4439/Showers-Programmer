@@ -34,6 +34,19 @@ import shower_cache
 
 
 DEFAULT_CONFIG_NAME = "shower_programmer_config.json"
+DEFAULT_HINGE_LABEL_KEYWORDS = (
+    "GEN037",
+    "V1E037",
+    "AV1E037",
+    "JRG037",
+    "GEN180",
+    "PPH",
+    "SRPPH01",
+)
+DEFAULT_HINGE_LABEL_ORIENTATIONS = {
+    "PPH": "up",
+    "SRPPH01": "up",
+}
 TEMPLATE_PAGE_MARKERS = ("TEMPLATES FOR GLASS", "TEMPLATE A:", "TEMPLATE B:")
 LABEL_FONT = "Helvetica-Bold"
 PDF_MATRIX_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
@@ -300,6 +313,45 @@ def merge_item_overrides(config: dict[str, Any], override_config: dict[str, Any]
 
 def upper_set(config: dict[str, Any], section: str, key: str) -> set[str]:
     return {str(v).upper() for v in config.get(section, {}).get(key, [])}
+
+
+def hinge_label_keywords(config: dict[str, Any]) -> set[str]:
+    configured = upper_set(config, "rules", "hinge_label_keywords")
+    return configured or set(DEFAULT_HINGE_LABEL_KEYWORDS)
+
+
+def hinge_code_match_key(value: str) -> str:
+    """Normalize a hinge token while tolerating the common letter-O/zero ambiguity."""
+    return re.sub(r"[^A-Z0-9]", "", str(value).upper()).replace("O", "0")
+
+
+def matched_hinge_label_codes(text: str, config: dict[str, Any]) -> list[str]:
+    compact = hinge_code_match_key(text)
+    matches = [
+        code
+        for code in hinge_label_keywords(config)
+        if (key := hinge_code_match_key(code)) and key in compact
+    ]
+    return sorted(matches, key=lambda code: (-len(hinge_code_match_key(code)), code))
+
+
+def hinge_label_orientations(config: dict[str, Any]) -> dict[str, str]:
+    raw = config.get("rules", {}).get("hinge_label_orientations", {})
+    configured = {str(key).upper(): value for key, value in raw.items()} if isinstance(raw, dict) else {}
+    result: dict[str, str] = {}
+    for code in hinge_label_keywords(config):
+        value = str(configured.get(code.upper(), "")).strip().lower()
+        if value not in {"up", "down"}:
+            value = DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code.upper(), "down")
+        result[code.upper()] = value
+    return result
+
+
+def configured_hinge_orientation(text: str, config: dict[str, Any]) -> bool | None:
+    matches = matched_hinge_label_codes(text, config)
+    if not matches:
+        return None
+    return hinge_label_orientations(config).get(matches[0].upper(), "down") == "up"
 
 
 def parse_measurement(value: str) -> float | None:
@@ -695,7 +747,7 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
     upper = panel.text.upper()
     fabrication_upper = strip_non_fabrication_edge_text(upper)
     door_keywords = upper_set(config, "rules", "door_keywords")
-    hinge_label_keywords = upper_set(config, "rules", "hinge_label_keywords")
+    hinge_labels = hinge_label_keywords(config)
     waterjet_keywords = upper_set(config, "rules", "waterjet_keywords")
     weak_waterjet_keywords = upper_set(config, "rules", "weak_waterjet_keywords")
     fabrication_keywords = upper_set(config, "rules", "fabrication_keywords")
@@ -703,7 +755,7 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
     label_only_allow = upper_set(config, "rules", "label_only_allow_keywords")
     denver_min = float(rules.get("denver_min_inches", 6.125))
 
-    has_door = any(k in upper for k in door_keywords | hinge_label_keywords) or has_hinge_label_text(upper, config)
+    has_door = any(k in upper for k in door_keywords | hinge_labels) or has_hinge_label_text(upper, config)
     has_strong_waterjet = has_pdf_waterjet_evidence(panel.text, config)
     has_weak_waterjet = any(k in fabrication_upper for k in weak_waterjet_keywords)
     has_fabrication = any(k in fabrication_upper for k in fabrication_keywords)
@@ -932,7 +984,7 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
     order_overrides = overrides.get(str(aw_order), {})
     override = order_overrides.get(str(panel.item), {})
     if not override:
-        enforce_pph_hinges_up(panel)
+        enforce_configured_hinge_orientation(panel, config)
         return
     manual_dxf_rotation = bool(override.get("manual_dxf_rotation")) and override.get("rotation_degrees") is not None
     coerced_denver_indicator_override = False
@@ -1077,7 +1129,7 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.remake_x = parse_float(override["remake_x"], 0)
     if "remake_y" in override:
         panel.remake_y = parse_float(override["remake_y"], 0)
-    enforce_pph_hinges_up(panel)
+    enforce_configured_hinge_orientation(panel, config)
     if manual_dxf_rotation:
         panel.rotation_degrees = float(override["rotation_degrees"])
         panel.manual_rotation_override = True
@@ -1325,7 +1377,8 @@ def refine_panel_orientations(reader: PdfReader, panels: list[Panel], config: di
             continue
         bbox = estimate_panel_bbox(reader, panel.page_index)
         hinge_side = estimate_hinge_side(reader, panel.page_index, bbox, config)
-        hinges_up = has_door_cut_in(panel, config)
+        configured_orientation = configured_hinge_orientation(panel_combined_text(panel), config)
+        hinges_up = has_door_cut_in(panel, config) or bool(configured_orientation)
         panel.hinges_up = hinges_up
         if hinge_side is None:
             if hinges_up and panel.indicator_corner:
@@ -1333,7 +1386,7 @@ def refine_panel_orientations(reader: PdfReader, panels: list[Panel], config: di
                 panel.hinge_side = fallback_side
                 panel.rotation_degrees = door_rotation_for_hinge_side(fallback_side, hinges_up)
                 panel.indicator_corner = door_indicator_corner_for_hinge_side(fallback_side, hinges_up)
-                panel.reasons.append("hinges up from cut-in/K-cut/PPH hint; hinge side not confirmed")
+                panel.reasons.append("hinges up from cut-in/K-cut or hinge-code setting; hinge side not confirmed")
             continue
         panel.hinge_side = hinge_side
         panel.rotation_degrees = door_rotation_for_hinge_side(hinge_side, hinges_up)
@@ -1347,11 +1400,8 @@ def has_door_cut_in(panel: Panel, config: dict[str, Any]) -> bool:
     if not keywords:
         keywords = {"CUT IN", "CUT-IN", "CUTIN", "DOOR CUT IN"}
     keywords.update({"K CUT", "K-CUT", "K CUTS", "K-CUTS"})
-    hinge_labels = upper_set(config, "rules", "hinge_label_keywords")
-    hinge_labels.update({"GEN037", "V1E037", "AV1E037"})
+    hinge_labels = hinge_label_keywords(config)
     keywords.difference_update(label for label in hinge_labels if label)
-    if has_pph_hinge(panel):
-        return True
     upper = panel_combined_text(panel).upper()
     return any(keyword in upper for keyword in keywords)
 
@@ -1394,8 +1444,8 @@ def has_door_programming_evidence(panel: Panel, config: dict[str, Any]) -> bool:
     if has_hinge_label_text(upper, config):
         return True
     keywords = upper_set(config, "rules", "door_keywords")
-    keywords.update(upper_set(config, "rules", "hinge_label_keywords"))
-    keywords.update({"DOOR", "HINGE", "PULL", "HANDLE", "GEN037", "V1E037", "AV1E037"})
+    keywords.update(hinge_label_keywords(config))
+    keywords.update({"DOOR", "HINGE", "PULL", "HANDLE"})
     if any(keyword and keyword in upper for keyword in keywords):
         return True
     normalized = re.sub(r"[^A-Z0-9]", "", upper)
@@ -1412,10 +1462,15 @@ def has_pph_hinge(panel: Panel) -> bool:
     return bool(re.search(r"\b[A-Z0-9-]*PPH[A-Z0-9-]*\b", upper) or "PPH" in compact)
 
 
-def enforce_pph_hinges_up(panel: Panel) -> None:
-    """Keep PPH doors hinges-up even when an older override says otherwise."""
-    if panel.machine != "DENVER 1" or not has_pph_hinge(panel):
+def enforce_configured_hinge_orientation(panel: Panel, config: dict[str, Any]) -> None:
+    """Apply the matched hinge code's default unless geometry or a manual edit has priority."""
+    if panel.machine != "DENVER 1" or panel.manual_rotation_override or panel.manual_indicator_override:
         return
+
+    configured = configured_hinge_orientation(panel_combined_text(panel), config)
+    if configured is None:
+        return
+    hinges_up = has_door_cut_in(panel, config) or configured
 
     original_corner = panel.indicator_corner
     if original_corner == "bottom_left":
@@ -1432,22 +1487,34 @@ def enforce_pph_hinges_up(panel: Panel) -> None:
         hinge_side = "right"
 
     panel.hinge_side = hinge_side
-    panel.hinges_up = True
-    panel.rotation_degrees = door_rotation_for_hinge_side(hinge_side, True)
-    panel.indicator_corner = door_indicator_corner_for_hinge_side(hinge_side, True)
+    panel.hinges_up = hinges_up
+    panel.rotation_degrees = door_rotation_for_hinge_side(hinge_side, hinges_up)
+    panel.indicator_corner = door_indicator_corner_for_hinge_side(hinge_side, hinges_up)
     if original_corner and original_corner != panel.indicator_corner:
         panel.indicator_x = None
         panel.indicator_y = None
-    reason = f"PPH hinge rule: hinge side {hinge_side}; hinges up"
+    matched = matched_hinge_label_codes(panel_combined_text(panel), config)
+    code = matched[0] if matched else "configured hinge"
+    direction = "up" if hinges_up else "down"
+    reason = f"hinge code {code}: hinge side {hinge_side}; hinges {direction}"
     if reason not in panel.reasons:
         panel.reasons.append(reason)
 
 
+def enforce_pph_hinges_up(panel: Panel) -> None:
+    """Compatibility helper for callers that explicitly request the legacy PPH-up rule."""
+    config = {
+        "rules": {
+            "hinge_label_keywords": ["PPH", "SRPPH01"],
+            "hinge_label_orientations": {"PPH": "up", "SRPPH01": "up"},
+        }
+    }
+    enforce_configured_hinge_orientation(panel, config)
+
+
 def has_hinge_label_text(text: str, config: dict[str, Any]) -> bool:
     upper = text.upper()
-    labels = upper_set(config, "rules", "hinge_label_keywords")
-    labels.update({"GEN037", "V1E037", "AV1E037"})
-    if any(label and label in upper for label in labels):
+    if matched_hinge_label_codes(upper, config):
         return True
     return bool(re.search(r"\b(?:A?V1E|A?GEN)\d{3}\b", upper))
 
@@ -1501,18 +1568,15 @@ def denver_door_orientation_for_indicator_corner(
     *,
     allow_manual_corner: bool = False,
 ) -> tuple[str, bool, float] | None:
-    pph_hinge = has_pph_hinge(panel)
-    if allow_manual_corner and not pph_hinge:
+    if allow_manual_corner:
         raw_orientation = door_orientation_for_indicator_corner(corner)
         if raw_orientation is not None:
             return raw_orientation
-    if not pph_hinge:
+    if not has_pph_hinge(panel):
         corner = denver_allowed_indicator_corner(corner, panel) or corner
     if corner not in {"bottom_left", "top_right"}:
         return None
     cut_in = has_door_cut_in(panel, config)
-    if pph_hinge:
-        cut_in = True
     if panel.source_dxf is not None:
         candidate_side = panel.hinge_side if panel.hinge_side in {"left", "right"} else dxf_hinge_side_candidate(panel.source_dxf)
         if candidate_side in {"left", "right"} and fps_hinge_side_has_cut_in(panel, candidate_side, config):
@@ -1621,7 +1685,7 @@ def apply_indicator_corner_override_with_options(
         if rotation is not None:
             panel.rotation_degrees = rotation
             panel.manual_rotation_override = True
-    enforce_pph_hinges_up(panel)
+    enforce_configured_hinge_orientation(panel, config)
 
 
 def estimate_hinge_side_from_text(
@@ -1630,8 +1694,8 @@ def estimate_hinge_side_from_text(
     bbox: tuple[float, float, float, float],
     config: dict[str, Any],
 ) -> str | None:
-    labels = upper_set(config, "rules", "hinge_label_keywords") | {"GEN037", "V1E037", "AV1E037"}
-    normalized_labels = {re.sub(r"[^A-Z0-9]", "", label.upper()) for label in labels}
+    labels = hinge_label_keywords(config)
+    normalized_labels = {hinge_code_match_key(label) for label in labels}
     for label in list(normalized_labels):
         if len(label) > 4:
             normalized_labels.add(label[1:])
@@ -1683,7 +1747,7 @@ def estimate_hinge_side_from_text(
     pattern = re.compile("|".join(pattern_parts))
     for row in rows:
         chars = sorted(row["chars"], key=lambda entry: entry[0])
-        text = "".join(char for _, char in chars)
+        text = hinge_code_match_key("".join(char for _, char in chars))
         for match in pattern.finditer(text):
             x_values = [x for x, _ in chars[match.start() : match.end()]]
             if not x_values:
@@ -2303,9 +2367,12 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
             panel.reasons = [
                 reason
                 for reason in panel.reasons
-                if not reason.startswith("PPH hinge rule: hinge side ")
+                if not reason.startswith("hinge code ")
             ]
-            panel.reasons.append(f"PPH DXF hinge radii confirm {side} side; hinges up; overrides {previous}")
+            direction = "up" if panel.hinges_up else "down"
+            panel.reasons.append(
+                f"PPH DXF hinge radii confirm {side} side; hinges {direction}; overrides {previous}"
+            )
         else:
             panel.reasons.append(f"DXF hinge side {side} overrides {previous}")
     moved_off_hinge = False

@@ -18,7 +18,7 @@ CONFIG = {
         "denver_min_inches": 6.125,
         "waterjet_fit_limit_inches": 75,
         "door_keywords": ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"],
-        "hinge_label_keywords": ["GEN037", "V1E037", "AV1E037"],
+        "hinge_label_keywords": ["GEN037", "V1E037", "AV1E037", "JRG037", "GEN180"],
         "fabrication_keywords": ["HOLE", "CUTOUT", "NOTCH", "RADIUS"],
         "denver_fabrication_keywords": ["HOLE", "SLOT"],
         "waterjet_keywords": ["NOTCH", "RADIUS"],
@@ -70,6 +70,48 @@ class MirrorWaterjetTests(unittest.TestCase):
         self.assertEqual(panel.machine, "WJ")
         self.assertFalse(panel.label_only)
         self.assertFalse(panel.skip_dxf)
+
+    def test_radius_cutout_overrides_conflicting_denver_process_route(self) -> None:
+        panel = self.panel('3/8" Clear Tempered\n1/2 Radius', "WJ")
+        order = shower_batch.ProcessOrder("900010", "12345680 RADIUS PANEL")
+        item = shower_batch.ProcessItem(1, width_text='33-1/2"', height_text='80"')
+        item.machine_hints.append("Denver 2 (CNC)")
+        order.items[1] = item
+
+        shower_batch.apply_process_hints([panel], order, CONFIG)
+
+        self.assertEqual(panel.machine, "WJ")
+        self.assertIn("WJ-only radius/notch fabrication overrides process-list Denver routing", panel.reasons)
+
+    def test_double_notch_is_strong_waterjet_fabrication(self) -> None:
+        panel = self.panel('3/8" Clear Tempered', "")
+        order = shower_batch.ProcessOrder("900011", "12345681 DOUBLE NOTCH PANEL")
+        item = shower_batch.ProcessItem(1, width_text='33-1/2"', height_text='80"')
+        item.processing.append("Double Notch")
+        item.machine_hints.append("Denver 2 (CNC)")
+        order.items[1] = item
+
+        shower_batch.apply_process_hints([panel], order, CONFIG)
+
+        self.assertEqual(panel.machine, "WJ")
+
+    def test_new_hinge_codes_remain_denver_even_when_radius_text_is_present(self) -> None:
+        for code in ("JRG037", "GEN180"):
+            with self.subTest(code=code):
+                panel = programmer.classify_panel(
+                    self.panel(f'3/8" Clear Tempered\n{code}\nRadius'),
+                    CONFIG,
+                    "900012",
+                )
+                order = shower_batch.ProcessOrder("900012", "12345682 HINGE DOOR")
+                item = shower_batch.ProcessItem(1, width_text='28"', height_text='79-1/2"')
+                item.machine_hints.append("Denver 1 (CNC)")
+                order.items[1] = item
+
+                shower_batch.apply_process_hints([panel], order, CONFIG)
+
+                self.assertEqual(panel.machine, "DENVER 1")
+                self.assertTrue(programmer.has_hinge_label_text(code, CONFIG))
 
     def test_project_name_mirror_does_not_change_clear_glass(self) -> None:
         panel = programmer.classify_panel(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 0.70 production-safety features for Shower Programmer.
+"""Version 0.84 production-safety features for Shower Programmer.
 
 This module intentionally patches the existing V40-era core at startup instead
 of duplicating the large GUI, batch, and programming modules.  It is loaded by
@@ -19,6 +19,20 @@ from __future__ import annotations
 # VERSION_0_67_DUPLICATE_JOB_ORDER_IDENTITY
 # VERSION_0_69_FAST_ACCURATE_SCANNING
 # VERSION_0_70_LOCAL_FIRST_IMPORT_REVIEW
+# VERSION_0_71_WATERJET_REVIEW_POLISH
+# VERSION_0_72_BOUNDED_NETWORK_CLEANUP
+# VERSION_0_73_VALIDATED_ARCHIVE_HANDOFF
+# VERSION_0_74_COMPLETED_BATCH_CLEANUP
+# VERSION_0_75_RESILIENT_SCAN_CLEANUP
+# VERSION_0_76_MANUAL_WJ_METRIC_SAVE
+# VERSION_0_77_REVIEW_WORKFLOW_CONTROLS
+# VERSION_0_78_CENTERED_ORDER_SUMMARY
+# VERSION_0_79_STREAMLINED_TOOLS
+# VERSION_0_80_ORDER_SEARCH_ACTION_HISTORY
+# VERSION_0_81_DASHBOARD_LAYOUT_POLISH
+# VERSION_0_82_SETTINGS_REMAKE_DETECTION
+# VERSION_0_83_MAXIMIZED_SETTINGS
+# VERSION_0_84_WORKFLOW_SETTINGS
 
 import copy
 import hashlib
@@ -26,6 +40,7 @@ import math
 import re
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -470,16 +485,28 @@ def files_are_identical(source: Path, target: Path) -> bool:
 
 
 def find_send_conflicts(sketch_paths: list[Path], dxf_paths: list[Path], sketch_dir: Path, programs_dir: Path) -> list[SendConflict]:
-    conflicts: list[SendConflict] = []
+    candidates: list[tuple[int, str, Path, Path]] = []
     for kind, paths, target_dir in (
         ("Sketch", sketch_paths, sketch_dir),
         ("Program", dxf_paths, programs_dir),
     ):
         for source in paths:
             target = target_dir / source.name
-            if source.is_file() and target.exists():
-                conflicts.append(SendConflict(source, target, kind, files_are_identical(source, target)))
-    return conflicts
+            candidates.append((len(candidates), kind, source, target))
+
+    def inspect(candidate: tuple[int, str, Path, Path]) -> tuple[int, SendConflict | None]:
+        index, kind, source, target = candidate
+        if not source.is_file() or not target.exists():
+            return index, None
+        return index, SendConflict(source, target, kind, files_are_identical(source, target))
+
+    if len(candidates) <= 1:
+        inspected = [inspect(candidate) for candidate in candidates]
+    else:
+        worker_count = min(4, len(candidates))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-send-check") as executor:
+            inspected = [future.result() for future in as_completed(executor.submit(inspect, item) for item in candidates)]
+    return [conflict for _index, conflict in sorted(inspected) if conflict is not None]
 
 
 def _walk_widgets(widget: Any) -> Iterable[Any]:
@@ -669,43 +696,53 @@ def _copy_outputs_with_policy(
     global _LAST_SEND_SUMMARY
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    copied: list[Path] = []
+    copied_by_index: dict[int, Path] = {}
     actions = getattr(app, "_v4_send_conflict_actions", {})
     summary = getattr(app, "_v4_send_summary", None)
     if not isinstance(summary, dict):
         summary = {"kept": [], "replaced": [], "failed": []}
         app._v4_send_summary = summary
 
-    for source in paths:
+    copy_jobs: list[tuple[int, Path, Path, str]] = []
+    for index, source in enumerate(paths):
         if not source.exists() or not source.is_file():
             continue
         target = target_dir / source.name
         if progress_callback is not None:
             progress_callback(source, target, "starting")
         action = actions.get(str(target.resolve()).casefold(), "copy") if isinstance(actions, dict) else "copy"
-        try:
-            if target.exists() and action == "keep":
-                copied.append(target)
-                summary.setdefault("kept", []).append(target)
-                if progress_callback is not None:
-                    progress_callback(source, target, "complete")
-                _LAST_SEND_SUMMARY = dict(summary)
-                continue
-            app.copy_file_atomically(source, target)
-            copied.append(target)
-            if target.exists() and action == "replace":
-                summary.setdefault("replaced", []).append(target)
+        if target.exists() and action == "keep":
+            copied_by_index[index] = target
+            summary.setdefault("kept", []).append(target)
             if progress_callback is not None:
                 progress_callback(source, target, "complete")
             _LAST_SEND_SUMMARY = dict(summary)
-        except Exception as exc:
-            summary.setdefault("failed", []).append(f"{source.name}: {exc}")
-            _LAST_SEND_SUMMARY = dict(summary)
-            # Per-file failures do not abort the rest of the send. The order will
-            # not be archived because its missing copied filename fails the
-            # existing successfully_sent_orders check.
             continue
-    return copied
+        copy_jobs.append((index, source, target, action))
+
+    worker_count = max(1, min(4, len(copy_jobs)))
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-send") as executor:
+        futures = {
+            executor.submit(app.copy_file_atomically, source, target): (index, source, target, action)
+            for index, source, target, action in copy_jobs
+        }
+        for future in as_completed(futures):
+            index, source, target, action = futures[future]
+            try:
+                future.result()
+                copied_by_index[index] = target
+                if action == "replace":
+                    summary.setdefault("replaced", []).append(target)
+                if progress_callback is not None:
+                    progress_callback(source, target, "complete")
+                _LAST_SEND_SUMMARY = dict(summary)
+            except Exception as exc:
+                summary.setdefault("failed", []).append(f"{source.name}: {exc}")
+                _LAST_SEND_SUMMARY = dict(summary)
+                # Per-file failures do not abort the rest of the send. The order
+                # remains unarchived because its copied filename is still missing.
+                continue
+    return [copied_by_index[index] for index in sorted(copied_by_index)]
 
 
 def _start_send_outputs_worker(
@@ -917,10 +954,10 @@ def _canvas_oos_text_rects(canvas: Any) -> list[CanvasRect]:
         return occupied
     for item in items:
         try:
-            if canvas.type(item) != "text":
-                continue
-            text = str(canvas.itemcget(item, "text"))
-            if "OOS" not in text.upper():
+            item_type = canvas.type(item)
+            tags = set(canvas.gettags(item))
+            text = str(canvas.itemcget(item, "text")) if item_type == "text" else ""
+            if "dxf_oos_label_bg" not in tags and "OOS" not in text.upper():
                 continue
             bbox = canvas.bbox(item)
             if bbox:
@@ -1034,11 +1071,17 @@ def _draw_radius_callouts(app: Any, canvas: Any, path: Path | None, panel: Any, 
     max_y = max(y for _x, y in points)
     width = max(max_x - min_x, 0.001)
     height = max(max_y - min_y, 0.001)
-    margin = 34.0
-    header_height = 116.0
-    scale = min(
-        max(20, canvas.winfo_width() - margin * 2) / width,
-        max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
+    transform = state.get("dxf_preview_transform", {}) if isinstance(state, dict) else {}
+    margin = float(transform.get("margin", 74.0))
+    header_height = float(transform.get("header_height", 116.0))
+    scale = float(
+        transform.get(
+            "scale",
+            min(
+                max(20, canvas.winfo_width() - margin * 2) / width,
+                max(20, canvas.winfo_height() - margin * 2 - header_height) / height,
+            ),
+        )
     )
     thickness = extract_glass_thickness_inches(panel)
     callouts = radius_callouts(
@@ -1316,6 +1359,17 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "version_0_67_duplicate_job_order_identity": True,
                         "version_0_68_hidden_xls_conversion": True,
                         "version_0_69_fast_accurate_scanning": True,
+                        "version_0_71_waterjet_review_polish": True,
+                        "version_0_72_bounded_network_cleanup": True,
+                        "version_0_73_validated_archive_handoff": True,
+                        "version_0_74_completed_batch_cleanup": True,
+                        "version_0_75_resilient_scan_cleanup": True,
+                        "version_0_76_manual_wj_metric_save": True,
+                        "version_0_77_review_workflow_controls": True,
+                        "version_0_78_centered_order_summary": True,
+                        "version_0_79_streamlined_tools": True,
+                        "version_0_80_order_search_action_history": True,
+                        "version_0_81_dashboard_layout_polish": True,
                     }
                 )
             except Exception as exc:
@@ -1352,6 +1406,20 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_0_68_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_69_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_70_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_71_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_72_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_73_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_74_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_75_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_76_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_77_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_78_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_79_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_80_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_81_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_82_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_83_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_84_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 
@@ -1508,3 +1576,26 @@ def _run_v4_self_tests(programmer: Any, shower_batch: Any, gui: Any, scratch_par
     preview_panel = _panel_without_radius_header(header_panel)
     if str(preview_panel.machine).upper() == "WJ" or "PPH" in str(preview_panel.text).upper():
         raise RuntimeError("Radius header suppression self-test failed.")
+
+    decision_config = {
+        "rules": {
+            "denver_min_inches": 6.125,
+            "door_keywords": ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"],
+            "hinge_label_keywords": ["GEN037", "V1E037", "AV1E037", "JRG037", "GEN180"],
+            "fabrication_keywords": ["HOLE", "CUTOUT", "NOTCH", "RADIUS"],
+            "denver_fabrication_keywords": ["HOLE", "SLOT", "SCU4"],
+            "waterjet_keywords": ["NOTCH", "RADIUS"],
+            "weak_waterjet_keywords": ["IRREGULAR SHAPE"],
+            "label_only_allow_keywords": ["RAKED EDGE"],
+        }
+    }
+    wj_panel = programmer.Panel(1, 1, '3/8" Clear Tempered\n1/2 Radius', 33.5, 80.0, "WJ")
+    wj_order = shower_batch.ProcessOrder("900071", "12345671 WATERJET TEST")
+    wj_item = shower_batch.ProcessItem(1, width_text='33-1/2"', height_text='80"')
+    wj_item.machine_hints.append("Denver 2 (CNC)")
+    wj_order.items[1] = wj_item
+    shower_batch.apply_process_hints([wj_panel], wj_order, decision_config)
+    if wj_panel.machine != "WJ":
+        raise RuntimeError("Strong Waterjet geometry did not override conflicting Denver routing.")
+    if not all(programmer.has_hinge_label_text(code, decision_config) for code in ("JRG037", "GEN180")):
+        raise RuntimeError("Configured JRG037/GEN180 hinge detection self-test failed.")

@@ -2,7 +2,7 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 0.70 - Local-First Import and Review**
+Current release: **Version 0.84 - Workflow Settings**
 
 ## Main Workflow
 
@@ -18,7 +18,17 @@ Current release: **Version 0.70 - Local-First Import and Review**
 
 - **Existing production files:** Before sending, the application identifies generated filenames that already exist in the production folders. Identical files are accepted automatically. Different files open a clear dialog where the operator can keep the existing production files, replace them, or cancel the send. Non-conflicting files continue normally.
 - **Per-file send recovery:** A locked or inaccessible file is reported without stopping unrelated files. An order with an unsent required file is not archived as fully sent.
+- **Fast production sending:** Independent sketch and DXF copies, plus existing-file checks, run concurrently while preserving atomic targets and keep/replace decisions.
 - **Radius callouts:** Waterjet and PPH DXF previews circle each detected internal radius and place a spaced leader label beside it. Radius labels avoid OOS annotations and nearby radius labels.
+- **Hinge detection settings:** Use **Hinge Detection** under Tools to add or change hinge codes such as `JRG037` and `GEN180` without editing source code. Core PPH identifiers `PPH` and `SRPPH01` remain available in the editable list.
+- **Manual machine changes:** Saving a review edit after changing a piece from Denver to Waterjet rewrites its program DXF in millimeters, including the metric DXF header expected by Waterjet.
+- **Review workflow controls:** Review Order includes an explicit machine selector, and refreshing a sketch returns directly to the editable overlay view without requiring the order window to be reopened.
+- **Sortable order list:** Click an Orders table heading to sort that column ascending or descending without separating orders from their process-list batch.
+- **Order search:** Use the order-number search above the table to highlight and scroll to an exact or partial A&W order match.
+- **Action History:** Search the last seven days of major workflow activity by action, A&W order, Job Nr, job name, result, or detail. Older entries are retained in monthly local archives.
+- **Validate Selected:** Run a non-destructive readiness review of selected orders without generating or changing production output.
+- **Guarded hinge settings:** Hinge codes are managed through a selectable list with confirmed add/remove actions. Required `PPH` and `SRPPH01` identifiers are visibly protected.
+- **Compact order summary:** Live Orders, Ready, Issues, Processed, and Checked totals sit inside the Orders header so the table has more vertical room.
 - **Long glass:** Glass with either dimension at least 113 inches must show `SE` on both short end edges. Missing or unclear end-edge labels create a review warning.
 - **Waterjet envelope:** A Waterjet piece larger than 75 inches in both dimensions is flagged and its DXF is skipped for review.
 - **Waterjet radius versus thickness:** Detected internal radii must be at least the glass thickness. For example, 3/8-inch glass with a 1/4-inch internal radius is flagged; a 3/8-inch radius passes.
@@ -136,12 +146,20 @@ Do not publish a new source revision without rebuilding and publishing matching 
 
 ## Versioning
 
-The project uses a pre-1.0 release series. The current release is **Version 0.70**. Each revision advances by `0.01`:
+The project uses a pre-1.0 release series. The current release is **Version 0.79**. Each revision advances by `0.01`:
 
 ```text
-Version 0.70
+Version 0.69
 Version 0.70
 Version 0.71
+Version 0.72
+Version 0.73
+Version 0.74
+Version 0.75
+Version 0.76
+Version 0.77
+Version 0.78
+Version 0.79
 ```
 
 For every release:

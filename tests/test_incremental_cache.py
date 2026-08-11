@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
+import threading
+import time
 import unittest
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -405,6 +409,232 @@ class IncrementalCacheTests(unittest.TestCase):
             {"top": '100"', "bottom": '100"', "left": '42"', "right": '42"'},
         )
 
+    def test_hinge_detection_settings_preserve_config_and_normalize_codes(self) -> None:
+        with writable_test_directory() as temp:
+            path = temp / "shower_programmer_config.json"
+            path.write_text(
+                '{"rules":{"denver_min_inches":6.125,"hinge_label_keywords":["GEN037"]},"item_overrides":{}}',
+                encoding="utf-8",
+            )
+
+            codes = shower_programmer_gui.ShowerProgrammerApp.save_hinge_detection_codes(
+                path,
+                "gen037\nJRG037\nGEN180\ngen037",
+                {"GEN037": "down", "JRG037": "up", "GEN180": "down"},
+            )
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(codes, ["GEN037", "JRG037", "GEN180"])
+            self.assertEqual(saved["rules"]["hinge_label_keywords"], codes)
+            self.assertEqual(
+                saved["rules"]["hinge_label_orientations"],
+                {"GEN037": "down", "JRG037": "up", "GEN180": "down"},
+            )
+            self.assertEqual(saved["rules"]["denver_min_inches"], 6.125)
+            self.assertEqual(saved["item_overrides"], {})
+
+    def test_hinge_detection_guarded_add_and_remove(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        added = app.add_hinge_detection_code(["GEN037"], " new037 ")
+
+        self.assertEqual(added, ["GEN037", "NEW037"])
+        self.assertEqual(
+            app.remove_hinge_detection_code(added, "NEW037"),
+            ["GEN037"],
+        )
+        with self.assertRaisesRegex(ValueError, "already"):
+            app.add_hinge_detection_code(added, "GEN037")
+        self.assertEqual(app.remove_hinge_detection_code(["GEN037", "PPH"], "PPH"), ["GEN037"])
+
+    def test_hinge_code_matching_tolerates_letter_o_and_zero_and_uses_orientation(self) -> None:
+        config = {
+            "rules": {
+                "hinge_label_keywords": ["COL037", "PPH"],
+                "hinge_label_orientations": {"COL037": "down", "PPH": "up"},
+            }
+        }
+        panel = programmer.Panel(1, 2, "AC0L037", 34.125, 95.1875, "DENVER 1")
+        panel.hinge_side = "right"
+        panel.hinges_up = True
+
+        self.assertTrue(programmer.has_hinge_label_text("Template A: C0L037", config))
+        self.assertEqual(programmer.matched_hinge_label_codes("AC0L037", config), ["COL037"])
+        programmer.enforce_configured_hinge_orientation(panel, config)
+
+        self.assertFalse(panel.hinges_up)
+        self.assertEqual(panel.rotation_degrees, -90)
+        self.assertEqual(panel.indicator_corner, "top_right")
+
+    def test_input_only_pdf_becomes_visible_issue_row(self) -> None:
+        with writable_test_directory() as temp:
+            pdf = temp / "Glass Order Example.pdf"
+            pdf.write_bytes(b"pdf")
+            with (
+                mock.patch.object(shower_programmer_gui.ShowerProgrammerApp, "file_matches_process_orders", return_value=False),
+                mock.patch.object(programmer, "extract_aw_order_from_pdf", return_value="237999"),
+                mock.patch.object(programmer, "extract_job_from_pdf", return_value="90000000.1 EXAMPLE"),
+            ):
+                orders, results = shower_programmer_gui.ShowerProgrammerApp.input_only_orders_from_pdfs([pdf], [])
+
+            self.assertEqual([order.aw_order for order in orders], ["237999"])
+            self.assertTrue(shower_programmer_gui.ShowerProgrammerApp.is_input_only_order(orders[0]))
+            self.assertEqual(results[0].status, "ISSUES")
+            self.assertIn("No matching order", results[0].issues[0])
+
+    def test_sketch_refresh_returns_to_editable_overlay_state(self) -> None:
+        class Reader:
+            pages = [object(), object(), object()]
+
+        source = Path("editable-source.pdf")
+        state = {
+            "embedded_sketch_preview": True,
+            "sketch_preview_path": Path("saved-output.pdf"),
+            "show_sketch_marks": True,
+        }
+
+        shower_programmer_gui.ShowerProgrammerApp.configure_editable_sketch_preview_state(
+            state,
+            Reader(),
+            source,
+        )
+
+        self.assertFalse(state["embedded_sketch_preview"])
+        self.assertEqual(state["sketch_preview_path"], source)
+        self.assertEqual(state["pdf_page_count"], 3)
+        self.assertTrue(shower_programmer_gui.ShowerProgrammerApp.should_draw_sketch_overlays(state))
+
+    def test_manual_wj_machine_change_rewrites_program_in_millimeters(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "source.dxf"
+            output = temp / "output.dxf"
+            pairs = [
+                ("0", "SECTION"),
+                ("2", "HEADER"),
+                ("9", "$INSUNITS"),
+                ("70", "1"),
+                ("9", "$MEASUREMENT"),
+                ("70", "0"),
+                ("0", "ENDSEC"),
+                ("0", "SECTION"),
+                ("2", "ENTITIES"),
+                ("0", "LINE"),
+                ("10", "0"),
+                ("20", "0"),
+                ("11", "10"),
+                ("21", "20"),
+                ("0", "ENDSEC"),
+                ("0", "EOF"),
+            ]
+            source.write_text(
+                "\n".join(value for pair in pairs for value in pair) + "\n",
+                encoding="ascii",
+            )
+            panel = programmer.Panel(1, 0, "", 10.0, 20.0, "WJ")
+            panel.source_dxf = source
+            panel.output_dxf = output
+            panel.rotation_degrees = 0
+            config = {
+                "dxf": {
+                    "waterjet_output_scale": 25.4,
+                    "waterjet_insunits": 4,
+                    "waterjet_measurement": 1,
+                    "default_output_scale": 1,
+                    "default_insunits": 1,
+                    "default_measurement": 0,
+                }
+            }
+
+            written = shower_programmer_gui.ShowerProgrammerApp.write_machine_changed_dxfs(
+                [panel],
+                [1],
+                config,
+            )
+            output_pairs = programmer.read_dxf_pairs(output)
+            header_values: dict[str, str] = {}
+            for index, pair in enumerate(output_pairs):
+                if pair[0].strip() != "9" or pair[1].strip().upper() not in {"$INSUNITS", "$MEASUREMENT"}:
+                    continue
+                for code, value in output_pairs[index + 1:index + 8]:
+                    if code.strip() == "9":
+                        break
+                    if code.strip() == "70":
+                        header_values[pair[1].strip().upper()] = value.strip()
+                        break
+            coordinates = [
+                float(value)
+                for code, value in output_pairs
+                if code.strip() in {"10", "11", "20", "21"}
+            ]
+
+            self.assertEqual(written, [output])
+            self.assertEqual(header_values["$INSUNITS"], "4")
+            self.assertEqual(header_values["$MEASUREMENT"], "1")
+            self.assertAlmostEqual(max(coordinates), 508.0, places=6)
+
+    def test_mirror_non_waterjet_rows_do_not_block_local_process_list_archive(self) -> None:
+        with writable_test_directory() as temp:
+            order_root = temp / "Orders"
+            process_root = temp / "Process List"
+            order_root.mkdir()
+            process_root.mkdir()
+            process_list = process_root / "Batch 7300.xls"
+            process_list.write_text("mirror batch", encoding="utf-8")
+
+            def process_row(order_item: str, job_name: str, machine: str) -> list[str]:
+                row = [""] * 22
+                row[2] = '42"'
+                row[3] = '83"'
+                row[6] = order_item
+                row[7] = "Flat Polish"
+                row[10] = "Customer"
+                row[13] = job_name
+                row[21] = machine
+                return row
+
+            orders = shower_batch.load_process_orders_from_rows(
+                [
+                    ['1/4" Mirror'],
+                    process_row("900001-1", "12345678 MIRROR JOB", "Waterjet"),
+                    process_row("900002-1", "12345679 PACKING ONLY", "Packing / Shipping"),
+                ]
+            )
+            self.assertEqual([order.aw_order for order in orders], ["900001"])
+            order_dxf = order_root / "12345678 MIRROR JOB_1.dxf"
+            order_dxf.write_text("DXF", encoding="utf-8")
+
+            class MirrorArchiveApp(shower_programmer_gui.ShowerProgrammerApp):
+                def load_processing_history(self):
+                    return {"orders": {}}
+
+            app = object.__new__(MirrorArchiveApp)
+            app.process_batches = {
+                "batch-7300": {
+                    "id": "batch-7300",
+                    "path": process_list,
+                    "name": process_list.name,
+                    "orders": orders,
+                    "all_orders": orders,
+                }
+            }
+            plans = app.completed_process_list_batches_for_orders(orders)
+            archived, warnings = app.archive_sent_input_files_for_orders(
+                orders,
+                order_root,
+                process_root,
+                include_process_lists=False,
+                completed_process_batches=plans,
+            )
+
+            self.assertEqual(len(plans), 1)
+            self.assertFalse(process_list.exists())
+            self.assertTrue(any(path.name == process_list.name for path in archived))
+            self.assertEqual(warnings, [])
+
+    def test_preview_annotation_rectangles_detect_collisions(self) -> None:
+        overlaps = shower_programmer_gui.ShowerProgrammerApp.preview_rects_overlap
+        self.assertTrue(overlaps((10, 10, 40, 30), (30, 20, 60, 40)))
+        self.assertFalse(overlaps((10, 10, 20, 20), (24, 10, 34, 20)))
+
     def test_completed_converted_batch_deletes_matching_network_xls(self) -> None:
         with writable_test_directory() as temp:
             source = temp / "Showers Programmer Input"
@@ -433,6 +663,384 @@ class IncrementalCacheTests(unittest.TestCase):
             self.assertEqual(deleted, [network_xls])
             self.assertEqual(warnings, [])
             self.assertFalse(network_xls.exists())
+
+    def test_validated_network_cleanup_deletes_files_concurrently(self) -> None:
+        with writable_test_directory() as temp:
+            paths = []
+            for index in range(4):
+                path = temp / f"validated-{index}.pdf"
+                path.write_text(str(index), encoding="utf-8")
+                paths.append(path)
+            lock = threading.Lock()
+            active = 0
+            max_active = 0
+
+            class ConcurrentCleanupApp(shower_programmer_gui.ShowerProgrammerApp):
+                @staticmethod
+                def unlink_import_path(path: Path) -> None:
+                    nonlocal active, max_active
+                    with lock:
+                        active += 1
+                        max_active = max(max_active, active)
+                    try:
+                        time.sleep(0.04)
+                        path.unlink()
+                    finally:
+                        with lock:
+                            active -= 1
+
+            deleted, warnings, timed_out = ConcurrentCleanupApp.delete_import_paths_bounded(
+                paths,
+                timeout_seconds=1.0,
+            )
+
+            self.assertEqual({path.name for path in deleted}, {path.name for path in paths})
+            self.assertEqual(warnings, [])
+            self.assertEqual(timed_out, [])
+            self.assertGreater(max_active, 1)
+
+    def test_cleanup_timeout_keeps_process_list_and_reports_fallback(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "Showers Programmer Input"
+            local = temp / "Process List"
+            source.mkdir()
+            local.mkdir()
+            order_dxf = source / "12345678 SLOW JOB_1.dxf"
+            network_list = source / "Batch 7100.xlsx"
+            local_list = local / "Batch 7100.xlsx"
+            order_dxf.write_text("DXF", encoding="utf-8")
+            network_list.write_text("network", encoding="utf-8")
+            local_list.write_text("local", encoding="utf-8")
+            order = shower_batch.ProcessOrder("900071", "12345678 SLOW JOB", "Customer")
+            order.items[1] = shower_batch.ProcessItem(1)
+            plan = {"name": "Batch 7100", "files": [local_list], "orders": [order]}
+
+            class SlowCleanupApp(shower_programmer_gui.ShowerProgrammerApp):
+                EDI_IMPORT_ORDERS_DIR = source
+
+                @staticmethod
+                def unlink_import_path(path: Path) -> None:
+                    if path.suffix.lower() == ".dxf":
+                        time.sleep(0.15)
+                    path.unlink(missing_ok=True)
+
+            deleted, warnings = SlowCleanupApp.clear_import_staging_folder(
+                [order],
+                completed_process_batches=[plan],
+                delete_timeout_seconds=0.02,
+            )
+
+            self.assertNotIn(network_list, deleted)
+            self.assertTrue(network_list.exists())
+            self.assertTrue(any("timed out" in warning.lower() for warning in warnings))
+            self.assertTrue(any("kept completed process lists" in warning.lower() for warning in warnings))
+            time.sleep(0.18)
+
+    def test_network_folder_index_timeout_returns_safe_failure(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "Showers Programmer Input"
+            source.mkdir()
+
+            class SlowIndexApp(shower_programmer_gui.ShowerProgrammerApp):
+                @classmethod
+                def index_import_source_folder(cls, source_dir: Path | None = None) -> dict[str, object]:
+                    time.sleep(0.15)
+                    return {"source_missing": False, "files": []}
+
+            started = time.perf_counter()
+            snapshot = SlowIndexApp.index_import_source_folder_bounded(source, timeout_seconds=0.02)
+            elapsed = time.perf_counter() - started
+
+            self.assertTrue(snapshot["source_missing"])
+            self.assertTrue(snapshot["cleanup_timed_out"])
+            self.assertIn("timed out", str(snapshot["source_error"]).lower())
+            self.assertLess(elapsed, 0.1)
+            time.sleep(0.16)
+
+    def test_validated_archive_names_avoid_shared_pdf_content_scan(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "Showers Programmer Input"
+            source.mkdir()
+            matching_pdf = source / "Glass Order TRUE HOMES_88643652 EDGEWATER 1007.pdf"
+            matching_dxf = source / "88643652 EDGEWATER 1007_1__P1.dxf"
+            unrelated_pdf = source / "customer_export_without_order_in_filename.pdf"
+            matching_pdf.write_text("matching", encoding="utf-8")
+            matching_dxf.write_text("matching", encoding="utf-8")
+            unrelated_pdf.write_text("unrelated", encoding="utf-8")
+            order = shower_batch.ProcessOrder("237239", "88643652 EDGEWATER 1007", "TRUE HOMES")
+            order.items[1] = shower_batch.ProcessItem(1)
+
+            class ValidatedCleanupApp(shower_programmer_gui.ShowerProgrammerApp):
+                EDI_IMPORT_ORDERS_DIR = source
+
+                @classmethod
+                def matching_order_files_bounded(cls, *args, **kwargs):
+                    raise AssertionError("Validated filenames should avoid shared PDF content matching.")
+
+            deleted, warnings = ValidatedCleanupApp.clear_import_staging_folder(
+                [order],
+                source_files=[matching_pdf, matching_dxf, unrelated_pdf],
+                validated_order_sources_by_aw={
+                    "237239": {matching_pdf.name, matching_dxf.name},
+                },
+            )
+
+            self.assertEqual({path.name for path in deleted}, {matching_pdf.name, matching_dxf.name})
+            self.assertEqual(warnings, [])
+            self.assertTrue(unrelated_pdf.exists())
+
+    def test_explicit_archive_handoff_never_scans_unrelated_shared_pdfs(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "Showers Programmer Input"
+            source.mkdir()
+            unrelated_pdf = source / "customer_export_without_order_in_filename.pdf"
+            unrelated_pdf.write_text("unrelated", encoding="utf-8")
+            order = shower_batch.ProcessOrder("237239", "88643652 EDGEWATER 1007", "TRUE HOMES")
+
+            class ReconciledCleanupApp(shower_programmer_gui.ShowerProgrammerApp):
+                EDI_IMPORT_ORDERS_DIR = source
+
+                @classmethod
+                def matching_order_files_bounded(cls, *args, **kwargs):
+                    raise AssertionError("An explicit local handoff must not inspect shared PDF content.")
+
+            deleted, warnings = ReconciledCleanupApp.clear_import_staging_folder(
+                [order],
+                source_files=[unrelated_pdf],
+                validated_order_sources_by_aw={},
+            )
+
+            self.assertEqual(deleted, [])
+            self.assertEqual(warnings, [])
+            self.assertTrue(unrelated_pdf.exists())
+
+    def test_cleanup_keeps_shared_file_needed_by_unsent_duplicate_job(self) -> None:
+        with writable_test_directory() as temp:
+            source = temp / "Showers Programmer Input"
+            source.mkdir()
+            shared_pdf = source / "Glass Order BUILDER_89494499 130 DEERBROOK.pdf"
+            shared_dxf = source / "89494499 130 DEERBROOK_1__P1.dxf"
+            shared_pdf.write_text("shared", encoding="utf-8")
+            shared_dxf.write_text("shared", encoding="utf-8")
+            sent_order = shower_batch.ProcessOrder("237178", "89494499 130 DEERBROOK", "BUILDER")
+            sent_order.items[1] = shower_batch.ProcessItem(1)
+            unsent_order = shower_batch.ProcessOrder("237179", "89494499 130 DEERBROOK", "BUILDER")
+            unsent_order.items[1] = shower_batch.ProcessItem(1)
+
+            class ProtectedCleanupApp(shower_programmer_gui.ShowerProgrammerApp):
+                EDI_IMPORT_ORDERS_DIR = source
+
+            deleted, warnings = ProtectedCleanupApp.clear_import_staging_folder(
+                [sent_order],
+                source_files=[shared_pdf, shared_dxf],
+                validated_order_sources_by_aw={
+                    "237178": {shared_pdf.name, shared_dxf.name},
+                },
+                protected_orders=[unsent_order],
+            )
+
+            self.assertEqual(deleted, [])
+            self.assertEqual(warnings, [])
+            self.assertTrue(shared_pdf.exists())
+            self.assertTrue(shared_dxf.exists())
+
+    def test_missing_shared_source_during_copy_does_not_abort_scan(self) -> None:
+        with writable_test_directory() as temp:
+            missing = temp / "already_removed.pdf"
+            target = temp / "Orders" / missing.name
+
+            results = list(
+                shower_programmer_gui.ShowerProgrammerApp.copy_file_pairs_concurrently(
+                    [(missing, target)]
+                )
+            )
+
+            self.assertEqual(results, [(missing, target, False)])
+            self.assertFalse(target.exists())
+
+    def test_completed_batch_reuses_prior_dated_archive_names(self) -> None:
+        with writable_test_directory() as temp:
+            order_root = temp / "Orders"
+            process_root = temp / "Process List"
+            order_root.mkdir()
+            process_root.mkdir()
+            archive_root = order_root / shower_programmer_gui.ShowerProgrammerApp.dated_archive_folder_name()
+            archive_root.mkdir()
+
+            prior_order = shower_batch.ProcessOrder("237239", "88643652 EDGEWATER 1007", "TRUE HOMES")
+            prior_order.items[1] = shower_batch.ProcessItem(1)
+            current_order = shower_batch.ProcessOrder("237240", "88651438 ENCORE 75", "DAVID WEEKLEY")
+            current_order.items[1] = shower_batch.ProcessItem(1)
+            prior_pdf = archive_root / "Glass Order TRUE HOMES_88643652 EDGEWATER 1007.pdf"
+            prior_dxf = archive_root / "88643652 EDGEWATER 1007_1__P1.dxf"
+            current_pdf = order_root / "Glass Order DAVID WEEKLEY_88651438 ENCORE 75.pdf"
+            current_dxf = order_root / "88651438 ENCORE 75_1__P1.dxf"
+            process_list = process_root / "Batch 7200.xlsx"
+            for path in (prior_pdf, prior_dxf, current_pdf, current_dxf, process_list):
+                path.write_text(path.name, encoding="utf-8")
+            plan = {
+                "name": "Batch 7200",
+                "files": [process_list],
+                "orders": [prior_order, current_order],
+            }
+
+            app = object.__new__(shower_programmer_gui.ShowerProgrammerApp)
+            archived, warnings = app.archive_sent_input_files_for_orders(
+                [current_order],
+                order_root,
+                process_root,
+                include_process_lists=False,
+                completed_process_batches=[plan],
+            )
+
+            self.assertEqual(warnings, [])
+            self.assertEqual(len(archived), 3)
+            self.assertEqual(
+                app._last_archived_order_sources_by_aw["237239"],
+                {prior_pdf.name, prior_dxf.name},
+            )
+            self.assertEqual(
+                app._last_archived_order_sources_by_aw["237240"],
+                {current_pdf.name, current_dxf.name},
+            )
+
+            source = temp / "Showers Programmer Input"
+            source.mkdir()
+            shared_current_pdf = source / current_pdf.name
+            shared_current_dxf = source / current_dxf.name
+            unrelated_pdf = source / "customer_export_without_order_in_filename.pdf"
+            for path in (shared_current_pdf, shared_current_dxf, unrelated_pdf):
+                path.write_text(path.name, encoding="utf-8")
+
+            class CompletedBatchCleanupApp(shower_programmer_gui.ShowerProgrammerApp):
+                EDI_IMPORT_ORDERS_DIR = source
+
+                @classmethod
+                def matching_order_files_bounded(cls, *args, **kwargs):
+                    raise AssertionError("Completed archive evidence should avoid shared PDF matching.")
+
+            deleted, cleanup_warnings = CompletedBatchCleanupApp.clear_import_staging_folder(
+                [current_order],
+                completed_process_batches=[plan],
+                source_files=[shared_current_pdf, shared_current_dxf, unrelated_pdf],
+                validated_order_sources_by_aw=app._last_archived_order_sources_by_aw,
+            )
+
+            self.assertEqual(
+                {path.name for path in deleted},
+                {shared_current_pdf.name, shared_current_dxf.name},
+            )
+            self.assertEqual(cleanup_warnings, [])
+            self.assertTrue(unrelated_pdf.exists())
+
+    def test_local_archive_reuses_initial_match_without_post_move_rescan(self) -> None:
+        with writable_test_directory() as temp:
+            order_root = temp / "Orders"
+            process_root = temp / "Process List"
+            order_root.mkdir()
+            process_root.mkdir()
+            order_pdf = order_root / "Glass Order TRUE HOMES_88643652 EDGEWATER 1007.pdf"
+            order_dxf = order_root / "88643652 EDGEWATER 1007_1__P1.dxf"
+            unrelated = order_root / "99999999 OTHER JOB_1.dxf"
+            process_list = process_root / "Batch 7200.xlsx"
+            for path in (order_pdf, order_dxf, unrelated, process_list):
+                path.write_text(path.name, encoding="utf-8")
+            order = shower_batch.ProcessOrder("237239", "88643652 EDGEWATER 1007", "TRUE HOMES")
+            order.items[1] = shower_batch.ProcessItem(1)
+            plan = {"name": "Batch 7200", "files": [process_list], "orders": [order]}
+
+            class CountingArchiveApp(shower_programmer_gui.ShowerProgrammerApp):
+                match_calls = 0
+
+                @classmethod
+                def matching_order_files(cls, *args, **kwargs):
+                    cls.match_calls += 1
+                    return super().matching_order_files(*args, **kwargs)
+
+            app = object.__new__(CountingArchiveApp)
+            archived, warnings = app.archive_sent_input_files_for_orders(
+                [order],
+                order_root,
+                process_root,
+                include_process_lists=False,
+                completed_process_batches=[plan],
+            )
+
+            self.assertEqual(warnings, [])
+            self.assertEqual(CountingArchiveApp.match_calls, 2)
+            self.assertEqual(
+                app._last_archived_order_sources_by_aw["237239"],
+                {order_pdf.name, order_dxf.name},
+            )
+            self.assertEqual(len(archived), 3)
+            self.assertTrue(unrelated.exists())
+            self.assertFalse(process_list.exists())
+
+    def test_action_history_partitions_records_after_seven_days(self) -> None:
+        now = datetime(2026, 8, 10, 12, 0, 0)
+        recent = {"id": "recent", "timestamp": (now - timedelta(days=2)).isoformat()}
+        boundary = {"id": "boundary", "timestamp": (now - timedelta(days=7)).isoformat()}
+        old = {"id": "old", "timestamp": (now - timedelta(days=8)).isoformat()}
+
+        current, archived = shower_programmer_gui.ShowerProgrammerApp.partition_action_history_events(
+            [recent, boundary, old],
+            now=now,
+        )
+
+        self.assertEqual([event["id"] for event in current], ["recent", "boundary"])
+        self.assertEqual([event["id"] for event in archived], ["old"])
+
+    def test_action_history_archives_old_records_and_searches_job_fields(self) -> None:
+        with writable_test_directory() as temp:
+            app = object.__new__(shower_programmer_gui.ShowerProgrammerApp)
+            app.runtime_root = temp
+            app.action_history_lock = threading.RLock()
+            app.order_by_aw = {}
+            recent = {
+                "id": "recent",
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "action": "Validate Selected",
+                "status": "SUCCESS",
+                "orders": ["237009"],
+                "job_numbers": ["89420398.4"],
+                "job_names": ["2089 HOLBROOK"],
+                "customers": ["SAUSSY BURBANK HOMES"],
+                "message": "Validation complete",
+                "details": "Generated DXF verified",
+            }
+            old_stamp = datetime.now() - timedelta(days=9)
+            old = {
+                "id": "old",
+                "timestamp": old_stamp.isoformat(timespec="seconds"),
+                "action": "Scan Orders",
+                "status": "SUCCESS",
+                "orders": ["236472"],
+                "job_numbers": ["88000000"],
+                "job_names": ["OLD JOB"],
+                "message": "Scan complete",
+                "details": "Archived test",
+            }
+            app.write_action_history_file(app.action_history_path(), [old, recent])
+
+            self.assertEqual(app.archive_old_action_history(), 1)
+            current = app.load_action_history_events("Last 7 Days")
+            archived = app.load_action_history_events("Archive")
+
+            self.assertEqual([event["id"] for event in current], ["recent"])
+            self.assertEqual([event["id"] for event in archived], ["old"])
+            self.assertTrue(app.action_history_matches(recent, "237009 holbrook dxf"))
+            self.assertTrue(app.action_history_matches(recent, "89420398.4 validation"))
+            self.assertTrue(app.action_history_matches(recent, "saussy burbank"))
+            self.assertFalse(app.action_history_matches(recent, "236472"))
+
+    def test_order_sort_values_use_dates_and_natural_numbers(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        self.assertLess(app.order_sort_value("P2", "items"), app.order_sort_value("P10", "items"))
+        self.assertLess(
+            app.order_sort_value("08/09/2026", "delivery"),
+            app.order_sort_value("08/10/2026", "delivery"),
+        )
+        self.assertLess(app.order_sort_value("ISSUES", "status"), app.order_sort_value("READY", "status"))
 
 
 if __name__ == "__main__":

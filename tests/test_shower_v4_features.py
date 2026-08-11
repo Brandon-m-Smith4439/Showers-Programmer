@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import shutil
 import sys
+import threading
+import time
 import unittest
 import uuid
 from contextlib import contextmanager
@@ -204,6 +206,41 @@ class CurrentFeatureTests(unittest.TestCase):
             self.assertFalse((target_dir / fail_source.name).exists())
             self.assertEqual(len(copied), 3)
             self.assertEqual(len(app._v4_send_summary["failed"]), 1)
+
+    def test_independent_shop_copies_run_concurrently(self):
+        class ConcurrentApp(FakeApp):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lock = threading.Lock()
+                self.active = 0
+                self.max_active = 0
+
+            def copy_file_atomically(self, source: Path, target: Path) -> None:
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(0.04)
+                    target.write_bytes(source.read_bytes())
+                finally:
+                    with self.lock:
+                        self.active -= 1
+
+        with writable_test_directory() as root:
+            source_dir = root / "source"
+            target_dir = root / "target"
+            source_dir.mkdir(); target_dir.mkdir()
+            sources = []
+            for index in range(4):
+                source = source_dir / f"9000010{index}.dxf"
+                source.write_text(str(index), encoding="utf-8")
+                sources.append(source)
+            app = ConcurrentApp()
+
+            copied = v4._copy_outputs_with_policy(app, sources, target_dir)
+
+            self.assertEqual([path.name for path in copied], [path.name for path in sources])
+            self.assertGreater(app.max_active, 1)
 
     def test_radius_callout_points_and_severity(self):
         callouts = v4.radius_callouts(

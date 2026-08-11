@@ -114,9 +114,13 @@ class ProcessItem:
             return ""
         fabrication_text = programmer.strip_non_fabrication_edge_text(text)
         door_keywords = upper_config_list(config, "door_keywords", ["DOOR", "HINGE", "PPH", "PULL", "HANDLE"])
-        door_keywords.update(upper_config_list(config, "hinge_label_keywords", ["GEN037", "V1E037", "AV1E037"]))
+        door_keywords.update(programmer.hinge_label_keywords(config))
         fabrication = process_list_fabrication_keywords(config)
-        if any(keyword in text for keyword in door_keywords) or re.search(r"\b(?:A?V1E|A?GEN)\d{3}\b", text):
+        if (
+            any(keyword in text for keyword in door_keywords)
+            or programmer.has_hinge_label_text(text, config)
+            or re.search(r"\b(?:A?V1E|A?GEN)\d{3}\b", text)
+        ):
             return "DENVER 1"
         if any(keyword in fabrication_text for keyword in fabrication):
             return "DENVER 2"
@@ -126,6 +130,8 @@ class ProcessItem:
         text = self.processing_text.upper()
         if not text:
             return False
+        if re.search(r"\b(?:DOUBLE|TRIPLE)\s+NOTCH(?:ES)?\b", text):
+            return True
         if re.search(r"\b[1-9]\d*\s+(?:EDGE\s+NOTCH(?:ES)?|CORNER\s+NOTCH(?:ES)?|NOTCHED\s+CORNERS?)\b", text):
             return True
         if re.search(r"\b(?:[1-9]\d*\s+)?(?:1/2\s+)?RADIUS\b", text):
@@ -208,6 +214,7 @@ class BatchJobResult:
     report_path: Path | None = None
     delivery_date: str = ""
     issues: list[str] = field(default_factory=list)
+    remake_items: list[int] | None = None
 
 
 @dataclass
@@ -1537,6 +1544,7 @@ def apply_process_hints(
         processing_machine = process_item.inferred_denver_machine(config)
         strong_process_wj = process_item.has_strong_waterjet_fabrication(config)
         strong_pdf_wj = programmer.has_pdf_waterjet_evidence(panel.text, config)
+        has_door_evidence = programmer.has_door_programming_evidence(panel, config)
         if not is_mirror_glass and desired_machine:
             original_machine = panel.machine
             if desired_machine == "WJ":
@@ -1549,6 +1557,12 @@ def apply_process_hints(
                     panel.reasons.append(f"process list machine: {desired_machine}")
                 else:
                     set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
+            elif (strong_process_wj or strong_pdf_wj) and not has_door_evidence:
+                set_panel_machine(
+                    panel,
+                    "WJ",
+                    "WJ-only radius/notch fabrication overrides process-list Denver routing",
+                )
             else:
                 set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
         elif not is_mirror_glass and processing_machine:
@@ -1956,6 +1970,30 @@ def open_process_order_pdf(folder: Path, process_order: ProcessOrder) -> tuple[P
     return pdf_path, reader
 
 
+LOCATION_FIELD_RE = re.compile(
+    r"\blocation\s*:\s*(.*?)"
+    r"(?=\s+\b(?:marks?|project(?:\s*#)?|shape|quantity|glass)\s*:|[\r\n]|$)",
+    re.IGNORECASE,
+)
+
+
+def pdf_location_values(reader: PdfReader) -> list[str]:
+    """Return Location field values without matching unrelated PDF text."""
+    values: list[str] = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        for match in LOCATION_FIELD_RE.finditer(text):
+            value = re.sub(r"\s+", " ", match.group(1)).strip()
+            if value:
+                values.append(value)
+    return values
+
+
+def pdf_location_indicates_remake(reader: PdfReader) -> bool:
+    """Detect an order-entry remake only when REMAKE appears in Location."""
+    return any(re.search(r"\bREMAKE\b", value, re.IGNORECASE) for value in pdf_location_values(reader))
+
+
 def prepare_job(
     folder: Path,
     sketch_output_dir: Path,
@@ -1967,6 +2005,8 @@ def prepare_job(
 ) -> tuple[programmer.Job, PdfReader, list[str]]:
     process_order = clone_process_order(process_order)
     pdf_path, reader = open_process_order_pdf(folder, process_order)
+    if remake_items is None and pdf_location_indicates_remake(reader):
+        remake_items = set()
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
     item_remaps = match_process_items_to_sketch_pages(reader, panels, process_order, config, remake_items)
     if remake_items:
@@ -2082,6 +2122,7 @@ def process_one_order(
         result.input_pdf = job.pdf_path
         result.output_pdf = job.output_pdf
         result.report_path = job.report_path
+        result.remake_items = None if job.remake_items is None else sorted(job.remake_items)
         result.issues.extend(issues)
         if apply:
             if not force and not skip_pdf and job.output_pdf.exists():

@@ -2,6 +2,147 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 0.84] - 2026-08-11
+
+### Added
+- Input PDFs without a matching current process-list order remain visible as blocked rows instead of disappearing from the scan.
+- Hinge Detection settings now support adding, editing, removing, and assigning a default hinges-up or hinges-down orientation to every code.
+
+### Interface
+- General prompts are smaller, centered on their owning window, and use a clear two-choice Save or Don't Save layout where applicable.
+- Settings now opens as a large centered window with larger tabs instead of maximizing, and returns to the foreground after child notices close.
+- Hinge-code changes save immediately when confirmed; the separate Save Changes button and required-code labels were removed.
+
+### Reliability
+- Hinge-code matching now tolerates the common letter-O/zero variation, allowing configured `COL037` to match sketch text such as `C0L037`.
+- Real cut-in/FP-S geometry and manual overrides continue to take priority over each hinge code's configurable default orientation.
+
+## [Version 0.83] - 2026-08-11
+
+### Interface
+- Settings now opens maximized on the same display as the main Shower Programmer window.
+
+## [Version 0.82] - 2026-08-10
+
+### Added
+- Added a consolidated Settings workspace with Preferences, Folder Setup, Hinge Detection, and Action History tabs.
+- Source sketches whose Location field contains `REMAKE` now automatically use the established REMAKE processing workflow and retain that status in processing history.
+
+### Interface
+- Removed the duplicate Folder Setup card from the dashboard and consolidated Hinge Detection, Action History, and update/configuration tools under Settings.
+- Reduced the footprint of general notice, success, warning, and failure dialogs while preserving readable details and controls.
+
+### Reliability
+- REMAKE detection is restricted to the PDF Location field so unrelated notes containing the word do not change processing behavior.
+
+## [Version 0.81] - 2026-08-10
+
+### Interface
+- Simplified the shop handoff card to only Select All Orders and Review / Send.
+- Restored the original full-size Workflow buttons and moved the Tools group lower for clearer sidebar rhythm.
+- Enlarged the Orders, Ready, Issues, Processed, and Checked badges and placed them between order search and the column-resize hint.
+- Added responsive toolbar and sidebar layouts so smaller windows retain every action without overlap or clipping.
+
+## [Version 0.80] - 2026-08-10
+
+### Added
+- Orders table headers now sort their column ascending or descending while keeping each process-list batch grouped.
+- A compact order-number search highlights and scrolls directly to matching orders; repeated searches cycle through partial matches.
+- Action History keeps the latest seven days of major scan, processing, review-status, validation, send, and memory-cleanup activity in a searchable local viewer. Older entries move into monthly local archives.
+- Validate Selected performs a read-only input, output, processing, issue, checked-state, and machine-routing review for the selected orders.
+
+### Reliability
+- Active sorting is reapplied after scans and state changes so the table remains organized while work progresses.
+- Packaged self-tests now verify the new search, sorting, validation, and history feature set.
+
+## [Version 0.79] - 2026-08-10
+
+### Interface
+- Removed the obsolete Install Shortcut button from the Tools sidebar now that the application is distributed as a directly runnable folder-based executable.
+
+## [Version 0.78] - 2026-08-10
+
+### Interface
+- Centered the Orders, Ready, Issues, Processed, and Checked summary group within the Orders header.
+- Increased the summary badge dimensions, icons, counts, and labels slightly for clearer at-a-glance status reading.
+
+## [Version 0.77] - 2026-08-10
+
+### Added
+- Review Order now has a dedicated Change Machine button with explicit Denver 1, Denver 2, and Water Jet choices.
+- Hinge Detection now uses a selectable code list with Add New, Confirm Add, and confirmed removal controls. Required PPH identifiers are labeled and protected from removal.
+
+### Fixed
+- Refreshing the sketch preview now reloads the current review model and returns immediately to the editable overlay view. Operators can continue moving and changing marks without closing and reopening the order.
+
+### Interface
+- Orders, Ready, Issues, Processed, and Checked totals were reduced to compact badges and moved into the Orders section header, giving the order table more vertical workspace.
+
+## [Version 0.76] - 2026-08-10
+
+### Fixed
+- Saving a manual Denver-to-Waterjet machine change now immediately rewrites that piece's generated DXF in millimeters with metric DXF headers. The sketch, preview, processing history, and shop program can no longer disagree about the selected machine units.
+- Hinge Detection now includes the core `PPH` and `SRPPH01` identifiers. Existing editable configurations are migrated when the settings window opens, while preserving operator-added hinge codes.
+- Mirror process-list batches continue to ignore Packing/Shipping-only rows when deciding whether the programming work is complete, allowing the local process list to archive after its Waterjet mirror pieces are sent.
+
+### Validation
+- Added regression coverage for manual Waterjet DXF conversion and mirror-batch local process-list archival.
+
+## [Version 0.75] - 2026-08-10
+
+### Fixed
+- Startup scanning now imports files required by active orders before clearing validated files for previously sent orders, preventing stale shared-folder snapshot paths from raising `[WinError 2]`.
+- Shared files that also match an unsent order are protected from sent-order cleanup. This is especially important when two A&W orders use the same Job Nr.
+- A shared source file removed by another workstation between indexing and copying is now skipped safely; the affected order remains missing/flagged instead of aborting the complete scan.
+- File-not-found scan errors now include the processing stage that encountered the missing path.
+
+## [Version 0.74] - 2026-08-10
+
+### Fixed
+- Final sends for a partially delivered process-list batch now reuse filenames from the dated local archive for orders sent earlier. Those earlier orders no longer force a shared-drive PDF-content scan when the batch becomes complete.
+- An order with a validated archive map is considered clean when none of its exact source names remain in the shared snapshot. Unrelated shared PDFs are left untouched instead of being opened to prove an already-completed cleanup.
+- Startup reconciliation now passes the same local archive evidence into cleanup, allowing leftovers from a previously successful production send to be retired without repeating network PDF inspection.
+- If correlation is ever still required and times out, the cleanup note now identifies the unresolved A&W order numbers.
+
+### Performance
+- Completed-batch cleanup performs prior-order correlation against the fast local archive and keeps the bounded network path limited to files that do not have validated local evidence.
+
+## [Version 0.73] - 2026-08-10
+
+### Fixed
+- Sending an individual order now hands the exact locally validated input filenames to shared-folder cleanup. Predictable files such as order `237239` no longer trigger a 15-second scan through unrelated shared PDFs.
+
+### Performance
+- Shared cleanup uses fast A&W/Job Nr filename correlation first and opens PDF content only for orders that still lack validated filename evidence.
+- Local archiving no longer rescans the entire Orders folder after moving each completed batch. A failed local move keeps the affected process list and produces a cleanup warning.
+- Source-name mapping for multi-order archives uses up to four local workers while preserving the existing exact order/PDF/DXF correlation rules.
+
+## [Version 0.72] - 2026-08-10
+
+### Performance
+- Shared input cleanup now indexes the network folder once before deletion and performs up to four independently validated deletions concurrently.
+- Post-delete verification uses one lightweight directory snapshot and inspects only files that arrived during cleanup, avoiding repeated full-folder PDF reads for every completed batch.
+
+### Safety
+- Cleanup has a bounded timeout so an unavailable or stalled network share cannot hold the send workflow indefinitely.
+- Process lists remain untouched when deletion times out, the shared folder changes unexpectedly, post-cleanup verification fails, or batch ownership cannot be established.
+- Transient delete failures receive one retry. Remaining files and indeterminate cleanup conditions are shown in a themed warning popup after the production send completes.
+
+## [Version 0.71] - 2026-08-10
+
+### Fixed
+- Strong radius and positive notch evidence now keeps non-door pieces on Waterjet even when a conflicting process-list row includes Denver routing. This fixes the underlying classification for archived examples `237181.2` and `237191.1` without order-specific overrides.
+- DXF radius pointers now reuse the exact outline transform, correcting vertically and horizontally offset circles such as `237189.2`.
+- OOS labels now render inside the piece with backed, dimension-style text and collision-aware placement around other OOS labels and detected radius cuts.
+
+### Added
+- Added `JRG037` and `GEN180` to door hinge detection.
+- Added a themed **Hinge Detection** settings window so operators can add, remove, or change hinge codes while preserving the rest of the JSON configuration.
+- Standard information, warning, error, confirmation, retry, and save prompts now use a consistent Shower Programmer dialog style.
+
+### Performance
+- Production destination checks and independent sketch/DXF copies now use up to four workers. Atomic targets, existing-file keep/replace choices, progress reporting, and per-file failure recovery remain intact.
+
 ## [Version 0.70] - 2026-08-07
 
 ### Added

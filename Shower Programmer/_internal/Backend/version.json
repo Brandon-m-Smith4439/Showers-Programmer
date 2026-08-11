@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.70",
-  "version_number": 70,
-  "marker": "VERSION_0_70_LOCAL_FIRST_IMPORT_REVIEW",
-  "release_name": "Local-First Import and Review",
-  "release_date": "2026-08-07",
+  "version": "Version 0.84",
+  "version_number": 84,
+  "marker": "VERSION_0_84_WORKFLOW_SETTINGS",
+  "release_name": "Workflow Settings",
+  "release_date": "2026-08-11",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }
