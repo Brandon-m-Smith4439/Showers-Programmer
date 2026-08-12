@@ -292,7 +292,7 @@ class _ProgramMessageBox:
             result["value"] = value
             try:
                 dialog.grab_release()
-            except tk.TclError:
+            except (tk.TclError, RuntimeError):
                 pass
             dialog.destroy()
             if owner is not None:
@@ -392,6 +392,19 @@ class _ProgramMessageBox:
                 parent=options.get("parent"),
                 kind="warning",
                 buttons=[("Cancel", False), ("Retry", True)],
+                default=False,
+            )
+        )
+
+    def askcontinue(self, title: str, message: str, **options: Any) -> bool:
+        return bool(
+            self._show(
+                "askyesno",
+                title,
+                message,
+                parent=options.get("parent"),
+                kind="warning",
+                buttons=[("Cancel", False), ("Review Anyway", True)],
                 default=False,
             )
         )
@@ -545,7 +558,7 @@ class ModernProgressBar:
             self.mode = str(kwargs.pop("mode") or "determinate")
             try:
                 self.widget.configure(mode=self.mode)
-            except tk.TclError:
+            except (tk.TclError, RuntimeError):
                 pass
         if "value" in kwargs:
             try:
@@ -656,6 +669,12 @@ class ShowerProgrammerApp:
     UI_SETTINGS_FILE_NAME = "shower_programmer_ui_settings.json"
     ACTION_HISTORY_RETENTION_DAYS = 7
     ACTION_HISTORY_FILE_NAME = "action_history.jsonl"
+    QUARANTINE_RETENTION_DAYS = 7
+    QUARANTINE_FOLDER_NAME = "Recovery"
+    DIAGNOSTICS_FOLDER_NAME = "Diagnostics"
+    CONFIG_BACKUP_FOLDER_NAME = "Configuration Backups"
+    NETWORK_HEALTH_REFRESH_MS = 5 * 60 * 1000
+    NETWORK_HEALTH_TIMEOUT_SECONDS = 3.0
     ORDER_TREE_COLUMNS = (
         "status", "processed", "delivery", "order", "review",
         "sent", "job", "customer", "items", "issues",
@@ -711,6 +730,11 @@ class ShowerProgrammerApp:
         self.order_search_last_query = ""
         self.order_search_match_index = -1
         self.action_history_lock = threading.RLock()
+        self.network_health_var = tk.StringVar(value="Network: Checking")
+        self.network_health_details: dict[str, dict[str, object]] = {}
+        self.network_health_running = False
+        self.network_health_after_id: str | None = None
+        self.diagnostic_worker_active = False
 
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -764,6 +788,8 @@ class ShowerProgrammerApp:
         self.root.after(75, self.drain_worker_queue)
         self.root.after(1000, self.refresh_activity_heartbeat)
         self.root.after(250, self.archive_old_action_history)
+        self.root.after(350, self.cleanup_expired_quarantine)
+        self.root.after(1400, self.check_network_health_async)
         self.root.after_idle(lambda: self.root.after(850, self.scan_orders))
 
     def force_main_window_maximized(self) -> None:
@@ -824,6 +850,350 @@ class ShowerProgrammerApp:
             if not existed:
                 created.append(folder)
         return created
+
+    @staticmethod
+    def atomic_write_json(path: Path, data: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            last_error: OSError | None = None
+            for attempt in range(6):
+                try:
+                    os.replace(temporary, path)
+                    return
+                except PermissionError as exc:
+                    last_error = exc
+                    time.sleep(0.04 * (attempt + 1))
+            if last_error is not None:
+                raise last_error
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def quarantine_root(self) -> Path:
+        root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.QUARANTINE_FOLDER_NAME
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def diagnostics_directory(self) -> Path:
+        path = Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.DIAGNOSTICS_FOLDER_NAME
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @classmethod
+    def quarantine_paths(
+        cls,
+        quarantine_root: Path,
+        paths: Iterable[Path],
+        allowed_roots: Iterable[Path],
+        aw_orders: Iterable[str],
+        *,
+        bundle_id: str | None = None,
+        now: datetime | None = None,
+    ) -> tuple[list[Path], list[str], str | None]:
+        """Move local workflow files into a seven-day, manifest-backed recovery bundle."""
+        stamp = now or datetime.now()
+        roots = [root.resolve() for root in allowed_roots]
+        if not roots:
+            raise ValueError("At least one allowed local folder is required.")
+        quarantine_root = quarantine_root.resolve()
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        bundle_id = bundle_id or f"{stamp.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        bundle_dir = (quarantine_root / bundle_id).resolve()
+        try:
+            bundle_dir.relative_to(quarantine_root)
+        except ValueError as exc:
+            raise ValueError("Invalid recovery bundle identifier.") from exc
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = bundle_dir / "manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(f"Could not read recovery manifest {bundle_id}: {exc}") from exc
+            existing_roots = [Path(value).resolve() for value in manifest.get("allowed_roots", [])]
+            for root in roots:
+                if root not in existing_roots:
+                    existing_roots.append(root)
+            roots = existing_roots
+            manifest["allowed_roots"] = [str(root) for root in roots]
+        else:
+            manifest = {
+                "schema": 1,
+                "bundle_id": bundle_id,
+                "created_at": stamp.isoformat(timespec="seconds"),
+                "expires_at": (stamp + timedelta(days=cls.QUARANTINE_RETENTION_DAYS)).isoformat(timespec="seconds"),
+                "orders": [],
+                "allowed_roots": [str(root) for root in roots],
+                "files": [],
+            }
+        manifest["orders"] = sorted(
+            set(str(value) for value in manifest.get("orders", []))
+            | {str(value) for value in aw_orders if str(value)}
+        )
+        entries = manifest.setdefault("files", [])
+        if not isinstance(entries, list):
+            raise RuntimeError("The recovery manifest file list is invalid.")
+        moved: list[Path] = []
+        warnings: list[str] = []
+        seen: set[str] = set()
+        for source_value in paths:
+            source = Path(source_value)
+            try:
+                resolved = source.resolve()
+                root_index = next(
+                    index for index, root in enumerate(roots)
+                    if resolved == root or resolved.is_relative_to(root)
+                )
+            except (OSError, StopIteration):
+                warnings.append(f"Skipped file outside approved local folders: {source.name}")
+                continue
+            key = str(resolved).casefold()
+            if key in seen or not resolved.is_file():
+                continue
+            seen.add(key)
+            relative = resolved.relative_to(roots[root_index])
+            target = bundle_dir / "files" / f"root-{root_index + 1}" / relative
+            target = cls.unique_target_path(target)
+            try:
+                size = resolved.stat().st_size
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(resolved), str(target))
+                entries.append(
+                    {
+                        "original_path": str(resolved),
+                        "quarantined_path": str(target.relative_to(bundle_dir)),
+                        "size": size,
+                        "restored": False,
+                    }
+                )
+                moved.append(resolved)
+                cls.atomic_write_json(manifest_path, manifest)
+            except OSError as exc:
+                warnings.append(f"Could not move {source.name} to recovery: {exc}")
+        if not entries:
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+            return moved, warnings, None
+        cls.atomic_write_json(manifest_path, manifest)
+        return moved, warnings, bundle_id
+
+    @classmethod
+    def quarantine_bundles(cls, quarantine_root: Path) -> list[dict[str, object]]:
+        bundles: list[dict[str, object]] = []
+        if not quarantine_root.is_dir():
+            return bundles
+        root = quarantine_root.resolve()
+        for manifest_path in root.glob("*/manifest.json"):
+            try:
+                if not manifest_path.resolve().is_relative_to(root):
+                    continue
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or not isinstance(data.get("files"), list):
+                    continue
+                data["_manifest_path"] = str(manifest_path)
+                bundles.append(data)
+            except (OSError, ValueError, TypeError):
+                continue
+        return sorted(bundles, key=lambda item: str(item.get("created_at", "")), reverse=True)
+
+    @classmethod
+    def restore_quarantine_bundle(cls, quarantine_root: Path, bundle_id: str) -> tuple[list[Path], list[str]]:
+        root = quarantine_root.resolve()
+        bundle_dir = (root / bundle_id).resolve()
+        try:
+            bundle_dir.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("Invalid recovery bundle.") from exc
+        manifest_path = bundle_dir / "manifest.json"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        allowed_roots = [Path(value).resolve() for value in data.get("allowed_roots", [])]
+        restored: list[Path] = []
+        warnings: list[str] = []
+        for entry in data.get("files", []):
+            if not isinstance(entry, dict) or bool(entry.get("restored")):
+                continue
+            source = (bundle_dir / str(entry.get("quarantined_path", ""))).resolve()
+            target = Path(str(entry.get("original_path", ""))).resolve()
+            if not source.is_relative_to(bundle_dir) or not any(target.is_relative_to(base) for base in allowed_roots):
+                warnings.append("Skipped an unsafe recovery manifest entry.")
+                continue
+            if not source.is_file():
+                warnings.append(f"Recovery copy is missing: {source.name}")
+                continue
+            if target.exists():
+                target = cls.unique_target_path(target.with_name(f"{target.stem} (restored){target.suffix}"))
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source), str(target))
+                entry["restored"] = True
+                entry["restored_path"] = str(target)
+                restored.append(target)
+            except OSError as exc:
+                warnings.append(f"Could not restore {source.name}: {exc}")
+        cls.atomic_write_json(manifest_path, data)
+        if all(bool(entry.get("restored")) for entry in data.get("files", []) if isinstance(entry, dict)):
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+        return restored, warnings
+
+    @classmethod
+    def delete_quarantine_bundle(cls, quarantine_root: Path, bundle_id: str) -> None:
+        root = quarantine_root.resolve()
+        bundle_dir = (root / bundle_id).resolve()
+        if bundle_dir == root or not bundle_dir.is_relative_to(root):
+            raise ValueError("Invalid recovery bundle.")
+        shutil.rmtree(bundle_dir)
+
+    def cleanup_expired_quarantine(self) -> None:
+        now = datetime.now()
+        for bundle in self.quarantine_bundles(self.quarantine_root()):
+            try:
+                expires = datetime.fromisoformat(str(bundle.get("expires_at", "")))
+                if expires <= now:
+                    self.delete_quarantine_bundle(self.quarantine_root(), str(bundle.get("bundle_id", "")))
+            except (OSError, ValueError, TypeError):
+                continue
+
+    @staticmethod
+    def probe_network_path(path: Path) -> dict[str, object]:
+        started = time.perf_counter()
+        try:
+            if not path.is_dir():
+                raise FileNotFoundError(str(path))
+            with os.scandir(path) as entries:
+                next(entries, None)
+            return {"path": str(path), "reachable": True, "elapsed_ms": round((time.perf_counter() - started) * 1000)}
+        except Exception as exc:
+            return {
+                "path": str(path),
+                "reachable": False,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000),
+                "error": str(exc),
+            }
+
+    def network_health_targets(self) -> dict[str, Path]:
+        return {
+            "Import folder": Path(self.import_source_var.get()),
+            "Shop sketches": Path(self.SHOP_SKETCHES_DIR),
+            "Shop programs": Path(self.SHOP_PROGRAMS_DIR),
+        }
+
+    def check_network_health_async(self) -> None:
+        if self.network_health_running:
+            return
+        self.network_health_running = True
+        self.network_health_var.set("Network: Checking")
+        targets = self.network_health_targets()
+
+        def worker() -> None:
+            results: dict[str, dict[str, object]] = {}
+            result_queue: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
+            for name, path in targets.items():
+                threading.Thread(
+                    target=lambda label=name, candidate=path: result_queue.put((label, self.probe_network_path(candidate))),
+                    daemon=True,
+                ).start()
+            deadline = time.monotonic() + self.NETWORK_HEALTH_TIMEOUT_SECONDS
+            while len(results) < len(targets) and time.monotonic() < deadline:
+                try:
+                    name, result = result_queue.get(timeout=max(0.05, deadline - time.monotonic()))
+                    results[name] = result
+                except queue.Empty:
+                    break
+            for name, path in targets.items():
+                results.setdefault(name, {"path": str(path), "reachable": False, "error": "Timed out"})
+            try:
+                self.root.after(0, lambda: self.apply_network_health_results(results))
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def apply_network_health_results(self, results: dict[str, dict[str, object]]) -> None:
+        self.network_health_running = False
+        self.network_health_details = results
+        online = sum(bool(result.get("reachable")) for result in results.values())
+        total = len(results)
+        if online == total:
+            label, color = "Network: Online", self.SUCCESS
+        elif online:
+            label, color = f"Network: {online}/{total} Online", self.WARNING
+        else:
+            label, color = "Network: Offline", self.DANGER
+        self.network_health_var.set(label)
+        button = getattr(self, "network_health_button", None)
+        if button is not None:
+            try:
+                button.configure(text=label, border_color=color, text_color=color)
+            except tk.TclError:
+                pass
+        if self.network_health_after_id is not None:
+            try:
+                self.root.after_cancel(self.network_health_after_id)
+            except tk.TclError:
+                pass
+        self.network_health_after_id = self.root.after(self.NETWORK_HEALTH_REFRESH_MS, self.check_network_health_async)
+
+    @classmethod
+    def export_configuration_backup(cls, target: Path, config_path: Path, ui_settings_path: Path) -> Path:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError("The programmer configuration is not a JSON object.")
+        ui_settings: dict[str, object] = {}
+        if ui_settings_path.is_file():
+            loaded = json.loads(ui_settings_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("The UI settings file is not a JSON object.")
+            ui_settings = loaded
+        target = target.with_suffix(".zip")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        manifest = {
+            "schema": 1,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "application_version": cls.APP_VERSION,
+            "files": ["shower_programmer_config.json", cls.UI_SETTINGS_FILE_NAME],
+        }
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("backup_manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
+            archive.writestr("shower_programmer_config.json", json.dumps(config, indent=2, sort_keys=True))
+            archive.writestr(cls.UI_SETTINGS_FILE_NAME, json.dumps(ui_settings, indent=2, sort_keys=True))
+        os.replace(temporary, target)
+        return target
+
+    @classmethod
+    def import_configuration_backup(
+        cls,
+        archive_path: Path,
+        config_path: Path,
+        ui_settings_path: Path,
+        auto_backup_dir: Path,
+    ) -> dict[str, object]:
+        allowed = {"backup_manifest.json", "shower_programmer_config.json", cls.UI_SETTINGS_FILE_NAME}
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            names = {member.filename.replace("\\", "/") for member in archive.infolist() if not member.is_dir()}
+            if not names or not names.issubset(allowed) or "shower_programmer_config.json" not in names:
+                raise ValueError("This is not a valid Shower Programmer configuration backup.")
+            config = json.loads(archive.read("shower_programmer_config.json").decode("utf-8"))
+            ui_settings = (
+                json.loads(archive.read(cls.UI_SETTINGS_FILE_NAME).decode("utf-8"))
+                if cls.UI_SETTINGS_FILE_NAME in names
+                else {}
+            )
+        if not isinstance(config, dict) or not isinstance(ui_settings, dict):
+            raise ValueError("The configuration backup contains invalid JSON data.")
+        auto_backup_dir.mkdir(parents=True, exist_ok=True)
+        if config_path.is_file():
+            backup_target = auto_backup_dir / f"before-import-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+            cls.export_configuration_backup(backup_target, config_path, ui_settings_path)
+        cls.atomic_write_json(config_path, config)
+        cls.atomic_write_json(ui_settings_path, ui_settings)
+        return {"config": config, "ui_settings": ui_settings}
 
     def internal_orders_dir(self) -> Path:
         return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Input" / "Orders"
@@ -3505,6 +3875,7 @@ class ShowerProgrammerApp:
         bottom.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         bottom.columnconfigure(0, weight=1)
         bottom.columnconfigure(1, weight=0)
+        bottom.columnconfigure(2, weight=0)
         self.progress = ModernProgressBar(bottom, self, height=14)
         self.progress.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(12, 0), ipady=2)
         self.status_label = ctk.CTkLabel(
@@ -3525,13 +3896,21 @@ class ShowerProgrammerApp:
             width=520,
         )
         self.activity_detail_label.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 10))
+        self.network_health_button = self.make_tool_button(
+            bottom,
+            "Network: Checking",
+            "refresh",
+            self.open_network_health_dialog,
+            width=164,
+        )
+        self.network_health_button.grid(row=1, column=1, rowspan=2, sticky="e", padx=(8, 0), pady=(9, 10))
         self.make_tool_button(
             bottom,
             "Report Bug",
             "bug",
             self.open_bug_report,
             width=126,
-        ).grid(row=1, column=1, rowspan=2, sticky="e", padx=(8, 14), pady=(9, 10))
+        ).grid(row=1, column=2, rowspan=2, sticky="e", padx=(8, 14), pady=(9, 10))
 
     def make_sidebar_button(
         self,
@@ -5740,6 +6119,12 @@ class ShowerProgrammerApp:
     def review_raster_page_path(cls, output_dir: Path, pdf_path: Path, dpi: int, page_index: int) -> Path:
         return cls.review_raster_cache_dir(output_dir, pdf_path, dpi) / f"page_{page_index + 1:03d}.png"
 
+    @classmethod
+    def invalidate_review_pdf_raster_cache(cls, output_dir: Path, pdf_path: Path, dpi: int | None = None) -> None:
+        """Remove the raster for the PDF's current on-disk revision."""
+        render_dpi = int(dpi or cls.REVIEW_RENDER_DPI)
+        shutil.rmtree(cls.review_raster_cache_dir(output_dir, pdf_path, render_dpi), ignore_errors=True)
+
     @staticmethod
     def close_pdfium_object(obj: Any) -> None:
         close = getattr(obj, "close", None)
@@ -5763,7 +6148,7 @@ class ShowerProgrammerApp:
         temp_path = output_path.with_name(f"{output_path.stem}.{threading.get_ident()}.tmp{output_path.suffix}")
         try:
             page = document[page_index]
-            bitmap = page.render(scale=max(0.1, dpi / 72.0))
+            bitmap = page.render(scale=max(0.1, dpi / 72.0), draw_annots=True)
             image = bitmap.to_pil().convert("RGB")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(temp_path, format="PNG")
@@ -6286,6 +6671,7 @@ class ShowerProgrammerApp:
             title = "Process List Batch Actions"
             subtitle = str(batch.get("name", "Process List"))
             action_text = "Delete Local Batch"
+            network_delete_available = self.batch_allows_network_input_delete(batch)
         elif order is not None:
             title = "Order Actions"
             subtitle = (
@@ -6294,6 +6680,7 @@ class ShowerProgrammerApp:
                 else f"{order.aw_order}  {order.job_name}"
             )
             action_text = "Delete Local Input Files"
+            network_delete_available = False
         else:
             return "break"
 
@@ -6311,8 +6698,394 @@ class ShowerProgrammerApp:
                 "command": self.delete_selected_local_order_inputs,
             },
         ]
+        if not batch_id and order is not None:
+            actions.insert(
+                1,
+                {
+                    "text": "Why Programmed This Way",
+                    "icon": "help",
+                    "command": lambda selected=order: self.open_programming_evidence(selected),
+                },
+            )
+            actions.insert(
+                2,
+                {
+                    "text": "Create Diagnostic Package",
+                    "icon": "bug",
+                    "command": lambda selected=order: self.create_diagnostic_package_for_order(selected),
+                },
+            )
+        if network_delete_available:
+            actions.append(
+                {
+                    "text": "Delete Local + Network Batch",
+                    "icon": "trash",
+                    "destructive": True,
+                    "command": lambda: self.delete_selected_local_order_inputs(include_network=True),
+                }
+            )
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
         return "break"
+
+    def collect_programming_evidence(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path | None = None,
+        output_dir: Path | None = None,
+    ) -> dict[str, object]:
+        folder = folder.resolve() if folder is not None else Path(self.folder_var.get()).resolve()
+        output_dir = output_dir.resolve() if output_dir is not None else Path(self.output_dir_var.get()).resolve()
+        payload: dict[str, object] = {
+            "order": str(process_order.aw_order),
+            "job": str(process_order.job_name),
+            "customer": str(process_order.customer),
+            "items": list(process_order.item_numbers),
+            "panels": [],
+            "issues": [],
+        }
+        try:
+            context = self.prepare_order_review_context(process_order, folder, output_dir, use_cache=True)
+            job = context.get("job")
+            if isinstance(job, programmer.Job):
+                payload["source_pdf"] = job.pdf_path.name
+                payload["panels"] = [programmer.panel_machine_decision_evidence(panel) for panel in job.panels]
+            payload["issues"] = [str(issue) for issue in context.get("issues", [])]
+        except Exception as exc:
+            payload["preparation_error"] = str(exc)
+        try:
+            history = self.load_processing_history_for_output(output_dir).get("orders", {})
+            if isinstance(history, dict):
+                entry = history.get(str(process_order.aw_order), {})
+                payload["processing_history"] = entry if isinstance(entry, dict) else {}
+        except Exception as exc:
+            payload["history_error"] = str(exc)
+        try:
+            overrides = self.load_manual_overrides_for_output(output_dir).get("item_overrides", {})
+            if isinstance(overrides, dict):
+                order_overrides = overrides.get(str(process_order.aw_order), {})
+                payload["manual_overrides"] = order_overrides if isinstance(order_overrides, dict) else {}
+        except Exception as exc:
+            payload["override_error"] = str(exc)
+        return payload
+
+    @staticmethod
+    def format_programming_evidence_panel(panel: dict[str, object]) -> str:
+        rotation = panel.get("rotation")
+        angle = float(panel.get("angle_correction") or 0.0)
+        lines = [
+            f"Machine: {panel.get('machine', 'Not identified')}",
+            f"Glass: {panel.get('glass_type', 'Not identified')}",
+            f"Dimensions: {panel.get('dimensions', 'Not identified')}",
+            f"Process-list hint: {panel.get('process_hint', 'None')}",
+            f"Source DXF: {panel.get('source_dxf', 'None')}",
+            f"Indicator corner: {panel.get('indicator', 'None')}",
+            f"DXF rotation: {rotation if rotation is not None else 'None'} deg",
+            f"Out-of-square correction: {angle:+.6f} deg",
+        ]
+        hinge_side = str(panel.get("hinge_side", "Not applicable"))
+        if hinge_side != "Not applicable":
+            lines.append(f"Hinges: {hinge_side} side, {'up' if panel.get('hinges_up') else 'down'}")
+        lines.append(f"Manual override active: {'Yes' if panel.get('manual_override') else 'No'}")
+        lines.append("")
+        lines.append("Decision evidence")
+        reasons = panel.get("reasons", [])
+        if isinstance(reasons, list) and reasons:
+            lines.extend(f"  - {reason}" for reason in reasons)
+        else:
+            lines.append("  - No decision evidence was recorded.")
+        warnings = panel.get("warnings", [])
+        if isinstance(warnings, list) and warnings:
+            lines.extend(["", "Warnings", *[f"  - {warning}" for warning in warnings]])
+        return "\n".join(lines)
+
+    def open_programming_evidence(self, process_order: shower_batch.ProcessOrder) -> None:
+        key = f"programming_evidence_{process_order.aw_order}"
+        existing = self.managed_page_window(key)
+        if existing is not None:
+            self.bring_page_window_to_front(existing)
+            return
+        if ctk is None:
+            payload = self.collect_programming_evidence(process_order)
+            messagebox.showinfo(
+                "Why Programmed This Way",
+                "\n\n".join(
+                    self.format_programming_evidence_panel(panel)
+                    for panel in payload.get("panels", [])
+                    if isinstance(panel, dict)
+                ) or str(payload.get("preparation_error", "No evidence is available.")),
+                parent=self.root,
+            )
+            return
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(f"Why Programmed This Way - {process_order.aw_order}")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.minsize(860, 600)
+        self.center_child_window(dialog, 1120, 760)
+        self.set_window_icon(dialog)
+        self.register_page_window(key, dialog)
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
+        header = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=0)
+        header.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            header,
+            text=f"Why {process_order.aw_order} was programmed this way",
+            font=("Segoe UI", 22, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).pack(fill=tk.X, padx=24, pady=(18, 3))
+        ctk.CTkLabel(
+            header,
+            text=f"{process_order.job_name}  |  {process_order.customer}",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+        ).pack(fill=tk.X, padx=24, pady=(0, 16))
+        loading = ctk.CTkLabel(
+            dialog,
+            text="Collecting machine, geometry, orientation, and override evidence...",
+            font=("Segoe UI", 13),
+            text_color=self.MUTED,
+        )
+        loading.grid(row=1, column=0, pady=40)
+        folder = Path(self.folder_var.get()).resolve()
+        output_dir = Path(self.output_dir_var.get()).resolve()
+
+        def render(payload: dict[str, object]) -> None:
+            if not dialog.winfo_exists():
+                return
+            loading.destroy()
+            panels = [panel for panel in payload.get("panels", []) if isinstance(panel, dict)]
+            if not panels:
+                detail = str(payload.get("preparation_error", "No panel evidence is available."))
+                ctk.CTkLabel(dialog, text=detail, text_color=self.DANGER, wraplength=900).grid(row=1, column=0, padx=24, pady=24)
+                return
+            tabs = ctk.CTkTabview(
+                dialog,
+                fg_color=self.APP_BG,
+                segmented_button_selected_color=self.ACCENT,
+                segmented_button_selected_hover_color=self.ACCENT_DARK,
+                segmented_button_unselected_color=self.PANEL_BG,
+                segmented_button_unselected_hover_color=self.BUTTON_HOVER,
+                text_color=self.TEXT,
+            )
+            tabs.grid(row=1, column=0, sticky="nsew", padx=18, pady=18)
+            for panel in panels:
+                piece = str(panel.get("piece", "Piece"))
+                tabs.add(piece)
+                tab = tabs.tab(piece)
+                tab.grid_columnconfigure(0, weight=1)
+                tab.grid_rowconfigure(0, weight=1)
+                textbox = ctk.CTkTextbox(
+                    tab,
+                    fg_color=self.CARD_BG,
+                    border_width=1,
+                    border_color=self.BORDER,
+                    corner_radius=12,
+                    font=("Consolas", 12),
+                    text_color=self.TEXT,
+                    wrap="word",
+                )
+                textbox.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+                textbox.insert("1.0", self.format_programming_evidence_panel(panel))
+                textbox.configure(state="disabled")
+            tabs.set(str(panels[0].get("piece", "Piece")))
+
+        def worker() -> None:
+            payload = self.collect_programming_evidence(process_order, folder, output_dir)
+            try:
+                self.root.after(0, lambda: render(payload))
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.bring_window_to_front(dialog, make_transient=False)
+
+    @staticmethod
+    def redacted_configuration_snapshot(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                str(key): ("[redacted]" if any(token in str(key).lower() for token in ("password", "secret", "token")) else ShowerProgrammerApp.redacted_configuration_snapshot(item))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [ShowerProgrammerApp.redacted_configuration_snapshot(item) for item in value]
+        return value
+
+    @classmethod
+    def write_diagnostic_zip(
+        cls,
+        target: Path,
+        file_groups: dict[str, Iterable[Path]],
+        snapshots: dict[str, object],
+        *,
+        maximum_bytes: int = 250 * 1024 * 1024,
+    ) -> tuple[Path, list[str]]:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        warnings: list[str] = []
+        included: list[dict[str, object]] = []
+        used_names: set[str] = set()
+        total_size = 0
+        try:
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for group, paths in file_groups.items():
+                    for source in paths:
+                        source = Path(source)
+                        if not source.is_file():
+                            continue
+                        size = source.stat().st_size
+                        if total_size + size > maximum_bytes:
+                            warnings.append(f"Skipped {source.name}: diagnostic package size limit reached.")
+                            continue
+                        base = f"files/{re.sub(r'[^A-Za-z0-9_.-]+', '_', group)}/{source.name}"
+                        arcname = base
+                        counter = 2
+                        while arcname.casefold() in used_names:
+                            path = Path(base)
+                            arcname = f"{path.parent.as_posix()}/{path.stem}_{counter}{path.suffix}"
+                            counter += 1
+                        used_names.add(arcname.casefold())
+                        archive.write(source, arcname)
+                        total_size += size
+                        included.append({"group": group, "name": source.name, "archive_path": arcname, "size": size})
+                for name, payload in snapshots.items():
+                    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._") or "snapshot"
+                    archive.writestr(f"snapshots/{safe_name}.json", json.dumps(payload, indent=2, sort_keys=True, default=str))
+                manifest = {
+                    "schema": 1,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "application_version": cls.APP_VERSION,
+                    "included_files": included,
+                    "warnings": warnings,
+                }
+                archive.writestr("diagnostic_manifest.json", json.dumps(manifest, indent=2, sort_keys=True))
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return target, warnings
+
+    def create_diagnostic_package_for_order(self, process_order: shower_batch.ProcessOrder) -> None:
+        if self.diagnostic_worker_active:
+            messagebox.showinfo("Diagnostic package", "Another diagnostic package is already being prepared.", parent=self.root)
+            return
+        self.diagnostic_worker_active = True
+        self.status_var.set(f"Creating diagnostic package for {process_order.aw_order}...")
+        folder = Path(self.folder_var.get()).resolve()
+        output_dir = Path(self.output_dir_var.get()).resolve()
+        batch_sources: list[Path] = []
+        for batch_id in self.order_batch_ids.get(str(process_order.aw_order), []):
+            source = self.process_batches.get(batch_id, {}).get("path")
+            if source:
+                candidate = source if isinstance(source, Path) else Path(str(source))
+                batch_sources.extend(self.process_list_companion_files(candidate) or [candidate])
+
+        def worker() -> None:
+            try:
+                run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(process_order.aw_order, output_dir)
+                generated = [
+                    sketch_dir / f"{process_order.aw_order}.pdf",
+                    report_dir / f"{process_order.aw_order}_programming_report.txt",
+                ]
+                generated.extend(programs_dir.glob(f"{process_order.aw_order}*.dxf"))
+                local_inputs = self.matching_order_files(folder, [process_order], root_only=True, inspect_pdf_text=True)
+                evidence = self.collect_programming_evidence(process_order, folder, output_dir)
+                config = programmer.load_config(self.config_path(folder))
+                actions = [
+                    event for event in self.load_action_history_events("All")
+                    if str(process_order.aw_order) in self.action_history_values(event, "orders")
+                ]
+                snapshots = {
+                    "order": {
+                        "aw_order": process_order.aw_order,
+                        "job_name": process_order.job_name,
+                        "customer": process_order.customer,
+                        "items": list(process_order.item_numbers),
+                    },
+                    "programming_evidence": evidence,
+                    "configuration": self.redacted_configuration_snapshot(config),
+                    "action_history": actions,
+                }
+                target = self.diagnostics_directory() / (
+                    f"ShowerProgrammer-{process_order.aw_order}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+                )
+                package, warnings = self.write_diagnostic_zip(
+                    target,
+                    {"local_inputs": local_inputs, "process_lists": batch_sources, "generated_output": generated},
+                    snapshots,
+                )
+
+                def finish() -> None:
+                    self.diagnostic_worker_active = False
+                    self.status_var.set(f"Diagnostic package created: {package.name}")
+                    self.record_action(
+                        "Diagnostic Package",
+                        f"Created diagnostic package for {process_order.aw_order}.",
+                        status="WARNING" if warnings else "SUCCESS",
+                        orders=[process_order],
+                        details=str(package),
+                    )
+                    self.show_themed_notice(
+                        "Diagnostic package ready",
+                        "Package created",
+                        "The selected order's inputs, generated output, decision evidence, and configuration snapshot were collected.",
+                        icon_name="bug",
+                        accent_color=self.WARNING if warnings else self.SUCCESS,
+                        details=[("File", package.name), ("Folder", str(package.parent)), ("Warnings", str(len(warnings)))],
+                        parent=self.root,
+                        button_text="Done",
+                    )
+
+                try:
+                    self.root.after(0, finish)
+                except (tk.TclError, RuntimeError):
+                    self.diagnostic_worker_active = False
+            except Exception as exc:
+                def failed() -> None:
+                    self.diagnostic_worker_active = False
+                    self.status_var.set("Diagnostic package failed.")
+                    messagebox.showerror("Diagnostic package failed", str(exc), parent=self.root)
+                try:
+                    self.root.after(0, failed)
+                except (tk.TclError, RuntimeError):
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @classmethod
+    def batch_allows_network_input_delete(cls, batch: dict[str, object]) -> bool:
+        """Restrict shared-folder deletion to the input-only synthetic batch."""
+        batch_orders = batch.get("orders", [])
+        return bool(batch_orders) and isinstance(batch_orders, list) and all(
+            isinstance(order, shower_batch.ProcessOrder) and cls.is_input_only_order(order)
+            for order in batch_orders
+        )
+
+    @classmethod
+    def network_input_files_for_orders(
+        cls,
+        source_dir: Path,
+        orders: list[shower_batch.ProcessOrder],
+    ) -> list[Path]:
+        """Return validated root-level network files for input-only orders."""
+        snapshot = cls.index_import_source_folder_bounded(source_dir)
+        if bool(snapshot.get("source_missing", False)):
+            detail = str(snapshot.get("source_error", "")).strip()
+            raise RuntimeError(detail or f"Could not access {source_dir}")
+        values = snapshot.get("files", [])
+        candidates = [path for path in values if isinstance(path, Path)] if isinstance(values, list) else []
+        matches, correlation_error = cls.matching_order_files_bounded(
+            source_dir,
+            orders,
+            candidates,
+        )
+        if correlation_error:
+            raise RuntimeError(correlation_error)
+        source_root = source_dir.resolve()
+        return [path for path in matches if path.resolve().parent == source_root]
 
     def batches_fully_selected_for_local_delete(
         self,
@@ -6334,7 +7107,7 @@ class ShowerProgrammerApp:
                 delete_batches.add(batch_id)
         return delete_batches
 
-    def delete_selected_local_order_inputs(self) -> None:
+    def delete_selected_local_order_inputs(self, include_network: bool = False) -> None:
         orders = self.selected_orders()
         if not orders:
             messagebox.showinfo("No selection", "Select one or more orders or a process-list batch first.")
@@ -6342,8 +7115,17 @@ class ShowerProgrammerApp:
         try:
             local_order_folder = Path(self.folder_var.get()).resolve()
             process_list_root = Path(self.process_list_var.get()).resolve()
+            network_source = Path(self.import_source_var.get()).resolve() if include_network else None
         except Exception as exc:
             messagebox.showerror("Invalid local input folder", str(exc))
+            return
+
+        if include_network and any(not self.is_input_only_order(order) for order in orders):
+            messagebox.showwarning(
+                "Network deletion unavailable",
+                "Local and network deletion is available only for the Input Without Process List batch.",
+                parent=self.root,
+            )
             return
 
         files = self.matching_order_files(
@@ -6352,37 +7134,88 @@ class ShowerProgrammerApp:
             root_only=True,
             inspect_pdf_text=True,
         )
+        network_files: list[Path] = []
+        if network_source is not None:
+            try:
+                network_files = self.network_input_files_for_orders(network_source, orders)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Network input check failed",
+                    "The shared input folder could not be validated, so nothing was deleted.\n\n"
+                    f"{exc}",
+                    parent=self.root,
+                )
+                return
         order_names = ", ".join(order.aw_order for order in orders[:8])
         if len(orders) > 8:
             order_names += f", +{len(orders) - 8} more"
         file_preview = "\n".join(path.name for path in files[:12]) or "No matching local PDF/DXF files found."
         if len(files) > 12:
             file_preview += f"\n...and {len(files) - 12} more"
-        message = (
-            "Delete these local input files?\n\n"
-            f"Orders: {order_names}\n\n"
-            f"Local order folder:\n{local_order_folder}\n\n"
-            f"Files:\n{file_preview}\n\n"
+        network_preview = "\n".join(path.name for path in network_files[:12]) or "No matching network files found."
+        if len(network_files) > 12:
+            network_preview += f"\n...and {len(network_files) - 12} more"
+        message_parts = [
+            "Remove these local and network input files?\n\n"
+            if include_network
+            else "Remove these local input files?\n\n",
+            f"Orders: {order_names}\n\n",
+            f"Local order folder:\n{local_order_folder}\n\n",
+            f"Local files:\n{file_preview}\n\n",
+        ]
+        if include_network:
+            message_parts.extend(
+                [
+                    f"Network import folder:\n{network_source}\n\n",
+                    f"Network files:\n{network_preview}\n\n",
+                ]
+            )
+        message_parts.append(
             "A process list will be removed only after every order in that batch has been sent or explicitly deleted.\n\n"
-            "Nothing will be deleted from the shared Showers Programmer Input folder."
         )
-        if not messagebox.askyesno("Delete local order input", message):
+        message_parts.append(
+            "Local files can be restored from Settings for seven days. Only the listed matching files will be permanently deleted from the shared import folder."
+            if include_network
+            else "Local files can be restored from Settings for seven days. Nothing will be deleted from the shared Showers Programmer Input folder."
+        )
+        message = "".join(message_parts)
+        title = "Delete local and network input" if include_network else "Delete local order input"
+        if not messagebox.askyesno(title, message, parent=self.root):
             return
 
         deleted: list[Path] = []
+        deleted_network: list[Path] = []
         deleted_process_lists: list[Path] = []
         warnings: list[str] = []
-        local_root = local_order_folder.resolve()
-        for source in files:
-            try:
-                resolved = source.resolve()
-                if resolved.parent != local_root:
-                    warnings.append(f"Skipped outside local order folder: {source.name}")
-                    continue
-                source.unlink()
-                deleted.append(source)
-            except OSError as exc:
-                warnings.append(f"Could not delete {source.name}: {exc}")
+        quarantine_id: str | None = None
+        if network_files:
+            deleted_network, network_warnings, timed_out = self.delete_import_paths_bounded(
+                network_files,
+                timeout_seconds=min(25.0, max(8.0, 4.0 + len(network_files) * 0.35)),
+            )
+            warnings.extend(network_warnings)
+            if timed_out or len(deleted_network) != len(network_files):
+                detail = (
+                    f"Deleted {len(deleted_network)} of {len(network_files)} validated network file(s). "
+                    "Local files were kept so the order can be reviewed and cleanup can be retried."
+                )
+                if warnings:
+                    detail += "\n\n" + "\n".join(warnings[:8])
+                self.status_var.set("Network cleanup was incomplete; local files were kept.")
+                messagebox.showwarning("Network cleanup incomplete", detail, parent=self.root)
+                return
+        try:
+            deleted, recovery_warnings, quarantine_id = self.quarantine_paths(
+                self.quarantine_root(),
+                files,
+                [local_order_folder],
+                [order.aw_order for order in orders],
+            )
+        except Exception as exc:
+            self.status_var.set("Local recovery move failed; local files were kept.")
+            messagebox.showerror("Could not move files to recovery", str(exc), parent=self.root)
+            return
+        warnings.extend(recovery_warnings)
 
         successfully_deleted_orders: list[shower_batch.ProcessOrder] = []
         for order in orders:
@@ -6437,10 +7270,17 @@ class ShowerProgrammerApp:
                     if resolved.parent != allowed_process_parent:
                         warnings.append(f"Skipped process list outside local process-list folder: {source.name}")
                         continue
-                    source.unlink()
-                    deleted_process_lists.append(source)
-                except OSError as exc:
-                    warnings.append(f"Could not delete process list {source.name}: {exc}")
+                    moved_lists, move_warnings, quarantine_id = self.quarantine_paths(
+                        self.quarantine_root(),
+                        [source],
+                        [allowed_process_parent],
+                        [order.aw_order for order in orders],
+                        bundle_id=quarantine_id,
+                    )
+                    deleted_process_lists.extend(moved_lists)
+                    warnings.extend(move_warnings)
+                except Exception as exc:
+                    warnings.append(f"Could not move process list {source.name} to recovery: {exc}")
 
         deleted_aw_orders = {str(order.aw_order) for order in successfully_deleted_orders}
         for aw_order in deleted_aw_orders:
@@ -6494,8 +7334,10 @@ class ShowerProgrammerApp:
         self.update_summary_strip()
 
         detail = (
-            f"Deleted {len(deleted)} local order file(s), removed {len(successfully_deleted_orders)} order(s), "
-            f"and deleted {len(deleted_process_lists)} completed process-list file(s)."
+            f"Moved {len(deleted)} local order file(s) to seven-day recovery"
+            + (f" and {len(deleted_network)} network file(s)" if include_network else "")
+            + f", removed {len(successfully_deleted_orders)} order(s), "
+            f"and moved {len(deleted_process_lists)} completed process-list file(s) to recovery."
         )
         if len(successfully_deleted_orders) != len(orders):
             detail += f"\n{len(orders) - len(successfully_deleted_orders)} selected order(s) remain because matching files are still present."
@@ -8090,6 +8932,16 @@ a {{ color: #1f4e79; }}
             "</div>"
         )
 
+    def confirm_unprocessed_order_review(self, aw_order: str) -> bool:
+        """Warn before opening Review Order when no generated output exists yet."""
+        if self.processed_summary_for_order(str(aw_order)) != "No":
+            return True
+        return messagebox.askcontinue(
+            "Order not processed",
+            f"Order {aw_order} has not been processed yet.\n\nDo you want to review it anyway?",
+            parent=self.root,
+        )
+
     def open_order_review(self, event: tk.Event | None = None) -> None:
         if event is not None:
             row_id = self.tree.identify_row(event.y)
@@ -8119,6 +8971,9 @@ a {{ color: #1f4e79; }}
             )
             return
         if self.resolve_exact_duplicate_order(process_order):
+            return
+        if not self.confirm_unprocessed_order_review(process_order.aw_order):
+            self.status_var.set(f"Review canceled for unprocessed order {process_order.aw_order}.")
             return
         try:
             folder = Path(self.folder_var.get()).resolve()
@@ -8150,6 +9005,7 @@ a {{ color: #1f4e79; }}
                     self.status_var.set(f"Renamed {renamed.name}; reopening order review...")
                     self.root.after(75, self.open_order_review)
             return
+
         except Exception as exc:
             if isinstance(exc, FileNotFoundError):
                 messagebox.showinfo("No sketch yet", str(exc))
@@ -8174,19 +9030,28 @@ a {{ color: #1f4e79; }}
         dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
         self.register_page_window("review_order", dialog)
         dialog.title(f"Review Order - {process_order.aw_order}")
+        # Build the review workspace transparently. CTk performs delayed Windows
+        # title-bar setup and restores the state it saw at construction time, so
+        # using withdraw() here can hide the completed window again afterward.
+        try:
+            dialog.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
         self.position_child_window(dialog, 1180, 820)
-        dialog.minsize(980, 560)
+        dialog.minsize(1100, 620)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
         dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
-        dialog.after(0, lambda: self.maximize_window(dialog))
 
         dialog.grid_columnconfigure(0, weight=1)
         dialog.grid_rowconfigure(1, weight=1)
 
+        overview_label = "Order Overview"
+        overview_available = min(panel.page_index for panel in job.panels) > 0 and len(source_reader.pages) > 0
+        review_page_values = ([overview_label] if overview_available else []) + [f"P{panel.item}" for panel in job.panels]
         rotation_var = tk.IntVar(value=0)
-        item_var = tk.StringVar(value=f"P{job.panels[0].item}")
-        page_count_var = tk.StringVar(value=f"1/{len(job.panels)}")
+        item_var = tk.StringVar(value=review_page_values[0])
+        page_count_var = tk.StringVar(value=f"1/{len(review_page_values)}")
         status = tk.StringVar(
             value=(
                 "Original sketch preview. Skip Sketch output is active, so automatic marks are hidden. "
@@ -8235,8 +9100,8 @@ a {{ color: #1f4e79; }}
         workspace = ctk.CTkFrame(dialog, fg_color="transparent")
         workspace.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
         workspace.grid_columnconfigure(0, weight=0, minsize=286)
-        workspace.grid_columnconfigure(1, weight=9)
-        workspace.grid_columnconfigure(2, weight=3)
+        workspace.grid_columnconfigure(1, weight=7, minsize=520)
+        workspace.grid_columnconfigure(2, weight=4, minsize=340)
         workspace.grid_rowconfigure(0, weight=1)
 
         control_panel = ctk.CTkFrame(
@@ -8291,9 +9156,9 @@ a {{ color: #1f4e79; }}
         item_box = ttk.Combobox(
             piece_card,
             textvariable=item_var,
-            values=[f"P{panel.item}" for panel in job.panels],
+            values=review_page_values,
             state="readonly",
-            width=8,
+            width=15,
             style="Review.TCombobox",
         )
         item_box.grid(row=0, column=1, sticky="ew", padx=(6, 12), pady=(12, 6))
@@ -8309,6 +9174,7 @@ a {{ color: #1f4e79; }}
         primary_grid = ctk.CTkFrame(primary_section, fg_color="transparent")
         primary_grid.grid(row=1, column=0, sticky="ew")
         primary_grid.grid_columnconfigure((0, 1), weight=1)
+        piece_action_widgets: list[Any] = []
         save_edits_button = ctk.CTkButton(
             primary_grid,
             text="Save Sketch Edits",
@@ -8328,12 +9194,14 @@ a {{ color: #1f4e79; }}
         undo_button.configure(state=tk.DISABLED)
         redo_button.configure(state=tk.DISABLED)
         save_edits_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        self.make_tool_button(primary_grid, "Process DXF Again", "play", lambda: process_review_order(), width=250).grid(
+        process_dxf_button = self.make_tool_button(primary_grid, "Process DXF Again", "play", lambda: process_review_order(), width=250)
+        process_dxf_button.grid(
             row=2,
             column=0,
             columnspan=2,
             sticky="ew",
         )
+        piece_action_widgets.extend([save_edits_button, process_dxf_button])
 
         edit_section = control_section(control_panel, 3, "MARKUP TOOLS")
         sketch_edit_mode_button: Any | None = None
@@ -8354,21 +9222,28 @@ a {{ color: #1f4e79; }}
                 **self.ctk_button_icon("image", 15, self.ACCENT_DARK, "left"),
             )
             sketch_edit_mode_button.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+            piece_action_widgets.append(sketch_edit_mode_button)
             edit_grid_row = 2
         edit_grid = ctk.CTkFrame(edit_section, fg_color="transparent")
         edit_grid.grid(row=edit_grid_row, column=0, sticky="ew")
         edit_grid.grid_columnconfigure((0, 1), weight=1)
-        self.make_tool_button(edit_grid, "Indicator", "indicator", lambda: add_indicator_mark(), width=120).grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=(0, 7))
-        self.make_tool_button(edit_grid, "Flip", "flip", lambda: flip_indicator_sides(), width=120).grid(row=0, column=1, sticky="ew", pady=(0, 7))
-        self.make_tool_button(edit_grid, "Change Machine", "program", lambda: choose_machine_type(), width=250).grid(
+        indicator_button = self.make_tool_button(edit_grid, "Indicator", "indicator", lambda: add_indicator_mark(), width=120)
+        indicator_button.grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=(0, 7))
+        flip_button = self.make_tool_button(edit_grid, "Flip", "flip", lambda: flip_indicator_sides(), width=120)
+        flip_button.grid(row=0, column=1, sticky="ew", pady=(0, 7))
+        machine_button = self.make_tool_button(edit_grid, "Change Machine", "program", lambda: choose_machine_type(), width=250)
+        machine_button.grid(
             row=1,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(0, 7),
         )
-        self.make_tool_button(edit_grid, "Text Box", "text", lambda: add_text_box(), width=120).grid(row=2, column=0, sticky="ew", padx=(0, 6))
-        self.make_tool_button(edit_grid, "Add X", "x", lambda: add_x_mark(), width=120).grid(row=2, column=1, sticky="ew")
+        text_button = self.make_tool_button(edit_grid, "Text Box", "text", lambda: add_text_box(), width=120)
+        text_button.grid(row=2, column=0, sticky="ew", padx=(0, 6))
+        x_button = self.make_tool_button(edit_grid, "Add X", "x", lambda: add_x_mark(), width=120)
+        x_button.grid(row=2, column=1, sticky="ew")
+        piece_action_widgets.extend([indicator_button, flip_button, machine_button, text_button, x_button])
 
         status_card = ctk.CTkFrame(control_panel, fg_color=self.PANEL_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
         status_card.grid(row=4, column=0, sticky="ew", padx=14, pady=(0, 14))
@@ -8458,9 +9333,10 @@ a {{ color: #1f4e79; }}
         details_card.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         decision_header = ctk.CTkFrame(details_card, fg_color="transparent")
         decision_header.pack(fill=tk.X, padx=14, pady=(12, 4))
+        decision_title_var = tk.StringVar(value="Machine Decision")
         ctk.CTkLabel(
             decision_header,
-            text="Machine Decision",
+            textvariable=decision_title_var,
             font=("Segoe UI", 14, "bold"),
             text_color=self.TEXT,
             anchor="w",
@@ -8497,31 +9373,38 @@ a {{ color: #1f4e79; }}
         dxf_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
         dxf_header.grid_propagate(False)
         ctk.CTkLabel(dxf_header, text="", image=self.ctk_button_icon("dxf", 18, self.ACCENT_DARK).get("image"), width=24).pack(side=tk.LEFT, padx=(0, 8))
-        ctk.CTkLabel(dxf_header, text="DXF Reference", font=("Segoe UI", 15, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
-        self.make_tool_button(
+        dxf_title_var = tk.StringVar(value="DXF Reference")
+        ctk.CTkLabel(dxf_header, textvariable=dxf_title_var, font=("Segoe UI", 15, "bold"), text_color=self.TEXT).pack(side=tk.LEFT)
+        open_dxf_button = self.make_tool_button(
             dxf_header,
             "Open DXF",
             "dxf",
             lambda: open_current_dxf(),
             width=96,
-        ).pack(side=tk.LEFT, padx=(12, 0))
-        self.make_header_icon_button(
+        )
+        open_dxf_button.pack(side=tk.LEFT, padx=(12, 0))
+        rotate_dxf_left_button = self.make_header_icon_button(
             dxf_header,
             "rotate_left",
             "Rotate and reprocess DXF left",
             lambda: rotate_dxf_and_process(-90),
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        self.make_header_icon_button(
+        )
+        rotate_dxf_left_button.pack(side=tk.LEFT, padx=(6, 0))
+        rotate_dxf_right_button = self.make_header_icon_button(
             dxf_header,
             "rotate_right",
             "Rotate and reprocess DXF right",
             lambda: rotate_dxf_and_process(90),
-        ).pack(side=tk.LEFT, padx=(6, 0))
-        self.make_header_refresh_button(
+        )
+        rotate_dxf_right_button.pack(side=tk.LEFT, padx=(6, 0))
+        piece_action_widgets.extend([open_dxf_button, rotate_dxf_left_button, rotate_dxf_right_button])
+        dxf_refresh_button = self.make_header_refresh_button(
             dxf_header,
             lambda: refresh_dxf_preview(),
             "Reload the latest DXF from disk",
-        ).pack(side=tk.RIGHT)
+        )
+        dxf_refresh_button.pack(side=tk.RIGHT)
+        piece_action_widgets.append(dxf_refresh_button)
         dxf_canvas = tk.Canvas(dxf_frame, background=self.PREVIEW_CARD_BG, highlightthickness=0, bd=0)
         dxf_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
 
@@ -8542,8 +9425,8 @@ a {{ color: #1f4e79; }}
             "output_dir": output_dir,
             "pdf_page_count": len(source_reader.pages),
             "raster_rendering": set(),
-            "current_item": job.panels[0].item,
-            "viewed_items": {job.panels[0].item},
+            "current_item": None if overview_available else job.panels[0].item,
+            "viewed_items": set() if overview_available else {job.panels[0].item},
             "pending_items": set(),
             "machine_changed_items": set(),
             "needs_output_save": False,
@@ -8554,6 +9437,9 @@ a {{ color: #1f4e79; }}
             "sketch_preview_path": job.pdf_path,
             "embedded_sketch_preview": False,
             "redraw_after_id": None,
+            "canvas_sizes": {},
+            "piece_action_state": None,
+            "history_button_states": None,
             "undo_stack": [],
             "redo_stack": [],
             "drag_history_recorded": False,
@@ -8615,12 +9501,35 @@ a {{ color: #1f4e79; }}
                 enable_sketch_editing()
 
         def selected_panel() -> programmer.Panel:
+            if item_var.get() == overview_label:
+                raise RuntimeError("The order overview does not represent a programmable piece.")
             item = int(item_var.get().replace("P", ""))
             return next(panel for panel in job.panels if panel.item == item)
 
+        def overview_selected() -> bool:
+            return bool(overview_available and item_var.get() == overview_label)
+
+        def update_piece_action_states() -> None:
+            state_value = tk.DISABLED if overview_selected() else tk.NORMAL
+            if state.get("piece_action_state") == state_value:
+                return
+            state["piece_action_state"] = state_value
+            for widget in piece_action_widgets:
+                try:
+                    widget.configure(state=state_value)
+                except (tk.TclError, ValueError):
+                    pass
+
         def update_history_buttons() -> None:
-            undo_button.configure(state=tk.NORMAL if state.get("undo_stack") else tk.DISABLED)
-            redo_button.configure(state=tk.NORMAL if state.get("redo_stack") else tk.DISABLED)
+            button_states = (
+                tk.NORMAL if state.get("undo_stack") and not overview_selected() else tk.DISABLED,
+                tk.NORMAL if state.get("redo_stack") and not overview_selected() else tk.DISABLED,
+            )
+            if state.get("history_button_states") == button_states:
+                return
+            state["history_button_states"] = button_states
+            undo_button.configure(state=button_states[0])
+            redo_button.configure(state=button_states[1])
 
         def capture_edit_snapshot() -> dict[str, Any]:
             return {
@@ -8656,6 +9565,9 @@ a {{ color: #1f4e79; }}
             status.set(f"{action} sketch edit on {job.aw_order}.{selected_panel().item}.")
 
         def undo_review_edit() -> str:
+            if overview_selected():
+                status.set("The order overview is read-only. Select a piece to edit its sketch marks.")
+                return "break"
             undo_stack = state.setdefault("undo_stack", [])
             if not undo_stack:
                 status.set("Nothing to undo.")
@@ -8666,6 +9578,9 @@ a {{ color: #1f4e79; }}
             return "break"
 
         def redo_review_edit() -> str:
+            if overview_selected():
+                status.set("The order overview is read-only. Select a piece to edit its sketch marks.")
+                return "break"
             redo_stack = state.setdefault("redo_stack", [])
             if not redo_stack:
                 status.set("Nothing to redo.")
@@ -8753,12 +9668,22 @@ a {{ color: #1f4e79; }}
             return True
 
         def set_piece(value: str) -> bool:
+            current_item_value = state.get("current_item")
+            if value == overview_label and overview_available:
+                if current_item_value is not None and not confirm_save_before_leaving(int(current_item_value)):
+                    item_var.set(f"P{int(current_item_value)}")
+                    return False
+                state["current_item"] = None
+                item_var.set(overview_label)
+                rotation_var.set(0)
+                redraw()
+                return True
             try:
                 next_item = int(value.replace("P", ""))
             except ValueError:
                 return False
-            current_item = int(state.get("current_item", selected_panel().item))
-            if next_item != current_item and not confirm_save_before_leaving(current_item):
+            current_item = int(current_item_value) if current_item_value is not None else None
+            if current_item is not None and next_item != current_item and not confirm_save_before_leaving(current_item):
                 item_var.set(f"P{current_item}")
                 return False
             state["current_item"] = next_item
@@ -8769,7 +9694,7 @@ a {{ color: #1f4e79; }}
             return True
 
         def change_piece(delta: int) -> str:
-            values = [f"P{panel.item}" for panel in job.panels]
+            values = review_page_values
             if not values:
                 return "break"
             try:
@@ -8790,23 +9715,24 @@ a {{ color: #1f4e79; }}
             redraw()
 
         def refresh_sketch_preview() -> None:
+            nonlocal sketch_reader
             try:
                 refresh_prepared_job()
+                saved_path = generated_sketch_path if generated_sketch_path.exists() else sketch_path
+                self.invalidate_review_pdf_raster_cache(output_dir, saved_path)
+                refreshed_reader = PdfReader(str(saved_path))
             except Exception as exc:
                 messagebox.showerror("Refresh Sketch failed", str(exc), parent=dialog)
                 return
-            self.configure_editable_sketch_preview_state(
-                state,
-                source_reader,
-                job.pdf_path,
-            )
+            sketch_reader = refreshed_reader
+            self.configure_saved_sketch_preview_state(state, refreshed_reader, saved_path)
             state["show_sketch_marks"] = True
             clear_sketch_preview_caches()
             self.clear_review_context_cache(process_order.aw_order)
             redraw()
             status.set(
-                f"Refreshed the editable sketch for {job.aw_order}. "
-                "You can continue moving or changing marks without reopening the order."
+                f"Reloaded {saved_path.name} from disk for {job.aw_order}. "
+                "Saved PDF annotations are visible; choose a markup tool to return to editable marks."
             )
 
         def refresh_dxf_preview() -> None:
@@ -9572,11 +10498,75 @@ a {{ color: #1f4e79; }}
                 except tk.TclError:
                     pass
             state["redraw_after_id"] = None
+            update_piece_action_states()
+            update_history_buttons()
+            if overview_selected():
+                page_count_var.set(f"1/{len(review_page_values)}")
+                dxf_title_var.set("Order Overview")
+                decision_title_var.set("Process Descriptions")
+                try:
+                    preview_reader = state.get("sketch_preview_reader")
+                    if not isinstance(preview_reader, PdfReader):
+                        preview_reader = source_reader
+                    preview_path = state.get("sketch_preview_path")
+                    if not isinstance(preview_path, Path):
+                        preview_path = job.pdf_path
+                    self.draw_order_review_sketch(
+                        sketch_canvas,
+                        preview_reader,
+                        preview_path,
+                        job,
+                        job.panels[0],
+                        config,
+                        rotation_var.get(),
+                        state,
+                        page_index=0,
+                        show_overlays=False,
+                    )
+                except Exception as exc:
+                    sketch_canvas.delete("all")
+                    sketch_canvas.create_rectangle(
+                        0, 0, sketch_canvas.winfo_width(), sketch_canvas.winfo_height(),
+                        fill=self.PREVIEW_BG, outline="",
+                    )
+                    sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Overview preview failed: {exc}", fill=self.DANGER)
+                overview = self.order_review_overview_data(
+                    process_order,
+                    job,
+                    issues,
+                    output_dir,
+                    generated_sketch_path,
+                )
+                self.draw_order_review_overview(dxf_canvas, overview)
+                review_info_var.set(
+                    "\n".join(
+                        [
+                            f"Order: {job.aw_order}",
+                            f"Job: {process_order.job_name or '-'}",
+                            f"Customer: {process_order.customer or '-'}",
+                            f"Delivery: {process_order.delivery_date or '-'}",
+                            f"Status: {overview['status']}",
+                            f"Checked: {overview['checked']}",
+                        ]
+                    )
+                )
+                decision_textbox.configure(state="normal")
+                decision_textbox.delete("1.0", tk.END)
+                decision_textbox.insert("1.0", "\n\n".join(overview["process_lines"]))
+                decision_textbox.configure(state="disabled")
+                status.set(
+                    f"Order overview for {job.aw_order}. This page is informational only and is not counted as a reviewed piece."
+                )
+                return
             panel = selected_panel()
             state.setdefault("viewed_items", set()).add(panel.item)
             ordered_items = [current.item for current in sorted(job.panels, key=lambda current: current.item)]
             if panel.item in ordered_items:
-                page_count_var.set(f"{ordered_items.index(panel.item) + 1}/{len(ordered_items)}")
+                page_count_var.set(
+                    f"{ordered_items.index(panel.item) + 1 + (1 if overview_available else 0)}/{len(review_page_values)}"
+                )
+            dxf_title_var.set("DXF Reference")
+            decision_title_var.set("Machine Decision")
             try:
                 preview_reader = state.get("sketch_preview_reader")
                 if not isinstance(preview_reader, PdfReader):
@@ -9667,6 +10657,16 @@ a {{ color: #1f4e79; }}
                     pass
             state["redraw_after_id"] = dialog.after(delay, redraw)
 
+        def schedule_canvas_resize_redraw(canvas_name: str, event: tk.Event) -> None:
+            size = (int(event.width), int(event.height))
+            if size[0] <= 1 or size[1] <= 1:
+                return
+            canvas_sizes = state.setdefault("canvas_sizes", {})
+            if canvas_sizes.get(canvas_name) == size:
+                return
+            canvas_sizes[canvas_name] = size
+            schedule_redraw(120)
+
         state["render_callback"] = lambda: schedule_redraw(1)
 
         def complete_order_review() -> None:
@@ -9729,13 +10729,16 @@ a {{ color: #1f4e79; }}
                 dialog.destroy()
 
         def save_shortcut(_event: tk.Event) -> str:
+            if overview_selected():
+                status.set("The order overview is read-only. Select a piece before saving sketch edits.")
+                return "break"
             save_review_edits()
             return "break"
 
         item_box.bind("<<ComboboxSelected>>", lambda _event: set_piece(item_var.get()))
         item_box.bind("<MouseWheel>", piece_wheel)
-        sketch_canvas.bind("<Configure>", lambda _event: schedule_redraw())
-        dxf_canvas.bind("<Configure>", lambda _event: schedule_redraw())
+        sketch_canvas.bind("<Configure>", lambda event: schedule_canvas_resize_redraw("sketch", event))
+        dxf_canvas.bind("<Configure>", lambda event: schedule_canvas_resize_redraw("dxf", event))
         sketch_canvas.bind("<B1-Motion>", drag)
         sketch_canvas.bind("<ButtonRelease-1>", release)
         sketch_canvas.bind("<MouseWheel>", lambda event: "break")
@@ -9751,7 +10754,133 @@ a {{ color: #1f4e79; }}
         state["show_mark_menu"] = show_mark_menu
         dialog.protocol("WM_DELETE_WINDOW", request_close)
         dialog.bind("<Destroy>", cleanup_render_temp, add="+")
-        dialog.after(100, redraw)
+
+        def present_review_window() -> None:
+            try:
+                if not bool(dialog.winfo_exists()):
+                    return
+                dialog.transient(self.root)
+                dialog.deiconify()
+                self.maximize_window(dialog)
+                dialog.update_idletasks()
+                dialog.attributes("-alpha", 1.0)
+            except (AttributeError, tk.TclError):
+                return
+            self.bring_page_window_to_front(dialog)
+            schedule_redraw(1)
+
+        # Let CustomTkinter finish its delayed title-bar initialization before
+        # applying the final state and focus exactly once.
+        dialog.after(260, present_review_window)
+
+    def order_review_overview_data(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        job: programmer.Job,
+        issues: list[str],
+        output_dir: Path,
+        generated_sketch_path: Path,
+    ) -> dict[str, Any]:
+        """Build concise, read-only production status for the review overview page."""
+        active_panels = [panel for panel in job.panels if not panel.remake_excluded]
+        expected_programs = [panel for panel in active_panels if not panel.skip_dxf]
+        ready_programs = [panel for panel in expected_programs if panel.output_dxf is not None and panel.output_dxf.exists()]
+        history = self.history_for_order_from_output(process_order.aw_order, output_dir)
+        last_processed = str(history.get("last_processed", "")).strip()
+        status = str(history.get("status", "")).strip().upper()
+        if not last_processed:
+            status = "NOT PROCESSED"
+        elif not status:
+            status = "PROCESSED"
+        checked = self.review_status_for_order(process_order.aw_order) or "Not checked"
+        process_lines: list[str] = []
+        panel_by_item = {panel.item: panel for panel in job.panels}
+        for item_number in process_order.item_numbers:
+            item = process_order.items[item_number]
+            panel = panel_by_item.get(item_number)
+            machine = panel.machine if panel is not None and panel.machine else item.desired_machine() or "Unassigned"
+            dimensions = " x ".join(value for value in (item.width_text, item.height_text) if value) or "Size unavailable"
+            description = item.processing_text or "No process description"
+            if panel is None:
+                result = "No sketch piece"
+            elif panel.remake_excluded:
+                result = "Crossed out"
+            elif panel.skip_dxf:
+                result = "Sketch only"
+            elif panel.output_dxf is not None and panel.output_dxf.exists():
+                result = "Program ready"
+            else:
+                result = "Program pending"
+            process_lines.append(f"P{item_number}  |  {dimensions}  |  {machine}  |  {result}\n{description}")
+        if not process_lines:
+            process_lines.append("No process-list items were found for this order.")
+        return {
+            "order": process_order.aw_order,
+            "item_count": process_order.item_count,
+            "active_count": len(active_panels),
+            "programs_ready": len(ready_programs),
+            "programs_expected": len(expected_programs),
+            "sketch_ready": generated_sketch_path.exists(),
+            "status": status,
+            "last_processed": last_processed or "Not yet",
+            "checked": checked,
+            "sent": self.sent_summary_for_order(process_order.aw_order),
+            "issue_count": len(issues),
+            "issues": list(issues),
+            "process_lines": process_lines,
+        }
+
+    def draw_order_review_overview(self, canvas: tk.Canvas, overview: dict[str, Any]) -> None:
+        canvas.delete("all")
+        width = max(320, canvas.winfo_width())
+        height = max(360, canvas.winfo_height())
+        canvas.create_rectangle(0, 0, width, height, fill=self.PREVIEW_CARD_BG, outline="")
+        canvas.create_text(
+            18, 16, anchor=tk.NW, text=f"Order {overview['order']}",
+            fill=self.TEXT, font=("Segoe UI", 17, "bold"),
+        )
+        canvas.create_text(
+            18, 45, anchor=tk.NW,
+            text="Production readiness at a glance",
+            fill=self.MUTED, font=("Segoe UI", 10),
+        )
+        cards = [
+            ("Process Items", str(overview["item_count"]), self.ACCENT_DARK),
+            ("Programs Ready", f"{overview['programs_ready']}/{overview['programs_expected']}", self.SUCCESS),
+            ("Sketch Output", "Ready" if overview["sketch_ready"] else "Missing", self.SUCCESS if overview["sketch_ready"] else self.WARNING),
+            ("Issues", str(overview["issue_count"]), self.WARNING if overview["issue_count"] else self.SUCCESS),
+        ]
+        gap = 10
+        card_width = max(120, (width - 36 - gap) / 2)
+        card_height = 72
+        for index, (label, value, color) in enumerate(cards):
+            row, column = divmod(index, 2)
+            x1 = 18 + column * (card_width + gap)
+            y1 = 78 + row * (card_height + gap)
+            x2 = x1 + card_width
+            y2 = y1 + card_height
+            canvas.create_rectangle(x1, y1, x2, y2, fill=self.CARD_BG, outline=self.BORDER, width=1)
+            canvas.create_text(x1 + 12, y1 + 12, anchor=tk.NW, text=label, fill=self.MUTED, font=("Segoe UI", 9, "bold"))
+            canvas.create_text(x1 + 12, y1 + 34, anchor=tk.NW, text=value, fill=color, font=("Segoe UI", 16, "bold"))
+        details_y = 78 + 2 * (card_height + gap) + 6
+        detail_lines = [
+            f"Processing status: {overview['status']}",
+            f"Last processed: {overview['last_processed']}",
+            f"Review: {overview['checked']}",
+            f"Sent: {overview['sent']}",
+        ]
+        canvas.create_text(
+            18, details_y, anchor=tk.NW, text="\n".join(detail_lines),
+            width=max(260, width - 36), fill=self.TEXT, font=("Segoe UI", 10),
+        )
+        if overview["issues"]:
+            issue_y = details_y + 100
+            canvas.create_text(18, issue_y, anchor=tk.NW, text="Attention", fill=self.WARNING, font=("Segoe UI", 10, "bold"))
+            canvas.create_text(
+                18, issue_y + 24, anchor=tk.NW, text="\n".join(f"- {item}" for item in overview["issues"][:4]),
+                width=max(260, width - 36), fill=self.MUTED, font=("Segoe UI", 9),
+            )
+        canvas.configure(scrollregion=(0, 0, width, height))
 
     def draw_order_review_sketch(
         self,
@@ -9763,11 +10892,15 @@ a {{ color: #1f4e79; }}
         config: dict[str, object],
         rotation_degrees: int,
         state: dict[str, Any],
+        *,
+        page_index: int | None = None,
+        show_overlays: bool = True,
     ) -> None:
         canvas.delete("all")
         state["objects"] = {}
         state["page_images"] = []
-        page = reader.pages[panel.page_index]
+        active_page_index = panel.page_index if page_index is None else page_index
+        page = reader.pages[active_page_index]
         page_width = float(page.mediabox.width)
         page_height = float(page.mediabox.height)
         view_width = page_height if rotation_degrees % 180 else page_width
@@ -9778,7 +10911,7 @@ a {{ color: #1f4e79; }}
         scale = round(min(2.0, max(0.18, fit_scale)), 3)
         image = self.editor_page_image(
             sketch_path,
-            panel.page_index,
+            active_page_index,
             page_width,
             page_height,
             scale,
@@ -9795,7 +10928,7 @@ a {{ color: #1f4e79; }}
         y = max(8.0, (canvas.winfo_height() - image.height()) / 2)
         canvas.create_image(x, y, image=image, anchor=tk.NW)
         embedded_preview = bool(state.get("embedded_sketch_preview"))
-        if not embedded_preview and self.should_draw_sketch_overlays(state):
+        if show_overlays and not embedded_preview and self.should_draw_sketch_overlays(state):
             objects = self.editor_overlay_objects(
                 reader,
                 job,
@@ -9826,7 +10959,7 @@ a {{ color: #1f4e79; }}
                 fill=self.SUCCESS,
                 font=("Segoe UI", 10, "bold"),
             )
-        else:
+        elif show_overlays:
             canvas.create_text(
                 x + 12,
                 y + 12,
@@ -13562,6 +14695,18 @@ try {{
         return matched
 
     @staticmethod
+    def configure_saved_sketch_preview_state(
+        state: dict[str, Any],
+        reader: PdfReader,
+        saved_path: Path,
+    ) -> None:
+        """Point Review Order at a fresh saved-PDF reader, including external annotations."""
+        state["sketch_preview_reader"] = reader
+        state["sketch_preview_path"] = saved_path
+        state["embedded_sketch_preview"] = True
+        state["pdf_page_count"] = len(reader.pages)
+
+    @staticmethod
     def configure_editable_sketch_preview_state(
         state: dict[str, Any],
         reader: PdfReader,
@@ -16480,6 +17625,17 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 "marker_bbox": programmer.estimate_panel_outline_bbox(reader, panel.page_index, panel.width, panel.height),
                 "obstacles": programmer.collect_page_obstacles(reader, panel.page_index),
             }
+            cached_geometry["top_measurement_y"] = programmer.estimate_top_measurement_y(
+                reader,
+                panel.page_index,
+                cached_geometry["marker_bbox"] or cached_geometry["bbox"],
+            )
+            cached_geometry["diamon_obstacles"] = programmer.collect_diamon_banner_obstacles(
+                reader,
+                panel.page_index,
+                cached_geometry["marker_bbox"] or cached_geometry["bbox"],
+                cached_geometry["top_measurement_y"],
+            )
             if geometry_cache is not None:
                 if len(geometry_cache) > 80:
                     geometry_cache.clear()
@@ -16489,6 +17645,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         bbox = cached_geometry["bbox"]
         indicator_bbox = cached_geometry["indicator_bbox"]
         marker_bbox = cached_geometry["marker_bbox"]
+        top_measurement_y = cached_geometry.get("top_measurement_y")
+        diamon_obstacles = cached_geometry.get("diamon_obstacles", [])
         obstacles = cached_geometry["obstacles"]
         label_bbox = marker_bbox or bbox
         active_marker_bbox = marker_bbox or (indicator_bbox if panel.machine == "WJ" and indicator_bbox is not None else bbox)
@@ -16569,11 +17727,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     width,
                     height,
                     pdf_cfg,
-                    bbox,
-                    indicator_bbox,
+                    marker_bbox or bbox,
+                    None if top_measurement_y is None else (0.0, top_measurement_y, width, top_measurement_y),
                     diamon_text,
                     df_font,
-                    obstacles,
+                    diamon_obstacles,
                     avoid_rects,
                     panel,
                 )
@@ -16706,7 +17864,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             if "center" in obj:
                 center_x, center_y = obj["center"]
                 obj["center"] = (center_x + dx, center_y + dy)
-            if "lines" in obj:
+            if obj.get("kind") in {"wj", "x"} and "lines" in obj:
                 obj["lines"] = [
                     ((start[0] + dx, start[1] + dy), (end[0] + dx, end[1] + dy))
                     for start, end in obj["lines"]
@@ -16850,6 +18008,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         path = Path(self.output_dir_var.get()).resolve()
         path.mkdir(parents=True, exist_ok=True)
         os.startfile(path)
+
+    def open_diagnostics_folder(self) -> None:
+        path = self.diagnostics_directory()
+        os.startfile(str(path.resolve()))
+        self.status_var.set(f"Opened diagnostics folder: {path}")
 
     def open_latest_batch(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()
@@ -17660,6 +18823,77 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         code_list.focus_set()
         self.bring_window_to_front(dialog, make_transient=True)
 
+    def open_network_health_dialog(self) -> None:
+        if ctk is None:
+            details = "\n".join(
+                f"{name}: {'Online' if result.get('reachable') else result.get('error', 'Offline')}"
+                for name, result in self.network_health_details.items()
+            ) or "Network health has not completed yet."
+            messagebox.showinfo("Network Health", details, parent=self.root)
+            return
+        existing = self.managed_page_window("network_health")
+        if existing is not None:
+            self.bring_page_window_to_front(existing)
+            return
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Network Health")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.resizable(False, False)
+        self.center_child_window(dialog, 680, 430)
+        self.set_window_icon(dialog)
+        self.register_page_window("network_health", dialog)
+        dialog.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(dialog, text="Network Health", font=("Segoe UI", 22, "bold"), text_color=self.TEXT, anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=22, pady=(20, 3)
+        )
+        ctk.CTkLabel(
+            dialog,
+            text="Quick reachability checks run in the background and never block scanning.",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=22, pady=(0, 14))
+        body = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        body.grid(row=2, column=0, sticky="ew", padx=22)
+        body.grid_columnconfigure(1, weight=1)
+        status_vars: dict[str, tk.StringVar] = {}
+        target_paths = self.network_health_targets()
+        for row, (name, path) in enumerate(target_paths.items()):
+            ctk.CTkLabel(body, text=name, font=("Segoe UI", 11, "bold"), text_color=self.TEXT, anchor="w").grid(
+                row=row * 2, column=0, sticky="w", padx=(14, 12), pady=(12 if row == 0 else 8, 0)
+            )
+            variable = tk.StringVar(value="Checking...")
+            status_vars[name] = variable
+            ctk.CTkLabel(body, textvariable=variable, font=("Segoe UI", 11, "bold"), text_color=self.ACCENT_DARK, anchor="e").grid(
+                row=row * 2, column=1, sticky="e", padx=14, pady=(12 if row == 0 else 8, 0)
+            )
+            ctk.CTkLabel(body, text=str(path), font=("Segoe UI", 9), text_color=self.MUTED, anchor="w", wraplength=600).grid(
+                row=row * 2 + 1, column=0, columnspan=2, sticky="ew", padx=14, pady=(1, 8 if row < len(target_paths) - 1 else 12)
+            )
+
+        def refresh_labels() -> None:
+            if not dialog.winfo_exists():
+                return
+            for name, variable in status_vars.items():
+                result = self.network_health_details.get(name, {})
+                if self.network_health_running:
+                    variable.set("Checking...")
+                elif result.get("reachable"):
+                    variable.set(f"Online  ({result.get('elapsed_ms', 0)} ms)")
+                else:
+                    variable.set(f"Offline  ({result.get('error', 'Unavailable')})")
+            if self.network_health_running:
+                dialog.after(200, refresh_labels)
+
+        footer = ctk.CTkFrame(dialog, fg_color="transparent")
+        footer.grid(row=3, column=0, sticky="ew", padx=22, pady=18)
+        footer.grid_columnconfigure(0, weight=1)
+        self.make_tool_button(footer, "Check Again", "refresh", lambda: (self.check_network_health_async(), refresh_labels()), width=132).grid(
+            row=0, column=1, sticky="e"
+        )
+        refresh_labels()
+        self.bring_window_to_front(dialog, make_transient=False)
+
     def open_settings(self, initial_tab: str = "Preferences") -> None:
         """Open the consolidated application settings workspace."""
         if ctk is None:
@@ -17718,7 +18952,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         tabview.grid(row=1, column=0, sticky="nsew", padx=16, pady=(10, 16))
         try:
             tabview._segmented_button.configure(
-                width=640,
+                width=980,
                 height=42,
                 dynamic_resizing=False,
                 font=("Segoe UI", 12, "bold"),
@@ -17726,11 +18960,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except (AttributeError, tk.TclError):
             pass
         self.settings_tabview = tabview
-        for tab_name in ("Preferences", "Folder Setup", "Hinge Detection", "Action History"):
+        for tab_name in ("Preferences", "Folder Setup", "Hinge Detection", "Recovery", "Backup & Restore", "Action History"):
             tabview.add(tab_name)
         self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog)
         self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog)
         self.build_hinge_settings_tab(tabview.tab("Hinge Detection"), dialog)
+        self.build_recovery_settings_tab(tabview.tab("Recovery"), dialog)
+        self.build_configuration_backup_tab(tabview.tab("Backup & Restore"), dialog)
         self.build_action_history_settings_tab(tabview.tab("Action History"))
         try:
             tabview.set(initial_tab)
@@ -17745,6 +18981,199 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         dialog.bind("<Destroy>", clear_reference, add="+")
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
         self.bring_window_to_front(dialog, make_transient=False)
+
+    def build_recovery_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text="Deleted File Recovery", font=("Segoe UI", 18, "bold"), text_color=self.TEXT, anchor="w").grid(
+            row=0, column=0, sticky="w"
+        )
+        ctk.CTkLabel(
+            header,
+            text="Local order and process-list files remain recoverable for seven days.",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        body = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 10))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        columns = ("created", "expires", "orders", "files")
+        tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse", style="Orders.Treeview")
+        for column, label in zip(columns, ("Removed", "Expires", "Orders", "Files")):
+            tree.heading(column, text=label)
+        tree.column("created", width=180, minwidth=150, stretch=False)
+        tree.column("expires", width=180, minwidth=150, stretch=False)
+        tree.column("orders", width=360, minwidth=220, stretch=True)
+        tree.column("files", width=90, minwidth=70, anchor=tk.CENTER, stretch=False)
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
+        scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
+        rows: dict[str, dict[str, object]] = {}
+
+        def refresh() -> None:
+            self.cleanup_expired_quarantine()
+            tree.delete(*tree.get_children())
+            rows.clear()
+            for bundle in self.quarantine_bundles(self.quarantine_root()):
+                row_id = tree.insert(
+                    "", tk.END,
+                    values=(
+                        str(bundle.get("created_at", "")).replace("T", " "),
+                        str(bundle.get("expires_at", "")).replace("T", " "),
+                        ", ".join(str(value) for value in bundle.get("orders", [])),
+                        len(bundle.get("files", [])),
+                    ),
+                )
+                rows[row_id] = bundle
+
+        def selected_bundle() -> dict[str, object] | None:
+            selection = tree.selection()
+            return rows.get(selection[0]) if selection else None
+
+        def restore_selected() -> None:
+            bundle = selected_bundle()
+            if bundle is None:
+                messagebox.showinfo("Select recovery item", "Select the files you want to restore.", parent=dialog)
+                return
+            try:
+                restored, warnings = self.restore_quarantine_bundle(self.quarantine_root(), str(bundle.get("bundle_id", "")))
+            except Exception as exc:
+                messagebox.showerror("Restore failed", str(exc), parent=dialog)
+                return
+            refresh()
+            self.status_var.set(f"Restored {len(restored)} local input file(s).")
+            messagebox.showinfo(
+                "Files restored",
+                f"Restored {len(restored)} file(s)." + (f"\n\n{warnings[0]}" if warnings else ""),
+                parent=dialog,
+            )
+            self.scan_orders()
+
+        def permanently_delete() -> None:
+            bundle = selected_bundle()
+            if bundle is None:
+                messagebox.showinfo("Select recovery item", "Select the recovery item you want to remove.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Permanently delete files?",
+                "These local recovery copies will be permanently deleted and cannot be restored.",
+                parent=dialog,
+            ):
+                return
+            try:
+                self.delete_quarantine_bundle(self.quarantine_root(), str(bundle.get("bundle_id", "")))
+                refresh()
+            except Exception as exc:
+                messagebox.showerror("Could not delete recovery item", str(exc), parent=dialog)
+
+        footer = ctk.CTkFrame(parent, fg_color="transparent")
+        footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        footer.grid_columnconfigure(0, weight=1)
+        self.make_tool_button(footer, "Refresh", "refresh", refresh, width=106).grid(row=0, column=0, sticky="w")
+        self.make_tool_button(footer, "Permanently Delete", "trash", permanently_delete, width=164).grid(row=0, column=1, padx=(8, 0))
+        ctk.CTkButton(
+            footer,
+            text="Restore Selected",
+            command=restore_selected,
+            width=158,
+            height=36,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("undo", 14, "#ffffff", "left"),
+        ).grid(row=0, column=2, padx=(8, 0))
+        refresh()
+
+    def build_configuration_backup_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        card = self.make_section(parent, "Configuration Backup", "save")
+        card.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 10))
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            card,
+            text="Export shop rules, hinge settings, and application preferences before changing computers or testing configuration changes.",
+            font=("Segoe UI", 11),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=980,
+        ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 14))
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 18))
+
+        def export_backup() -> None:
+            initial = f"Shower-Programmer-Configuration-{datetime.now().strftime('%Y-%m-%d')}.zip"
+            selected = filedialog.asksaveasfilename(
+                title="Export Shower Programmer configuration",
+                parent=dialog,
+                initialdir=str(Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.CONFIG_BACKUP_FOLDER_NAME),
+                initialfile=initial,
+                defaultextension=".zip",
+                filetypes=[("Shower Programmer backup", "*.zip")],
+            )
+            if not selected:
+                return
+            try:
+                target = self.export_configuration_backup(
+                    Path(selected),
+                    self.editable_config_path(),
+                    self.preferred_ui_settings_path(),
+                )
+            except Exception as exc:
+                messagebox.showerror("Backup failed", str(exc), parent=dialog)
+                return
+            messagebox.showinfo("Backup created", f"Configuration backup created:\n{target}", parent=dialog)
+
+        def import_backup() -> None:
+            selected = filedialog.askopenfilename(
+                title="Import Shower Programmer configuration",
+                parent=dialog,
+                filetypes=[("Shower Programmer backup", "*.zip")],
+            )
+            if not selected:
+                return
+            if not messagebox.askyesno(
+                "Import configuration?",
+                "The current configuration will be backed up automatically, then replaced by the selected backup.",
+                parent=dialog,
+            ):
+                return
+            try:
+                imported = self.import_configuration_backup(
+                    Path(selected),
+                    self.editable_config_path(),
+                    self.preferred_ui_settings_path(),
+                    Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.CONFIG_BACKUP_FOLDER_NAME,
+                )
+                self.ui_settings = dict(imported.get("ui_settings", {}))
+            except Exception as exc:
+                messagebox.showerror("Import failed", str(exc), parent=dialog)
+                return
+            messagebox.showinfo(
+                "Configuration imported",
+                "The backup was imported successfully. Restart Shower Programmer to apply every preference.",
+                parent=dialog,
+            )
+
+        self.make_tool_button(actions, "Export Backup", "save", export_backup, width=148).pack(side=tk.LEFT)
+        self.make_tool_button(actions, "Import Backup", "undo", import_backup, width=148).pack(side=tk.LEFT, padx=(10, 0))
+        safety = self.make_section(parent, "Automatic Safety Copy", "check_circle")
+        safety.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        ctk.CTkLabel(
+            safety,
+            text=f"Before an import, the current configuration is automatically saved in {self.CONFIG_BACKUP_FOLDER_NAME}.",
+            font=("Segoe UI", 11),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
 
     def build_preferences_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -17779,6 +19208,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         buttons = (
             ("Open Input Folder", "folder", self.open_input_folder),
             ("Open Latest Batch", "clock", self.open_latest_batch),
+            ("Open Diagnostics Folder", "folder", self.open_diagnostics_folder),
             ("Check for Updates", "refresh", self.check_for_updates),
             ("Open Advanced Config", "settings", self.open_config),
         )
@@ -17788,7 +19218,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 column=index % 2,
                 sticky="ew",
                 padx=(18 if index % 2 == 0 else 6, 6 if index % 2 == 0 else 18),
-                pady=(4, 8 if index < 2 else 16),
+                pady=(4, 8 if index < len(buttons) - 2 else 16),
             )
 
         about = self.make_section(parent, "About", "info")
@@ -18292,8 +19722,12 @@ def validate_runtime_contracts() -> None:
         "clear_generated_program_artifacts",
         "clear_processing_history_program_fields",
         "clear_program_memory",
+        "invalidate_review_pdf_raster_cache",
+        "configure_saved_sketch_preview_state",
         "configure_editable_sketch_preview_state",
         "should_draw_sketch_overlays",
+        "order_review_overview_data",
+        "draw_order_review_overview",
         "add_hinge_detection_code",
         "remove_hinge_detection_code",
         "record_manual_sketch_output",
@@ -18339,6 +19773,25 @@ def validate_runtime_contracts() -> None:
         "show_ambiguous_pdf_dialog",
         "rename_ambiguous_pdf",
         "resolve_exact_duplicate_order",
+        "confirm_unprocessed_order_review",
+        "batch_allows_network_input_delete",
+        "network_input_files_for_orders",
+        "quarantine_paths",
+        "quarantine_bundles",
+        "restore_quarantine_bundle",
+        "delete_quarantine_bundle",
+        "cleanup_expired_quarantine",
+        "collect_programming_evidence",
+        "open_programming_evidence",
+        "write_diagnostic_zip",
+        "create_diagnostic_package_for_order",
+        "diagnostics_directory",
+        "open_diagnostics_folder",
+        "probe_network_path",
+        "check_network_health_async",
+        "open_network_health_dialog",
+        "export_configuration_backup",
+        "import_configuration_backup",
         "import_duplicate_name_groups",
         "duplicate_groups_by_order",
         "local_network_pdf_cache_dir",
@@ -18347,6 +19800,8 @@ def validate_runtime_contracts() -> None:
         "build_preferences_settings_tab",
         "build_folder_settings_tab",
         "build_hinge_settings_tab",
+        "build_recovery_settings_tab",
+        "build_configuration_backup_tab",
         "build_action_history_settings_tab",
     }
     missing = sorted(name for name in required_methods if not callable(getattr(ShowerProgrammerApp, name, None)))
@@ -19627,6 +21082,29 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "input_only_order_visibility": True,
                 "compact_centered_popups": True,
                 "version_0_84_workflow_settings": True,
+                "stable_hinge_orientation": True,
+                "version_0_85_stable_hinge_orientation": True,
+                "unprocessed_review_warning": True,
+                "version_0_86_review_readiness_warning": True,
+                "network_input_batch_delete": True,
+                "version_0_87_input_batch_network_delete": True,
+                "seven_day_local_recovery": True,
+                "programming_evidence_window": True,
+                "order_diagnostic_package": True,
+                "network_health_indicator": True,
+                "configuration_backup_import": True,
+                "version_0_88_recovery_diagnostics": True,
+                "diagnostics_folder_access": True,
+                "version_0_89_diagnostics_folder_access": True,
+                "order_overview_page": True,
+                "external_pdf_annotation_refresh": True,
+                "corner_text_indicator_avoidance": True,
+                "version_0_90_order_overview_pdf_refresh": True,
+                "review_window_stability": True,
+                "editable_text_position_fix": True,
+                "indicator_text_cutout_avoidance": True,
+                "diamon_fusion_glass_measurement_corridor": True,
+                "version_0_91_review_stability_placement": True,
                 "manual_sketch_save_reenables_output": True,
                 "dxf_reprocess_lock_guard": True,
                 "single_page_window_guard": True,

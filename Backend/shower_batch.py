@@ -2038,6 +2038,7 @@ def prepare_job(
         remake_items=selected_remake_items,
     )
     programmer.assign_dxf_paths(job, folder, dxf_output_dir, config)
+    programmer.apply_corner_text_indicator_avoidance(reader, job.panels, config)
     return job, reader, collect_issues(job, process_order)
 
 

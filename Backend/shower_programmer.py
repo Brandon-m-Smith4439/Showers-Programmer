@@ -1473,16 +1473,11 @@ def enforce_configured_hinge_orientation(panel: Panel, config: dict[str, Any]) -
     hinges_up = has_door_cut_in(panel, config) or configured
 
     original_corner = panel.indicator_corner
-    if original_corner == "bottom_left":
-        hinge_side = "right"
-    elif original_corner == "top_right":
-        hinge_side = "left"
-    elif original_corner == "top_left":
-        hinge_side = "left"
-    elif original_corner == "bottom_right":
-        hinge_side = "right"
-    elif panel.hinge_side in {"left", "right"}:
+    if panel.hinge_side in {"left", "right"}:
         hinge_side = panel.hinge_side
+    elif original_corner:
+        orientation = door_orientation_for_indicator_corner(original_corner)
+        hinge_side = orientation[0] if orientation is not None else "right"
     else:
         hinge_side = "right"
 
@@ -1497,8 +1492,9 @@ def enforce_configured_hinge_orientation(panel: Panel, config: dict[str, Any]) -
     code = matched[0] if matched else "configured hinge"
     direction = "up" if hinges_up else "down"
     reason = f"hinge code {code}: hinge side {hinge_side}; hinges {direction}"
-    if reason not in panel.reasons:
-        panel.reasons.append(reason)
+    reason_prefix = f"hinge code {code}:"
+    panel.reasons = [existing for existing in panel.reasons if not existing.startswith(reason_prefix)]
+    panel.reasons.append(reason)
 
 
 def enforce_pph_hinges_up(panel: Panel) -> None:
@@ -3410,6 +3406,8 @@ def make_overlay_page(
     bbox: tuple[float, float, float, float] | None,
     indicator_bbox: tuple[float, float, float, float] | None,
     marker_bbox: tuple[float, float, float, float] | None,
+    top_measurement_y: float | None,
+    diamon_obstacles: list[tuple[float, float, float, float]],
     obstacles: list[tuple[float, float, float, float]],
     config: dict[str, Any],
 ) -> bytes:
@@ -3470,11 +3468,11 @@ def make_overlay_page(
                 width,
                 height,
                 pdf_cfg,
-                bbox,
-                indicator_bbox,
+                marker_bbox or bbox,
+                None if top_measurement_y is None else (0.0, top_measurement_y, width, top_measurement_y),
                 diamon_text,
                 df_font,
-                obstacles,
+                diamon_obstacles,
                 avoid_rects,
                 panel,
             )
@@ -3604,42 +3602,120 @@ def choose_diamon_banner_position(
     min_font = parse_float(pdf_cfg.get("diamon_fusion_min_font_size", 28), 28)
     edge_gap = parse_float(pdf_cfg.get("diamon_fusion_edge_gap", 8), 8)
     anchor_top = piece_bbox[3] if piece_bbox is not None else None
-    x_ratios = [0.5, 0.58, 0.42, 0.66, 0.34]
-    for candidate_font in descending_font_sizes(font_size, min_font):
+    measurement_y = top_measurement_bbox[3] if top_measurement_bbox is not None else None
+    if piece_bbox is not None:
+        piece_center = (piece_bbox[0] + piece_bbox[2]) / 2.0
+        piece_width = piece_bbox[2] - piece_bbox[0]
+        x_candidates = [piece_center, piece_center + piece_width * 0.08, piece_center - piece_width * 0.08]
+    else:
+        x_candidates = [page_width * ratio for ratio in (0.5, 0.58, 0.42)]
+    effective_min_font = min_font
+    if anchor_top is not None and measurement_y is not None:
+        effective_min_font = min(min_font, 18.0)
+    baseline_candidates: list[float] = []
+    if anchor_top is not None:
+        baseline_candidates.append(anchor_top + edge_gap + 4)
+        if measurement_y is not None:
+            for obstacle in obstacles:
+                if obstacle[3] <= anchor_top + edge_gap or obstacle[3] >= measurement_y - edge_gap:
+                    continue
+                if piece_bbox is not None and (obstacle[2] <= piece_bbox[0] or obstacle[0] >= piece_bbox[2]):
+                    continue
+                baseline_candidates.append(obstacle[3] + edge_gap + 4)
+    else:
+        baseline_candidates.append(page_height * 0.60)
+    baseline_candidates = sorted(set(round(value, 4) for value in baseline_candidates))
+    best_candidate: tuple[float, float, float, float, tuple[float, float, float, float]] | None = None
+    for candidate_font in descending_font_sizes(font_size, effective_min_font):
         text_width = stringWidth(text, "Helvetica-Bold", candidate_font) + 12
         text_height = candidate_font + 10
-        slots: list[tuple[float, float]] = []
-        if anchor_top is not None:
-            slots.append((anchor_top, anchor_top + edge_gap + 4))
-        else:
-            slots.append((page_height * 0.60, page_height * 0.60))
-
-        for _, y in slots:
+        for y in baseline_candidates:
             y += panel.diamon_fusion_nudge_y
-            for ratio in x_ratios:
-                x = page_width * ratio + panel.diamon_fusion_nudge_x
+            for candidate_x in x_candidates:
+                x = candidate_x + panel.diamon_fusion_nudge_x
                 rect = (x - text_width / 2, y - 4, x + text_width / 2, y + text_height)
                 if rect[0] < 20 or rect[2] > page_width - 20 or rect[1] < 35 or rect[3] > page_height - 35:
                     continue
+                if measurement_y is not None and rect[3] > measurement_y - edge_gap:
+                    continue
+                score = placement_score(rect, obstacles, avoid_rects) + max(0.0, font_size - candidate_font) * 0.20
+                if best_candidate is None or score < best_candidate[0]:
+                    best_candidate = (score, x, y, candidate_font, rect)
                 if rect_is_clear(rect, obstacles, avoid_rects):
                     return x, y, candidate_font, rect
 
-    fallback_font = max(min_font, min(font_size, parse_float(pdf_cfg.get("diamon_fusion_font_size", font_size), font_size)))
-    fallback_bbox = piece_bbox
-    if anchor_top is not None:
-        if fallback_bbox is None:
-            fallback_bbox = (page_width * 0.2, 0, page_width * 0.8, anchor_top)
-        else:
-            fallback_bbox = (fallback_bbox[0], fallback_bbox[1], fallback_bbox[2], anchor_top)
-    x, y, rect = banner_text_position(page_width, page_height, pdf_cfg, fallback_bbox, None, text, fallback_font)
+    if best_candidate is not None:
+        _score, x, y, candidate_font, rect = best_candidate
+        return x, y, candidate_font, rect
+
+    fallback_font = max(effective_min_font, min(font_size, parse_float(pdf_cfg.get("diamon_fusion_font_size", font_size), font_size)))
+    x = x_candidates[0]
     if anchor_top is not None:
         y = anchor_top + edge_gap + 4
+    else:
+        y = page_height * 0.60
     x += panel.diamon_fusion_nudge_x
     y += panel.diamon_fusion_nudge_y
     width = stringWidth(text, "Helvetica-Bold", fallback_font) + 12
     height = fallback_font + 10
     rect = (x - width / 2, y - 4, x + width / 2, y + height)
+    if measurement_y is not None and rect[3] > measurement_y - edge_gap:
+        fallback_font = max(18.0, measurement_y - edge_gap - y - 10.0)
+        width = stringWidth(text, "Helvetica-Bold", fallback_font) + 12
+        height = fallback_font + 10
+        rect = (x - width / 2, y - 4, x + width / 2, y + height)
     return x, y, fallback_font, rect
+
+
+def estimate_top_measurement_y(
+    reader: PdfReader,
+    page_index: int,
+    piece_bbox: tuple[float, float, float, float] | None,
+) -> float | None:
+    """Find the nearest full-width horizontal dimension line above the glass."""
+    if piece_bbox is None:
+        return None
+    left, _bottom, right, top = piece_bbox
+    piece_width = right - left
+    minimum_overlap = max(60.0, piece_width * 0.55)
+    candidates: list[float] = []
+    for start, end, _length in collect_page_line_segments(reader, page_index, min_length=10.0):
+        if abs(start[1] - end[1]) > 1.0:
+            continue
+        y = (start[1] + end[1]) / 2.0
+        if y <= top + 10.0 or y >= top + 150.0:
+            continue
+        segment_left = min(start[0], end[0])
+        segment_right = max(start[0], end[0])
+        overlap = max(0.0, min(segment_right, right) - max(segment_left, left))
+        if overlap >= minimum_overlap:
+            candidates.append(y)
+    return min(candidates) if candidates else None
+
+
+def collect_diamon_banner_obstacles(
+    reader: PdfReader,
+    page_index: int,
+    piece_bbox: tuple[float, float, float, float] | None,
+    top_measurement_y: float | None,
+) -> list[tuple[float, float, float, float]]:
+    """Collect only text and dimension strokes in the banner's vertical corridor."""
+    if piece_bbox is None or top_measurement_y is None:
+        return []
+    left, _bottom, right, top = piece_bbox
+    corridor = (left - 16.0, top + 2.0, right + 16.0, top_measurement_y + 2.0)
+    obstacles = [
+        obstacle
+        for obstacle in collect_page_text_obstacles(reader, page_index)
+        if rects_overlap(obstacle, corridor)
+    ]
+    for start, end, length in collect_page_line_segments(reader, page_index, min_length=3.0):
+        if length > max(160.0, (right - left) * 1.25):
+            continue
+        obstacle = line_rect(start, end, pad=2.0)
+        if rects_overlap(obstacle, corridor):
+            obstacles.append(obstacle)
+    return obstacles
 
 
 def descending_font_sizes(font_size: float, min_font: float) -> Iterable[float]:
@@ -4055,6 +4131,146 @@ def collect_page_text_obstacles(reader: PdfReader, page_index: int) -> list[tupl
     return obstacles
 
 
+def indicator_visible_rect(geometry: dict[str, Any]) -> tuple[float, float, float, float]:
+    """Return the marker's painted footprint instead of its larger editor hit box."""
+    if geometry.get("kind") == "dot":
+        center_x, center_y = geometry["center"]
+        radius = float(geometry.get("radius", 0.0)) + 2.0
+        return center_x - radius, center_y - radius, center_x + radius, center_y + radius
+    points = [point for line in geometry.get("lines", []) for point in line]
+    if points:
+        pad = float(geometry.get("line_width", 1.0)) / 2.0 + 2.0
+        return points_rect(points, pad)
+    return geometry["rect"]
+
+
+def collect_indicator_cutout_obstacles(
+    reader: PdfReader,
+    page_index: int,
+    piece_bbox: tuple[float, float, float, float] | None,
+) -> list[tuple[float, float, float, float]]:
+    """Keep local interior drawing features while excluding long glass/dimension edges."""
+    if piece_bbox is None:
+        return []
+    left, bottom, right, top = piece_bbox
+    short_feature_limit = max(48.0, min(right - left, top - bottom) * 0.30)
+    boundary_tolerance = 5.0
+    obstacles: list[tuple[float, float, float, float]] = []
+    for obstacle in collect_page_drawing_obstacles(reader, page_index):
+        obstacle_width = obstacle[2] - obstacle[0]
+        obstacle_height = obstacle[3] - obstacle[1]
+        center_x = (obstacle[0] + obstacle[2]) / 2.0
+        center_y = (obstacle[1] + obstacle[3]) / 2.0
+        if not (left - 2 <= center_x <= right + 2 and bottom - 2 <= center_y <= top + 2):
+            continue
+        if max(obstacle_width, obstacle_height) > short_feature_limit:
+            continue
+        on_outer_edge = (
+            abs(center_x - left) <= boundary_tolerance
+            or abs(center_x - right) <= boundary_tolerance
+            or abs(center_y - bottom) <= boundary_tolerance
+            or abs(center_y - top) <= boundary_tolerance
+        )
+        if on_outer_edge and min(obstacle_width, obstacle_height) <= 8.0:
+            continue
+        obstacles.append(obstacle)
+    return obstacles
+
+
+def apply_corner_text_indicator_avoidance(
+    reader: PdfReader,
+    panels: Iterable[Panel],
+    config: dict[str, Any],
+) -> None:
+    """Apply a small sketch-only marker offset when source corner text is covered."""
+    pdf_cfg = config.get("pdf", {})
+    if not isinstance(pdf_cfg, dict) or not bool(pdf_cfg.get("avoid_corner_text_with_indicator", True)):
+        return
+    max_shift = max(0.0, min(36.0, parse_float(pdf_cfg.get("corner_text_avoidance_max_shift", 36), 36)))
+    if max_shift <= 0:
+        return
+    distances = sorted({0.0, *[min(max_shift, value) for value in (4.0, 8.0, 12.0, 16.0, 20.0, 24.0, 28.0, 32.0, 36.0, max_shift)]})
+    offsets = sorted({0.0, *distances, *[-value for value in distances if value > 0]}, key=lambda value: (abs(value), value))
+    for panel in panels:
+        if (
+            not panel.machine
+            or not panel.indicator_corner
+            or panel.hide_indicator
+            or panel.remake_excluded
+            or panel.manual_indicator_override
+            or panel.indicator_x is not None
+            or panel.indicator_y is not None
+            or abs(panel.indicator_nudge_x) > 0.01
+            or abs(panel.indicator_nudge_y) > 0.01
+            or panel.page_index < 0
+            or panel.page_index >= len(reader.pages)
+        ):
+            continue
+        page = reader.pages[panel.page_index]
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+        marker_bbox = estimate_panel_outline_bbox(reader, panel.page_index, panel.width, panel.height)
+        if marker_bbox is None:
+            marker_bbox = estimate_panel_bbox(reader, panel.page_index)
+        geometry = indicator_marker_geometry(
+            panel.machine,
+            panel.indicator_corner,
+            marker_bbox,
+            page_width,
+            page_height,
+            pdf_cfg,
+            precise_edges=marker_bbox is not None,
+            panel=panel,
+        )
+        if geometry is None:
+            continue
+        text_obstacles = collect_page_text_obstacles(reader, panel.page_index)
+        cutout_obstacles = collect_indicator_cutout_obstacles(reader, panel.page_index, marker_bbox)
+        base_rect = indicator_visible_rect(geometry)
+        base_text_overlap = sum(rect_overlap_area(base_rect, obstacle) for obstacle in text_obstacles)
+        base_cutout_overlap = sum(rect_overlap_area(base_rect, obstacle) for obstacle in cutout_obstacles)
+        base_overlap = base_text_overlap * 4.0 + base_cutout_overlap * 5.0
+        if base_overlap <= 0.5:
+            continue
+
+        best: tuple[float, float, float, float, float] | None = None
+        for offset_x in offsets:
+            for offset_y in offsets:
+                if abs(offset_x) < 0.01 and abs(offset_y) < 0.01:
+                    continue
+                panel.indicator_nudge_x = offset_x
+                panel.indicator_nudge_y = offset_y
+                candidate = indicator_marker_geometry(
+                    panel.machine,
+                    panel.indicator_corner,
+                    marker_bbox,
+                    page_width,
+                    page_height,
+                    pdf_cfg,
+                    precise_edges=marker_bbox is not None,
+                    panel=panel,
+                )
+                if candidate is None:
+                    continue
+                candidate_rect = indicator_visible_rect(candidate)
+                text_overlap = sum(rect_overlap_area(candidate_rect, obstacle) for obstacle in text_obstacles)
+                cutout_overlap = sum(rect_overlap_area(candidate_rect, obstacle) for obstacle in cutout_obstacles)
+                overlap = text_overlap * 4.0 + cutout_overlap * 5.0
+                distance = math.hypot(offset_x, offset_y)
+                score = overlap + distance * 0.20
+                if best is None or score < best[0]:
+                    best = (score, offset_x, offset_y, overlap, distance)
+        panel.indicator_nudge_x = 0.0
+        panel.indicator_nudge_y = 0.0
+        if best is None or best[3] >= base_overlap * 0.80:
+            continue
+        panel.indicator_nudge_x = best[1]
+        panel.indicator_nudge_y = best[2]
+        panel.reasons.append(
+            f"automatic sketch marker nudged {best[4]:g} pt to avoid corner text or fabrication"
+        )
+
+
 def segment_is_relevant(start: tuple[float, float], end: tuple[float, float]) -> bool:
     length = math.hypot(end[0] - start[0], end[1] - start[1])
     if length < 5:
@@ -4398,6 +4614,13 @@ def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force:
             bbox = estimate_panel_bbox(reader, page_index)
             indicator_bbox = estimate_panel_bbox(reader, page_index, use_outer_edges=True)
             marker_bbox = estimate_panel_outline_bbox(reader, page_index, panel.width, panel.height)
+            top_measurement_y = estimate_top_measurement_y(reader, page_index, marker_bbox or bbox)
+            diamon_obstacles = collect_diamon_banner_obstacles(
+                reader,
+                page_index,
+                marker_bbox or bbox,
+                top_measurement_y,
+            )
             obstacles = collect_page_obstacles(reader, page_index)
             overlay_bytes = make_overlay_page(
                 width,
@@ -4407,6 +4630,8 @@ def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force:
                 bbox,
                 indicator_bbox,
                 marker_bbox,
+                top_measurement_y,
+                diamon_obstacles,
                 obstacles,
                 config,
             )
@@ -4808,6 +5033,7 @@ def main() -> int:
         remake_items=selected_remake_items,
     )
     assign_dxf_paths(job, folder, dxf_output_dir, config)
+    apply_corner_text_indicator_avoidance(reader, job.panels, config)
     report = build_report(job, apply=args.apply, skip_pdf=args.skip_pdf, skip_dxf=args.skip_dxf)
     print(report)
 

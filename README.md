@@ -2,7 +2,7 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 0.84 - Workflow Settings**
+Current release: **Version 0.91 - Review Stability and Placement**
 
 ## Main Workflow
 
@@ -16,6 +16,15 @@ Current release: **Version 0.84 - Workflow Settings**
 
 ## Production Checks
 
+- **Seven-day file recovery:** Explicit local input deletion moves order and completed process-list files into a manifest-backed Recovery area for seven days. Restore or permanently remove a recovery bundle from Settings.
+- **Programming evidence:** Right-click an order and choose **Why Programmed This Way** to inspect machine, geometry, hinge, rotation, OOS correction, warnings, and manual-override evidence in a separate window.
+- **Diagnostic packages:** Right-click one order to create an order-scoped ZIP containing its matched inputs, process list, generated files, processing evidence, action history, and a redacted configuration snapshot.
+- **Diagnostics folder access:** Open the local Diagnostics folder directly from the Preferences tab. The folder is created automatically on a fresh installation.
+- **Order overview:** Review Order includes the sketch cover page as an informational overview with process descriptions, item/output counts, processing status, issues, checked state, and sent state.
+- **External PDF annotations:** Refresh Sketch reopens the saved PDF and displays annotations saved from Microsoft Edge while keeping the normal markup tools available for piece pages.
+- **Corner-text protection:** Automatic indicators move only a few points when needed to avoid source corner text such as the tempering `BUG` mark; manual indicators are preserved.
+- **Network health:** The main status area checks the import, shop sketch, and shop program folders asynchronously and shows Online, Partial, or Offline without delaying normal scans.
+- **Configuration backup:** Settings can export or import shop rules, hinge settings, and UI preferences. Import automatically preserves the current configuration first.
 - **Existing production files:** Before sending, the application identifies generated filenames that already exist in the production folders. Identical files are accepted automatically. Different files open a clear dialog where the operator can keep the existing production files, replace them, or cancel the send. Non-conflicting files continue normally.
 - **Per-file send recovery:** A locked or inaccessible file is reported without stopping unrelated files. An order with an unsent required file is not archived as fully sent.
 - **Fast production sending:** Independent sketch and DXF copies, plus existing-file checks, run concurrently while preserving atomic targets and keep/replace decisions.

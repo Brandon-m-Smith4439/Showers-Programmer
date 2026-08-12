@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 0.84 production-safety features for Shower Programmer.
+"""Version 0.91 production-safety features for Shower Programmer.
 
 This module intentionally patches the existing V40-era core at startup instead
 of duplicating the large GUI, batch, and programming modules.  It is loaded by
@@ -33,6 +33,13 @@ from __future__ import annotations
 # VERSION_0_82_SETTINGS_REMAKE_DETECTION
 # VERSION_0_83_MAXIMIZED_SETTINGS
 # VERSION_0_84_WORKFLOW_SETTINGS
+# VERSION_0_85_STABLE_HINGE_ORIENTATION
+# VERSION_0_86_REVIEW_READINESS_WARNING
+# VERSION_0_87_INPUT_BATCH_NETWORK_DELETE
+# VERSION_0_88_RECOVERY_DIAGNOSTICS
+# VERSION_0_89_DIAGNOSTICS_FOLDER_ACCESS
+# VERSION_0_90_ORDER_OVERVIEW_PDF_REFRESH
+# VERSION_0_91_REVIEW_STABILITY_PLACEMENT
 
 import copy
 import hashlib
@@ -1420,6 +1427,13 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_0_82_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_83_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_84_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_85_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_86_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_87_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_88_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_89_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_90_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_91_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 

@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import uuid
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -465,6 +466,95 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertEqual(panel.rotation_degrees, -90)
         self.assertEqual(panel.indicator_corner, "top_right")
 
+    def test_hinge_orientation_enforcement_preserves_confirmed_side_and_is_stable(self) -> None:
+        config = {
+            "rules": {
+                "hinge_label_keywords": ["AV1E037"],
+                "hinge_label_orientations": {"AV1E037": "down"},
+            }
+        }
+        panel = programmer.Panel(1, 2, 'A V1E037 1-13/16"', 29.0, 90.875, "DENVER 1")
+        panel.hinge_side = "left"
+        panel.hinges_up = False
+        panel.rotation_degrees = 90.0
+        panel.indicator_corner = "bottom_left"
+        panel.reasons = ["hinge code AV1E037: hinge side right; hinges down"]
+
+        programmer.enforce_configured_hinge_orientation(panel, config)
+        programmer.enforce_configured_hinge_orientation(panel, config)
+
+        self.assertEqual(panel.hinge_side, "left")
+        self.assertFalse(panel.hinges_up)
+        self.assertEqual(panel.rotation_degrees, 90.0)
+        self.assertEqual(panel.indicator_corner, "bottom_left")
+        self.assertEqual(
+            [reason for reason in panel.reasons if reason.startswith("hinge code AV1E037:")],
+            ["hinge code AV1E037: hinge side left; hinges down"],
+        )
+
+    def test_unprocessed_order_review_requires_confirmation(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp.__new__(
+            shower_programmer_gui.ShowerProgrammerApp
+        )
+        app.root = object()
+        app.processed_summary_for_order = lambda _aw_order: "No"
+
+        with mock.patch.object(
+            shower_programmer_gui.messagebox,
+            "askcontinue",
+            return_value=False,
+        ) as prompt:
+            self.assertFalse(app.confirm_unprocessed_order_review("237400"))
+
+        prompt.assert_called_once()
+        self.assertIn("237400", prompt.call_args.args[1])
+
+        app.processed_summary_for_order = lambda _aw_order: "2026-08-11 14:30:00"
+        with mock.patch.object(
+            shower_programmer_gui.messagebox,
+            "askcontinue",
+        ) as processed_prompt:
+            self.assertTrue(app.confirm_unprocessed_order_review("237400"))
+        processed_prompt.assert_not_called()
+
+    def test_network_batch_delete_is_restricted_to_input_only_orders(self) -> None:
+        input_only = shower_batch.ProcessOrder("INPUT-ONE", "90000001 TEST", "Input file only")
+        setattr(input_only, "process_list_missing", True)
+        regular = shower_batch.ProcessOrder("237401", "90000002 TEST", "Customer")
+
+        self.assertTrue(
+            shower_programmer_gui.ShowerProgrammerApp.batch_allows_network_input_delete(
+                {"orders": [input_only]}
+            )
+        )
+        self.assertFalse(
+            shower_programmer_gui.ShowerProgrammerApp.batch_allows_network_input_delete(
+                {"orders": [input_only, regular]}
+            )
+        )
+
+    def test_network_input_delete_matches_only_selected_order_files(self) -> None:
+        with writable_test_directory() as temp:
+            order = shower_batch.ProcessOrder("237402", "90000003 TEST JOB", "Input file only")
+            setattr(order, "process_list_missing", True)
+            expected = {
+                temp / "Glass Order TEST_90000003 TEST JOB.pdf",
+                temp / "90000003 TEST JOB_1.dxf",
+            }
+            for path in expected:
+                path.write_text("placeholder", encoding="utf-8")
+            (temp / "Glass Order OTHER_90000004 OTHER JOB.pdf").write_text(
+                "unrelated",
+                encoding="utf-8",
+            )
+
+            matched = shower_programmer_gui.ShowerProgrammerApp.network_input_files_for_orders(
+                temp,
+                [order],
+            )
+
+            self.assertEqual(set(matched), expected)
+
     def test_input_only_pdf_becomes_visible_issue_row(self) -> None:
         with writable_test_directory() as temp:
             pdf = temp / "Glass Order Example.pdf"
@@ -502,6 +592,91 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertEqual(state["sketch_preview_path"], source)
         self.assertEqual(state["pdf_page_count"], 3)
         self.assertTrue(shower_programmer_gui.ShowerProgrammerApp.should_draw_sketch_overlays(state))
+
+    def test_saved_sketch_refresh_uses_fresh_reader_and_invalidates_current_raster(self) -> None:
+        class Reader:
+            pages = [object(), object()]
+
+        app = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            saved = temp / "900001.pdf"
+            saved.write_bytes(b"externally annotated revision")
+            cache_dir = app.review_raster_cache_dir(temp, saved, app.REVIEW_RENDER_DPI)
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "page_001.png").write_bytes(b"stale")
+            state: dict[str, object] = {}
+
+            app.invalidate_review_pdf_raster_cache(temp, saved)
+            app.configure_saved_sketch_preview_state(state, Reader(), saved)
+
+            self.assertFalse(cache_dir.exists())
+            self.assertTrue(state["embedded_sketch_preview"])
+            self.assertEqual(state["sketch_preview_path"], saved)
+            self.assertEqual(state["pdf_page_count"], 2)
+
+    def test_order_overview_reports_process_descriptions_and_output_readiness(self) -> None:
+        app = object.__new__(shower_programmer_gui.ShowerProgrammerApp)
+        app.history_for_order_from_output = lambda _aw, _output: {
+            "last_processed": "2026-08-12 10:15 AM",
+            "status": "OK",
+        }
+        app.review_status_for_order = lambda _aw: "Order checked"
+        app.sent_summary_for_order = lambda _aw: "No"
+        with writable_test_directory() as temp:
+            dxf = temp / "90000101.dxf"
+            dxf.write_text("0\nEOF\n", encoding="ascii")
+            sketch = temp / "900001.pdf"
+            sketch.write_bytes(b"pdf")
+            item = shower_batch.ProcessItem(
+                item=1,
+                width_text="30",
+                height_text="80",
+                processing=["2 HINGES GEN037"],
+                machine_hints=["DENVER 1"],
+            )
+            order = shower_batch.ProcessOrder("900001", "12345678 TEST JOB", "TEST CUSTOMER", {1: item})
+            panel = programmer.Panel(1, 1, "P1", 30.0, 80.0, "DENVER 1", output_dxf=dxf)
+            job = programmer.Job(temp / "source.pdf", "900001", order.job_name, [panel], sketch, temp / "report.txt")
+
+            overview = app.order_review_overview_data(order, job, [], temp, sketch)
+
+            self.assertEqual(overview["programs_ready"], 1)
+            self.assertEqual(overview["status"], "OK")
+            self.assertIn("2 HINGES GEN037", overview["process_lines"][0])
+            self.assertIn("Program ready", overview["process_lines"][0])
+
+    def test_corner_text_avoidance_nudges_only_automatic_indicator(self) -> None:
+        class Box:
+            width = 612
+            height = 792
+
+        class Page:
+            mediabox = Box()
+
+        class Reader:
+            pages = [Page()]
+
+        panel = programmer.Panel(1, 0, "P1", 30.0, 80.0, "DENVER 2", indicator_corner="bottom_left")
+        obstacle = (103.0, 103.0, 137.0, 137.0)
+        config = {"pdf": {"indicator_offset": 20, "indicator_size": 18, "corner_text_avoidance_max_shift": 12}}
+        with (
+            mock.patch.object(programmer, "estimate_panel_outline_bbox", return_value=(100.0, 100.0, 300.0, 400.0)),
+            mock.patch.object(programmer, "collect_page_text_obstacles", return_value=[obstacle]),
+        ):
+            programmer.apply_corner_text_indicator_avoidance(Reader(), [panel], config)
+
+        self.assertLessEqual(abs(panel.indicator_nudge_x), 12)
+        self.assertLessEqual(abs(panel.indicator_nudge_y), 12)
+        self.assertTrue(panel.indicator_nudge_x or panel.indicator_nudge_y)
+        self.assertTrue(any("avoid corner text" in reason for reason in panel.reasons))
+
+        manual = programmer.Panel(
+            1, 0, "P1", 30.0, 80.0, "DENVER 2",
+            indicator_corner="bottom_left", manual_indicator_override=True,
+        )
+        with mock.patch.object(programmer, "collect_page_text_obstacles", return_value=[obstacle]):
+            programmer.apply_corner_text_indicator_avoidance(Reader(), [manual], config)
+        self.assertEqual((manual.indicator_nudge_x, manual.indicator_nudge_y), (0.0, 0.0))
 
     def test_manual_wj_machine_change_rewrites_program_in_millimeters(self) -> None:
         with writable_test_directory() as temp:
@@ -1041,6 +1216,167 @@ class IncrementalCacheTests(unittest.TestCase):
             app.order_sort_value("08/10/2026", "delivery"),
         )
         self.assertLess(app.order_sort_value("ISSUES", "status"), app.order_sort_value("READY", "status"))
+
+    def test_local_quarantine_round_trip_restores_order_and_process_list_files(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            orders = temp / "Input" / "Orders"
+            process_lists = temp / "Input" / "Process List"
+            recovery = temp / "Recovery"
+            orders.mkdir(parents=True)
+            process_lists.mkdir(parents=True)
+            pdf = orders / "Glass Order 900001.pdf"
+            process_list = process_lists / "Batch 7000.xlsx"
+            pdf.write_bytes(b"pdf")
+            process_list.write_bytes(b"xlsx")
+
+            moved, warnings, bundle_id = app.quarantine_paths(
+                recovery,
+                [pdf],
+                [orders],
+                ["900001"],
+            )
+            moved_lists, list_warnings, bundle_id = app.quarantine_paths(
+                recovery,
+                [process_list],
+                [process_lists],
+                ["900001"],
+                bundle_id=bundle_id,
+            )
+
+            self.assertEqual(warnings + list_warnings, [])
+            self.assertEqual(moved, [pdf.resolve()])
+            self.assertEqual(moved_lists, [process_list.resolve()])
+            self.assertFalse(pdf.exists())
+            self.assertFalse(process_list.exists())
+            restored, restore_warnings = app.restore_quarantine_bundle(recovery, str(bundle_id))
+            self.assertEqual(restore_warnings, [])
+            self.assertEqual({path.name for path in restored}, {pdf.name, process_list.name})
+            self.assertEqual(pdf.read_bytes(), b"pdf")
+            self.assertEqual(process_list.read_bytes(), b"xlsx")
+            self.assertFalse((recovery / str(bundle_id)).exists())
+
+    def test_quarantine_rejects_files_outside_approved_local_roots(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            approved = temp / "approved"
+            approved.mkdir()
+            outside = temp / "outside.pdf"
+            outside.write_bytes(b"keep")
+            moved, warnings, bundle_id = app.quarantine_paths(
+                temp / "Recovery",
+                [outside],
+                [approved],
+                ["900001"],
+            )
+            self.assertEqual(moved, [])
+            self.assertTrue(warnings)
+            self.assertIsNone(bundle_id)
+            self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_expired_quarantine_cleanup_removes_only_expired_bundle(self) -> None:
+        app_class = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            source_root = temp / "Input"
+            source_root.mkdir()
+            old_file = source_root / "old.pdf"
+            current_file = source_root / "current.pdf"
+            old_file.write_bytes(b"old")
+            current_file.write_bytes(b"current")
+            recovery = temp / "Recovery"
+            _, _, old_id = app_class.quarantine_paths(
+                recovery, [old_file], [source_root], ["1"], now=datetime.now() - timedelta(days=8)
+            )
+            _, _, current_id = app_class.quarantine_paths(
+                recovery, [current_file], [source_root], ["2"], now=datetime.now()
+            )
+            app = app_class.__new__(app_class)
+            app.runtime_root = temp
+            app.cleanup_expired_quarantine()
+            self.assertFalse((recovery / str(old_id)).exists())
+            self.assertTrue((recovery / str(current_id)).exists())
+
+    def test_diagnostic_zip_contains_only_supplied_order_files(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            selected = temp / "900001.pdf"
+            unrelated = temp / "900002.pdf"
+            selected.write_bytes(b"selected")
+            unrelated.write_bytes(b"unrelated")
+            target, warnings = app.write_diagnostic_zip(
+                temp / "diagnostic.zip",
+                {"local_inputs": [selected]},
+                {"order": {"aw_order": "900001"}},
+            )
+            self.assertEqual(warnings, [])
+            with zipfile.ZipFile(target, "r") as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.endswith(selected.name) for name in names))
+                self.assertFalse(any(name.endswith(unrelated.name) for name in names))
+                self.assertIn("diagnostic_manifest.json", names)
+
+    def test_open_diagnostics_folder_creates_and_opens_runtime_folder(self) -> None:
+        app_class = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            app = app_class.__new__(app_class)
+            app.runtime_root = temp
+            app.status_var = mock.Mock()
+            with mock.patch.object(os, "startfile", create=True) as startfile:
+                app.open_diagnostics_folder()
+            diagnostics = temp / app_class.DIAGNOSTICS_FOLDER_NAME
+            self.assertEqual(app.diagnostics_directory(), diagnostics)
+            self.assertTrue(diagnostics.is_dir())
+            startfile.assert_called_once_with(str(diagnostics.resolve()))
+            app.status_var.set.assert_called_once()
+
+    def test_configuration_backup_round_trip_and_invalid_archive_rejection(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            config = temp / "shower_programmer_config.json"
+            ui = temp / app.UI_SETTINGS_FILE_NAME
+            config.write_text('{"rules":{"hinge_label_keywords":["GEN037"]}}', encoding="utf-8")
+            ui.write_text('{"dark_mode":false}', encoding="utf-8")
+            backup = app.export_configuration_backup(temp / "settings.zip", config, ui)
+            config.write_text('{"rules":{}}', encoding="utf-8")
+            ui.write_text('{"dark_mode":true}', encoding="utf-8")
+            imported = app.import_configuration_backup(backup, config, ui, temp / "Backups")
+            self.assertEqual(imported["config"]["rules"]["hinge_label_keywords"], ["GEN037"])
+            self.assertFalse(imported["ui_settings"]["dark_mode"])
+            self.assertTrue(list((temp / "Backups").glob("before-import-*.zip")))
+
+            invalid = temp / "invalid.zip"
+            with zipfile.ZipFile(invalid, "w") as archive:
+                archive.writestr("../unsafe.json", "{}")
+            with self.assertRaisesRegex(ValueError, "valid Shower Programmer"):
+                app.import_configuration_backup(invalid, config, ui, temp / "Backups")
+
+    def test_network_probe_reports_reachable_and_missing_paths(self) -> None:
+        app = shower_programmer_gui.ShowerProgrammerApp
+        with writable_test_directory() as temp:
+            self.assertTrue(app.probe_network_path(temp)["reachable"])
+            self.assertFalse(app.probe_network_path(temp / "missing")["reachable"])
+
+    def test_programming_evidence_format_includes_orientation_and_reasons(self) -> None:
+        text = shower_programmer_gui.ShowerProgrammerApp.format_programming_evidence_panel(
+            {
+                "machine": "DENVER 1",
+                "glass_type": '3/8" Clear Tempered',
+                "dimensions": "34 x 80 in",
+                "process_hint": "DENVER 1",
+                "source_dxf": "90000101.dxf",
+                "indicator": "bottom_left",
+                "rotation": 90,
+                "angle_correction": 0.125,
+                "hinge_side": "left",
+                "hinges_up": False,
+                "manual_override": False,
+                "reasons": ["hinge side left; hinges down"],
+                "warnings": [],
+            }
+        )
+        self.assertIn("DXF rotation: 90 deg", text)
+        self.assertIn("Hinges: left side, down", text)
+        self.assertIn("hinge side left; hinges down", text)
 
 
 if __name__ == "__main__":

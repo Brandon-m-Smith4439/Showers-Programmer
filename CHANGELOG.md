@@ -2,6 +2,69 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 0.91] - 2026-08-12
+
+### Fixed
+- Review Order is built while hidden and presented once after layout, preventing it from dropping behind the main window or visibly oscillating between panel widths.
+- Canvas resize redraws and control-state updates are deduplicated to keep the review workspace stable.
+- Dragging a text mark no longer treats its text lines as geometric line segments, fixing the `too many values to unpack` sketch-preview failure.
+- Automatic indicators now avoid nearby source text and local cutout geometry while preserving manual positions.
+- DIAMON FUSION is anchored to the detected glass outline and fitted between the glass top and its nearest full-width top measurement.
+
+## [Version 0.90] - 2026-08-12
+
+### Added
+- Review Order now starts with the sketch cover page as a read-only Order Overview when the cover is separate from all piece pages.
+- The overview summarizes process-list descriptions, item counts, generated sketch/program readiness, processing state, issues, review state, and sent state.
+
+### Fixed
+- Refresh Sketch now reopens the saved PDF from disk, invalidates its prior raster, and explicitly renders annotations saved from Microsoft Edge.
+- Automatic sketch indicators make a small bounded move when their marker would cover extracted corner text such as the tempering `BUG` mark.
+- Manual indicator positions, corner choices, and DXF orientation remain untouched by corner-text avoidance.
+
+## [Version 0.89] - 2026-08-12
+
+### Added
+- Preferences now includes an Open Diagnostics Folder button.
+- The Diagnostics folder is created automatically before Windows Explorer opens it.
+
+## [Version 0.88] - 2026-08-12
+
+### Added
+- Local order and process-list deletion now uses a seven-day recovery quarantine with restore and permanent-delete controls in Settings.
+- A separate Why Programmed This Way window exposes panel-level machine, geometry, hinge, rotation, OOS, warning, and override evidence.
+- The main order context menu can create a diagnostic ZIP for one selected order.
+- A non-blocking network-health indicator monitors the configured import, shop sketch, and shop program folders.
+- Settings can export and import configuration backups, with an automatic safety copy before import.
+
+### Reliability
+- Recovery manifests validate approved local roots and avoid overwriting files during restore.
+- Diagnostic packages are order-scoped, size-bounded, and redact credential-like configuration values.
+- Network health checks time out independently and do not block scanning or review.
+
+## [Version 0.87] - 2026-08-11
+
+### Added
+- The Input Without Process List batch now offers a separate Delete Local + Network Batch action.
+- The confirmation identifies the exact local and configured-network PDF/DXF files that will be removed.
+
+### Reliability
+- Shared deletion is restricted to input-only batches and validated root-level matches.
+- If network correlation or deletion cannot complete safely, local files are retained so the order remains visible and cleanup can be retried.
+
+## [Version 0.86] - 2026-08-11
+
+### Added
+- Opening Review Order for an unprocessed order now displays a centered warning with Cancel and Review Anyway choices.
+- Orders with persisted processing history or an existing generated sketch continue opening immediately without an extra prompt.
+
+## [Version 0.85] - 2026-08-11
+
+### Fixed
+- Configured hinge directions now preserve the hinge side confirmed from sketch geometry instead of reversing it during the later configuration pass.
+- Repeated orientation enforcement is stable, preventing correctly calculated hinges-down doors from toggling back to hinges up in the generated DXF.
+- Programming reports replace stale hinge-code reasons with the final side and direction so orientation evidence is no longer contradictory.
+
 ## [Version 0.84] - 2026-08-11
 
 ### Added

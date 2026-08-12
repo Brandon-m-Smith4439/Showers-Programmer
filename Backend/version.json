@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.84",
-  "version_number": 84,
-  "marker": "VERSION_0_84_WORKFLOW_SETTINGS",
-  "release_name": "Workflow Settings",
-  "release_date": "2026-08-11",
+  "version": "Version 0.91",
+  "version_number": 91,
+  "marker": "VERSION_0_91_REVIEW_STABILITY_PLACEMENT",
+  "release_name": "Review Stability and Placement",
+  "release_date": "2026-08-12",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

@@ -11,7 +11,9 @@
       "diamon_fusion_above_remake_gap": "When REMAKE and DIAMON FUSION are both present, this is the vertical gap above REMAKE.",
       "diamon_fusion_edge_gap": "Gap between the detected top glass edge and the bottom of DIAMON FUSION when there is no REMAKE text.",
       "hinge_side_band_ratio": "How wide the left/right side zones are when detecting hinge cutouts on Denver 1 doors.",
-      "hinge_side_min_delta": "How much stronger one side must be before the program trusts it as the hinge side."
+      "hinge_side_min_delta": "How much stronger one side must be before the program trusts it as the hinge side.",
+      "avoid_corner_text_with_indicator": "Nudges automatic sketch indicators slightly when they would cover source text such as BUG.",
+      "corner_text_avoidance_max_shift": "Maximum automatic sketch-only indicator movement in PDF points. Manual indicators are never changed."
     },
     "label_x_ratio": 0.5,
     "label_y_ratio": 0.74,
@@ -61,6 +63,8 @@
     "indicator_offset": 64,
     "hinge_side_band_ratio": 0.28,
     "hinge_side_min_delta": 8,
+    "avoid_corner_text_with_indicator": true,
+    "corner_text_avoidance_max_shift": 36,
     "indicator_nudge": {
       "_notes": {
         "denver": "Moves Denver dots after automatic corner selection.",
