@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 0.91 production-safety features for Shower Programmer.
+"""Version 0.97 production-safety features for Shower Programmer.
 
 This module intentionally patches the existing V40-era core at startup instead
 of duplicating the large GUI, batch, and programming modules.  It is loaded by
@@ -40,6 +40,12 @@ from __future__ import annotations
 # VERSION_0_89_DIAGNOSTICS_FOLDER_ACCESS
 # VERSION_0_90_ORDER_OVERVIEW_PDF_REFRESH
 # VERSION_0_91_REVIEW_STABILITY_PLACEMENT
+# VERSION_0_92_REVIEW_WORKSPACE_EDITING
+# VERSION_0_93_OOS_DIMENSION_RECONCILIATION
+# VERSION_0_94_ARCHIVE_REMAKE_USABILITY
+# VERSION_0_95_BACKGROUND_RESPONSIVENESS
+# VERSION_0_96_FAST_FILTERED_ARCHIVE_BROWSER
+# VERSION_0_97_REIMPORTED_BATCH_REACTIVATION
 
 import copy
 import hashlib
@@ -1329,6 +1335,41 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                     raise RuntimeError("Smart network import helpers are unavailable.")
                 if not hasattr(shower_batch, "cached_pdf_piece_dimensions"):
                     raise RuntimeError("Cached PDF dimension evidence is unavailable.")
+                if not hasattr(shower_batch, "reconcile_out_of_square_dimension_match"):
+                    raise RuntimeError("Out-of-square dimension reconciliation is unavailable.")
+                if not hasattr(shower_batch, "manual_dimension_match_override_enabled"):
+                    raise RuntimeError("Manual dimension-match override is unavailable.")
+                if not hasattr(shower_batch, "dimension_mismatch_message"):
+                    raise RuntimeError("Readable dimension-mismatch formatting is unavailable.")
+                required_archive_helpers = (
+                    "archived_order_inventory",
+                    "copy_archived_order_for_testing",
+                    "return_archived_order_to_archive",
+                    "resize_overview_text_box",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_archive_helpers):
+                    raise RuntimeError("Version 0.94 archive/review helpers are unavailable.")
+                required_responsiveness_helpers = (
+                    "worker_prepare_local_order_delete",
+                    "worker_delete_local_order_inputs",
+                    "apply_local_order_delete_result",
+                    "load_archive_settings_inventory",
+                    "mark_orders_deleted_for_output",
+                    "save_processing_history_for_output",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_responsiveness_helpers):
+                    raise RuntimeError("Version 0.95 background responsiveness helpers are unavailable.")
+                required_archive_browser_helpers = (
+                    "archive_date_from_name",
+                    "normalize_archive_date_filter",
+                    "archived_run_inventory",
+                    "archive_browser_sort_value",
+                    "load_archive_run_settings_inventory",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_archive_browser_helpers):
+                    raise RuntimeError("Version 0.96 archive browser helpers are unavailable.")
+                if not hasattr(gui.ShowerProgrammerApp, "reactivate_reimported_process_list_orders"):
+                    raise RuntimeError("Version 0.97 re-imported process-list reactivation is unavailable.")
                 if not hasattr(gui.shower_cache, "cached_file_sha256"):
                     raise RuntimeError("Cached duplicate-file hashing is unavailable.")
                 mirror_rows = [
@@ -1377,6 +1418,31 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "version_0_79_streamlined_tools": True,
                         "version_0_80_order_search_action_history": True,
                         "version_0_81_dashboard_layout_polish": True,
+                        "out_of_square_dimension_reconciliation": True,
+                        "manual_dimension_match_override": True,
+                        "version_0_93_oos_dimension_reconciliation": True,
+                        "dxf_geometry_dimension_reconciliation": True,
+                        "archive_test_restore_workflow": True,
+                        "overview_text_size_editing": True,
+                        "readable_operator_popups": True,
+                        "remake_location_field_reliability": True,
+                        "remake_diamon_banner_placement": True,
+                        "version_0_94_archive_remake_usability": True,
+                        "background_order_input_cleanup": True,
+                        "settings_archive_background_load": True,
+                        "deferred_settings_history_loads": True,
+                        "current_progress_status_language": True,
+                        "version_0_95_background_responsiveness": True,
+                        "archive_seven_day_incremental_loading": True,
+                        "archive_date_range_filters": True,
+                        "archive_batch_grouping": True,
+                        "archive_column_sorting": True,
+                        "archive_runs_view": True,
+                        "archive_fast_filename_index": True,
+                        "version_0_96_fast_filtered_archive_browser": True,
+                        "reimported_process_list_reactivation": True,
+                        "deleted_receipt_reactivation_audit": True,
+                        "version_0_97_reimported_batch_reactivation": True,
                     }
                 )
             except Exception as exc:
@@ -1434,6 +1500,9 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_0_89_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_90_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_91_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_92_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_93_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_94_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 

@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 # UNMARKED_SKETCH_AND_ORDER_PDF_V12: process-list mapping for unmarked pages and order-number PDF names.
+# OOS_DIMENSION_RECONCILIATION_V93: reconcile A+W overall size with sketch edge size using proven DXF OOS geometry.
+# DXF_GEOMETRY_DIMENSION_RECONCILIATION_V94: accept alternate sketch edge dimensions only when source DXF geometry proves them.
 
 import argparse
 import csv
 import hashlib
 import html
+import math
 import os
 import re
 import subprocess
@@ -34,6 +37,10 @@ PROCESS_LIST_CACHE_NAMESPACE = "process_orders_v1"
 PROCESS_LIST_CACHE_SCHEMA = 2
 ProcessListProgress = Callable[[str, Path, str], None]
 PDF_DIMENSION_MATCH_TOLERANCE = 0.20
+OOS_DXF_OVERALL_TOLERANCE = 0.08
+OOS_DXF_EDGE_TOLERANCE = 0.35
+OOS_MIN_SHIFT_INCHES = 1.0 / 32.0
+OOS_MAX_SHIFT_INCHES = 2.0
 
 GLASS_MATERIAL_PATTERN = re.compile(
     r'^\s*(?:\d+-\d+/\d+|\d+/\d+|0?\.\d+)\s*(?:"|IN(?:CH(?:ES)?)?)?\s+[A-Z].*$',
@@ -1529,6 +1536,15 @@ def apply_process_hints(
             continue
         panel.process_text = process_item.text_blob()
         apply_process_dimensions(panel, process_item)
+        dimension_notes = getattr(process_order, "dimension_match_notes", {})
+        if isinstance(dimension_notes, dict):
+            dimension_note = str(dimension_notes.get(panel.item, "")).strip()
+            if dimension_note and dimension_note not in panel.reasons:
+                panel.reasons.append(dimension_note)
+        if bool(getattr(process_order, "manual_dimension_match_override_used", False)):
+            warning = "Manual dimension-match override: operator accepted the process-list/sketch mismatch."
+            if warning not in panel.warnings:
+                panel.warnings.append(warning)
 
         process_glass_text = "\n".join((process_item.processing_text, process_item.machine_text))
         is_mirror_glass = (
@@ -1739,6 +1755,329 @@ def dimensions_match(
     return direct or swapped
 
 
+def manual_dimension_match_override_enabled(
+    config: dict[str, object] | None,
+    aw_order: str,
+) -> bool:
+    """Return True only for an explicit operator-approved order override."""
+    if not isinstance(config, dict):
+        return False
+    overrides = config.get("dimension_match_overrides", {})
+    if not isinstance(overrides, dict):
+        return False
+    value = overrides.get(str(aw_order))
+    if isinstance(value, dict):
+        return bool(value.get("enabled", False))
+    return bool(value)
+
+
+def _record_dimension_match_note(process_order: ProcessOrder, item: int, note: str) -> None:
+    notes = getattr(process_order, "dimension_match_notes", None)
+    if not isinstance(notes, dict):
+        notes = {}
+        setattr(process_order, "dimension_match_notes", notes)
+    notes[int(item)] = str(note)
+
+
+def _record_manual_dimension_override(process_order: ProcessOrder) -> None:
+    setattr(process_order, "manual_dimension_match_override_used", True)
+
+
+def _dxf_oos_profile(
+    path: Path,
+    expected: tuple[float, float],
+) -> dict[str, object] | None:
+    """Describe alternate sketch dimensions proven by the source DXF.
+
+    A+W process lists can report the axis-aligned bounding size while the PDF
+    sketch reports a physical edge length or edge span.  That can happen on a
+    parallelogram, trapezoid, or other intentionally out-of-square shower
+    piece.  The fallback remains strict: the DXF overall bounds must match the
+    A+W size and the DXF must contain real non-axis-aligned outer geometry.
+    """
+    segments = programmer.collect_dxf_outer_line_segments(path)
+    if len(segments) < 4:
+        return None
+    points = [point for start, end in segments for point in (start, end)]
+    min_x = min(x for x, _ in points)
+    max_x = max(x for x, _ in points)
+    min_y = min(y for _, y in points)
+    max_y = max(y for _, y in points)
+    raw_width = max_x - min_x
+    raw_height = max_y - min_y
+    if raw_width <= 0 or raw_height <= 0:
+        return None
+
+    expected_width, expected_height = expected
+    for scale in (1.0, 1.0 / 25.4):
+        width = raw_width * scale
+        height = raw_height * scale
+        direct = (
+            abs(width - expected_width) <= OOS_DXF_OVERALL_TOLERANCE
+            and abs(height - expected_height) <= OOS_DXF_OVERALL_TOLERANCE
+        )
+        swapped = (
+            abs(width - expected_height) <= OOS_DXF_OVERALL_TOLERANCE
+            and abs(height - expected_width) <= OOS_DXF_OVERALL_TOLERANCE
+        )
+        if not direct and not swapped:
+            continue
+
+        # Classify long layer-0 outline segments by their dominant axis rather
+        # than by closeness to a bounding-box side. This keeps strongly raked
+        # trapezoid edges available as evidence even when they move several
+        # inches across the piece.
+        horizontal_edges: list[tuple[float, float, float]] = []
+        vertical_edges: list[tuple[float, float, float]] = []
+        for start_point, end_point in segments:
+            dx = abs(end_point[0] - start_point[0]) * scale
+            dy = abs(end_point[1] - start_point[1]) * scale
+            length = math.hypot(dx, dy)
+            if dx >= max(1.0, width * 0.45) and dx >= dy:
+                horizontal_edges.append((dx, dy, length))
+            if dy >= max(1.0, height * 0.45) and dy >= dx:
+                vertical_edges.append((dx, dy, length))
+        if not horizontal_edges or not vertical_edges:
+            continue
+
+        edge_width = sum(edge[0] for edge in horizontal_edges) / len(horizontal_edges)
+        edge_height = sum(edge[1] for edge in vertical_edges) / len(vertical_edges)
+        side_shift_x = max(edge[0] for edge in vertical_edges)
+        side_shift_y = max(edge[1] for edge in horizontal_edges)
+        skew_shift = max(side_shift_x, side_shift_y)
+        if skew_shift < OOS_MIN_SHIFT_INCHES:
+            continue
+
+        maximum_reasonable_skew = max(2.0, max(width, height) * 0.20)
+        if skew_shift > maximum_reasonable_skew:
+            continue
+
+        def unique_candidates(values: Iterable[float], minimum: float) -> list[float]:
+            result: list[float] = []
+            for value in values:
+                value = float(value)
+                if value + OOS_DXF_EDGE_TOLERANCE < minimum:
+                    continue
+                if not any(abs(value - existing) <= 0.01 for existing in result):
+                    result.append(value)
+            return result
+
+        width_candidates = unique_candidates(
+            [value for dx, _dy, length in horizontal_edges for value in (dx, length)]
+            + [edge_width, width],
+            max(1.0, width * 0.45),
+        )
+        height_candidates = unique_candidates(
+            [value for _dx, dy, length in vertical_edges for value in (dy, length)]
+            + [edge_height, height],
+            max(1.0, height * 0.45),
+        )
+
+        profile: dict[str, object] = {
+            "overall_width": width,
+            "overall_height": height,
+            "edge_width": edge_width,
+            "edge_height": edge_height,
+            "width_shift": abs(width - edge_width),
+            "height_shift": abs(height - edge_height),
+            "side_shift_x": side_shift_x,
+            "side_shift_y": side_shift_y,
+            "skew_shift": skew_shift,
+            "width_candidates": width_candidates,
+            "height_candidates": height_candidates,
+        }
+        if swapped:
+            profile = {
+                "overall_width": height,
+                "overall_height": width,
+                "edge_width": edge_height,
+                "edge_height": edge_width,
+                "width_shift": abs(height - edge_height),
+                "height_shift": abs(width - edge_width),
+                "side_shift_x": side_shift_y,
+                "side_shift_y": side_shift_x,
+                "skew_shift": skew_shift,
+                "width_candidates": height_candidates,
+                "height_candidates": width_candidates,
+            }
+        return profile
+    return None
+
+
+def _matched_oos_edge_pair(
+    actual: tuple[float, float],
+    profile: dict[str, object],
+) -> tuple[float, float] | None:
+    width_candidates = [
+        float(value) for value in profile.get("width_candidates", [])
+        if isinstance(value, (int, float))
+    ]
+    height_candidates = [
+        float(value) for value in profile.get("height_candidates", [])
+        if isinstance(value, (int, float))
+    ]
+    if not width_candidates:
+        width_candidates = [float(profile["edge_width"])]
+    if not height_candidates:
+        height_candidates = [float(profile["edge_height"])]
+
+    best: tuple[float, float, float] | None = None
+    for width in width_candidates:
+        for height in height_candidates:
+            direct_error = abs(actual[0] - width) + abs(actual[1] - height)
+            swapped_error = abs(actual[0] - height) + abs(actual[1] - width)
+            if (
+                abs(actual[0] - width) <= OOS_DXF_EDGE_TOLERANCE
+                and abs(actual[1] - height) <= OOS_DXF_EDGE_TOLERANCE
+            ):
+                candidate = (direct_error, width, height)
+            elif (
+                abs(actual[0] - height) <= OOS_DXF_EDGE_TOLERANCE
+                and abs(actual[1] - width) <= OOS_DXF_EDGE_TOLERANCE
+            ):
+                candidate = (swapped_error, height, width)
+            else:
+                continue
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+    return None if best is None else (best[1], best[2])
+
+
+def _pdf_dimensions_match_oos_profile(
+    actual: tuple[float, float],
+    profile: dict[str, object],
+) -> bool:
+    return _matched_oos_edge_pair(actual, profile) is not None
+
+
+def _find_oos_dxf_evidence(
+    folder: Path,
+    process_order: ProcessOrder,
+    item_number: int,
+    expected: tuple[float, float],
+) -> tuple[Path, dict[str, object]] | None:
+    panel = programmer.Panel(
+        int(item_number),
+        0,
+        "",
+        float(expected[0]),
+        float(expected[1]),
+        "",
+    )
+    source = programmer.find_source_dxf(
+        folder,
+        process_order.job_name,
+        panel,
+        process_order.aw_order,
+    )
+    if source is None:
+        return None
+    profile = _dxf_oos_profile(source, expected)
+    if profile is None:
+        return None
+    return source, profile
+
+
+def reconcile_out_of_square_dimension_match(
+    process_order: ProcessOrder,
+    actual: list[tuple[int, float, float]],
+    folder: Path | None,
+) -> bool:
+    """Validate an already-selected PDF using source-DXF geometry evidence.
+
+    This fallback is intentionally not used by duplicate-Job PDF selection.
+    Every process-list item must still map to a unique sketch piece; an OOS or
+    raked candidate may never reuse a sketch page already needed by a strict
+    dimension match.
+    """
+    if folder is None:
+        return False
+    expected = process_order_dimensions(process_order)
+    if not expected or not actual or len(expected) > len(actual):
+        return False
+
+    strict_candidates: list[list[int]] = [
+        [
+            actual_index
+            for actual_index, (_page, actual_width, actual_height) in enumerate(actual)
+            if dimensions_match((width, height), (actual_width, actual_height))
+        ]
+        for _item, width, height in expected
+    ]
+    unmatched_indices = [
+        expected_index
+        for expected_index, candidates in enumerate(strict_candidates)
+        if not candidates
+    ]
+    if not unmatched_indices:
+        return False
+
+    candidate_indices = [list(candidates) for candidates in strict_candidates]
+    evidence_by_expected: dict[int, tuple[Path, dict[str, object]]] = {}
+    for expected_index in unmatched_indices:
+        item, width, height = expected[expected_index]
+        evidence = _find_oos_dxf_evidence(folder, process_order, item, (width, height))
+        if evidence is None:
+            return False
+        source, profile = evidence
+        matches = [
+            actual_index
+            for actual_index, (_page, actual_width, actual_height) in enumerate(actual)
+            if _pdf_dimensions_match_oos_profile((actual_width, actual_height), profile)
+        ]
+        if not matches:
+            return False
+        candidate_indices[expected_index] = matches
+        evidence_by_expected[expected_index] = (source, profile)
+
+    assignment: dict[int, int] = {}
+    assignment_order = sorted(range(len(expected)), key=lambda index: len(candidate_indices[index]))
+
+    def assign(position: int, used_actual: set[int]) -> bool:
+        if position >= len(assignment_order):
+            return True
+        expected_index = assignment_order[position]
+        for actual_index in candidate_indices[expected_index]:
+            if actual_index in used_actual:
+                continue
+            assignment[expected_index] = actual_index
+            used_actual.add(actual_index)
+            if assign(position + 1, used_actual):
+                return True
+            used_actual.remove(actual_index)
+            assignment.pop(expected_index, None)
+        return False
+
+    if not assign(0, set()):
+        return False
+
+    for expected_index in unmatched_indices:
+        item, width, height = expected[expected_index]
+        source, profile = evidence_by_expected[expected_index]
+        actual_index = assignment[expected_index]
+        _page, actual_width, actual_height = actual[actual_index]
+        matched_edge = _matched_oos_edge_pair((actual_width, actual_height), profile)
+        edge_width, edge_height = matched_edge or (
+            float(profile["edge_width"]),
+            float(profile["edge_height"]),
+        )
+        shift = float(profile.get("skew_shift", max(
+            float(profile.get("width_shift", 0.0)),
+            float(profile.get("height_shift", 0.0)),
+        )))
+        _record_dimension_match_note(
+            process_order,
+            item,
+            (
+                f"A+W overall size {width:g} x {height:g} reconciled to sketch "
+                f"{actual_width:g} x {actual_height:g} by DXF OOS geometry "
+                f"({source.name}; edge {edge_width:g} x {edge_height:g}; "
+                f"OOS shift {shift:g} in)."
+            ),
+        )
+    return True
+
+
 def process_dimensions_fit_pdf(
     process_order: ProcessOrder,
     reader: PdfReader,
@@ -1790,44 +2129,74 @@ def format_dimension_pairs(dimensions: Iterable[tuple[int, float, float]]) -> st
     return ", ".join(f"P{item} {width:g} x {height:g}" for item, width, height in dimensions)
 
 
+def dimension_mismatch_message(
+    process_order: ProcessOrder,
+    pdf_path: Path,
+    actual_values: list[tuple[int, float, float]],
+) -> str:
+    """Build a readable operator-facing dimension mismatch explanation."""
+    expected_lines = [
+        f"  P{item}: {width:g} x {height:g}"
+        for item, width, height in process_order_dimensions(process_order)
+    ] or ["  Unknown"]
+    sketch_lines = [
+        f"  PDF page {page + 1}: {width:g} x {height:g}"
+        for page, width, height in actual_values
+    ] or ["  Unknown"]
+    return (
+        f"A&W {process_order.aw_order} does not match the piece dimensions in:\n"
+        f"{pdf_path.name}\n\n"
+        "PROCESS LIST\n"
+        + "\n".join(expected_lines)
+        + "\n\nSKETCH\n"
+        + "\n".join(sketch_lines)
+        + "\n\nWHAT THE PROGRAMMER CHECKED\n"
+        "The normal dimension match failed. The programmer also checked the matching DXF for "
+        "out-of-square, raked, or other alternate edge geometry, but could not prove that the two "
+        "dimension sets describe the same piece.\n\n"
+        "NEXT STEP\n"
+        "Verify the sketch and DXF. If they are intentionally correct, right-click the order and choose "
+        "Allow Dimension Mismatch."
+    )
+
+
 def validate_process_order_pdf_dimensions(
     reader: PdfReader,
     process_order: ProcessOrder,
     pdf_path: Path,
+    *,
+    folder: Path | None = None,
+    config: dict[str, object] | None = None,
 ) -> None:
-    fit = process_dimensions_fit_pdf(process_order, reader)
+    actual_values = pdf_piece_dimensions(reader)
+    fit = process_dimensions_fit_values(process_order, actual_values)
     if fit is not False:
         return
-    expected = format_dimension_pairs(process_order_dimensions(process_order))
-    actual = ", ".join(
-        f"{width:g} x {height:g}"
-        for _page, width, height in pdf_piece_dimensions(reader)
-    )
-    raise RuntimeError(
-        f"A&W {process_order.aw_order} does not match the piece dimensions in {pdf_path.name}. "
-        f"Process list: {expected or 'unknown'}; sketch: {actual or 'unknown'}. "
-        "This Job Nr may belong to multiple A&W orders; locate the separate matching sketch instead of reusing this PDF."
-    )
+    if reconcile_out_of_square_dimension_match(process_order, actual_values, folder):
+        return
+    if manual_dimension_match_override_enabled(config, process_order.aw_order):
+        _record_manual_dimension_override(process_order)
+        return
+    raise RuntimeError(dimension_mismatch_message(process_order, pdf_path, actual_values))
 
 
 def validate_process_order_pdf_dimension_values(
     actual: list[tuple[int, float, float]],
     process_order: ProcessOrder,
     pdf_path: Path,
+    *,
+    folder: Path | None = None,
+    config: dict[str, object] | None = None,
 ) -> None:
     fit = process_dimensions_fit_values(process_order, actual)
     if fit is not False:
         return
-    expected = format_dimension_pairs(process_order_dimensions(process_order))
-    actual_text = ", ".join(
-        f"{width:g} x {height:g}"
-        for _page, width, height in actual
-    )
-    raise RuntimeError(
-        f"A&W {process_order.aw_order} does not match the piece dimensions in {pdf_path.name}. "
-        f"Process list: {expected or 'unknown'}; sketch: {actual_text or 'unknown'}. "
-        "This Job Nr may belong to multiple A&W orders; locate the separate matching sketch instead of reusing this PDF."
-    )
+    if reconcile_out_of_square_dimension_match(process_order, actual, folder):
+        return
+    if manual_dimension_match_override_enabled(config, process_order.aw_order):
+        _record_manual_dimension_override(process_order)
+        return
+    raise RuntimeError(dimension_mismatch_message(process_order, pdf_path, actual))
 
 
 def job_number_pdf_candidates(
@@ -1898,6 +2267,7 @@ def preview_process_order_pdf(
     folder: Path,
     process_order: ProcessOrder,
     candidate_pdfs: list[Path],
+    config: dict[str, object] | None = None,
 ) -> Path:
     """Resolve and validate a scan preview without reparsing unchanged PDFs."""
     try:
@@ -1920,6 +2290,8 @@ def preview_process_order_pdf(
             cached_pdf_piece_dimensions(pdf_path),
             process_order,
             pdf_path,
+            folder=folder,
+            config=config,
         )
         return pdf_path
 
@@ -1928,6 +2300,8 @@ def preview_process_order_pdf(
             cached_pdf_piece_dimensions(pdf_path),
             process_order,
             pdf_path,
+            folder=folder,
+            config=config,
         )
     except RuntimeError:
         matched = dimension_matched_pdf_path(
@@ -1943,11 +2317,17 @@ def preview_process_order_pdf(
             cached_pdf_piece_dimensions(pdf_path),
             process_order,
             pdf_path,
+            folder=folder,
+            config=config,
         )
     return pdf_path
 
 
-def open_process_order_pdf(folder: Path, process_order: ProcessOrder) -> tuple[Path, PdfReader]:
+def open_process_order_pdf(
+    folder: Path,
+    process_order: ProcessOrder,
+    config: dict[str, object] | None = None,
+) -> tuple[Path, PdfReader]:
     try:
         pdf_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
     except RuntimeError:
@@ -1955,42 +2335,72 @@ def open_process_order_pdf(folder: Path, process_order: ProcessOrder) -> tuple[P
         if matched is None:
             raise
         pdf_path, reader = matched
-        validate_process_order_pdf_dimensions(reader, process_order, pdf_path)
+        validate_process_order_pdf_dimensions(
+            reader,
+            process_order,
+            pdf_path,
+            folder=folder,
+            config=config,
+        )
         return pdf_path, reader
 
     reader = PdfReader(str(pdf_path))
     try:
-        validate_process_order_pdf_dimensions(reader, process_order, pdf_path)
+        validate_process_order_pdf_dimensions(
+            reader,
+            process_order,
+            pdf_path,
+            folder=folder,
+            config=config,
+        )
     except RuntimeError:
         matched = dimension_matched_pdf(folder, process_order, exclude=pdf_path)
         if matched is None:
             raise
         pdf_path, reader = matched
-        validate_process_order_pdf_dimensions(reader, process_order, pdf_path)
+        validate_process_order_pdf_dimensions(
+            reader,
+            process_order,
+            pdf_path,
+            folder=folder,
+            config=config,
+        )
     return pdf_path, reader
 
 
 LOCATION_FIELD_RE = re.compile(
-    r"\blocation\s*:\s*(.*?)"
-    r"(?=\s+\b(?:marks?|project(?:\s*#)?|shape|quantity|glass)\s*:|[\r\n]|$)",
+    r"location\s*:\s*(.*?)"
+    r"(?="
+    r"\s*(?:marks?|project(?:\s*#)?|shape|quantity|glass|page)\s*:"
+    r"|\s+measurements\s+are\s+in\s+inches"
+    r"|\s+page\s+\d+\s+of\s+\d+"
+    r"|$"
+    r")",
     re.IGNORECASE,
 )
 
 
 def pdf_location_values(reader: PdfReader) -> list[str]:
-    """Return Location field values without matching unrelated PDF text."""
+    """Return A+W Location values from overview and piece-page content.
+
+    A+W PDF text extraction sometimes joins the preceding value directly to
+    ``Location:`` (for example ``MASTERLocation:``) or places the location
+    value on the next visual line.  Collapsing page whitespace before applying
+    the field-boundary expression handles both forms without treating an
+    unrelated REMAKE note elsewhere on the page as the Location value.
+    """
     values: list[str] = []
     for page in reader.pages:
-        text = page.extract_text() or ""
+        text = re.sub(r"\s+", " ", page.extract_text() or "").strip()
         for match in LOCATION_FIELD_RE.finditer(text):
-            value = re.sub(r"\s+", " ", match.group(1)).strip()
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" :-")
             if value:
                 values.append(value)
     return values
 
 
 def pdf_location_indicates_remake(reader: PdfReader) -> bool:
-    """Detect an order-entry remake only when REMAKE appears in Location."""
+    """Detect REMAKE whenever the A+W Location field says REMAKE."""
     return any(re.search(r"\bREMAKE\b", value, re.IGNORECASE) for value in pdf_location_values(reader))
 
 
@@ -2004,7 +2414,7 @@ def prepare_job(
     remake_items: set[int] | None = None,
 ) -> tuple[programmer.Job, PdfReader, list[str]]:
     process_order = clone_process_order(process_order)
-    pdf_path, reader = open_process_order_pdf(folder, process_order)
+    pdf_path, reader = open_process_order_pdf(folder, process_order, config=config)
     if remake_items is None and pdf_location_indicates_remake(reader):
         remake_items = set()
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
@@ -2336,7 +2746,11 @@ def count_statuses(results: list[BatchJobResult]) -> dict[str, int]:
     return counts
 
 
-def preview_orders(orders: list[ProcessOrder], folder: Path) -> list[BatchJobResult]:
+def preview_orders(
+    orders: list[ProcessOrder],
+    folder: Path,
+    config: dict[str, object] | None = None,
+) -> list[BatchJobResult]:
     candidate_pdfs = sorted(
         (
             path
@@ -2356,7 +2770,7 @@ def preview_orders(orders: list[ProcessOrder], folder: Path) -> list[BatchJobRes
             delivery_date=order.delivery_date,
         )
         try:
-            result.input_pdf = preview_process_order_pdf(folder, order, candidate_pdfs)
+            result.input_pdf = preview_process_order_pdf(folder, order, candidate_pdfs, config=config)
         except Exception as exc:
             result.status = "ISSUES"
             result.issues.append(str(exc))
@@ -2438,7 +2852,7 @@ def main() -> int:
         remake_items_by_order = {order.aw_order: set(remake_items) for order in orders if order.aw_order in remake_orders}
 
     if args.preview:
-        for result in preview_orders(orders, folder):
+        for result in preview_orders(orders, folder, config=config):
             issue_text = "; ".join(result.issues)
             print(f"{result.status:7} {result.aw_order} {result.job_name} {result.items} {issue_text}")
         return 0

@@ -9,6 +9,7 @@ machine programming.
 from __future__ import annotations
 
 # OUTPUT_CONTROL_AND_PDF_MATCH_V12: blank-markup safety and order-number PDF matching.
+# REMAKE_BANNER_PLACEMENT_V94: use the same fixed-large, glass-anchored placement contract as DIAMON FUSION.
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: use unambiguous PPH radius pairs to confirm the DXF hinge side.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: orient proven symmetric SCU4 panels opposite a bottom-left logo.
 
@@ -294,20 +295,45 @@ def load_config(path: Path) -> dict[str, Any]:
 
 
 def merge_item_overrides(config: dict[str, Any], override_config: dict[str, Any]) -> dict[str, Any]:
+    """Merge persisted operator edits without mutating the base configuration.
+
+    Version 0.92 also stores cover-page text separately from piece overrides so
+    overview annotations can never be mistaken for a programmable glass item.
+    """
     merged = copy.deepcopy(config)
     incoming = override_config.get("item_overrides", {})
-    if not isinstance(incoming, dict):
-        return merged
-    target = merged.setdefault("item_overrides", {})
-    for aw_order, item_overrides in incoming.items():
-        if not isinstance(item_overrides, dict):
-            continue
-        order_target = target.setdefault(str(aw_order), {})
-        for item, override in item_overrides.items():
-            if not isinstance(override, dict):
+    if isinstance(incoming, dict):
+        target = merged.setdefault("item_overrides", {})
+        for aw_order, item_overrides in incoming.items():
+            if not isinstance(item_overrides, dict):
                 continue
-            item_target = order_target.setdefault(str(item), {})
-            item_target.update(override)
+            order_target = target.setdefault(str(aw_order), {})
+            for item, override in item_overrides.items():
+                if not isinstance(override, dict):
+                    continue
+                item_target = order_target.setdefault(str(item), {})
+                item_target.update(override)
+
+    overview_incoming = override_config.get("overview_text_boxes", {})
+    if isinstance(overview_incoming, dict):
+        overview_target = merged.setdefault("overview_text_boxes", {})
+        if not isinstance(overview_target, dict):
+            overview_target = {}
+            merged["overview_text_boxes"] = overview_target
+        for aw_order, boxes in overview_incoming.items():
+            overview_target[str(aw_order)] = copy.deepcopy(boxes)
+
+    # Version 0.93: dimension-match overrides authorize validation only. Keeping
+    # them outside per-piece programming overrides prevents an identity override
+    # from changing machine, rotation, indicator, or DXF behavior.
+    dimension_incoming = override_config.get("dimension_match_overrides", {})
+    if isinstance(dimension_incoming, dict):
+        dimension_target = merged.setdefault("dimension_match_overrides", {})
+        if not isinstance(dimension_target, dict):
+            dimension_target = {}
+            merged["dimension_match_overrides"] = dimension_target
+        for aw_order, override in dimension_incoming.items():
+            dimension_target[str(aw_order)] = copy.deepcopy(override)
     return merged
 
 
@@ -1184,6 +1210,14 @@ def normalize_additional_text_boxes(value: object) -> list[dict[str, Any]]:
             text_box["font_size"] = font_size
         normalized.append(text_box)
     return normalized
+
+
+def overview_text_boxes_for_order(config: dict[str, Any], aw_order: str) -> list[dict[str, Any]]:
+    """Return validated text annotations for the non-programmable order cover page."""
+    raw = config.get("overview_text_boxes", {})
+    if not isinstance(raw, dict):
+        return []
+    return normalize_additional_text_boxes(raw.get(str(aw_order), []))
 
 
 def additional_text_box_values(
@@ -3553,14 +3587,44 @@ def choose_remake_banner_position(
     panel: Panel | None = None,
     text: str = "REMAKE",
 ) -> tuple[float, float, float, tuple[float, float, float, float]]:
+    """Place REMAKE using the same fixed-large glass anchor as DIAMON FUSION.
+
+    Measurements may overlap the banner; automatic placement must remain above
+    the detected glass.  Manual REMAKE coordinates and manual font-size
+    overrides remain authoritative.
+    """
+    del top_measurement_bbox
     remake_cfg = pdf_cfg.get("remake", {})
-    font_size = panel.remake_font_size if panel is not None and panel.remake_font_size else parse_float(remake_cfg.get("font_size", 40), 40)
-    x, y, rect = banner_text_position(width, height, pdf_cfg, piece_bbox, top_measurement_bbox, text, font_size)
+    if not isinstance(remake_cfg, dict):
+        remake_cfg = {}
+    configured_remake_font = parse_float(remake_cfg.get("font_size", 40), 40)
+    diamon_font = parse_float(pdf_cfg.get("diamon_fusion_font_size", configured_remake_font), configured_remake_font)
+    font_size = (
+        panel.remake_font_size
+        if panel is not None and panel.remake_font_size
+        else max(configured_remake_font, diamon_font)
+    )
+    font_size = max(6.0, float(font_size))
+    text_width = stringWidth(text, "Helvetica-Bold", font_size) + 12
+    text_height = font_size + 10
+
     if panel is not None and panel.remake_x is not None and panel.remake_y is not None:
         x, y = panel.remake_x, panel.remake_y
-        text_width = stringWidth(text, "Helvetica-Bold", font_size) + 12
-        text_height = font_size + 10
-        rect = (x - text_width / 2, y - 4, x + text_width / 2, y + text_height)
+    else:
+        edge_gap = max(0.0, parse_float(pdf_cfg.get("diamon_fusion_edge_gap", 4), 4))
+        if piece_bbox is not None:
+            x = (piece_bbox[0] + piece_bbox[2]) / 2.0
+            y = piece_bbox[3] + edge_gap + 4.0
+        else:
+            x = width / 2.0
+            y = height * 0.60
+
+        half_width = text_width / 2.0
+        min_x = 20.0 + half_width
+        max_x = max(min_x, width - 20.0 - half_width)
+        x = min(max(x, min_x), max_x)
+
+    rect = (x - text_width / 2.0, y - 4.0, x + text_width / 2.0, y + text_height)
     return x, y, font_size, rect
 
 
@@ -3599,72 +3663,51 @@ def choose_diamon_banner_position(
     avoid_rects: list[tuple[float, float, float, float]],
     panel: Panel,
 ) -> tuple[float, float, float, tuple[float, float, float, float]]:
-    min_font = parse_float(pdf_cfg.get("diamon_fusion_min_font_size", 28), 28)
-    edge_gap = parse_float(pdf_cfg.get("diamon_fusion_edge_gap", 8), 8)
-    anchor_top = piece_bbox[3] if piece_bbox is not None else None
-    measurement_y = top_measurement_bbox[3] if top_measurement_bbox is not None else None
+    """Place DIAMON FUSION above the glass without reducing its configured size.
+
+    Measurements are allowed to overlap the banner.  The production-critical
+    constraint is that the large banner stays outside the actual glass outline.
+    """
+    del top_measurement_bbox  # Measurements may sit behind the fixed-size banner.
+    edge_gap = max(0.0, parse_float(pdf_cfg.get("diamon_fusion_edge_gap", 4), 4))
+    fixed_font = max(6.0, float(font_size))
+    text_width = stringWidth(text, "Helvetica-Bold", fixed_font) + 12
+    text_height = fixed_font + 10
+
     if piece_bbox is not None:
         piece_center = (piece_bbox[0] + piece_bbox[2]) / 2.0
-        piece_width = piece_bbox[2] - piece_bbox[0]
+        piece_width = max(1.0, piece_bbox[2] - piece_bbox[0])
         x_candidates = [piece_center, piece_center + piece_width * 0.08, piece_center - piece_width * 0.08]
+        y = piece_bbox[3] + edge_gap + 4.0
     else:
         x_candidates = [page_width * ratio for ratio in (0.5, 0.58, 0.42)]
-    effective_min_font = min_font
-    if anchor_top is not None and measurement_y is not None:
-        effective_min_font = min(min_font, 18.0)
-    baseline_candidates: list[float] = []
-    if anchor_top is not None:
-        baseline_candidates.append(anchor_top + edge_gap + 4)
-        if measurement_y is not None:
-            for obstacle in obstacles:
-                if obstacle[3] <= anchor_top + edge_gap or obstacle[3] >= measurement_y - edge_gap:
-                    continue
-                if piece_bbox is not None and (obstacle[2] <= piece_bbox[0] or obstacle[0] >= piece_bbox[2]):
-                    continue
-                baseline_candidates.append(obstacle[3] + edge_gap + 4)
-    else:
-        baseline_candidates.append(page_height * 0.60)
-    baseline_candidates = sorted(set(round(value, 4) for value in baseline_candidates))
-    best_candidate: tuple[float, float, float, float, tuple[float, float, float, float]] | None = None
-    for candidate_font in descending_font_sizes(font_size, effective_min_font):
-        text_width = stringWidth(text, "Helvetica-Bold", candidate_font) + 12
-        text_height = candidate_font + 10
-        for y in baseline_candidates:
-            y += panel.diamon_fusion_nudge_y
-            for candidate_x in x_candidates:
-                x = candidate_x + panel.diamon_fusion_nudge_x
-                rect = (x - text_width / 2, y - 4, x + text_width / 2, y + text_height)
-                if rect[0] < 20 or rect[2] > page_width - 20 or rect[1] < 35 or rect[3] > page_height - 35:
-                    continue
-                if measurement_y is not None and rect[3] > measurement_y - edge_gap:
-                    continue
-                score = placement_score(rect, obstacles, avoid_rects) + max(0.0, font_size - candidate_font) * 0.20
-                if best_candidate is None or score < best_candidate[0]:
-                    best_candidate = (score, x, y, candidate_font, rect)
-                if rect_is_clear(rect, obstacles, avoid_rects):
-                    return x, y, candidate_font, rect
-
-    if best_candidate is not None:
-        _score, x, y, candidate_font, rect = best_candidate
-        return x, y, candidate_font, rect
-
-    fallback_font = max(effective_min_font, min(font_size, parse_float(pdf_cfg.get("diamon_fusion_font_size", font_size), font_size)))
-    x = x_candidates[0]
-    if anchor_top is not None:
-        y = anchor_top + edge_gap + 4
-    else:
         y = page_height * 0.60
-    x += panel.diamon_fusion_nudge_x
+
     y += panel.diamon_fusion_nudge_y
-    width = stringWidth(text, "Helvetica-Bold", fallback_font) + 12
-    height = fallback_font + 10
-    rect = (x - width / 2, y - 4, x + width / 2, y + height)
-    if measurement_y is not None and rect[3] > measurement_y - edge_gap:
-        fallback_font = max(18.0, measurement_y - edge_gap - y - 10.0)
-        width = stringWidth(text, "Helvetica-Bold", fallback_font) + 12
-        height = fallback_font + 10
-        rect = (x - width / 2, y - 4, x + width / 2, y + height)
-    return x, y, fallback_font, rect
+    half_width = text_width / 2.0
+    min_x = 20.0 + half_width
+    max_x = max(min_x, page_width - 20.0 - half_width)
+    best: tuple[float, float, tuple[float, float, float, float]] | None = None
+    for candidate_x in x_candidates:
+        x = min(max(candidate_x + panel.diamon_fusion_nudge_x, min_x), max_x)
+        rect = (x - half_width, y - 4.0, x + half_width, y + text_height)
+        # Never let automatic placement enter the glass.  Other PDF text and
+        # dimension lines are intentionally soft obstacles for this banner.
+        if piece_bbox is not None and rect[1] < piece_bbox[3] + edge_gap - 0.01:
+            continue
+        score = placement_score(rect, [], avoid_rects)
+        if best is None or score < best[0]:
+            best = (score, x, rect)
+        if rect_is_clear(rect, [], avoid_rects):
+            return x, y, fixed_font, rect
+
+    if best is not None:
+        _score, x, rect = best
+        return x, y, fixed_font, rect
+
+    x = min(max(x_candidates[0] + panel.diamon_fusion_nudge_x, min_x), max_x)
+    rect = (x - half_width, y - 4.0, x + half_width, y + text_height)
+    return x, y, fixed_font, rect
 
 
 def estimate_top_measurement_y(
@@ -4177,12 +4220,28 @@ def collect_indicator_cutout_obstacles(
     return obstacles
 
 
+def rect_fits_inside(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float] | None,
+    pad: float = 0.0,
+) -> bool:
+    """Return True when a painted marker rectangle remains inside the glass box."""
+    if outer is None:
+        return True
+    return (
+        inner[0] >= outer[0] + pad
+        and inner[1] >= outer[1] + pad
+        and inner[2] <= outer[2] - pad
+        and inner[3] <= outer[3] - pad
+    )
+
+
 def apply_corner_text_indicator_avoidance(
     reader: PdfReader,
     panels: Iterable[Panel],
     config: dict[str, Any],
 ) -> None:
-    """Apply a small sketch-only marker offset when source corner text is covered."""
+    """Nudge automatic Denver markers around text/cutouts while keeping them in glass."""
     pdf_cfg = config.get("pdf", {})
     if not isinstance(pdf_cfg, dict) or not bool(pdf_cfg.get("avoid_corner_text_with_indicator", True)):
         return
@@ -4194,6 +4253,7 @@ def apply_corner_text_indicator_avoidance(
     for panel in panels:
         if (
             not panel.machine
+            or not str(panel.machine).startswith("DENVER")
             or not panel.indicator_corner
             or panel.hide_indicator
             or panel.remake_excluded
@@ -4230,7 +4290,8 @@ def apply_corner_text_indicator_avoidance(
         base_text_overlap = sum(rect_overlap_area(base_rect, obstacle) for obstacle in text_obstacles)
         base_cutout_overlap = sum(rect_overlap_area(base_rect, obstacle) for obstacle in cutout_obstacles)
         base_overlap = base_text_overlap * 4.0 + base_cutout_overlap * 5.0
-        if base_overlap <= 0.5:
+        base_inside = rect_fits_inside(base_rect, marker_bbox, pad=0.5)
+        if base_overlap <= 0.5 and base_inside:
             continue
 
         best: tuple[float, float, float, float, float] | None = None
@@ -4253,6 +4314,8 @@ def apply_corner_text_indicator_avoidance(
                 if candidate is None:
                     continue
                 candidate_rect = indicator_visible_rect(candidate)
+                if not rect_fits_inside(candidate_rect, marker_bbox, pad=0.5):
+                    continue
                 text_overlap = sum(rect_overlap_area(candidate_rect, obstacle) for obstacle in text_obstacles)
                 cutout_overlap = sum(rect_overlap_area(candidate_rect, obstacle) for obstacle in cutout_obstacles)
                 overlap = text_overlap * 4.0 + cutout_overlap * 5.0
@@ -4262,7 +4325,9 @@ def apply_corner_text_indicator_avoidance(
                     best = (score, offset_x, offset_y, overlap, distance)
         panel.indicator_nudge_x = 0.0
         panel.indicator_nudge_y = 0.0
-        if best is None or best[3] >= base_overlap * 0.80:
+        if best is None:
+            continue
+        if base_inside and best[3] >= base_overlap * 0.80:
             continue
         panel.indicator_nudge_x = best[1]
         panel.indicator_nudge_y = best[2]
@@ -4401,7 +4466,7 @@ def indicator_marker_geometry(
         x, y = manual_point
     else:
         x, y = apply_indicator_nudge_for_corner(x, y, machine, corner, pdf_cfg, precise_edges=precise_edges, panel=panel)
-        x, y = clamp_denver_marker_point(x, y, size, page_width, page_height)
+        x, y = clamp_denver_marker_point(x, y, size, page_width, page_height, bbox if precise_edges else None)
     radius = size / 2
     return {
         "kind": "dot",
@@ -4574,12 +4639,28 @@ def clamp_denver_marker_point(
     size: float,
     page_width: float,
     page_height: float,
+    piece_bbox: tuple[float, float, float, float] | None = None,
 ) -> tuple[float, float]:
-    margin = max(18.0, size / 2 + 6)
-    return (
-        min(max(x, margin), page_width - margin),
-        min(max(y, margin), page_height - margin),
-    )
+    """Clamp the full Denver dot inside both the page and detected glass bounds."""
+    radius = size / 2.0 + 2.0
+    page_margin = max(18.0, radius + 4.0)
+    min_x, max_x = page_margin, page_width - page_margin
+    min_y, max_y = page_margin, page_height - page_margin
+    if piece_bbox is not None:
+        left, bottom, right, top = piece_bbox
+        min_x = max(min_x, left + radius)
+        max_x = min(max_x, right - radius)
+        min_y = max(min_y, bottom + radius)
+        max_y = min(max_y, top - radius)
+    if min_x > max_x:
+        x = (min_x + max_x) / 2.0
+    else:
+        x = min(max(x, min_x), max_x)
+    if min_y > max_y:
+        y = (min_y + max_y) / 2.0
+    else:
+        y = min(max(y, min_y), max_y)
+    return x, y
 
 
 def panel_has_visible_markup(panel: Panel) -> bool:
@@ -4599,14 +4680,50 @@ def panel_has_visible_markup(panel: Panel) -> bool:
     return bool(panel.indicator_corner and panel.machine and not panel.hide_indicator)
 
 
+def make_overview_text_overlay_page(
+    width: float,
+    height: float,
+    text_boxes: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> bytes:
+    """Render user-added cover-page text only; no machine marks are allowed here."""
+    packet = io.BytesIO()
+    c = canvas.Canvas(packet, pagesize=(width, height))
+    pdf_cfg = config.get("pdf", {}) if isinstance(config.get("pdf", {}), dict) else {}
+    color_values = pdf_cfg.get("label_color_rgb", [0, 120, 212])
+    try:
+        red, green, blue = [max(0, min(255, int(value))) / 255.0 for value in color_values[:3]]
+    except (TypeError, ValueError):
+        red, green, blue = 0.0, 120.0 / 255.0, 212.0 / 255.0
+    marker_color = Color(red, green, blue)
+    default_font = parse_float(pdf_cfg.get("label_font_size", 21), 21)
+    for index, text_box in enumerate(text_boxes):
+        lines, x, y, font_size = additional_text_box_values(text_box, index, width, height, default_font)
+        if lines:
+            draw_centered_lines(c, lines, x, y, font_size, marker_color)
+    c.save()
+    return packet.getvalue()
+
+
 def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force: bool) -> None:
     if job.output_pdf.exists() and not force:
         raise FileExistsError(f"{job.output_pdf} already exists. Use --force to overwrite.")
 
     writer = PdfWriter()
     panel_by_page = {panel.page_index: panel for panel in job.panels}
+    overview_boxes = overview_text_boxes_for_order(config, job.aw_order)
     for page_index, page in enumerate(reader.pages):
         page_copy = page
+        if page_index == 0 and overview_boxes:
+            overview_bytes = make_overview_text_overlay_page(
+                float(page.mediabox.width),
+                float(page.mediabox.height),
+                overview_boxes,
+                config,
+            )
+            overview_reader = PdfReader(io.BytesIO(overview_bytes))
+            if overview_reader.pages:
+                page_copy.merge_page(overview_reader.pages[0])
         panel = panel_by_page.get(page_index)
         if panel and panel_has_visible_markup(panel):
             width = float(page.mediabox.width)

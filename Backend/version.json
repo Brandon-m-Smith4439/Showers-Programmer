@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.91",
-  "version_number": 91,
-  "marker": "VERSION_0_91_REVIEW_STABILITY_PLACEMENT",
-  "release_name": "Review Stability and Placement",
-  "release_date": "2026-08-12",
+  "version": "Version 0.97",
+  "version_number": 97,
+  "marker": "VERSION_0_97_REIMPORTED_BATCH_REACTIVATION",
+  "release_name": "Re-imported Batch Reactivation",
+  "release_date": "2026-08-13",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

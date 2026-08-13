@@ -116,11 +116,18 @@ class DuplicateJobNumberTests(unittest.TestCase):
             doors = folder / f"Glass Order COPPER_{JOB}.pdf"
             write_sketch(doors, [("31-7/8", "112-5/16"), ("31-7/8", "112-3/16")])
 
-            with self.assertRaisesRegex(RuntimeError, r"A&W 237009 does not match.*32 x 12"):
+            with self.assertRaises(RuntimeError) as raised:
                 shower_batch.open_process_order_pdf(
                     folder,
                     process_order("237009", [(1, "32", "12")]),
                 )
+
+            # User-facing dimension errors are intentionally multi-line. Verify
+            # the safety-critical evidence without coupling this regression test
+            # to the exact popup formatting.
+            message = str(raised.exception)
+            self.assertIn("A&W 237009 does not match", message)
+            self.assertIn("P1: 32 x 12", message)
 
 
 if __name__ == "__main__":

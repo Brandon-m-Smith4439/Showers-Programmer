@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "Backend"))
 
@@ -71,10 +70,10 @@ class ReviewStabilityPlacementTests(unittest.TestCase):
         self.assertEqual(obj["rect"], (72.0, 178.0, 152.0, 238.0))
         self.assertEqual([entry[0] for entry in canvas.created], ["text", "text", "rectangle"])
 
-    def test_diamon_fusion_stays_between_glass_and_top_measurement(self) -> None:
+    def test_diamon_fusion_keeps_full_size_even_when_it_crosses_top_measurement(self) -> None:
         panel = programmer.Panel(1, 0, "P1", 50.0, 46.0, "DENVER 2")
         piece_bbox = (120.0, 170.0, 490.0, 530.0)
-        measurement_y = 588.0
+        measurement_y = 560.0
 
         _x, _y, font_size, rect = programmer.choose_diamon_banner_position(
             612.0,
@@ -89,11 +88,11 @@ class ReviewStabilityPlacementTests(unittest.TestCase):
             panel,
         )
 
-        self.assertGreaterEqual(rect[1], piece_bbox[3])
-        self.assertLessEqual(rect[3], measurement_y - 4.0)
-        self.assertGreaterEqual(font_size, 18.0)
+        self.assertEqual(font_size, 55.0)
+        self.assertGreaterEqual(rect[1], piece_bbox[3] + 3.99)
+        self.assertGreater(rect[3], measurement_y, "Measurement overlap is allowed to preserve the large banner.")
 
-    def test_automatic_indicator_avoids_text_and_cutout(self) -> None:
+    def test_automatic_denver_indicator_avoids_text_cutout_and_stays_inside_glass(self) -> None:
         panel = programmer.Panel(
             1,
             0,
@@ -136,7 +135,65 @@ class ReviewStabilityPlacementTests(unittest.TestCase):
         visible_rect = programmer.indicator_visible_rect(geometry or {})
         self.assertFalse(any(programmer.rects_overlap(visible_rect, rect) for rect in text_obstacles))
         self.assertFalse(any(programmer.rects_overlap(visible_rect, rect) for rect in cutout_obstacles))
+        self.assertTrue(programmer.rect_fits_inside(visible_rect, piece_bbox, pad=0.5))
         self.assertNotEqual((panel.indicator_nudge_x, panel.indicator_nudge_y), (0.0, 0.0))
+
+    def test_denver_geometry_clamps_full_visible_dot_inside_detected_glass(self) -> None:
+        panel = programmer.Panel(1, 0, "P1", 30.0, 80.0, "DENVER 2", indicator_corner="bottom_left")
+        panel.indicator_nudge_x = -80.0
+        panel.indicator_nudge_y = -80.0
+        piece_bbox = (100.0, 100.0, 300.0, 500.0)
+        geometry = programmer.indicator_marker_geometry(
+            panel.machine,
+            panel.indicator_corner,
+            piece_bbox,
+            612.0,
+            792.0,
+            {"indicator_size": 18, "indicator_offset": 54},
+            precise_edges=True,
+            panel=panel,
+        )
+        self.assertIsNotNone(geometry)
+        self.assertTrue(programmer.rect_fits_inside(programmer.indicator_visible_rect(geometry or {}), piece_bbox))
+
+    def test_waterjet_indicator_is_not_moved_by_denver_avoidance(self) -> None:
+        panel = programmer.Panel(1, 0, "P1", 30.0, 80.0, "WJ", indicator_corner="top_left")
+        piece_bbox = (100.0, 100.0, 300.0, 500.0)
+        config = {
+            "pdf": {
+                "waterjet_indicator_size": 30,
+                "waterjet_indicator_length_ratio": 2.5,
+                "waterjet_indicator_line_width": 8,
+                "avoid_corner_text_with_indicator": True,
+                "corner_text_avoidance_max_shift": 36,
+                "indicator_nudge": {
+                    "waterjet_outline_x": 0,
+                    "waterjet_outline_y": 25,
+                    "waterjet_corner_x": {"top_left": -18},
+                },
+            }
+        }
+        with (
+            mock.patch.object(programmer, "estimate_panel_outline_bbox", return_value=piece_bbox),
+            mock.patch.object(programmer, "collect_page_text_obstacles", return_value=[(70.0, 480.0, 180.0, 620.0)]),
+            mock.patch.object(programmer, "collect_indicator_cutout_obstacles", return_value=[]),
+        ):
+            programmer.apply_corner_text_indicator_avoidance(FakeReader(), [panel], config)
+        self.assertEqual((panel.indicator_nudge_x, panel.indicator_nudge_y), (0.0, 0.0))
+
+    def test_overview_text_boxes_merge_separately_from_piece_overrides(self) -> None:
+        base = {"item_overrides": {}}
+        edits = {
+            "item_overrides": {"900001": {"1": {"machine": "DENVER 2"}}},
+            "overview_text_boxes": {
+                "900001": [{"id": "note", "text": "SHIP WITH PANEL", "x": 120, "y": 300, "font_size": 21}]
+            },
+        }
+        merged = programmer.merge_item_overrides(base, edits)
+        self.assertEqual(merged["item_overrides"]["900001"]["1"]["machine"], "DENVER 2")
+        boxes = programmer.overview_text_boxes_for_order(merged, "900001")
+        self.assertEqual(boxes[0]["text"], "SHIP WITH PANEL")
+        self.assertNotIn("0", merged["item_overrides"]["900001"])
 
 
 if __name__ == "__main__":

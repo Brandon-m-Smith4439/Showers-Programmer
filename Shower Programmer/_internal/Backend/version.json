@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.91",
-  "version_number": 91,
-  "marker": "VERSION_0_91_REVIEW_STABILITY_PLACEMENT",
-  "release_name": "Review Stability and Placement",
-  "release_date": "2026-08-12",
+  "version": "Version 0.96",
+  "version_number": 96,
+  "marker": "VERSION_0_96_FAST_FILTERED_ARCHIVE_BROWSER",
+  "release_name": "Fast Filtered Archive Browser",
+  "release_date": "2026-08-13",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

@@ -24,6 +24,9 @@
 # ATOMIC_RUNTIME_SWAP_V39: pre-copy and self-test updates before a fast runtime swap with rollback and visible progress.
 # REPORT_BUGS_VERSIONING_V40: visible app version, GitHub bug reporting, centralized release metadata, and changelog tracking.
 # PRODUCTION_SKETCH_RECONCILIATION: recognize orders sent by another workstation from the shared Sketches folder.
+# REVIEW_ARCHIVE_REMAKE_USABILITY_V94: overview text sizing, archive test restore, readable dialogs, and remake reliability.
+# BACKGROUND_RESPONSIVENESS_V95: threaded order cleanup, live cleanup progress, and non-blocking archive settings load.
+# FAST_FILTERED_ARCHIVE_BROWSER_V96: seven-day archive paging, batch grouping, date filters, run browsing, and sortable archive columns.
 
 from __future__ import annotations
 
@@ -56,6 +59,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from pypdf import PdfReader, PdfWriter
+from openpyxl import Workbook
 
 import shower_batch
 import shower_cache
@@ -255,23 +259,23 @@ class _ProgramMessageBox:
         ctk.CTkLabel(
             shell,
             text=str(title),
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 18, "bold"),
             text_color=palette["text"],
             anchor="w",
         ).grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=(13, 3))
 
         message_text = str(message)
-        if len(message_text) > 700 or message_text.count("\n") > 9:
+        if len(message_text) > 520 or message_text.count("\n") > 6:
             body = ctk.CTkTextbox(
                 shell,
-                width=420,
-                height=145,
+                width=620,
+                height=220,
                 corner_radius=10,
                 border_width=1,
                 border_color=palette["border"],
                 fg_color=palette["panel"],
                 text_color=palette["text"],
-                font=("Segoe UI", 10),
+                font=("Segoe UI", 12),
                 wrap="word",
             )
             body.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(0, 8))
@@ -281,11 +285,11 @@ class _ProgramMessageBox:
             ctk.CTkLabel(
                 shell,
                 text=message_text,
-                font=("Segoe UI", 10),
-                text_color=palette["muted"],
+                font=("Segoe UI", 12),
+                text_color=palette["text"],
                 justify="left",
                 anchor="w",
-                wraplength=400,
+                wraplength=590,
             ).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(0, 8))
 
         def finish(value: Any) -> None:
@@ -327,15 +331,15 @@ class _ProgramMessageBox:
                 border_width=0 if primary else 1,
                 border_color=palette["border"],
                 text_color="#ffffff" if primary else palette["text"],
-                font=("Segoe UI", 10, "bold"),
+                font=("Segoe UI", 11, "bold"),
             ).pack(side=tk.LEFT, padx=(8 if index else 0, 0))
 
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(default))
         dialog.bind("<Escape>", lambda _event: finish(default))
         dialog.bind("<Return>", lambda _event: finish(choices[-1][1]))
         dialog.update_idletasks()
-        width = max(440, dialog.winfo_reqwidth())
-        height = max(170, dialog.winfo_reqheight())
+        width = max(620 if (len(message_text) > 180 or "\n" in message_text) else 500, dialog.winfo_reqwidth())
+        height = max(210, dialog.winfo_reqheight())
         try:
             x = owner.winfo_rootx() + max(0, (owner.winfo_width() - width) // 2)
             y = owner.winfo_rooty() + max(0, (owner.winfo_height() - height) // 2)
@@ -896,6 +900,7 @@ class ShowerProgrammerApp:
         *,
         bundle_id: str | None = None,
         now: datetime | None = None,
+        progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str], str | None]:
         """Move local workflow files into a seven-day, manifest-backed recovery bundle."""
         stamp = now or datetime.now()
@@ -943,8 +948,17 @@ class ShowerProgrammerApp:
         moved: list[Path] = []
         warnings: list[str] = []
         seen: set[str] = set()
-        for source_value in paths:
-            source = Path(source_value)
+        source_paths = [Path(source_value) for source_value in paths]
+        progress_total = len(source_paths)
+        progress_done = 0
+
+        def report_progress(source: Path) -> None:
+            nonlocal progress_done
+            progress_done += 1
+            if progress_callback is not None:
+                progress_callback(progress_done, max(progress_total, 1), source)
+
+        for source in source_paths:
             try:
                 resolved = source.resolve()
                 root_index = next(
@@ -953,9 +967,11 @@ class ShowerProgrammerApp:
                 )
             except (OSError, StopIteration):
                 warnings.append(f"Skipped file outside approved local folders: {source.name}")
+                report_progress(source)
                 continue
             key = str(resolved).casefold()
             if key in seen or not resolved.is_file():
+                report_progress(source)
                 continue
             seen.add(key)
             relative = resolved.relative_to(roots[root_index])
@@ -977,6 +993,7 @@ class ShowerProgrammerApp:
                 cls.atomic_write_json(manifest_path, manifest)
             except OSError as exc:
                 warnings.append(f"Could not move {source.name} to recovery: {exc}")
+            report_progress(source)
         if not entries:
             shutil.rmtree(bundle_dir, ignore_errors=True)
             return moved, warnings, None
@@ -1224,32 +1241,47 @@ class ShowerProgrammerApp:
 
     @staticmethod
     def maximize_window(window: Any) -> None:
+        """Use a real OS maximize state instead of borderless fullscreen.
+
+        Fullscreen hides normal Windows caption controls and can cover the
+        taskbar, so it is intentionally not used as a maximize fallback.
+        """
         try:
             window.state("zoomed")
             return
         except tk.TclError:
             pass
-
+        if os.name == "nt":
+            try:
+                window.update_idletasks()
+                ctypes.windll.user32.ShowWindow(int(window.winfo_id()), 3)  # SW_MAXIMIZE
+                return
+            except Exception:
+                pass
         try:
             window.attributes("-zoomed", True)
-            return
-        except tk.TclError:
-            pass
-
-        try:
-            window.attributes("-fullscreen", True)
         except tk.TclError:
             pass
 
     @staticmethod
     def toggle_window_maximize(window: Any) -> None:
         try:
-            window.state("normal" if window.state() == "zoomed" else "zoomed")
+            current_state = str(window.state()).lower()
+            window.state("normal" if current_state == "zoomed" else "zoomed")
             return
         except tk.TclError:
             pass
+        if os.name == "nt":
+            try:
+                window.update_idletasks()
+                hwnd = int(window.winfo_id())
+                is_zoomed = bool(ctypes.windll.user32.IsZoomed(hwnd))
+                ctypes.windll.user32.ShowWindow(hwnd, 9 if is_zoomed else 3)  # SW_RESTORE / SW_MAXIMIZE
+                return
+            except Exception:
+                pass
         try:
-            window.attributes("-fullscreen", not bool(window.attributes("-fullscreen")))
+            window.attributes("-zoomed", not bool(window.attributes("-zoomed")))
         except tk.TclError:
             pass
 
@@ -4402,7 +4434,7 @@ class ShowerProgrammerApp:
             return
 
         self.record_action("Scan Orders", "Started scanning process lists and importing matching local inputs.", status="INFO")
-        self.start_background_activity("Scanning process lists and importing matching EDI order files...", maximum=5)
+        self.start_background_activity("Scanning process lists and synchronizing current order inputs...", maximum=5)
         worker = threading.Thread(
             target=self.worker_scan_orders,
             args=(folder, process_list, output_dir),
@@ -4424,7 +4456,7 @@ class ShowerProgrammerApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
 
-        self.start_background_activity("Importing matching EDI order files...", maximum=4)
+        self.start_background_activity("Synchronizing missing order PDF/DXF files...", maximum=4)
         worker = threading.Thread(
             target=self.worker_import_edi_orders,
             args=(folder, process_list, output_dir),
@@ -4665,17 +4697,17 @@ class ShowerProgrammerApp:
             shower_cache.reset_stats()
             progress_value = 0
             progress_max = 5
-            self.queue_scan_progress(progress_value, progress_max, "Loading configuration...")
+            self.queue_scan_progress(progress_value, progress_max, "Loading programming rules and saved overrides...")
             config = self.config_with_manual_overrides(folder, output_dir)
             progress_value += 1
-            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared input folder...")
+            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared Showers Programmer Input folder...")
             import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
                 self.prepare_import_source_snapshot()
             )
-            self.queue_scan_progress(progress_value, progress_max, "Checking shared process lists...")
+            self.queue_scan_progress(progress_value, progress_max, "Comparing shared process lists with the local Process List folder...")
 
             def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
-                action = "Copying" if copied is None else ("Copied" if copied else "Current")
+                action = "Copying" if copied is None else ("Copied" if copied else "Already current")
                 display_done = min(total, done + 1) if copied is None else done
                 self.queue_scan_progress(
                     progress_value + done,
@@ -4694,7 +4726,7 @@ class ShowerProgrammerApp:
             self.queue_scan_progress(
                 progress_value,
                 max(progress_max, progress_value + 3),
-                f"Reading {len(process_list_files)} process-list batch(es)...",
+                f"Loading {len(process_list_files)} local process-list batch(es)...",
             )
             def normalization_progress(stage: str, source: Path, detail: str) -> None:
                 stage_label = {
@@ -4713,10 +4745,26 @@ class ShowerProgrammerApp:
 
             scan_stage = "reading local process lists"
             all_batches = self.load_process_list_batches(process_list, config, normalization_progress)
+            copied_process_lists = [
+                path
+                for path in process_list_import_summary.get("copied", [])
+                if isinstance(path, Path)
+            ]
+            reactivated_aw_orders = self.reactivate_reimported_process_list_orders(
+                all_batches,
+                copied_process_lists,
+                output_dir,
+            )
+            if reactivated_aw_orders:
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 3),
+                    f"Reactivated {len(reactivated_aw_orders)} order(s) from process list batch(es) restored from shared input...",
+                )
             self.queue_scan_progress(
                 progress_value,
                 max(progress_max, progress_value + 3),
-                "Checking Production Sketches for orders sent by another workstation...",
+                "Checking production Sketches for orders already sent by another workstation...",
             )
             scan_stage = "checking Production Sketches"
             (
@@ -4768,7 +4816,7 @@ class ShowerProgrammerApp:
                 self.queue_scan_progress(
                     progress_value,
                     max(progress_max, progress_value + 3),
-                    f"Archiving {len(retired_batch_plans)} completed process-list batch(es)...",
+                    f"Retiring {len(retired_batch_plans)} completed process-list batch(es) into the dated archive...",
                 )
                 retired_process_lists, archive_warnings = self.archive_completed_process_list_batches(
                     process_list,
@@ -4799,7 +4847,7 @@ class ShowerProgrammerApp:
             ]
 
             def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
-                action = "Copying" if copied is None else ("Copied" if copied else "Current")
+                action = "Copying" if copied is None else ("Copied" if copied else "Already local")
                 display_done = min(total, done + 1) if copied is None else done
                 self.queue_scan_progress(
                     progress_value + done,
@@ -4811,9 +4859,9 @@ class ShowerProgrammerApp:
                 progress_value,
                 max(progress_max, progress_value + 2),
                 (
-                    f"Checking the shared index for missing PDFs/DXFs on {len(gateway_orders)} order(s)..."
+                    f"Checking shared input for missing PDFs/DXFs on {len(gateway_orders)} active order(s)..."
                     if gateway_orders
-                    else "All active order PDFs/DXFs are already current locally."
+                    else "All active order PDFs/DXFs are already available locally."
                 ),
             )
             scan_stage = "copying active order PDFs and DXFs"
@@ -4825,6 +4873,11 @@ class ShowerProgrammerApp:
                 missing_requirements=missing_requirements,
             )
             scan_stage = "copying visible shared input files"
+            self.queue_scan_progress(
+                progress_value,
+                max(progress_max, progress_value + 2),
+                "Synchronizing visible shared order files into local Input...",
+            )
             visible_import_summary = self.copy_visible_import_order_files(
                 folder,
                 import_snapshot,
@@ -4840,6 +4893,11 @@ class ShowerProgrammerApp:
             import_summary["skipped"] = int(visible_import_summary.get("skipped", 0) or 0)
             if retired_batch_plans or production_sent_orders:
                 scan_stage = "clearing validated shared inputs"
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 2),
+                    "Cleaning validated shared inputs for completed or already-sent orders...",
+                )
                 _retired_shared_files, shared_cleanup_warnings = self.clear_import_staging_folder(
                     production_sent_orders,
                     include_process_lists=False,
@@ -4865,7 +4923,7 @@ class ShowerProgrammerApp:
             progress_value += int(import_summary.get("considered", 0) or 0)
             progress_value += 1
             self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building grouped order list...")
-            previews = shower_batch.preview_orders(orders, folder)
+            previews = shower_batch.preview_orders(orders, folder, config=config)
             for result in previews:
                 if str(result.aw_order) not in duplicate_groups_by_aw:
                     continue
@@ -4911,6 +4969,7 @@ class ShowerProgrammerApp:
                         "duplicate_cleanup_warnings": duplicate_cleanup_warnings,
                         "duplicate_groups_by_aw": duplicate_groups_by_aw,
                         "network_entries_indexed": int(import_snapshot.get("entry_count", 0) or 0),
+                        "reactivated_aw_orders": reactivated_aw_orders,
                     },
                 )
             )
@@ -4923,7 +4982,7 @@ class ShowerProgrammerApp:
         try:
             progress_value = 0
             progress_max = 4
-            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared input folder...")
+            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared Showers Programmer Input folder...")
             import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
                 self.prepare_import_source_snapshot()
             )
@@ -4937,23 +4996,34 @@ class ShowerProgrammerApp:
                     f"{action} process list {display_done}/{total}: {source.name}",
                 )
 
-            self.queue_scan_progress(progress_value, progress_max, "Copying process lists into the local input folder...")
+            self.queue_scan_progress(progress_value, progress_max, "Synchronizing process lists into the local Process List folder...")
             process_list_import_summary = self.copy_process_lists_from_import_folder(
                 process_list,
                 progress_callback=process_list_progress,
                 import_snapshot=import_snapshot,
             )
             progress_value += int(process_list_import_summary.get("considered", 0) or 0)
-            if self.orders:
+            copied_process_lists = [
+                path
+                for path in process_list_import_summary.get("copied", [])
+                if isinstance(path, Path)
+            ]
+            if self.orders and not copied_process_lists:
                 orders = self.orders
                 process_list_count = 0
             else:
                 progress_value += 1
-                self.queue_scan_progress(progress_value, max(progress_max, progress_value + 2), "Reading process lists...")
+                self.queue_scan_progress(progress_value, max(progress_max, progress_value + 2), "Loading local process lists...")
                 config = self.config_with_manual_overrides(folder, output_dir)
                 process_list_files = shower_batch.process_list_files(process_list)
                 process_list_count = len(process_list_files)
-                orders = shower_batch.visible_orders(shower_batch.load_process_orders(process_list), config)
+                loaded_batches = self.load_process_list_batches(process_list, config)
+                self.reactivate_reimported_process_list_orders(
+                    loaded_batches,
+                    copied_process_lists,
+                    output_dir,
+                )
+                orders = self.unique_orders_from_batches(loaded_batches)
 
             def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
                 action = "Copying" if copied is None else ("Copied" if copied else "Already local")
@@ -4972,7 +5042,7 @@ class ShowerProgrammerApp:
             self.queue_scan_progress(
                 progress_value,
                 max(progress_max, progress_value + 1),
-                f"Importing missing PDFs/DXFs for {len(missing_orders)} order(s)...",
+                f"Synchronizing missing PDFs/DXFs for {len(missing_orders)} order(s)...",
             )
             import_summary = self.copy_edi_orders_for_process_orders(
                 folder,
@@ -4982,7 +5052,7 @@ class ShowerProgrammerApp:
                 missing_requirements=missing_requirements,
             )
             progress_value += int(import_summary.get("considered", 0) or 0)
-            self.queue_scan_progress(progress_value + 1, progress_value + 1, "Import complete.")
+            self.queue_scan_progress(progress_value + 1, progress_value + 1, "Input synchronization complete.")
             self.worker_queue.put(
                 (
                     "import_done",
@@ -5108,11 +5178,15 @@ class ShowerProgrammerApp:
     def load_processing_history(self) -> dict[str, object]:
         return self.load_processing_history_for_output(Path(self.output_dir_var.get()).resolve())
 
-    def save_processing_history(self, data: dict[str, object]) -> None:
-        path = self.processing_history_path()
+    @staticmethod
+    def save_processing_history_for_output(output_dir: Path, data: dict[str, object]) -> None:
+        path = Path(output_dir) / "processing_history.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
+
+    def save_processing_history(self, data: dict[str, object]) -> None:
+        self.save_processing_history_for_output(Path(self.output_dir_var.get()).resolve(), data)
 
     def action_history_dir(self) -> Path:
         return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "History"
@@ -5579,11 +5653,16 @@ class ShowerProgrammerApp:
         self.save_processing_history(history)
         self.update_sent_status_for_orders([str(order.aw_order) for order in orders_sent])
 
-    def mark_orders_deleted(self, orders_deleted: list[shower_batch.ProcessOrder]) -> None:
-        """Persist an explicit local deletion so batch completion can be proven later."""
+    @classmethod
+    def mark_orders_deleted_for_output(
+        cls,
+        orders_deleted: list[shower_batch.ProcessOrder],
+        output_dir: Path,
+    ) -> None:
+        """Persist deletion receipts using an explicit path so workers never read Tk variables."""
         if not orders_deleted:
             return
-        history = self.load_processing_history()
+        history = cls.load_processing_history_for_output(Path(output_dir))
         history_orders = history.setdefault("orders", {})
         if not isinstance(history_orders, dict):
             history_orders = {}
@@ -5595,8 +5674,15 @@ class ShowerProgrammerApp:
                 entry = {}
                 history_orders[str(order.aw_order)] = entry
             entry["deleted_at"] = deleted_at
-            entry["deleted_process_signature"] = self.sent_process_signature(order)
-        self.save_processing_history(history)
+            entry["deleted_process_signature"] = cls.sent_process_signature(order)
+        cls.save_processing_history_for_output(Path(output_dir), history)
+
+    def mark_orders_deleted(self, orders_deleted: list[shower_batch.ProcessOrder]) -> None:
+        """Persist an explicit local deletion so batch completion can be proven later."""
+        self.mark_orders_deleted_for_output(
+            orders_deleted,
+            Path(self.output_dir_var.get()).resolve(),
+        )
 
     @classmethod
     def order_is_terminal_in_history(
@@ -5610,6 +5696,76 @@ class ShowerProgrammerApp:
         sent = bool(entry.get("sent_at")) and str(entry.get("sent_process_signature", "")) == signature
         deleted = bool(entry.get("deleted_at")) and str(entry.get("deleted_process_signature", "")) == signature
         return sent or deleted
+
+    @classmethod
+    def reactivate_reimported_process_list_orders(
+        cls,
+        batches: list[dict[str, object]],
+        copied_process_lists: list[Path],
+        output_dir: Path,
+    ) -> list[str]:
+        """Clear stale explicit-delete receipts when a shared batch is intentionally re-imported.
+
+        Deleting a local batch records a deletion receipt so its process list can be
+        retired. If the same process list still exists in the shared import folder, a
+        later scan may legitimately copy it back. That copy is an explicit signal that
+        the batch should become active again; otherwise the old deletion receipt would
+        immediately retire the freshly restored process list and leave its PDFs/DXFs
+        looking like input-only files. Sent receipts are deliberately preserved.
+        """
+        copied_keys = {
+            cls.process_list_batch_key(path)
+            for path in copied_process_lists
+            if isinstance(path, Path)
+        }
+        copied_keys.discard("")
+        if not copied_keys:
+            return []
+
+        try:
+            history = cls.load_processing_history_for_output(Path(output_dir))
+        except Exception:
+            return []
+        history_orders = history.get("orders", {})
+        if not isinstance(history_orders, dict):
+            return []
+
+        reactivated: list[str] = []
+        reactivated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for batch in batches:
+            source_value = batch.get("path")
+            try:
+                source = source_value if isinstance(source_value, Path) else Path(str(source_value))
+            except (TypeError, ValueError):
+                continue
+            if cls.process_list_batch_key(source) not in copied_keys:
+                continue
+
+            raw_orders = batch.get("all_orders", batch.get("orders", []))
+            if not isinstance(raw_orders, list):
+                continue
+            for order in raw_orders:
+                if not isinstance(order, shower_batch.ProcessOrder):
+                    continue
+                aw_order = str(order.aw_order)
+                entry = history_orders.get(aw_order)
+                if not isinstance(entry, dict):
+                    continue
+                if not entry.get("deleted_at") and not entry.get("deleted_process_signature"):
+                    continue
+
+                previous_deleted_at = str(entry.pop("deleted_at", "") or "")
+                entry.pop("deleted_process_signature", None)
+                entry["reactivated_at"] = reactivated_at
+                entry["reactivated_source"] = source.name
+                if previous_deleted_at:
+                    entry["reactivated_from_deleted_at"] = previous_deleted_at
+                reactivated.append(aw_order)
+
+        if not reactivated:
+            return []
+        cls.save_processing_history_for_output(Path(output_dir), history)
+        return list(dict.fromkeys(reactivated))
 
     def history_for_order(self, aw_order: str) -> dict[str, object]:
         try:
@@ -6653,6 +6809,67 @@ class ShowerProgrammerApp:
             if row_id in self.tree_row_batches
         }
 
+    def dimension_match_override_enabled(self, aw_order: str) -> bool:
+        data = self.load_manual_overrides()
+        overrides = data.get("dimension_match_overrides", {})
+        if not isinstance(overrides, dict):
+            return False
+        value = overrides.get(str(aw_order))
+        if isinstance(value, dict):
+            return bool(value.get("enabled", False))
+        return bool(value)
+
+    def set_selected_dimension_match_override(self, enabled: bool) -> None:
+        orders = self.selected_orders()
+        if not orders:
+            messagebox.showinfo("No selection", "Select one or more process-list orders first.")
+            return
+        if enabled:
+            order_text = ", ".join(str(order.aw_order) for order in orders[:6])
+            if len(orders) > 6:
+                order_text += f", +{len(orders) - 6} more"
+            if not messagebox.askyesno(
+                "Allow dimension mismatch",
+                "Use this only after you have manually verified that the source sketch and DXF belong to the selected "
+                "A+W order. This bypasses only the PDF/process-list dimension identity check; it does not change DXF "
+                "geometry, machine routing, or programmed dimensions.\n\n"
+                f"Allow the mismatch for: {order_text}?",
+            ):
+                return
+
+        data = self.load_manual_overrides()
+        overrides = data.setdefault("dimension_match_overrides", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+            data["dimension_match_overrides"] = overrides
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        for order in orders:
+            key = str(order.aw_order)
+            if enabled:
+                overrides[key] = {
+                    "enabled": True,
+                    "job_name": str(order.job_name),
+                    "saved_at": timestamp,
+                }
+            else:
+                overrides.pop(key, None)
+        if not overrides:
+            data.pop("dimension_match_overrides", None)
+        self.save_manual_overrides(data)
+        for order in orders:
+            self.clear_review_context_cache(str(order.aw_order))
+        action = "Allowed" if enabled else "Cleared"
+        self.status_var.set(
+            f"{action} dimension mismatch override for {len(orders)} order(s). "
+            "Process Selected can be retried now; Scan Orders will also refresh the displayed issue state."
+        )
+        self.record_action(
+            "Dimension Match Override",
+            f"{action} dimension mismatch override for {len(orders)} order(s).",
+            status="WARNING" if enabled else "SUCCESS",
+            orders=orders,
+        )
+
     def open_orders_context_menu(self, event: tk.Event) -> str:
         row_id = self.tree.identify_row(event.y)
         if not row_id:
@@ -6713,6 +6930,18 @@ class ShowerProgrammerApp:
                     "text": "Create Diagnostic Package",
                     "icon": "bug",
                     "command": lambda selected=order: self.create_diagnostic_package_for_order(selected),
+                },
+            )
+            override_enabled = bool(selected_orders) and all(
+                self.dimension_match_override_enabled(str(selected.aw_order))
+                for selected in selected_orders
+            )
+            actions.insert(
+                3,
+                {
+                    "text": "Clear Dimension Override" if override_enabled else "Allow Dimension Mismatch",
+                    "icon": "minus_circle" if override_enabled else "warning",
+                    "command": lambda enabled=not override_enabled: self.set_selected_dimension_match_override(enabled),
                 },
             )
         if network_delete_available:
@@ -7108,6 +7337,10 @@ class ShowerProgrammerApp:
         return delete_batches
 
     def delete_selected_local_order_inputs(self, include_network: bool = False) -> None:
+        """Prepare a potentially large input cleanup without blocking Tk's UI thread."""
+        if self.is_busy:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
         orders = self.selected_orders()
         if not orders:
             messagebox.showinfo("No selection", "Select one or more orders or a process-list batch first.")
@@ -7115,6 +7348,7 @@ class ShowerProgrammerApp:
         try:
             local_order_folder = Path(self.folder_var.get()).resolve()
             process_list_root = Path(self.process_list_var.get()).resolve()
+            output_dir = Path(self.output_dir_var.get()).resolve()
             network_source = Path(self.import_source_var.get()).resolve() if include_network else None
         except Exception as exc:
             messagebox.showerror("Invalid local input folder", str(exc))
@@ -7128,24 +7362,79 @@ class ShowerProgrammerApp:
             )
             return
 
-        files = self.matching_order_files(
-            local_order_folder,
-            orders,
-            root_only=True,
-            inspect_pdf_text=True,
+        self.start_background_activity(
+            "Finding files for the selected order cleanup...",
+            maximum=100,
         )
-        network_files: list[Path] = []
-        if network_source is not None:
-            try:
+        threading.Thread(
+            target=self.worker_prepare_local_order_delete,
+            args=(orders, local_order_folder, process_list_root, output_dir, network_source, include_network),
+            name="shower-delete-prepare",
+            daemon=True,
+        ).start()
+
+    def worker_prepare_local_order_delete(
+        self,
+        orders: list[shower_batch.ProcessOrder],
+        local_order_folder: Path,
+        process_list_root: Path,
+        output_dir: Path,
+        network_source: Path | None,
+        include_network: bool,
+    ) -> None:
+        """Identify local/network cleanup targets before asking the operator to confirm."""
+        try:
+            self.queue_scan_progress(5, 100, "Finding matching local PDF/DXF input files...")
+            files = self.matching_order_files(
+                local_order_folder,
+                orders,
+                root_only=True,
+                inspect_pdf_text=True,
+            )
+            network_files: list[Path] = []
+            if network_source is not None:
+                self.queue_scan_progress(18, 100, "Checking the shared input folder for matching files...")
                 network_files = self.network_input_files_for_orders(network_source, orders)
-            except Exception as exc:
-                messagebox.showerror(
-                    "Network input check failed",
-                    "The shared input folder could not be validated, so nothing was deleted.\n\n"
-                    f"{exc}",
-                    parent=self.root,
+            self.queue_scan_progress(30, 100, "Cleanup targets identified; waiting for confirmation...")
+            self.worker_queue.put(
+                (
+                    "delete_preview_ready",
+                    {
+                        "orders": orders,
+                        "local_order_folder": local_order_folder,
+                        "process_list_root": process_list_root,
+                        "output_dir": output_dir,
+                        "network_source": network_source,
+                        "include_network": include_network,
+                        "files": files,
+                        "network_files": network_files,
+                    },
                 )
-                return
+            )
+        except Exception as exc:
+            self.worker_queue.put(
+                (
+                    "delete_error",
+                    {
+                        "stage": "preparing the cleanup",
+                        "error": exc,
+                    },
+                )
+            )
+
+    @staticmethod
+    def local_order_delete_confirmation_message(data: dict[str, object]) -> tuple[str, str]:
+        """Build the operator confirmation after file discovery finishes in the worker."""
+        orders = [
+            order for order in data.get("orders", [])
+            if isinstance(order, shower_batch.ProcessOrder)
+        ]
+        files = [path for path in data.get("files", []) if isinstance(path, Path)]
+        network_files = [path for path in data.get("network_files", []) if isinstance(path, Path)]
+        include_network = bool(data.get("include_network", False))
+        local_order_folder = Path(str(data.get("local_order_folder", "")))
+        network_source = data.get("network_source")
+
         order_names = ", ".join(order.aw_order for order in orders[:8])
         if len(orders) > 8:
             order_names += f", +{len(orders) - 8} more"
@@ -7155,6 +7444,7 @@ class ShowerProgrammerApp:
         network_preview = "\n".join(path.name for path in network_files[:12]) or "No matching network files found."
         if len(network_files) > 12:
             network_preview += f"\n...and {len(network_files) - 12} more"
+
         message_parts = [
             "Remove these local and network input files?\n\n"
             if include_network
@@ -7178,109 +7468,214 @@ class ShowerProgrammerApp:
             if include_network
             else "Local files can be restored from Settings for seven days. Nothing will be deleted from the shared Showers Programmer Input folder."
         )
-        message = "".join(message_parts)
         title = "Delete local and network input" if include_network else "Delete local order input"
-        if not messagebox.askyesno(title, message, parent=self.root):
-            return
+        return title, "".join(message_parts)
 
-        deleted: list[Path] = []
-        deleted_network: list[Path] = []
-        deleted_process_lists: list[Path] = []
-        warnings: list[str] = []
-        quarantine_id: str | None = None
-        if network_files:
-            deleted_network, network_warnings, timed_out = self.delete_import_paths_bounded(
-                network_files,
-                timeout_seconds=min(25.0, max(8.0, 4.0 + len(network_files) * 0.35)),
-            )
-            warnings.extend(network_warnings)
-            if timed_out or len(deleted_network) != len(network_files):
-                detail = (
-                    f"Deleted {len(deleted_network)} of {len(network_files)} validated network file(s). "
-                    "Local files were kept so the order can be reviewed and cleanup can be retried."
-                )
-                if warnings:
-                    detail += "\n\n" + "\n".join(warnings[:8])
-                self.status_var.set("Network cleanup was incomplete; local files were kept.")
-                messagebox.showwarning("Network cleanup incomplete", detail, parent=self.root)
-                return
+    def worker_delete_local_order_inputs(self, data: dict[str, object]) -> None:
+        """Perform the confirmed cleanup and report granular progress through the main activity bar."""
         try:
+            orders = [
+                order for order in data.get("orders", [])
+                if isinstance(order, shower_batch.ProcessOrder)
+            ]
+            files = [path for path in data.get("files", []) if isinstance(path, Path)]
+            network_files = [path for path in data.get("network_files", []) if isinstance(path, Path)]
+            local_order_folder = Path(str(data.get("local_order_folder", ""))).resolve()
+            process_list_root = Path(str(data.get("process_list_root", ""))).resolve()
+            output_dir = Path(str(data.get("output_dir", ""))).resolve()
+            include_network = bool(data.get("include_network", False))
+
+            deleted: list[Path] = []
+            deleted_network: list[Path] = []
+            deleted_process_lists: list[Path] = []
+            warnings: list[str] = []
+            quarantine_id: str | None = None
+
+            if network_files:
+                self.queue_scan_progress(8, 100, f"Removing {len(network_files)} validated file(s) from the shared input folder...")
+
+                def network_progress(done: int, total: int, source: Path) -> None:
+                    percent = 8 + int((done / max(total, 1)) * 27)
+                    self.queue_scan_progress(
+                        min(percent, 35),
+                        100,
+                        f"Removing shared input file {done}/{total}: {source.name}",
+                    )
+
+                deleted_network, network_warnings, timed_out = self.delete_import_paths_bounded(
+                    network_files,
+                    timeout_seconds=min(25.0, max(8.0, 4.0 + len(network_files) * 0.35)),
+                    progress_callback=network_progress,
+                )
+                warnings.extend(network_warnings)
+                if timed_out or len(deleted_network) != len(network_files):
+                    self.worker_queue.put(
+                        (
+                            "delete_incomplete",
+                            {
+                                "deleted_network": deleted_network,
+                                "network_files": network_files,
+                                "warnings": warnings,
+                            },
+                        )
+                    )
+                    return
+            else:
+                self.queue_scan_progress(35, 100, "No shared input files need removal.")
+
+            self.queue_scan_progress(40, 100, f"Moving {len(files)} local input file(s) into seven-day recovery...")
+
+            def local_recovery_progress(done: int, total: int, source: Path) -> None:
+                percent = 40 + int((done / max(total, 1)) * 20)
+                self.queue_scan_progress(
+                    min(percent, 60),
+                    100,
+                    f"Moving local file to recovery {done}/{total}: {source.name}",
+                )
+
             deleted, recovery_warnings, quarantine_id = self.quarantine_paths(
                 self.quarantine_root(),
                 files,
                 [local_order_folder],
                 [order.aw_order for order in orders],
+                progress_callback=local_recovery_progress,
             )
-        except Exception as exc:
-            self.status_var.set("Local recovery move failed; local files were kept.")
-            messagebox.showerror("Could not move files to recovery", str(exc), parent=self.root)
-            return
-        warnings.extend(recovery_warnings)
+            warnings.extend(recovery_warnings)
 
-        successfully_deleted_orders: list[shower_batch.ProcessOrder] = []
-        for order in orders:
-            remaining = self.matching_order_files(
-                local_order_folder,
-                [order],
-                root_only=True,
-                inspect_pdf_text=True,
-            )
-            if remaining:
-                names = ", ".join(path.name for path in remaining[:4])
-                warnings.append(f"Order {order.aw_order} remains active because these files could not be removed: {names}")
-            else:
-                successfully_deleted_orders.append(order)
-
-        try:
-            self.mark_orders_deleted(successfully_deleted_orders)
-        except Exception as exc:
-            warnings.append(f"Could not save deleted-order receipt: {exc}")
-
-        completed_batches = self.completed_process_list_batches_for_orders(
-            [],
-            deleted_orders=successfully_deleted_orders,
-        )
-        allowed_process_parent = process_list_root.parent if process_list_root.is_file() else process_list_root
-        try:
-            allowed_process_parent = allowed_process_parent.resolve()
-        except OSError:
-            pass
-        for plan in completed_batches:
-            batch_orders = plan.get("orders", [])
-            if isinstance(batch_orders, list):
-                remaining_batch_files = self.matching_order_files(
+            successfully_deleted_orders: list[shower_batch.ProcessOrder] = []
+            verify_total = max(len(orders), 1)
+            for index, order in enumerate(orders, start=1):
+                self.queue_scan_progress(
+                    60 + int((index / verify_total) * 15),
+                    100,
+                    f"Verifying local cleanup for A&W {order.aw_order} ({index}/{len(orders)})...",
+                )
+                remaining = self.matching_order_files(
                     local_order_folder,
-                    [order for order in batch_orders if isinstance(order, shower_batch.ProcessOrder)],
+                    [order],
                     root_only=True,
                     inspect_pdf_text=True,
                 )
-                if remaining_batch_files:
+                if remaining:
+                    names = ", ".join(path.name for path in remaining[:4])
                     warnings.append(
-                        f"Kept process list {plan.get('name', 'batch')} because matching order files still remain."
+                        f"Order {order.aw_order} remains active because these files could not be removed: {names}"
                     )
-                    continue
-            plan_files = plan.get("files", [])
-            if not isinstance(plan_files, list):
-                continue
-            for source in plan_files:
-                if not isinstance(source, Path) or not source.exists() or not source.is_file():
-                    continue
-                try:
-                    resolved = source.resolve()
-                    if resolved.parent != allowed_process_parent:
-                        warnings.append(f"Skipped process list outside local process-list folder: {source.name}")
+                else:
+                    successfully_deleted_orders.append(order)
+
+            self.queue_scan_progress(78, 100, "Updating deleted-order history...")
+            try:
+                self.mark_orders_deleted_for_output(successfully_deleted_orders, output_dir)
+            except Exception as exc:
+                warnings.append(f"Could not save deleted-order receipt: {exc}")
+
+            try:
+                deletion_history = self.load_processing_history_for_output(output_dir)
+            except Exception:
+                deletion_history = {"orders": {}}
+            self.queue_scan_progress(82, 100, "Checking whether completed process lists can be retired...")
+            completed_batches = self.completed_process_list_batches_for_orders(
+                [],
+                deleted_orders=successfully_deleted_orders,
+                history=deletion_history,
+            )
+            allowed_process_parent = process_list_root.parent if process_list_root.is_file() else process_list_root
+            try:
+                allowed_process_parent = allowed_process_parent.resolve()
+            except OSError:
+                pass
+
+            total_plans = max(len(completed_batches), 1)
+            for plan_index, plan in enumerate(completed_batches, start=1):
+                self.queue_scan_progress(
+                    82 + int((plan_index / total_plans) * 13),
+                    100,
+                    f"Retiring completed process list {plan_index}/{len(completed_batches)}: {plan.get('name', 'batch')}",
+                )
+                batch_orders = plan.get("orders", [])
+                if isinstance(batch_orders, list):
+                    remaining_batch_files = self.matching_order_files(
+                        local_order_folder,
+                        [order for order in batch_orders if isinstance(order, shower_batch.ProcessOrder)],
+                        root_only=True,
+                        inspect_pdf_text=True,
+                    )
+                    if remaining_batch_files:
+                        warnings.append(
+                            f"Kept process list {plan.get('name', 'batch')} because matching order files still remain."
+                        )
                         continue
-                    moved_lists, move_warnings, quarantine_id = self.quarantine_paths(
-                        self.quarantine_root(),
-                        [source],
-                        [allowed_process_parent],
-                        [order.aw_order for order in orders],
-                        bundle_id=quarantine_id,
-                    )
-                    deleted_process_lists.extend(moved_lists)
-                    warnings.extend(move_warnings)
-                except Exception as exc:
-                    warnings.append(f"Could not move process list {source.name} to recovery: {exc}")
+                plan_files = plan.get("files", [])
+                if not isinstance(plan_files, list):
+                    continue
+                for source in plan_files:
+                    if not isinstance(source, Path) or not source.exists() or not source.is_file():
+                        continue
+                    try:
+                        resolved = source.resolve()
+                        if resolved.parent != allowed_process_parent:
+                            warnings.append(f"Skipped process list outside local process-list folder: {source.name}")
+                            continue
+                        moved_lists, move_warnings, quarantine_id = self.quarantine_paths(
+                            self.quarantine_root(),
+                            [source],
+                            [allowed_process_parent],
+                            [order.aw_order for order in orders],
+                            bundle_id=quarantine_id,
+                        )
+                        deleted_process_lists.extend(moved_lists)
+                        warnings.extend(move_warnings)
+                    except Exception as exc:
+                        warnings.append(f"Could not move process list {source.name} to recovery: {exc}")
+
+            self.queue_scan_progress(97, 100, "Refreshing the active order list...")
+            self.worker_queue.put(
+                (
+                    "delete_done",
+                    {
+                        **data,
+                        "deleted": deleted,
+                        "deleted_network": deleted_network,
+                        "deleted_process_lists": deleted_process_lists,
+                        "successfully_deleted_orders": successfully_deleted_orders,
+                        "completed_batches": completed_batches,
+                        "warnings": warnings,
+                        "include_network": include_network,
+                    },
+                )
+            )
+        except Exception as exc:
+            self.worker_queue.put(
+                (
+                    "delete_error",
+                    {
+                        "stage": "removing the selected inputs",
+                        "error": exc,
+                    },
+                )
+            )
+
+    def apply_local_order_delete_result(self, data: dict[str, object]) -> None:
+        """Apply worker cleanup results to Tk widgets only after background I/O finishes."""
+        orders = [
+            order for order in data.get("orders", [])
+            if isinstance(order, shower_batch.ProcessOrder)
+        ]
+        successfully_deleted_orders = [
+            order for order in data.get("successfully_deleted_orders", [])
+            if isinstance(order, shower_batch.ProcessOrder)
+        ]
+        deleted = [path for path in data.get("deleted", []) if isinstance(path, Path)]
+        deleted_network = [path for path in data.get("deleted_network", []) if isinstance(path, Path)]
+        deleted_process_lists = [
+            path for path in data.get("deleted_process_lists", []) if isinstance(path, Path)
+        ]
+        completed_batches = [
+            plan for plan in data.get("completed_batches", []) if isinstance(plan, dict)
+        ]
+        warnings = [str(value) for value in data.get("warnings", [])]
+        include_network = bool(data.get("include_network", False))
 
         deleted_aw_orders = {str(order.aw_order) for order in successfully_deleted_orders}
         for aw_order in deleted_aw_orders:
@@ -7335,18 +7730,21 @@ class ShowerProgrammerApp:
 
         detail = (
             f"Moved {len(deleted)} local order file(s) to seven-day recovery"
-            + (f" and {len(deleted_network)} network file(s)" if include_network else "")
+            + (f" and removed {len(deleted_network)} shared input file(s)" if include_network else "")
             + f", removed {len(successfully_deleted_orders)} order(s), "
             f"and moved {len(deleted_process_lists)} completed process-list file(s) to recovery."
         )
         if len(successfully_deleted_orders) != len(orders):
-            detail += f"\n{len(orders) - len(successfully_deleted_orders)} selected order(s) remain because matching files are still present."
+            detail += (
+                f"\n{len(orders) - len(successfully_deleted_orders)} selected order(s) remain "
+                "because matching local files are still present."
+            )
         if warnings:
             detail += "\n\n" + "\n".join(warnings[:10])
             if len(warnings) > 10:
                 detail += f"\n...and {len(warnings) - 10} more"
         self.status_var.set(detail.split("\n", 1)[0])
-        messagebox.showinfo("Local input deleted", detail)
+        messagebox.showinfo("Order input cleanup complete", detail, parent=self.root)
 
     def on_orders_tree_selection(self, _event: tk.Event | None = None) -> None:
         """Selecting a process-list batch also selects every order in that batch."""
@@ -8311,6 +8709,53 @@ class ShowerProgrammerApp:
                     finally:
                         if isinstance(completed, threading.Event):
                             completed.set()
+                elif kind == "delete_preview_ready":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    title, message = self.local_order_delete_confirmation_message(data)
+                    if not messagebox.askyesno(title, message, parent=self.root):
+                        self.status_var.set("Order input cleanup canceled.")
+                        continue
+                    self.start_background_activity("Removing selected order inputs...", maximum=100)
+                    threading.Thread(
+                        target=self.worker_delete_local_order_inputs,
+                        args=(data,),
+                        name="shower-delete-inputs",
+                        daemon=True,
+                    ).start()
+                elif kind == "delete_incomplete":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    deleted_network = [path for path in data.get("deleted_network", []) if isinstance(path, Path)]
+                    network_files = [path for path in data.get("network_files", []) if isinstance(path, Path)]
+                    warnings = [str(value) for value in data.get("warnings", [])]
+                    detail = (
+                        f"Removed {len(deleted_network)} of {len(network_files)} validated shared input file(s). "
+                        "Local files were kept so cleanup can be reviewed and retried."
+                    )
+                    if warnings:
+                        detail += "\n\n" + "\n".join(warnings[:8])
+                    self.status_var.set("Shared input cleanup was incomplete; local files were kept.")
+                    messagebox.showwarning("Network cleanup incomplete", detail, parent=self.root)
+                elif kind == "delete_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    self.apply_local_order_delete_result(data)
+                elif kind == "delete_error":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    stage = str(data.get("stage", "cleaning order inputs"))
+                    error = data.get("error", "Unknown cleanup error")
+                    self.status_var.set(f"Order input cleanup failed while {stage}.")
+                    messagebox.showerror(
+                        "Order input cleanup failed",
+                        friendly_error_message("Order input cleanup", error),
+                        parent=self.root,
+                    )
                 elif kind == "done":
                     run, run_folder = payload
                     assert isinstance(run, shower_batch.BatchRunResult)
@@ -8421,6 +8866,12 @@ class ShowerProgrammerApp:
                         scan_message += f" Removed {len(duplicate_files_removed)} selected duplicate file(s)."
                     if duplicate_cleanup_warnings:
                         scan_message += f" Duplicate cleanup notes: {len(duplicate_cleanup_warnings)}."
+                    reactivated_aw_orders = data.get("reactivated_aw_orders", [])
+                    if isinstance(reactivated_aw_orders, list) and reactivated_aw_orders:
+                        scan_message += (
+                            f" Reactivated {len(reactivated_aw_orders)} previously deleted order(s) "
+                            "because their process-list batch was restored from shared input."
+                        )
                     hidden_missing_orders = int(data.get("hidden_missing_orders", 0) or 0)
                     if hidden_missing_orders:
                         scan_message += f" Hid {hidden_missing_orders} process-list order(s) with no local PDF/DXF."
@@ -9100,8 +9551,10 @@ a {{ color: #1f4e79; }}
         workspace = ctk.CTkFrame(dialog, fg_color="transparent")
         workspace.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
         workspace.grid_columnconfigure(0, weight=0, minsize=286)
-        workspace.grid_columnconfigure(1, weight=7, minsize=520)
-        workspace.grid_columnconfigure(2, weight=4, minsize=340)
+        # Keep the sketch and reference columns on one stable geometry contract.
+        # Child content on the overview page must not resize either column.
+        workspace.grid_columnconfigure(1, weight=7, minsize=520, uniform="review_content")
+        workspace.grid_columnconfigure(2, weight=4, minsize=340, uniform="review_content")
         workspace.grid_rowconfigure(0, weight=1)
 
         control_panel = ctk.CTkFrame(
@@ -9315,11 +9768,19 @@ a {{ color: #1f4e79; }}
             "Rotate sketch view right",
             lambda: rotate_view(90),
         ).pack(side=tk.LEFT, padx=(6, 0))
-        self.make_header_refresh_button(
+        refresh_sketch_button = self.make_header_refresh_button(
             sketch_header,
             lambda: refresh_sketch_preview(),
             "Reload the latest sketch from disk",
-        ).pack(side=tk.RIGHT)
+        )
+        refresh_sketch_button.pack(side=tk.RIGHT)
+        resume_sketch_edit_button = self.make_tool_button(
+            sketch_header,
+            "Resume Editing",
+            "edit",
+            lambda: enable_sketch_editing(),
+            width=118,
+        )
         sketch_canvas = tk.Canvas(sketch_frame, background=self.PREVIEW_BG, highlightthickness=0, bd=0)
         sketch_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
 
@@ -9452,6 +9913,16 @@ a {{ color: #1f4e79; }}
             state["page_images"] = []
             state["raster_rendering"] = set()
 
+        def set_resume_editing_visible(visible: bool) -> None:
+            try:
+                if visible:
+                    if not resume_sketch_edit_button.winfo_manager():
+                        resume_sketch_edit_button.pack(side=tk.RIGHT, padx=(0, 6))
+                elif resume_sketch_edit_button.winfo_manager():
+                    resume_sketch_edit_button.pack_forget()
+            except (AttributeError, tk.TclError):
+                pass
+
         def reset_sketch_to_editable_preview() -> bool:
             if not bool(state.get("embedded_sketch_preview")):
                 return False
@@ -9461,6 +9932,7 @@ a {{ color: #1f4e79; }}
                 job.pdf_path,
             )
             clear_sketch_preview_caches()
+            set_resume_editing_visible(False)
             return True
 
         def enable_sketch_editing() -> None:
@@ -9509,21 +9981,24 @@ a {{ color: #1f4e79; }}
         def overview_selected() -> bool:
             return bool(overview_available and item_var.get() == overview_label)
 
+        overview_allowed_widgets = (save_edits_button, text_button)
+
         def update_piece_action_states() -> None:
-            state_value = tk.DISABLED if overview_selected() else tk.NORMAL
-            if state.get("piece_action_state") == state_value:
+            mode = "overview" if overview_selected() else "piece"
+            if state.get("piece_action_state") == mode:
                 return
-            state["piece_action_state"] = state_value
+            state["piece_action_state"] = mode
             for widget in piece_action_widgets:
                 try:
-                    widget.configure(state=state_value)
+                    allowed = mode == "piece" or any(widget is candidate for candidate in overview_allowed_widgets)
+                    widget.configure(state=tk.NORMAL if allowed else tk.DISABLED)
                 except (tk.TclError, ValueError):
                     pass
 
         def update_history_buttons() -> None:
             button_states = (
-                tk.NORMAL if state.get("undo_stack") and not overview_selected() else tk.DISABLED,
-                tk.NORMAL if state.get("redo_stack") and not overview_selected() else tk.DISABLED,
+                tk.NORMAL if state.get("undo_stack") else tk.DISABLED,
+                tk.NORMAL if state.get("redo_stack") else tk.DISABLED,
             )
             if state.get("history_button_states") == button_states:
                 return
@@ -9562,12 +10037,10 @@ a {{ color: #1f4e79; }}
             state["drag_history_recorded"] = False
             refresh_prepared_job()
             redraw()
-            status.set(f"{action} sketch edit on {job.aw_order}.{selected_panel().item}.")
+            target = "Order Overview" if overview_selected() else f"P{selected_panel().item}"
+            status.set(f"{action} sketch edit on {job.aw_order} {target}.")
 
         def undo_review_edit() -> str:
-            if overview_selected():
-                status.set("The order overview is read-only. Select a piece to edit its sketch marks.")
-                return "break"
             undo_stack = state.setdefault("undo_stack", [])
             if not undo_stack:
                 status.set("Nothing to undo.")
@@ -9578,9 +10051,6 @@ a {{ color: #1f4e79; }}
             return "break"
 
         def redo_review_edit() -> str:
-            if overview_selected():
-                status.set("The order overview is read-only. Select a piece to edit its sketch marks.")
-                return "break"
             redo_stack = state.setdefault("redo_stack", [])
             if not redo_stack:
                 status.set("Nothing to redo.")
@@ -9623,6 +10093,21 @@ a {{ color: #1f4e79; }}
             if not isinstance(saved_order, dict):
                 saved_order = {}
             for changed_item in changed_items:
+                if changed_item == 0:
+                    current_overview = current_data.setdefault("overview_text_boxes", {})
+                    saved_overview = saved_data.get("overview_text_boxes", {})
+                    if not isinstance(current_overview, dict):
+                        current_overview = {}
+                        current_data["overview_text_boxes"] = current_overview
+                    if not isinstance(saved_overview, dict):
+                        saved_overview = {}
+                    if job.aw_order in saved_overview:
+                        current_overview[job.aw_order] = copy.deepcopy(saved_overview[job.aw_order])
+                    else:
+                        current_overview.pop(job.aw_order, None)
+                    if not current_overview:
+                        current_data.pop("overview_text_boxes", None)
+                    continue
                 key = str(changed_item)
                 if key in saved_order:
                     current_order[key] = copy.deepcopy(saved_order[key])
@@ -9656,7 +10141,7 @@ a {{ color: #1f4e79; }}
         def confirm_save_before_leaving(item_number: int | None = None) -> bool:
             if not has_pending_item_edits(item_number):
                 return True
-            label = f"P{item_number}" if item_number is not None else "this order"
+            label = "Order Overview" if item_number == 0 else f"P{item_number}" if item_number is not None else "this order"
             answer = messagebox.askyesnocancel(
                 "Save sketch edits?",
                 f"Save edits for {label} before leaving?",
@@ -9683,7 +10168,11 @@ a {{ color: #1f4e79; }}
             except ValueError:
                 return False
             current_item = int(current_item_value) if current_item_value is not None else None
-            if current_item is not None and next_item != current_item and not confirm_save_before_leaving(current_item):
+            if current_item is None and overview_selected() and has_pending_item_edits(0):
+                if not confirm_save_before_leaving(0):
+                    item_var.set(overview_label)
+                    return False
+            elif current_item is not None and next_item != current_item and not confirm_save_before_leaving(current_item):
                 item_var.set(f"P{current_item}")
                 return False
             state["current_item"] = next_item
@@ -9728,11 +10217,12 @@ a {{ color: #1f4e79; }}
             self.configure_saved_sketch_preview_state(state, refreshed_reader, saved_path)
             state["show_sketch_marks"] = True
             clear_sketch_preview_caches()
+            set_resume_editing_visible(True)
             self.clear_review_context_cache(process_order.aw_order)
             redraw()
             status.set(
                 f"Reloaded {saved_path.name} from disk for {job.aw_order}. "
-                "Saved PDF annotations are visible; choose a markup tool to return to editable marks."
+                "Saved PDF annotations are visible. Click Resume Editing to continue moving or adding marks."
             )
 
         def refresh_dxf_preview() -> None:
@@ -9893,7 +10383,7 @@ a {{ color: #1f4e79; }}
             scale = float(obj.get("scale", 1.0))
             obj["x"] += dx / scale
             obj["y"] -= dy / scale
-            item_number = int(obj.get("item", selected_panel().item))
+            item_number = int(obj["item"]) if obj.get("item") is not None else selected_panel().item
             item_key = (item_number, str(obj.get("key", key)))
             state["dirty"].add(item_key)
             state.get("pending_items", set()).add(item_number)
@@ -10166,11 +10656,21 @@ a {{ color: #1f4e79; }}
                 messagebox.showinfo("No mark selected", "Click a blue mark first.", parent=dialog)
                 return
             obj = state["objects"][key]
-            item_number = int(obj.get("item", selected_panel().item))
+            item_number = int(obj["item"]) if obj.get("item") is not None else selected_panel().item
             mark_key = str(obj.get("key", "")).strip()
             if not mark_key:
                 return
             record_undo_state()
+            if item_number == 0 and mark_key.startswith("overview_text:"):
+                text_id = mark_key.split(":", 1)[1]
+                self.delete_overview_text_box(job.aw_order, text_id)
+                refresh_prepared_job()
+                state["selected_key"] = None
+                state.get("pending_items", set()).add(0)
+                state["needs_output_save"] = True
+                status.set(f"Deleted overview text for {job.aw_order}. Click Save Sketch Edits to overwrite the sketch.")
+                redraw()
+                return
             if mark_key == "manual_x":
                 self.set_manual_x_override(job.aw_order, item_number, False)
                 refresh_prepared_job()
@@ -10253,7 +10753,6 @@ a {{ color: #1f4e79; }}
 
         def add_text_box() -> None:
             ensure_sketch_editing_enabled()
-            panel = selected_panel()
             value = self.ask_themed_text(
                 dialog,
                 "Add Text Box",
@@ -10263,6 +10762,32 @@ a {{ color: #1f4e79; }}
             if value is None or not value.strip():
                 return
 
+            if overview_selected():
+                page = source_reader.pages[0]
+                page_width = float(page.mediabox.width)
+                page_height = float(page.mediabox.height)
+                existing_count = len(programmer.overview_text_boxes_for_order(config, job.aw_order))
+                column_ratios = (0.50, 0.35, 0.65)
+                column = existing_count % len(column_ratios)
+                row = existing_count // len(column_ratios)
+                x = page_width * column_ratios[column]
+                y = max(48.0, page_height * (0.34 - min(row, 3) * 0.08))
+                pdf_cfg = config.get("pdf", {}) if isinstance(config.get("pdf", {}), dict) else {}
+                font_size = float(pdf_cfg.get("label_font_size", 21))
+                record_undo_state()
+                text_id = self.add_overview_text_box(job.aw_order, value, x, y, font_size)
+                refresh_prepared_job()
+                state.get("pending_items", set()).add(0)
+                state["needs_output_save"] = True
+                status.set(
+                    f"Added text to the Order Overview for {job.aw_order}. "
+                    "Drag it into position, then click Save Sketch Edits."
+                )
+                redraw()
+                state["selected_key"] = f"0_overview_text:{text_id}"
+                return
+
+            panel = selected_panel()
             page = source_reader.pages[panel.page_index]
             page_width = float(page.mediabox.width)
             page_height = float(page.mediabox.height)
@@ -10402,15 +10927,35 @@ a {{ color: #1f4e79; }}
         def resize_selected_mark(direction: int) -> None:
             key = state.get("selected_key")
             if not key or key not in state.get("objects", {}):
-                messagebox.showinfo("No mark selected", "Click a blue mark first, then use Size - or Size +.", parent=dialog)
+                messagebox.showinfo("No mark selected", "Click a blue mark first, then use Increase Size or Decrease Size.", parent=dialog)
                 return
             obj = state["objects"][key]
-            item_number = int(obj.get("item", selected_panel().item))
+            item_number = int(obj["item"]) if obj.get("item") is not None else selected_panel().item
             mark_key = str(obj.get("key", "")).strip()
             if not mark_key:
                 return
-            panel = next(panel for panel in job.panels if panel.item == item_number)
+
             record_undo_state()
+            if item_number == 0 and mark_key.startswith("overview_text:"):
+                text_id = mark_key.split(":", 1)[1]
+                current = float(obj.get("font_size") or 21.0)
+                new_size = self.resize_overview_text_box(
+                    job.aw_order,
+                    text_id,
+                    current,
+                    direction,
+                )
+                refresh_prepared_job()
+                state.get("pending_items", set()).add(0)
+                state["needs_output_save"] = True
+                status.set(
+                    f"Changed Order Overview text size to {new_size:g}. "
+                    "Click Save Sketch Edits to overwrite the sketch."
+                )
+                redraw()
+                return
+
+            panel = next(panel for panel in job.panels if panel.item == item_number)
             new_size = self.set_mark_size_override(job.aw_order, item_number, mark_key, direction, obj, panel, config)
             refresh_prepared_job()
             state.get("pending_items", set()).add(item_number)
@@ -10428,7 +10973,7 @@ a {{ color: #1f4e79; }}
                 messagebox.showinfo("Not text", "Select a blue text mark to edit.", parent=dialog)
                 return
             mark_key = str(obj.get("key", "")).strip()
-            item_number = int(obj.get("item", selected_panel().item))
+            item_number = int(obj["item"]) if obj.get("item") is not None else selected_panel().item
             current = "\\n".join(str(line) for line in obj.get("lines", []))
             value = self.ask_themed_text(
                 dialog,
@@ -10439,11 +10984,16 @@ a {{ color: #1f4e79; }}
             if value is None:
                 return
             record_undo_state()
-            self.set_mark_text_override(job.aw_order, item_number, mark_key, value)
+            if item_number == 0 and mark_key.startswith("overview_text:"):
+                self.update_overview_text_box(job.aw_order, mark_key.split(":", 1)[1], text=value)
+                target_label = "Order Overview"
+            else:
+                self.set_mark_text_override(job.aw_order, item_number, mark_key, value)
+                target_label = f"{job.aw_order}.{item_number}"
             refresh_prepared_job()
             state.get("pending_items", set()).add(item_number)
             state["needs_output_save"] = True
-            status.set(f"Edited {obj.get('name', mark_key)} on {job.aw_order}.{item_number}. Click Save Edits to overwrite the sketch.")
+            status.set(f"Edited {obj.get('name', mark_key)} on {target_label}. Click Save Sketch Edits to overwrite the sketch.")
             redraw()
 
         def show_mark_menu(event: tk.Event, key: str) -> str:
@@ -10453,8 +11003,8 @@ a {{ color: #1f4e79; }}
             obj = state["objects"][key]
             kind = str(obj.get("kind", "mark")).strip().lower()
             mark_name = str(obj.get("name") or obj.get("key") or "Sketch Mark")
-            item_number = int(obj.get("item", selected_panel().item))
-            title = f"P{item_number} - {mark_name}"
+            item_number = int(obj["item"]) if obj.get("item") is not None else selected_panel().item
+            title = f"Order Overview - {mark_name}" if item_number == 0 else f"P{item_number} - {mark_name}"
             subtitle = "Choose an action for this sketch mark."
 
             def select_then(command: Callable[[], object]) -> Callable[[], object]:
@@ -10464,7 +11014,7 @@ a {{ color: #1f4e79; }}
                 return wrapper
 
             actions: list[dict[str, object]] = []
-            if kind != "x":
+            if kind != "x" and (item_number != 0 or str(obj.get("key", "")).startswith("overview_text:")):
                 actions.extend(
                     [
                         {"text": "Increase Size", "icon": "plus", "keep_open": True, "command": select_then(lambda: resize_selected_mark(1))},
@@ -10521,7 +11071,7 @@ a {{ color: #1f4e79; }}
                         rotation_var.get(),
                         state,
                         page_index=0,
-                        show_overlays=False,
+                        show_overlays=True,
                     )
                 except Exception as exc:
                     sketch_canvas.delete("all")
@@ -10555,7 +11105,7 @@ a {{ color: #1f4e79; }}
                 decision_textbox.insert("1.0", "\n\n".join(overview["process_lines"]))
                 decision_textbox.configure(state="disabled")
                 status.set(
-                    f"Order overview for {job.aw_order}. This page is informational only and is not counted as a reviewed piece."
+                    f"Order overview for {job.aw_order}. Text Box edits are available here; machine and indicator tools remain disabled."
                 )
                 return
             panel = selected_panel()
@@ -10729,9 +11279,6 @@ a {{ color: #1f4e79; }}
                 dialog.destroy()
 
         def save_shortcut(_event: tk.Event) -> str:
-            if overview_selected():
-                status.set("The order overview is read-only. Select a piece before saving sketch edits.")
-                return "break"
             save_review_edits()
             return "break"
 
@@ -10759,7 +11306,7 @@ a {{ color: #1f4e79; }}
             try:
                 if not bool(dialog.winfo_exists()):
                     return
-                dialog.transient(self.root)
+                # A full review workspace must keep the normal Windows caption buttons.
                 dialog.deiconify()
                 self.maximize_window(dialog)
                 dialog.update_idletasks()
@@ -10832,8 +11379,8 @@ a {{ color: #1f4e79; }}
 
     def draw_order_review_overview(self, canvas: tk.Canvas, overview: dict[str, Any]) -> None:
         canvas.delete("all")
-        width = max(320, canvas.winfo_width())
-        height = max(360, canvas.winfo_height())
+        width = max(1, canvas.winfo_width())
+        height = max(1, canvas.winfo_height())
         canvas.create_rectangle(0, 0, width, height, fill=self.PREVIEW_CARD_BG, outline="")
         canvas.create_text(
             18, 16, anchor=tk.NW, text=f"Order {overview['order']}",
@@ -10929,15 +11476,20 @@ a {{ color: #1f4e79; }}
         canvas.create_image(x, y, image=image, anchor=tk.NW)
         embedded_preview = bool(state.get("embedded_sketch_preview"))
         if show_overlays and not embedded_preview and self.should_draw_sketch_overlays(state):
-            objects = self.editor_overlay_objects(
-                reader,
-                job,
-                panel,
-                config,
-                state.setdefault("overlay_cache", {}),
-            )
+            if active_page_index == 0 and panel.page_index != 0:
+                objects = self.editor_overview_text_objects(reader, job, config)
+                object_item = 0
+            else:
+                objects = self.editor_overlay_objects(
+                    reader,
+                    job,
+                    panel,
+                    config,
+                    state.setdefault("overlay_cache", {}),
+                )
+                object_item = panel.item
             for obj in objects:
-                obj["item"] = panel.item
+                obj["item"] = object_item
                 obj["scale"] = scale
                 self.draw_editor_object(
                     canvas,
@@ -11639,6 +12191,22 @@ a {{ color: #1f4e79; }}
                 position = state.get("positions", {}).get((item_number, key))
                 if position is None:
                     continue
+                if item_number == 0 and key.startswith("overview_text:"):
+                    text_id = key.split(":", 1)[1]
+                    overview_by_order = data.setdefault("overview_text_boxes", {})
+                    if not isinstance(overview_by_order, dict):
+                        overview_by_order = {}
+                        data["overview_text_boxes"] = overview_by_order
+                    boxes = overview_by_order.get(job.aw_order, [])
+                    if not isinstance(boxes, list):
+                        boxes = []
+                    for text_box in boxes:
+                        if isinstance(text_box, dict) and str(text_box.get("id")) == text_id:
+                            text_box["x"] = round(float(position["x"]), 3)
+                            text_box["y"] = round(float(position["y"]), 3)
+                            break
+                    overview_by_order[job.aw_order] = boxes
+                    continue
                 panel = next(panel for panel in job.panels if panel.item == item_number)
                 item_override = order_overrides.setdefault(str(item_number), {})
                 if not isinstance(item_override, dict):
@@ -11867,6 +12435,95 @@ a {{ color: #1f4e79; }}
             item_override.pop("additional_text_boxes", None)
         self.save_manual_overrides(data)
         return True
+
+    def add_overview_text_box(
+        self,
+        aw_order: str,
+        value: str,
+        x: float,
+        y: float,
+        font_size: float,
+    ) -> str:
+        """Persist a text-only annotation for the order cover/overview page."""
+        text_value = value.replace("\\n", "\n").strip()
+        if not text_value:
+            raise ValueError("Text cannot be blank.")
+        data = self.load_manual_overrides()
+        overview_by_order = data.setdefault("overview_text_boxes", {})
+        if not isinstance(overview_by_order, dict):
+            overview_by_order = {}
+            data["overview_text_boxes"] = overview_by_order
+        boxes = overview_by_order.setdefault(str(aw_order), [])
+        if not isinstance(boxes, list):
+            boxes = []
+            overview_by_order[str(aw_order)] = boxes
+        text_id = uuid.uuid4().hex[:10]
+        boxes.append({
+            "id": text_id,
+            "text": text_value,
+            "x": round(float(x), 3),
+            "y": round(float(y), 3),
+            "font_size": round(max(6.0, float(font_size)), 3),
+        })
+        self.save_manual_overrides(data)
+        return text_id
+
+    def update_overview_text_box(self, aw_order: str, text_id: str, **changes: object) -> bool:
+        data = self.load_manual_overrides()
+        overview_by_order = data.get("overview_text_boxes", {})
+        if not isinstance(overview_by_order, dict):
+            return False
+        boxes = overview_by_order.get(str(aw_order), [])
+        if not isinstance(boxes, list):
+            return False
+        for text_box in boxes:
+            if not isinstance(text_box, dict) or str(text_box.get("id")) != text_id:
+                continue
+            if "text" in changes:
+                text_value = str(changes["text"]).replace("\\n", "\n").strip()
+                if not text_value:
+                    return False
+                text_box["text"] = text_value
+            for field in ("x", "y", "font_size"):
+                if field in changes:
+                    text_box[field] = round(float(changes[field]), 3)
+            self.save_manual_overrides(data)
+            return True
+        return False
+
+    def resize_overview_text_box(
+        self,
+        aw_order: str,
+        text_id: str,
+        current_font_size: float,
+        direction: int,
+    ) -> float:
+        """Increase/decrease one cover-page text box without creating piece overrides."""
+        new_size = max(6.0, float(current_font_size) + 4.0 * (1 if direction > 0 else -1))
+        if not self.update_overview_text_box(aw_order, text_id, font_size=new_size):
+            raise ValueError("Could not update the Order Overview text size.")
+        return new_size
+
+    def delete_overview_text_box(self, aw_order: str, text_id: str) -> bool:
+        data = self.load_manual_overrides()
+        overview_by_order = data.get("overview_text_boxes", {})
+        if not isinstance(overview_by_order, dict):
+            return False
+        boxes = overview_by_order.get(str(aw_order), [])
+        if not isinstance(boxes, list):
+            return False
+        remaining = [box for box in boxes if not isinstance(box, dict) or str(box.get("id")) != text_id]
+        if len(remaining) == len(boxes):
+            return False
+        if remaining:
+            overview_by_order[str(aw_order)] = remaining
+        else:
+            overview_by_order.pop(str(aw_order), None)
+        if not overview_by_order:
+            data.pop("overview_text_boxes", None)
+        self.save_manual_overrides(data)
+        return True
+
 
     def set_mark_text_override(self, aw_order: str, item_number: int, mark_key: str, value: str) -> None:
         text_id = self.additional_text_id_from_mark_key(mark_key)
@@ -13805,6 +14462,7 @@ try {{
         sent_orders: list[shower_batch.ProcessOrder],
         *,
         deleted_orders: list[shower_batch.ProcessOrder] | None = None,
+        history: dict[str, object] | None = None,
     ) -> list[dict[str, object]]:
         """Return touched batches only when every original order is sent or deleted."""
         current_terminal_aw = {
@@ -13814,10 +14472,11 @@ try {{
         }
         if not current_terminal_aw:
             return []
-        try:
-            history = self.load_processing_history()
-        except Exception:
-            history = {"orders": {}}
+        if history is None:
+            try:
+                history = self.load_processing_history()
+            except Exception:
+                history = {"orders": {}}
 
         plans_by_stem: dict[str, dict[str, object]] = {}
         for batch_id, batch in self.process_batches.items():
@@ -17602,6 +18261,41 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except Exception:
             return
 
+    def editor_overview_text_objects(
+        self,
+        reader: PdfReader,
+        job: programmer.Job,
+        config: dict[str, object],
+    ) -> list[dict[str, Any]]:
+        """Build editable objects for cover-page text only (never machine marks)."""
+        if not reader.pages:
+            return []
+        page = reader.pages[0]
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+        pdf_cfg = config.get("pdf", {}) if isinstance(config.get("pdf", {}), dict) else {}
+        default_font = float(pdf_cfg.get("label_font_size", 21))
+        objects: list[dict[str, Any]] = []
+        for index, text_box in enumerate(programmer.overview_text_boxes_for_order(config, job.aw_order)):
+            text_id = str(text_box.get("id") or f"overview_{index + 1}")
+            lines, x, y, font_size = programmer.additional_text_box_values(
+                text_box, index, width, height, default_font
+            )
+            if not lines:
+                continue
+            objects.append({
+                "key": f"overview_text:{text_id}",
+                "name": f"overview text {index + 1}",
+                "kind": "text",
+                "lines": lines,
+                "x": x,
+                "y": y,
+                "font_size": font_size,
+                "rect": programmer.label_rect(lines, x, y, font_size),
+            })
+        return objects
+
+
     def editor_overlay_objects(
         self,
         reader: PdfReader,
@@ -18960,11 +19654,12 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except (AttributeError, tk.TclError):
             pass
         self.settings_tabview = tabview
-        for tab_name in ("Preferences", "Folder Setup", "Hinge Detection", "Recovery", "Backup & Restore", "Action History"):
+        for tab_name in ("Preferences", "Folder Setup", "Hinge Detection", "Archives", "Recovery", "Backup & Restore", "Action History"):
             tabview.add(tab_name)
         self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog)
         self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog)
         self.build_hinge_settings_tab(tabview.tab("Hinge Detection"), dialog)
+        self.build_archive_settings_tab(tabview.tab("Archives"), dialog)
         self.build_recovery_settings_tab(tabview.tab("Recovery"), dialog)
         self.build_configuration_backup_tab(tabview.tab("Backup & Restore"), dialog)
         self.build_action_history_settings_tab(tabview.tab("Action History"))
@@ -18981,6 +19676,1256 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         dialog.bind("<Destroy>", clear_reference, add="+")
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
         self.bring_window_to_front(dialog, make_transient=False)
+
+    @staticmethod
+    def archive_date_from_name(value: str) -> datetime | None:
+        """Parse the dated archive folder formats used by Shower Programmer."""
+        text = str(value or "").strip()
+        for format_text in ("%m.%d.%y", "%m.%d.%Y", "%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, format_text)
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def normalize_archive_date_filter(
+        cls,
+        from_value: str,
+        to_value: str,
+        *,
+        today: datetime | None = None,
+    ) -> tuple[datetime, datetime]:
+        """Normalize archive date filters, including a single-date search."""
+        anchor = today or datetime.now()
+
+        def parse(value: str) -> datetime | None:
+            value = str(value or "").strip()
+            if not value:
+                return None
+            parsed = cls.archive_date_from_name(value)
+            if parsed is None:
+                raise ValueError("Use a date such as 8/13/2026 or 8.13.26.")
+            return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        start = parse(from_value)
+        finish = parse(to_value)
+        if start is None and finish is None:
+            finish = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = finish - timedelta(days=6)
+        elif start is None:
+            start = finish
+        elif finish is None:
+            finish = start
+        assert start is not None and finish is not None
+        if start > finish:
+            raise ValueError("The From date must be on or before the To date.")
+        return start, finish
+
+    @classmethod
+    def archive_date_directories(
+        cls,
+        root: Path,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> list[Path]:
+        """Return dated archive directories, optionally limited to a calendar range."""
+        root = Path(root)
+        if root.is_file():
+            root = root.parent
+        if not root.exists() or not root.is_dir():
+            return []
+        try:
+            candidates = [
+                path
+                for path in root.iterdir()
+                if path.is_dir() and cls.INPUT_ARCHIVE_FOLDER_RE.match(path.name)
+            ]
+        except OSError:
+            return []
+
+        start = date_from.replace(hour=0, minute=0, second=0, microsecond=0) if date_from else None
+        finish = date_to.replace(hour=23, minute=59, second=59, microsecond=999999) if date_to else None
+        filtered: list[Path] = []
+        for path in candidates:
+            stamp = cls.archive_date_from_name(path.name)
+            if start is not None or finish is not None:
+                if stamp is None:
+                    continue
+                if start is not None and stamp < start:
+                    continue
+                if finish is not None and stamp > finish:
+                    continue
+            filtered.append(path)
+
+        def archive_key(path: Path) -> tuple[float, str]:
+            stamp = cls.archive_date_from_name(path.name)
+            return (stamp.timestamp() if stamp else 0.0, path.name.casefold())
+
+        return sorted(filtered, key=archive_key, reverse=True)
+
+    @classmethod
+    def archived_order_inventory(
+        cls,
+        order_folder: Path,
+        process_list_path: Path,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        """Build a fast order-level archive view for the requested date range.
+
+        Initial archive browsing intentionally uses filename-based PDF/DXF mapping.
+        Full PDF text correlation is deferred until an operator restores a specific
+        order, which prevents a large archive from spending minutes opening PDFs.
+        """
+        order_folder = Path(order_folder).resolve()
+        process_root = Path(process_list_path).resolve()
+        if process_root.is_file():
+            process_root = process_root.parent
+
+        warnings: list[str] = []
+        entries: list[dict[str, object]] = []
+        process_archives = cls.archive_date_directories(
+            process_root,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        work: list[tuple[str, Path, Path]] = []
+        for process_archive in process_archives:
+            archive_name = process_archive.name
+            order_archive = order_folder / archive_name
+            for process_file in cls.archive_process_list_files(process_archive):
+                work.append((archive_name, order_archive, process_file))
+
+        def load_process_file(item: tuple[str, Path, Path]) -> tuple[str, Path, Path, list[shower_batch.ProcessOrder], str]:
+            archive_name, order_archive, process_file = item
+            try:
+                orders = shower_batch.load_process_orders_from_file(process_file)
+                return archive_name, order_archive, process_file, orders, ""
+            except Exception as exc:
+                return archive_name, order_archive, process_file, [], str(exc)
+
+        loaded: list[tuple[str, Path, Path, list[shower_batch.ProcessOrder], str]] = []
+        if len(work) <= 1:
+            loaded = [load_process_file(item) for item in work]
+        else:
+            with ThreadPoolExecutor(max_workers=min(6, len(work)), thread_name_prefix="shower-archive-lists") as executor:
+                loaded = list(executor.map(load_process_file, work))
+
+        archive_candidates: dict[str, list[Path]] = {}
+        for archive_name, order_archive, process_file, orders, error in loaded:
+            if error:
+                warnings.append(f"Could not read archived process list {process_file.name}: {error}")
+                continue
+            if archive_name not in archive_candidates:
+                try:
+                    archive_candidates[archive_name] = [
+                        path
+                        for path in order_archive.iterdir()
+                        if path.is_file() and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                    ] if order_archive.exists() else []
+                except OSError:
+                    archive_candidates[archive_name] = []
+            candidates = archive_candidates[archive_name]
+            for order in orders:
+                try:
+                    matched = cls.matching_order_files(
+                        order_archive,
+                        [order],
+                        root_only=True,
+                        inspect_pdf_text=False,
+                        candidate_files=candidates,
+                    )
+                except Exception as exc:
+                    warnings.append(f"Could not map archived filenames for A&W {order.aw_order}: {exc}")
+                    matched = []
+                entries.append(
+                    {
+                        "archive_name": archive_name,
+                        "archive_date": cls.archive_date_from_name(archive_name),
+                        "batch_name": process_file.name,
+                        "order": order,
+                        "order_archive_dir": order_archive,
+                        "process_archive_dir": process_file.parent,
+                        "process_list_files": [process_file],
+                        "order_files": matched,
+                        "_fast_file_mapping": True,
+                    }
+                )
+
+        def inventory_sort_key(entry: dict[str, object]) -> tuple[float, tuple[tuple[int, object], ...], tuple[tuple[int, object], ...]]:
+            stamp = entry.get("archive_date")
+            timestamp = stamp.timestamp() if isinstance(stamp, datetime) else 0.0
+            batch_name = str(entry.get("batch_name", ""))
+            order = entry.get("order")
+            aw_order = str(getattr(order, "aw_order", ""))
+            return timestamp, cls.natural_sort_key(batch_name), cls.natural_sort_key(aw_order)
+
+        return sorted(entries, key=inventory_sort_key, reverse=True), warnings
+
+    @classmethod
+    def archived_run_inventory(
+        cls,
+        output_dir: Path,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        """Index processing run folders without opening archived PDFs or reports."""
+        output_dir = Path(output_dir).resolve()
+        runs_root = output_dir / "Runs"
+        warnings: list[str] = []
+        runs: list[dict[str, object]] = []
+        for date_dir in cls.archive_date_directories(runs_root, date_from=date_from, date_to=date_to):
+            try:
+                run_folders = sorted(
+                    (path for path in date_dir.iterdir() if path.is_dir()),
+                    key=lambda path: cls.natural_sort_key(path.name),
+                )
+            except OSError as exc:
+                warnings.append(f"Could not read run archive {date_dir.name}: {exc}")
+                continue
+            for run_folder in run_folders:
+                manifest: dict[str, object] = {}
+                manifest_path = run_folder / "manifest.json"
+                if manifest_path.exists():
+                    try:
+                        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        manifest = raw if isinstance(raw, dict) else {}
+                    except Exception as exc:
+                        warnings.append(f"Could not read {manifest_path.name} in {run_folder.name}: {exc}")
+                try:
+                    sketch_count = len(list((run_folder / "Sketches").glob("*.pdf"))) if (run_folder / "Sketches").exists() else 0
+                    program_count = len(list((run_folder / "Programs").glob("*.dxf"))) if (run_folder / "Programs").exists() else 0
+                    report_count = len(list((run_folder / "Reports").glob("*_programming_report.txt"))) if (run_folder / "Reports").exists() else 0
+                except OSError:
+                    sketch_count = program_count = report_count = 0
+                runs.append(
+                    {
+                        "archive_name": date_dir.name,
+                        "archive_date": cls.archive_date_from_name(date_dir.name),
+                        "batch_name": run_folder.name,
+                        "run_folder": run_folder,
+                        "manifest": manifest,
+                        "created": str(manifest.get("created", "")),
+                        "sketch_count": sketch_count,
+                        "program_count": program_count,
+                        "report_count": report_count,
+                        "orders": [],
+                    }
+                )
+        return runs, warnings
+
+    @classmethod
+    def archive_browser_sort_value(cls, value: object, column: str) -> tuple[int, object]:
+        """Normalize archive-browser values for column sorting."""
+        text = str(value or "").strip()
+        if column == "archive":
+            stamp = cls.archive_date_from_name(text)
+            return (0, stamp.timestamp()) if stamp else (2, 0.0)
+        if column in {"files", "active"}:
+            try:
+                return (0, int(text))
+            except ValueError:
+                if text.casefold() in {"yes", "no"}:
+                    return (0, 1 if text.casefold() == "yes" else 0)
+        if column == "sent":
+            return cls.order_sort_value(text, "sent")
+        return cls.order_sort_value(text, column)
+
+    @staticmethod
+    def archive_test_process_list_name(order: shower_batch.ProcessOrder) -> str:
+        job = re.sub(r"[^A-Za-z0-9._-]+", "_", str(order.job_name)).strip("._-")[:48]
+        suffix = f"_{job}" if job else ""
+        return f"Archive Test {order.aw_order}{suffix}.xlsx"
+
+    @classmethod
+    def write_archive_test_process_list(
+        cls,
+        target_dir: Path,
+        order: shower_batch.ProcessOrder,
+    ) -> Path:
+        """Write a one-order process list for safe archive regression testing."""
+        target_dir = Path(target_dir)
+        if target_dir.suffix:
+            target_dir = target_dir.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / cls.archive_test_process_list_name(order)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Archive Test"
+        for item_number, item in sorted(order.items.items()):
+            row = [""] * 22
+            row[2] = item.width_text
+            row[3] = item.height_text
+            row[6] = f"{order.aw_order}-{item_number}"
+            row[7] = " | ".join(item.processing)
+            row[8] = item.delivery_date
+            row[10] = item.customer or order.customer
+            row[13] = order.job_name
+            row[21] = " | ".join(item.machine_hints)
+            sheet.append(row)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp.xlsx")
+        try:
+            workbook.save(temporary)
+            workbook.close()
+            os.replace(temporary, target)
+        finally:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+            temporary.unlink(missing_ok=True)
+        return target
+
+    @classmethod
+    def copy_archived_order_for_testing(
+        cls,
+        entry: dict[str, object],
+        order_folder: Path,
+        process_list_path: Path,
+    ) -> tuple[list[Path], Path | None, list[str]]:
+        """Copy one archived order to active Input without disturbing the archive."""
+        order = entry.get("order")
+        if not isinstance(order, shower_batch.ProcessOrder):
+            return [], None, ["The selected archive row does not contain a valid order record."]
+        order_folder = Path(order_folder)
+        order_folder.mkdir(parents=True, exist_ok=True)
+        restored: list[Path] = []
+        warnings: list[str] = []
+        raw_files = entry.get("order_files", [])
+        archive_files = [path for path in raw_files if isinstance(path, Path)] if isinstance(raw_files, list) else []
+        archive_dir = entry.get("order_archive_dir")
+        if isinstance(archive_dir, Path) and archive_dir.exists():
+            try:
+                exact_files = cls.matching_order_files(
+                    archive_dir,
+                    [order],
+                    root_only=True,
+                    inspect_pdf_text=True,
+                )
+                archive_files = sorted(
+                    {Path(path) for path in [*archive_files, *exact_files]},
+                    key=lambda candidate: candidate.name.casefold(),
+                )
+                entry["order_files"] = archive_files
+                entry["_fast_file_mapping"] = False
+            except Exception as exc:
+                warnings.append(f"Could not complete archived PDF/DXF correlation: {exc}")
+        for source in archive_files:
+            if not source.exists() or not source.is_file():
+                continue
+            target = order_folder / source.name
+            try:
+                if target.exists():
+                    same = (
+                        target.stat().st_size == source.stat().st_size
+                        and cls.sha256_file(target) == cls.sha256_file(source)
+                    )
+                    if same:
+                        restored.append(target)
+                        continue
+                    target = cls.unique_target_path(target)
+                cls.copy_file_atomically(source, target)
+                restored.append(target)
+            except OSError as exc:
+                warnings.append(f"Could not restore {source.name}: {exc}")
+        try:
+            process_file = cls.write_archive_test_process_list(Path(process_list_path), order)
+        except Exception as exc:
+            warnings.append(f"Could not create the scoped archive-test process list: {exc}")
+            process_file = None
+        return restored, process_file, warnings
+
+    @classmethod
+    def return_archived_order_to_archive(
+        cls,
+        entry: dict[str, object],
+        order_folder: Path,
+        process_list_path: Path,
+    ) -> tuple[list[Path], list[str]]:
+        """Remove active test/manual copies and preserve the original dated archive."""
+        order = entry.get("order")
+        archive_dir = entry.get("order_archive_dir")
+        if not isinstance(order, shower_batch.ProcessOrder) or not isinstance(archive_dir, Path):
+            return [], ["The selected archive row does not contain a valid archive destination."]
+        warnings: list[str] = []
+        returned: list[Path] = []
+        try:
+            active_files = cls.matching_order_files(
+                Path(order_folder),
+                [order],
+                root_only=True,
+                inspect_pdf_text=True,
+            )
+        except Exception as exc:
+            return [], [f"Could not identify active files for A&W {order.aw_order}: {exc}"]
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        for source in active_files:
+            destination = archive_dir / source.name
+            try:
+                if destination.exists() and destination.is_file():
+                    same = (
+                        destination.stat().st_size == source.stat().st_size
+                        and cls.sha256_file(destination) == cls.sha256_file(source)
+                    )
+                    if same:
+                        source.unlink()
+                        returned.append(destination)
+                        continue
+                    destination = cls.unique_target_path(destination)
+                returned.append(cls.move_file_to_folder(source, archive_dir))
+            except OSError as exc:
+                warnings.append(f"Could not return {source.name} to {archive_dir.name}: {exc}")
+
+        process_root = Path(process_list_path)
+        if process_root.suffix:
+            process_root = process_root.parent
+        generated = process_root / cls.archive_test_process_list_name(order)
+        try:
+            generated.unlink(missing_ok=True)
+        except OSError as exc:
+            warnings.append(f"Could not remove {generated.name}: {exc}")
+
+        # Also return an original process list if an operator manually moved it
+        # out of the archive instead of using Restore for Testing.
+        raw_process_files = entry.get("process_list_files", [])
+        for archived_process in raw_process_files if isinstance(raw_process_files, list) else []:
+            if not isinstance(archived_process, Path):
+                continue
+            active_process = process_root / archived_process.name
+            if not active_process.exists() or not active_process.is_file():
+                continue
+            try:
+                if archived_process.exists() and archived_process.is_file():
+                    same = (
+                        archived_process.stat().st_size == active_process.stat().st_size
+                        and cls.sha256_file(archived_process) == cls.sha256_file(active_process)
+                    )
+                    if same:
+                        active_process.unlink()
+                        returned.append(archived_process)
+                        continue
+                returned.append(cls.move_file_to_folder(active_process, archived_process.parent))
+            except OSError as exc:
+                warnings.append(f"Could not return process list {active_process.name}: {exc}")
+        return returned, warnings
+
+    def load_archive_settings_inventory(
+        self,
+        order_folder: Path,
+        process_list_root: Path,
+        output_dir: Path,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        """Load and enrich archived-input rows without touching Tk widgets."""
+        loaded_inventory, loaded_warnings = self.archived_order_inventory(
+            order_folder,
+            process_list_root,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        try:
+            history = self.load_processing_history_for_output(output_dir)
+        except Exception:
+            history = {"orders": {}}
+        try:
+            active_candidates = [
+                path for path in order_folder.iterdir()
+                if path.is_file() and path.suffix.lower() in self.ORDER_FILE_EXTENSIONS
+            ]
+        except OSError:
+            active_candidates = []
+
+        for entry in loaded_inventory:
+            order = entry.get("order")
+            if not isinstance(order, shower_batch.ProcessOrder):
+                continue
+            history_entry = self.history_entry_from_data(history, str(order.aw_order))
+            sent_at = str(history_entry.get("sent_at", "")).strip()
+            if sent_at:
+                try:
+                    stamp = datetime.fromisoformat(sent_at)
+                    sent_summary = f"Sent {stamp:%m/%d/%y}"
+                except ValueError:
+                    sent_summary = "Sent"
+            else:
+                sent_summary = "No"
+            entry["_sent_at"] = sent_at
+            entry["_sent_summary"] = sent_summary
+            try:
+                entry["_active_copy"] = bool(
+                    self.matching_order_files(
+                        order_folder,
+                        [order],
+                        root_only=True,
+                        inspect_pdf_text=False,
+                        candidate_files=active_candidates,
+                    )
+                )
+            except Exception:
+                entry["_active_copy"] = False
+        return loaded_inventory, loaded_warnings
+
+    def load_archive_run_settings_inventory(
+        self,
+        output_dir: Path,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        """Load run folders and correlate processing-history order rows."""
+        runs, warnings = self.archived_run_inventory(
+            output_dir,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        by_path: dict[str, dict[str, object]] = {}
+        for run in runs:
+            run_folder = run.get("run_folder")
+            if not isinstance(run_folder, Path):
+                continue
+            try:
+                key = os.path.normcase(str(run_folder.resolve()))
+            except OSError:
+                key = os.path.normcase(str(run_folder))
+            by_path[key] = run
+        try:
+            history = self.load_processing_history_for_output(output_dir)
+        except Exception:
+            history = {"orders": {}}
+        orders_data = history.get("orders", {}) if isinstance(history, dict) else {}
+        if isinstance(orders_data, dict):
+            for aw_order, raw_entry in orders_data.items():
+                if not isinstance(raw_entry, dict):
+                    continue
+                run_value = str(raw_entry.get("run_folder", "")).strip()
+                if not run_value:
+                    continue
+                run_folder = Path(run_value)
+                if not run_folder.is_absolute():
+                    run_folder = Path(output_dir) / run_folder
+                try:
+                    key = os.path.normcase(str(run_folder.resolve()))
+                except OSError:
+                    key = os.path.normcase(str(run_folder))
+                run = by_path.get(key)
+                if run is None:
+                    continue
+                order_rows = run.setdefault("orders", [])
+                if not isinstance(order_rows, list):
+                    continue
+                order_rows.append(
+                    {
+                        "aw_order": str(aw_order),
+                        "last_processed": str(raw_entry.get("last_processed", "")),
+                        "status": str(raw_entry.get("status", "")),
+                        "sent_at": str(raw_entry.get("sent_at", "")),
+                        "remake_items": raw_entry.get("remake_items"),
+                        "output_pdf": str(raw_entry.get("output_pdf", "")),
+                    }
+                )
+        for run in runs:
+            order_rows = run.get("orders", [])
+            if isinstance(order_rows, list):
+                order_rows.sort(key=lambda row: self.natural_sort_key(row.get("aw_order", "")))
+        return runs, warnings
+
+    def build_archive_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        """Browse recent archives quickly, grouped by batch, with on-demand paging."""
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Archive Browser",
+            font=("Segoe UI", 18, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            header,
+            text=(
+                "Starts with the most recent seven days. Filter by date, search the loaded records, "
+                "sort by a column, or load another seven days when older history is needed."
+            ),
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        initial_from = today - timedelta(days=6)
+        mode_var = tk.StringVar(value="Orders / Sketch Archives")
+        search_var = tk.StringVar(value="")
+        from_var = tk.StringVar(value=f"{initial_from.month}/{initial_from.day}/{initial_from.year}")
+        to_var = tk.StringVar(value=f"{today.month}/{today.day}/{today.year}")
+        sent_filter_var = tk.StringVar(value="All sent states")
+        active_filter_var = tk.StringVar(value="All input states")
+
+        filters = ctk.CTkFrame(parent, fg_color="transparent")
+        filters.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        filters.grid_columnconfigure(1, weight=1)
+        mode_menu = ctk.CTkOptionMenu(
+            filters,
+            variable=mode_var,
+            values=["Orders / Sketch Archives", "Processing Runs"],
+            width=190,
+            height=34,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        mode_menu.grid(row=0, column=0, padx=(0, 8), sticky="w")
+        search_entry = ctk.CTkEntry(
+            filters,
+            textvariable=search_var,
+            height=34,
+            placeholder_text="Search A&W order, job, customer, batch/run, or archive date...",
+            fg_color=self.CARD_BG,
+            border_color=self.BORDER,
+            text_color=self.TEXT,
+        )
+        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        sent_menu = ctk.CTkOptionMenu(
+            filters,
+            variable=sent_filter_var,
+            values=["All sent states", "Sent only", "Not sent"],
+            width=132,
+            height=34,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        sent_menu.grid(row=0, column=2, padx=(0, 8))
+        active_menu = ctk.CTkOptionMenu(
+            filters,
+            variable=active_filter_var,
+            values=["All input states", "In Input", "Not in Input"],
+            width=140,
+            height=34,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        active_menu.grid(row=0, column=3)
+
+        date_row = ctk.CTkFrame(filters, fg_color="transparent")
+        date_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(7, 0))
+        date_row.grid_columnconfigure(6, weight=1)
+        ctk.CTkLabel(date_row, text="Archive date", font=("Segoe UI", 10, "bold"), text_color=self.MUTED).grid(row=0, column=0, padx=(0, 6))
+        from_entry = ctk.CTkEntry(date_row, textvariable=from_var, width=118, height=32, placeholder_text="From")
+        from_entry.grid(row=0, column=1, padx=(0, 5))
+        ctk.CTkLabel(date_row, text="to", font=("Segoe UI", 10), text_color=self.MUTED).grid(row=0, column=2, padx=(0, 5))
+        to_entry = ctk.CTkEntry(date_row, textvariable=to_var, width=118, height=32, placeholder_text="To / blank for single date")
+        to_entry.grid(row=0, column=3, padx=(0, 7))
+
+        body = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        body.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        columns = ("archive", "aw", "job", "customer", "files", "sent", "active")
+        tree = ttk.Treeview(body, columns=columns, show="tree headings", selectmode="browse", style="Orders.Treeview")
+        tree.column("#0", width=245, minwidth=180, stretch=True)
+        tree.column("archive", width=102, minwidth=88, stretch=False)
+        tree.column("aw", width=92, minwidth=78, stretch=False)
+        tree.column("job", width=250, minwidth=150, stretch=True)
+        tree.column("customer", width=190, minwidth=130, stretch=True)
+        tree.column("files", width=78, minwidth=62, anchor=tk.CENTER, stretch=False)
+        tree.column("sent", width=126, minwidth=96, stretch=False)
+        tree.column("active", width=92, minwidth=76, anchor=tk.CENTER, stretch=False)
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
+        scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
+
+        rows: dict[str, dict[str, object]] = {}
+        inventories: dict[str, list[dict[str, object]]] = {
+            "Orders / Sketch Archives": [],
+            "Processing Runs": [],
+        }
+        inventory_warnings: dict[str, list[str]] = {
+            "Orders / Sketch Archives": [],
+            "Processing Runs": [],
+        }
+        loaded_ranges: dict[str, tuple[datetime, datetime] | None] = {
+            "Orders / Sketch Archives": None,
+            "Processing Runs": None,
+        }
+        archive_status_var = tk.StringVar(value="Loading the most recent seven days in the background...")
+        archive_result_queue: queue.Queue[dict[str, object]] = queue.Queue()
+        refresh_inflight: set[str] = set()
+        sort_column = "archive"
+        sort_descending = True
+        request_serial = 0
+
+        def current_mode() -> str:
+            return str(mode_var.get() or "Orders / Sketch Archives")
+
+        def active_copy_exists(entry: dict[str, object]) -> bool:
+            return bool(entry.get("_active_copy", False))
+
+        def heading_labels() -> dict[str, str]:
+            if current_mode() == "Processing Runs":
+                return {
+                    "#0": "Batch / Run",
+                    "archive": "Run Date",
+                    "aw": "A&W",
+                    "job": "Processed",
+                    "customer": "Status",
+                    "files": "Outputs",
+                    "sent": "Sketch",
+                    "active": "Programs",
+                }
+            return {
+                "#0": "Batch / Process List",
+                "archive": "Archive Date",
+                "aw": "A&W",
+                "job": "Job",
+                "customer": "Customer",
+                "files": "Files",
+                "sent": "Sent",
+                "active": "In Input",
+            }
+
+        def refresh_headings() -> None:
+            labels = heading_labels()
+            for column in ("#0", *columns):
+                direction = ""
+                if column == sort_column:
+                    direction = "desc" if sort_descending else "asc"
+                tree.heading(
+                    column,
+                    text=self.order_tree_heading_text(labels[column], direction),
+                    anchor=tk.CENTER,
+                    command=lambda selected=column: sort_by_column(selected),
+                )
+
+        def entry_matches_filters(entry: dict[str, object]) -> bool:
+            if current_mode() != "Orders / Sketch Archives":
+                return True
+            sent_filter = sent_filter_var.get()
+            sent = bool(str(entry.get("_sent_at", "")).strip())
+            if sent_filter == "Sent only" and not sent:
+                return False
+            if sent_filter == "Not sent" and sent:
+                return False
+            active_filter = active_filter_var.get()
+            active = active_copy_exists(entry)
+            if active_filter == "In Input" and not active:
+                return False
+            if active_filter == "Not in Input" and active:
+                return False
+            return True
+
+        def order_entry_values(entry: dict[str, object]) -> tuple[object, ...]:
+            order = entry.get("order")
+            if not isinstance(order, shower_batch.ProcessOrder):
+                return ("", "", "", "", "", "", "")
+            raw_files = entry.get("order_files", [])
+            file_count = len([path for path in raw_files if isinstance(path, Path)]) if isinstance(raw_files, list) else 0
+            return (
+                str(entry.get("archive_name", "")),
+                order.aw_order,
+                order.job_name,
+                order.customer,
+                file_count,
+                str(entry.get("_sent_summary", "No")),
+                "Yes" if active_copy_exists(entry) else "No",
+            )
+
+        def run_order_values(run: dict[str, object], order_row: dict[str, object]) -> tuple[object, ...]:
+            output_pdf = Path(str(order_row.get("output_pdf", ""))) if str(order_row.get("output_pdf", "")).strip() else None
+            sketch_ready = bool(output_pdf and output_pdf.exists())
+            run_folder = run.get("run_folder")
+            aw_order = str(order_row.get("aw_order", ""))
+            program_count = 0
+            if isinstance(run_folder, Path):
+                try:
+                    program_count = len(list((run_folder / "Programs").glob(f"{aw_order}*.dxf")))
+                except OSError:
+                    program_count = 0
+            total_outputs = int(sketch_ready) + program_count
+            return (
+                str(run.get("archive_name", "")),
+                aw_order,
+                str(order_row.get("last_processed", "")),
+                str(order_row.get("status", "")),
+                total_outputs,
+                "Yes" if sketch_ready else "No",
+                program_count,
+            )
+
+        def child_sort_key(values: tuple[object, ...]) -> tuple[int, object]:
+            if sort_column == "#0":
+                return self.archive_browser_sort_value("", "job")
+            index = columns.index(sort_column)
+            return self.archive_browser_sort_value(values[index], sort_column)
+
+        def group_sort_key(group: dict[str, object]) -> tuple[int, object]:
+            if sort_column == "#0":
+                return self.archive_browser_sort_value(group.get("batch_name", ""), "job")
+            if sort_column == "archive":
+                return self.archive_browser_sort_value(group.get("archive_name", ""), "archive")
+            return self.archive_browser_sort_value(group.get("archive_name", ""), "archive")
+
+        def render() -> None:
+            tree.delete(*tree.get_children())
+            rows.clear()
+            mode = current_mode()
+            query = search_var.get().strip().casefold()
+            auto_open = bool(query or sent_filter_var.get() != "All sent states" or active_filter_var.get() != "All input states")
+            groups: list[dict[str, object]] = []
+
+            if mode == "Orders / Sketch Archives":
+                grouped: dict[tuple[str, str], dict[str, object]] = {}
+                for entry in inventories[mode]:
+                    if not entry_matches_filters(entry):
+                        continue
+                    order = entry.get("order")
+                    if not isinstance(order, shower_batch.ProcessOrder):
+                        continue
+                    batch_name = str(entry.get("batch_name", "Archived Process List"))
+                    haystack = " ".join((
+                        str(entry.get("archive_name", "")),
+                        batch_name,
+                        str(order.aw_order),
+                        order.job_name,
+                        order.customer,
+                    )).casefold()
+                    if query and query not in haystack:
+                        continue
+                    key = (str(entry.get("archive_name", "")), batch_name)
+                    group = grouped.setdefault(
+                        key,
+                        {
+                            "archive_name": key[0],
+                            "batch_name": batch_name,
+                            "children": [],
+                        },
+                    )
+                    group["children"].append(entry)
+                groups = list(grouped.values())
+            else:
+                for run in inventories[mode]:
+                    batch_name = str(run.get("batch_name", "Run"))
+                    order_rows = run.get("orders", [])
+                    filtered_orders: list[dict[str, object]] = []
+                    if isinstance(order_rows, list):
+                        for order_row in order_rows:
+                            if not isinstance(order_row, dict):
+                                continue
+                            haystack = " ".join((
+                                str(run.get("archive_name", "")),
+                                batch_name,
+                                str(order_row.get("aw_order", "")),
+                                str(order_row.get("last_processed", "")),
+                                str(order_row.get("status", "")),
+                            )).casefold()
+                            if not query or query in haystack:
+                                filtered_orders.append(order_row)
+                    batch_match = not query or query in f"{run.get('archive_name', '')} {batch_name}".casefold()
+                    if query and not filtered_orders and not batch_match:
+                        continue
+                    groups.append({**run, "children": filtered_orders if query else list(order_rows) if isinstance(order_rows, list) else []})
+
+            groups.sort(key=group_sort_key, reverse=sort_descending if sort_column in {"#0", "archive"} else True)
+            for group in groups:
+                children = group.get("children", [])
+                parent_values: tuple[object, ...]
+                if mode == "Processing Runs":
+                    outputs = int(group.get("sketch_count", 0) or 0) + int(group.get("program_count", 0) or 0) + int(group.get("report_count", 0) or 0)
+                    parent_values = (
+                        str(group.get("archive_name", "")),
+                        "",
+                        str(group.get("created", "")),
+                        f"{len(children) if isinstance(children, list) else 0} order(s)",
+                        outputs,
+                        int(group.get("sketch_count", 0) or 0),
+                        int(group.get("program_count", 0) or 0),
+                    )
+                else:
+                    file_total = 0
+                    if isinstance(children, list):
+                        for child in children:
+                            if isinstance(child, dict):
+                                raw_files = child.get("order_files", [])
+                                if isinstance(raw_files, list):
+                                    file_total += len([path for path in raw_files if isinstance(path, Path)])
+                    parent_values = (str(group.get("archive_name", "")), "", "", f"{len(children)} order(s)", file_total, "", "")
+                parent_id = tree.insert(
+                    "",
+                    tk.END,
+                    text=str(group.get("batch_name", "")),
+                    values=parent_values,
+                    open=auto_open,
+                    tags=("BATCH",),
+                )
+                rows[parent_id] = {"kind": "batch", "mode": mode, **group}
+                child_rows: list[tuple[tuple[object, ...], dict[str, object]]] = []
+                if isinstance(children, list):
+                    for child in children:
+                        if not isinstance(child, dict):
+                            continue
+                        values = order_entry_values(child) if mode == "Orders / Sketch Archives" else run_order_values(group, child)
+                        child_rows.append((values, child))
+                if sort_column not in {"#0", "archive"}:
+                    child_rows.sort(key=lambda item: child_sort_key(item[0]), reverse=sort_descending)
+                else:
+                    child_rows.sort(key=lambda item: self.natural_sort_key(item[0][1]), reverse=False)
+                for values, child in child_rows:
+                    row_id = tree.insert(parent_id, tk.END, text="Order", values=values)
+                    rows[row_id] = child if mode == "Orders / Sketch Archives" else {"kind": "run_order", "run": group, "order_row": child}
+
+            status = f"Showing {len(groups)} batch/run group(s) from {len(inventories[mode])} loaded archive record(s)."
+            archive_status_var.set(status)
+
+        def sort_by_column(column: str) -> None:
+            nonlocal sort_column, sort_descending
+            if sort_column == column:
+                sort_descending = not sort_descending
+            else:
+                sort_column = column
+                sort_descending = column == "archive"
+            refresh_headings()
+            render()
+            label = heading_labels().get(column, column)
+            self.status_var.set(f"Sorted Archives by {label}, {'descending' if sort_descending else 'ascending'}.")
+
+        def update_mode_controls() -> None:
+            archive_mode = current_mode() == "Orders / Sketch Archives"
+            state = "normal" if archive_mode else "disabled"
+            try:
+                sent_menu.configure(state=state)
+                active_menu.configure(state=state)
+            except (tk.TclError, ValueError):
+                pass
+            refresh_headings()
+
+        def start_load(
+            date_from: datetime,
+            date_to: datetime,
+            *,
+            replace: bool,
+        ) -> None:
+            nonlocal request_serial
+            mode = current_mode()
+            if mode in refresh_inflight:
+                archive_status_var.set(f"{mode} is already loading...")
+                return
+            try:
+                order_folder = Path(self.folder_var.get()).resolve()
+                process_list_root = Path(self.process_list_var.get()).resolve()
+                output_dir = Path(self.output_dir_var.get()).resolve()
+            except Exception as exc:
+                archive_status_var.set(f"Archive history could not start: {exc}")
+                return
+            request_serial += 1
+            request_id = request_serial
+            refresh_inflight.add(mode)
+            archive_status_var.set(
+                f"Loading {mode.lower()} for {date_from:%m/%d/%Y} through {date_to:%m/%d/%Y}..."
+            )
+
+            def worker() -> None:
+                try:
+                    if mode == "Processing Runs":
+                        loaded, warnings = self.load_archive_run_settings_inventory(
+                            output_dir,
+                            date_from=date_from,
+                            date_to=date_to,
+                        )
+                    else:
+                        loaded, warnings = self.load_archive_settings_inventory(
+                            order_folder,
+                            process_list_root,
+                            output_dir,
+                            date_from=date_from,
+                            date_to=date_to,
+                        )
+                except Exception as exc:
+                    loaded, warnings = [], [str(exc)]
+                archive_result_queue.put(
+                    {
+                        "request_id": request_id,
+                        "mode": mode,
+                        "replace": replace,
+                        "date_from": date_from,
+                        "date_to": date_to,
+                        "inventory": loaded,
+                        "warnings": warnings,
+                    }
+                )
+
+            threading.Thread(target=worker, name="shower-settings-archive-load", daemon=True).start()
+            dialog.after(100, poll_archive_refresh)
+
+        def poll_archive_refresh() -> None:
+            try:
+                payload = archive_result_queue.get_nowait()
+            except queue.Empty:
+                try:
+                    if dialog.winfo_exists():
+                        dialog.after(100, poll_archive_refresh)
+                except tk.TclError:
+                    pass
+                return
+            mode = str(payload.get("mode", "Orders / Sketch Archives"))
+            refresh_inflight.discard(mode)
+            loaded = payload.get("inventory", [])
+            warnings = payload.get("warnings", [])
+            if not isinstance(loaded, list):
+                loaded = []
+            if not isinstance(warnings, list):
+                warnings = []
+            if bool(payload.get("replace", True)):
+                inventories[mode] = loaded
+                inventory_warnings[mode] = warnings
+                loaded_ranges[mode] = (payload["date_from"], payload["date_to"])
+            else:
+                existing_keys: set[tuple[str, str, str]] = set()
+                for entry in inventories[mode]:
+                    if mode == "Processing Runs":
+                        existing_keys.add((str(entry.get("archive_name", "")), str(entry.get("batch_name", "")), ""))
+                    else:
+                        order = entry.get("order")
+                        existing_keys.add((str(entry.get("archive_name", "")), str(entry.get("batch_name", "")), str(getattr(order, "aw_order", ""))))
+                for entry in loaded:
+                    if mode == "Processing Runs":
+                        key = (str(entry.get("archive_name", "")), str(entry.get("batch_name", "")), "")
+                    else:
+                        order = entry.get("order")
+                        key = (str(entry.get("archive_name", "")), str(entry.get("batch_name", "")), str(getattr(order, "aw_order", "")))
+                    if key not in existing_keys:
+                        inventories[mode].append(entry)
+                        existing_keys.add(key)
+                inventory_warnings[mode].extend(warnings)
+                prior = loaded_ranges.get(mode)
+                if prior is None:
+                    loaded_ranges[mode] = (payload["date_from"], payload["date_to"])
+                else:
+                    loaded_ranges[mode] = (min(prior[0], payload["date_from"]), max(prior[1], payload["date_to"]))
+            try:
+                if not dialog.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if mode == current_mode():
+                render()
+                notes = inventory_warnings[mode]
+                archive_status_var.set(
+                    f"Loaded {len(inventories[mode])} archive record(s)"
+                    + (f" with {len(notes)} note(s)." if notes else ".")
+                )
+            self.status_var.set(f"Archive browser loaded {len(inventories[mode])} record(s) for {mode}.")
+
+        def apply_date_filter() -> None:
+            try:
+                date_from, date_to = self.normalize_archive_date_filter(from_var.get(), to_var.get())
+            except ValueError as exc:
+                messagebox.showerror("Invalid archive date", str(exc), parent=dialog)
+                return
+            from_var.set(f"{date_from.month}/{date_from.day}/{date_from.year}")
+            to_var.set(f"{date_to.month}/{date_to.day}/{date_to.year}")
+            start_load(date_from, date_to, replace=True)
+
+        def reset_last_seven_days() -> None:
+            current_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_from = current_today - timedelta(days=6)
+            from_var.set(f"{date_from.month}/{date_from.day}/{date_from.year}")
+            to_var.set(f"{current_today.month}/{current_today.day}/{current_today.year}")
+            start_load(date_from, current_today, replace=True)
+
+        def load_more() -> None:
+            mode = current_mode()
+            loaded_range = loaded_ranges.get(mode)
+            if loaded_range is None:
+                apply_date_filter()
+                return
+            current_start, _current_end = loaded_range
+            next_end = current_start - timedelta(days=1)
+            next_start = next_end - timedelta(days=6)
+            from_var.set(f"{next_start.month}/{next_start.day}/{next_start.year}")
+            start_load(next_start, next_end, replace=False)
+
+        def selected_entry() -> dict[str, object] | None:
+            selection = tree.selection()
+            if not selection:
+                return None
+            entry = rows.get(selection[0])
+            if current_mode() != "Orders / Sketch Archives" or not isinstance(entry, dict):
+                return None
+            return entry if isinstance(entry.get("order"), shower_batch.ProcessOrder) else None
+
+        def restore_selected() -> None:
+            entry = selected_entry()
+            if entry is None:
+                messagebox.showinfo("Select archived order", "Select an order row under a collapsed batch first.", parent=dialog)
+                return
+            order = entry.get("order")
+            assert isinstance(order, shower_batch.ProcessOrder)
+            restored, process_file, warnings = self.copy_archived_order_for_testing(
+                entry,
+                Path(self.folder_var.get()).resolve(),
+                Path(self.process_list_var.get()).resolve(),
+            )
+            entry["_active_copy"] = bool(restored)
+            render()
+            self.scan_orders()
+            message = (
+                f"A&W {order.aw_order} is ready for archive testing.\n\n"
+                f"Order files copied: {len(restored)}\n"
+                f"Scoped process list: {process_file.name if process_file else 'Not created'}\n\n"
+                "The original dated archive was not modified."
+            )
+            if warnings:
+                message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:6])
+            messagebox.showinfo("Archived order restored for testing", message, parent=dialog)
+
+        def return_selected() -> None:
+            entry = selected_entry()
+            if entry is None:
+                messagebox.showinfo("Select archived order", "Select an order row under a batch first.", parent=dialog)
+                return
+            order = entry.get("order")
+            assert isinstance(order, shower_batch.ProcessOrder)
+            if not messagebox.askyesno(
+                "Return active copies to archive?",
+                f"Return active Input copies for A&W {order.aw_order} to archive {entry.get('archive_name', '')}?\n\n"
+                "The dated archive copy is preserved. A generated Archive Test process list will be removed.",
+                parent=dialog,
+            ):
+                return
+            returned, warnings = self.return_archived_order_to_archive(
+                entry,
+                Path(self.folder_var.get()).resolve(),
+                Path(self.process_list_var.get()).resolve(),
+            )
+            entry["_active_copy"] = False
+            render()
+            self.scan_orders()
+            message = f"Returned/removed {len(returned)} active file(s) for A&W {order.aw_order}."
+            if warnings:
+                message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:6])
+            messagebox.showinfo("Archive return complete", message, parent=dialog)
+
+        def archive_sent_inputs() -> None:
+            if current_mode() != "Orders / Sketch Archives":
+                messagebox.showinfo("Switch archive view", "Archive Sent Inputs is available in Orders / Sketch Archives.", parent=dialog)
+                return
+            candidates = [
+                entry
+                for entry in inventories[current_mode()]
+                if isinstance(entry.get("order"), shower_batch.ProcessOrder)
+                and str(entry.get("_sent_at", "")).strip()
+                and active_copy_exists(entry)
+            ]
+            if not candidates:
+                messagebox.showinfo(
+                    "No sent inputs to archive",
+                    "No active Input files were found for the loaded archived orders that are already marked Sent.",
+                    parent=dialog,
+                )
+                return
+            if not messagebox.askyesno(
+                "Archive already-sent inputs?",
+                f"Found {len(candidates)} already-sent archived order(s) with files currently in Input.\n\n"
+                "Return those active copies to their dated archives now?",
+                parent=dialog,
+            ):
+                return
+            returned_count = 0
+            warnings: list[str] = []
+            for entry in candidates:
+                returned, entry_warnings = self.return_archived_order_to_archive(
+                    entry,
+                    Path(self.folder_var.get()).resolve(),
+                    Path(self.process_list_var.get()).resolve(),
+                )
+                returned_count += len(returned)
+                warnings.extend(entry_warnings)
+                entry["_active_copy"] = False
+            render()
+            self.scan_orders()
+            message = f"Returned/removed {returned_count} active file(s) for {len(candidates)} already-sent order(s)."
+            if warnings:
+                message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+            messagebox.showinfo("Sent inputs archived", message, parent=dialog)
+
+        def mode_changed(_value: str | None = None) -> None:
+            update_mode_controls()
+            mode = current_mode()
+            if loaded_ranges[mode] is None and mode not in refresh_inflight:
+                try:
+                    date_from, date_to = self.normalize_archive_date_filter(from_var.get(), to_var.get())
+                except ValueError:
+                    date_to = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                    date_from = date_to - timedelta(days=6)
+                start_load(date_from, date_to, replace=True)
+            else:
+                render()
+
+        mode_menu.configure(command=mode_changed)
+        search_var.trace_add("write", lambda *_args: render())
+        sent_filter_var.trace_add("write", lambda *_args: render())
+        active_filter_var.trace_add("write", lambda *_args: render())
+
+        self.make_tool_button(date_row, "Apply Dates", "refresh", apply_date_filter, width=112).grid(row=0, column=4, padx=(0, 7))
+        self.make_tool_button(date_row, "Last 7 Days", "history", reset_last_seven_days, width=112).grid(row=0, column=5, padx=(0, 7))
+        ctk.CTkLabel(
+            date_row,
+            text="Leave either From or To blank to search one date.",
+            font=("Segoe UI", 9),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=0, column=6, sticky="w")
+
+        footer = ctk.CTkFrame(parent, fg_color="transparent")
+        footer.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        footer.grid_columnconfigure(1, weight=1)
+        self.make_tool_button(footer, "Refresh Range", "refresh", apply_date_filter, width=120).grid(row=0, column=0, sticky="w")
+        self.make_tool_button(footer, "Load 7 More Days", "history", load_more, width=142).grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.make_tool_button(footer, "Archive Sent Inputs", "archive", archive_sent_inputs, width=164).grid(row=0, column=2, padx=(8, 0))
+        self.make_tool_button(footer, "Return to Archive", "archive", return_selected, width=148).grid(row=0, column=3, padx=(8, 0))
+        ctk.CTkButton(
+            footer,
+            text="Restore for Testing",
+            command=restore_selected,
+            width=158,
+            height=36,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("restore", 15, "#ffffff", "left"),
+        ).grid(row=0, column=4, padx=(8, 0))
+        ctk.CTkLabel(
+            footer,
+            textvariable=archive_status_var,
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=5, sticky="ew", pady=(8, 0))
+
+        update_mode_controls()
+        refresh_headings()
+        refresh = reset_last_seven_days
+        dialog.after(100, refresh)
 
     def build_recovery_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -19090,7 +21035,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("undo", 14, "#ffffff", "left"),
         ).grid(row=0, column=2, padx=(8, 0))
-        refresh()
+        dialog.after(250, refresh)
 
     def build_configuration_backup_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -19672,7 +21617,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         query_entry.bind("<Return>", lambda _event: refresh_history())
         scope_control.configure(command=lambda _value: refresh_history())
         tree.bind("<<TreeviewSelect>>", show_details)
-        refresh_history()
+        parent.after(350, refresh_history)
 
     def open_action_history(self) -> None:
         self.open_settings("Action History")
@@ -21105,6 +23050,13 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "indicator_text_cutout_avoidance": True,
                 "diamon_fusion_glass_measurement_corridor": True,
                 "version_0_91_review_stability_placement": True,
+                "review_workspace_native_maximize": True,
+                "overview_text_editing": True,
+                "resume_sketch_editing_after_refresh": True,
+                "denver_indicator_glass_containment": True,
+                "waterjet_indicator_position_stability": True,
+                "fixed_large_diamon_fusion": True,
+                "version_0_92_review_workspace_editing": True,
                 "manual_sketch_save_reenables_output": True,
                 "dxf_reprocess_lock_guard": True,
                 "single_page_window_guard": True,

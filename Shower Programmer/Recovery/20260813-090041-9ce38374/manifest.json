@@ -1,0 +1,56 @@
+{
+  "allowed_roots": [
+    "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders"
+  ],
+  "bundle_id": "20260813-090041-9ce38374",
+  "created_at": "2026-08-13T09:00:41",
+  "expires_at": "2026-08-20T09:00:41",
+  "files": [
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89580521M 316 FOXCHASE_1.dxf",
+      "quarantined_path": "files\\root-1\\89580521M 316 FOXCHASE_1.dxf",
+      "restored": false,
+      "size": 8178
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89580521M 316 FOXCHASE_1__38 Clear Annealed 16-38 x 10-14  (5.7lb).dxf",
+      "quarantined_path": "files\\root-1\\89580521M 316 FOXCHASE_1__38 Clear Annealed 16-38 x 10-14  (5.7lb).dxf",
+      "restored": false,
+      "size": 8428
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89580521M 316 FOXCHASE_2.dxf",
+      "quarantined_path": "files\\root-1\\89580521M 316 FOXCHASE_2.dxf",
+      "restored": false,
+      "size": 8178
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89580521M 316 FOXCHASE_2__38 Clear Annealed 16-38 x 13-14  (7.4lb).dxf",
+      "quarantined_path": "files\\root-1\\89580521M 316 FOXCHASE_2__38 Clear Annealed 16-38 x 13-14  (7.4lb).dxf",
+      "restored": false,
+      "size": 8428
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89580521M 316 FOXCHASE_3.dxf",
+      "quarantined_path": "files\\root-1\\89580521M 316 FOXCHASE_3.dxf",
+      "restored": false,
+      "size": 8167
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89580521M 316 FOXCHASE_3__38 Clear Annealed 41-716 x 12-12  (17.7lb).dxf",
+      "quarantined_path": "files\\root-1\\89580521M 316 FOXCHASE_3__38 Clear Annealed 41-716 x 12-12  (17.7lb).dxf",
+      "restored": false,
+      "size": 8417
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order 89580521M 316 FOXCHASE.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order 89580521M 316 FOXCHASE.pdf",
+      "restored": false,
+      "size": 130419
+    }
+  ],
+  "orders": [
+    "INPUT-1A4B38BA"
+  ],
+  "schema": 1
+}
