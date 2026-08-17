@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 237462
+Job/SO: 89580521M 316 FOXCHASE
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260814-114940-BATCH-Batch_6337.xls\Input\Orders\Glass Order 89580521M 316 FOXCHASE.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260814-114940-BATCH-Batch_6337.xls\Output\Runs\8.14.26\Batch_6337\Sketches\237462.pdf
+
+Items:
+- P1: 237462.1 | label only | 16.375 x 10.25
+  reasons: no cutouts/fabrication detected, unlabeled piece page mapped to P1 from process list, process list has no cutting machine
+  dxf: skipped
+- P2: 237462.2 | label only | 16.375 x 13.25
+  reasons: no cutouts/fabrication detected, unlabeled piece page mapped to P2 from process list, process list has no cutting machine
+  dxf: skipped
+- P3: 237462.3 | label only | 41.4375 x 12.5
+  reasons: no cutouts/fabrication detected, unlabeled piece page mapped to P3 from process list, process list has no cutting machine
+  dxf: skipped

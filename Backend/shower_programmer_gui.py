@@ -27,6 +27,17 @@
 # REVIEW_ARCHIVE_REMAKE_USABILITY_V94: overview text sizing, archive test restore, readable dialogs, and remake reliability.
 # BACKGROUND_RESPONSIVENESS_V95: threaded order cleanup, live cleanup progress, and non-blocking archive settings load.
 # FAST_FILTERED_ARCHIVE_BROWSER_V96: seven-day archive paging, batch grouping, date filters, run browsing, and sortable archive columns.
+# VISUAL_POLISH_BATCH_ARCHIVE_ACTIONS_V99: polished surfaces, network quick access, and batch-level archive/Test Mode actions.
+# OPERATOR_AUDIT_TEST_MODE_POLISH_V100: bordered table headers, isolated batch Test Mode scans, complete order action audit, and history filters.
+# TEST_MODE_VISIBILITY_DXF_DISPLAY_V114: persistent Test Mode banner/title state, close-time Test Mode exit, and concise DXF reference decimals.
+# ARCHIVE_MULTI_REVISION_XLS_POLISH_V115: deterministic synthetic Test Mode batches, faster XLS normalization, and concise four-decimal DXF reference text.
+# SETTINGS_NATIVE_SHELL_TEARDOWN_V102: verified Settings Toplevel destruction with raw Tcl fallback and stale-shell rejection.
+# SETTINGS_PERSISTENT_WITHDRAW_V103: Settings closes by hiding the intact Toplevel; non-primary tabs build lazily to avoid fragile destroy recursion.
+# SETTINGS_DATA_LIFECYCLE_V104: archive-local progress/error feedback plus reliable archive/history refresh after persistent Settings reopen.
+# HISTORY_RANGE_ARCHIVE_POLISH_V105: seven-day/date-windowed Action History, simplified Archives actions, and maximized Settings.
+# ACTION_HISTORY_DIAGNOSTICS_V106: repaired Action History tab construction and added visible file/stage diagnostics.
+# ARCHIVE_REVISION_HISTORY_POLISH_V107: collapsible Action History diagnostics and logical batch-revision consolidation.
+# ARCHIVE_BATCH_STATUS_DELETE_REFRESH_V108: batch sent/input summaries, deletion-scope-safe rescans, and richer dimension diagnostics.
 
 from __future__ import annotations
 
@@ -63,7 +74,10 @@ from openpyxl import Workbook
 
 import shower_batch
 import shower_cache
+import shower_errors
 import shower_programmer as programmer
+import shower_state
+import shower_tasks
 
 _SCRIPT_PROJECT_ROOT = programmer.project_root()
 
@@ -718,6 +732,7 @@ class ShowerProgrammerApp:
         self.remake_var = tk.BooleanVar(value=False)
         self.remake_items_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Scan the process list to begin.")
+        self.test_mode_banner_var = tk.StringVar(value="")
         self.activity_detail_var = tk.StringVar(value="")
         self.summary_var = tk.StringVar(value="Orders 0   Ready 0   Issues 0   Processed 0   Checked 0")
         self.summary_count_vars = {
@@ -739,6 +754,16 @@ class ShowerProgrammerApp:
         self.network_health_running = False
         self.network_health_after_id: str | None = None
         self.diagnostic_worker_active = False
+        self.state_store = shower_state.StateStore.for_output(self.internal_output_dir())
+        try:
+            self.state_store.migrate_processing_history(self.internal_output_dir() / "processing_history.json")
+        except Exception:
+            pass
+        self.task_manager = shower_tasks.BackgroundTaskManager(self.queue_task_event)
+        self._managed_task_handlers: dict[str, dict[str, Callable[..., None]]] = {}
+        self.test_mode_workspace: Path | None = None
+        self.test_mode_orders: list[shower_batch.ProcessOrder] = []
+        self._production_paths_before_test: tuple[str, str, str] | None = None
 
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -1492,6 +1517,48 @@ class ShowerProgrammerApp:
         launches[page_key] = now
         return False
 
+    @staticmethod
+    def dispatch_context_menu_action(
+        parent: tk.Widget,
+        command: object,
+        hide_popup: Callable[[], None],
+        destroy_popup: Callable[[], None],
+        *,
+        delay_ms: int = 20,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """Run the selected action immediately, then retire the hidden popup later.
+
+        Destructive order actions must not depend on the Treeview still having the
+        same selection after the context-menu Toplevel has been withdrawn.  The
+        command therefore runs synchronously after the popup is hidden, while the
+        potentially fragile CustomTkinter destruction is deferred until afterward.
+        """
+        try:
+            hide_popup()
+        except Exception:
+            pass
+
+        try:
+            if callable(command):
+                command()
+        except Exception as exc:
+            if on_error is not None:
+                on_error(exc)
+            else:
+                raise
+
+        def finish_popup_teardown() -> None:
+            try:
+                destroy_popup()
+            except Exception:
+                pass
+
+        try:
+            parent.after(delay_ms, finish_popup_teardown)
+        except Exception:
+            finish_popup_teardown()
+
     def close_active_themed_context_menu(self) -> None:
         binding = self.active_themed_context_binding
         if binding is not None:
@@ -1558,6 +1625,34 @@ class ShowerProgrammerApp:
         )
         shell.pack(fill=tk.BOTH, expand=True)
 
+        def retire_popup(*, destroy: bool) -> None:
+            """Hide the menu immediately and never let popup teardown block its action."""
+            if self.active_themed_context_popup is popup:
+                self.active_themed_context_popup = None
+            binding = self.active_themed_context_binding
+            if binding is not None:
+                widget, sequence, funcid = binding
+                try:
+                    widget.unbind(sequence, funcid)
+                except Exception:
+                    pass
+                if self.active_themed_context_binding == binding:
+                    self.active_themed_context_binding = None
+            try:
+                popup.withdraw()
+            except Exception:
+                pass
+            if not destroy:
+                return
+            try:
+                if popup.winfo_exists():
+                    popup.destroy()
+            except Exception:
+                # CustomTkinter descendant cleanup can occasionally raise after the
+                # visible menu is already gone. The command must still be allowed to
+                # run, so teardown failures are intentionally non-fatal here.
+                pass
+
         header = ctk.CTkFrame(shell, fg_color=self.SOFT_CARD_BG, corner_radius=10)
         header.pack(fill=tk.X, padx=8, pady=(8, 6))
         header.grid_columnconfigure(0, weight=1)
@@ -1578,7 +1673,7 @@ class ShowerProgrammerApp:
         ctk.CTkButton(
             header,
             text="",
-            command=popup.destroy,
+            command=lambda: retire_popup(destroy=True),
             width=28,
             height=28,
             corner_radius=8,
@@ -1601,15 +1696,21 @@ class ShowerProgrammerApp:
                 except tk.TclError:
                     pass
                 return
-            try:
-                popup.destroy()
-            except tk.TclError:
-                pass
-            if callable(command):
-                try:
-                    parent.after(20, command)
-                except tk.TclError:
-                    command()
+
+            # Hide and unregister the popup before dispatching the command, but do
+            # not destroy it first. A CustomTkinter destroy exception here used to
+            # prevent destructive order actions from ever reaching their handlers.
+            def report_context_action_error(exc: BaseException) -> None:
+                self.status_var.set(f"Context action failed: {exc}")
+                self.show_structured_error(exc, title="Order action failed")
+
+            self.dispatch_context_menu_action(
+                parent,
+                command,
+                lambda: retire_popup(destroy=False),
+                lambda: retire_popup(destroy=True),
+                on_error=report_context_action_error,
+            )
 
         for action in actions:
             if action.get("separator"):
@@ -1675,10 +1776,7 @@ class ShowerProgrammerApp:
             pass
 
         def close_menu(_event: tk.Event | None = None) -> str:
-            try:
-                popup.destroy()
-            except tk.TclError:
-                pass
+            retire_popup(destroy=True)
             return "break"
 
         # Do not close this popup on FocusOut. On initial review-window open,
@@ -2353,6 +2451,9 @@ class ShowerProgrammerApp:
         details: list[tuple[str, str]] | None = None,
         parent: tk.Widget | None = None,
         button_text: str = "Close",
+        secondary_button_text: str | None = None,
+        secondary_button_command: Callable[[], None] | None = None,
+        secondary_button_icon: str = "folder",
     ) -> None:
         """Display a clear theme-aware result dialog instead of a raw message box."""
         owner = parent.winfo_toplevel() if parent is not None else self.root
@@ -2472,6 +2573,19 @@ class ShowerProgrammerApp:
 
         button_row = ctk.CTkFrame(shell, fg_color="transparent")
         button_row.grid(row=next_row, column=0, columnspan=2, sticky="e", padx=14, pady=(0, 14))
+
+        def run_secondary_action() -> None:
+            if secondary_button_command is None:
+                return
+            try:
+                secondary_button_command()
+            except Exception as exc:
+                messagebox.showerror(
+                    secondary_button_text or "Action failed",
+                    str(exc),
+                    parent=dialog,
+                )
+
         ctk.CTkButton(
             button_row,
             text=button_text,
@@ -2485,6 +2599,22 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("check", 15, "#ffffff", "left"),
         ).pack(side=tk.RIGHT)
+        if secondary_button_text and secondary_button_command is not None:
+            ctk.CTkButton(
+                button_row,
+                text=secondary_button_text,
+                command=run_secondary_action,
+                width=124,
+                height=34,
+                corner_radius=10,
+                fg_color=self.SOFT_CARD_BG,
+                hover_color=self.ACCENT_LIGHT,
+                border_width=1,
+                border_color=self.BORDER,
+                text_color=self.TEXT,
+                font=("Segoe UI", 10, "bold"),
+                **self.ctk_button_icon(secondary_button_icon, 15, self.ACCENT_DARK, "left"),
+            ).pack(side=tk.RIGHT, padx=(0, 8))
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         dialog.bind("<Escape>", lambda _event: close_dialog())
@@ -2686,8 +2816,39 @@ class ShowerProgrammerApp:
             )
             if not should_close:
                 return
+        if getattr(self, "test_mode_workspace", None) is not None:
+            try:
+                self.exit_test_mode(rescan=False, closing=True)
+            except Exception as exc:
+                should_close = messagebox.askyesno(
+                    "Test Mode exit failed",
+                    "Shower Programmer could not fully exit Test Mode before closing.\n\n"
+                    f"{exc.__class__.__name__}: {exc}\n\n"
+                    "Choose No to keep the program open and correct the Test Mode state. "
+                    "Choose Yes to close anyway; the isolated Test Workspace will remain on disk.",
+                    icon="warning",
+                    parent=self.root,
+                )
+                if not should_close:
+                    return
         self.save_ui_settings()
-        self.root.destroy()
+        # Settings is intentionally persistent/withdrawn during normal use. Quit
+        # the Tk main loop first so application shutdown cannot be stranded by a
+        # descendant widget raising during recursive destruction.
+        settings_window = self.managed_page_window("settings")
+        if settings_window is not None:
+            try:
+                settings_window.withdraw()
+            except (AttributeError, tk.TclError):
+                pass
+        try:
+            self.root.quit()
+        except tk.TclError:
+            pass
+        try:
+            self.root.destroy()
+        except (AttributeError, tk.TclError, RuntimeError):
+            pass
 
     def activity_elapsed_seconds(self) -> int:
         if not self.activity_started_at:
@@ -3071,7 +3232,11 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 9, "bold"),
             background=self.TREE_HEADER_BG,
             foreground=self.TREE_HEADER_TEXT,
-            relief="flat",
+            bordercolor=self.BORDER,
+            lightcolor=self.BORDER,
+            darkcolor=self.BORDER,
+            borderwidth=1,
+            relief="raised",
             padding=(10, 9),
         )
         style.map(
@@ -3084,17 +3249,17 @@ class ShowerProgrammerApp:
         # changing the appearance of Treeviews used by other review windows.
         style.configure(
             "Orders.Treeview",
-            rowheight=34,
+            rowheight=38,
             fieldbackground=self.TREE_BG,
             background=self.TREE_BG,
             foreground=self.TEXT,
             bordercolor=self.BORDER,
             borderwidth=0,
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 10),
         )
         style.configure(
             "Orders.Treeview.Heading",
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 10, "bold"),
             background=self.TREE_HEADER_BG,
             foreground=self.TREE_HEADER_TEXT,
             bordercolor=self.BORDER,
@@ -3102,7 +3267,7 @@ class ShowerProgrammerApp:
             darkcolor=self.BORDER,
             borderwidth=1,
             relief="raised",
-            padding=(12, 10),
+            padding=(12, 12),
         )
         style.map(
             "Orders.Treeview",
@@ -3113,7 +3278,7 @@ class ShowerProgrammerApp:
             "Orders.Treeview.Heading",
             background=[("active", self.ACCENT_LIGHT), ("pressed", self.TREE_HEADER_BG)],
             foreground=[("active", self.TEXT)],
-            relief=[("pressed", "sunken"), ("active", "raised")],
+            relief=[("pressed", "sunken"), ("active", "raised"), ("!active", "raised")],
         )
         style.configure(
             "TCombobox",
@@ -3237,6 +3402,27 @@ class ShowerProgrammerApp:
         if icon in {"folder", "open_folder"}:
             rect(3, 7.5, 21, 19, radius=2.6)
             line([(4.5, 8), (8.7, 8), (10.1, 10.3), (19.5, 10.3)], thin)
+        elif icon in {"network", "network_folder"}:
+            rect(3, 6.8, 21, 17.3, radius=2.4, width=thin)
+            line([(4.4, 7.2), (8.7, 7.2), (10.1, 9.3), (19.5, 9.3)], thin)
+            circle(7.0, 20.0, 1.25, fill=color, width=thin)
+            circle(12.0, 20.0, 1.25, fill=color, width=thin)
+            circle(17.0, 20.0, 1.25, fill=color, width=thin)
+            line([(7.0, 17.5), (7.0, 18.7)], thin)
+            line([(12.0, 17.5), (12.0, 18.7)], thin)
+            line([(17.0, 17.5), (17.0, 18.7)], thin)
+            line([(7.0, 18.3), (17.0, 18.3)], thin)
+        elif icon == "archive":
+            rect(4.0, 8.0, 20.0, 20.0, radius=2.0, width=thin)
+            rect(3.0, 5.0, 21.0, 9.0, radius=1.5, width=thin)
+            line([(9.0, 12.0), (15.0, 12.0)], thin)
+            line([(12.0, 12.0), (12.0, 17.0)], thin)
+            poly([(9.7, 15.3), (12.0, 18.0), (14.3, 15.3)], fill=color)
+        elif icon == "restore":
+            rect(3.5, 8.0, 20.5, 19.0, radius=2.4, width=thin)
+            line([(4.7, 8.4), (9.0, 8.4), (10.3, 10.4), (19.3, 10.4)], thin)
+            arc(7.0, 10.0, 17.5, 20.5, 145, 355, width=thin)
+            poly([(7.0, 10.4), (7.4, 14.2), (10.3, 12.0)], fill=color)
         elif icon in {"scan", "search"}:
             circle(10.5, 10.5, 5.8)
             line([(15.0, 15.0), (20.0, 20.0)], stroke)
@@ -3665,7 +3851,7 @@ class ShowerProgrammerApp:
         content = ctk.CTkFrame(outer, fg_color="transparent")
         content.grid(row=0, column=1, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
-        content.grid_rowconfigure(1, weight=1)
+        content.grid_rowconfigure(2, weight=1)
 
         top_bar = ctk.CTkFrame(content, fg_color="transparent")
         top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -3678,7 +3864,7 @@ class ShowerProgrammerApp:
         ctk.CTkLabel(
             title_row,
             text="Production Dashboard",
-            font=("Segoe UI", 25, "bold"),
+            font=("Segoe UI", 27, "bold"),
             text_color=self.TEXT,
             anchor="w",
         ).pack(side=tk.LEFT)
@@ -3706,10 +3892,18 @@ class ShowerProgrammerApp:
             anchor="w",
         ).pack(anchor=tk.W, pady=(1, 0))
 
-        header_actions = ctk.CTkFrame(top_bar, fg_color="transparent")
+        header_actions = ctk.CTkFrame(
+            top_bar,
+            fg_color=self.CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=self.BORDER,
+        )
         header_actions.grid(row=0, column=1, sticky="e")
+        header_action_inner = ctk.CTkFrame(header_actions, fg_color="transparent")
+        header_action_inner.pack(padx=9, pady=8)
         ctk.CTkSwitch(
-            header_actions,
+            header_action_inner,
             text="Dark mode",
             variable=self.dark_mode_var,
             command=self.toggle_color_mode,
@@ -3718,13 +3912,64 @@ class ShowerProgrammerApp:
             button_hover_color="#f2f4f7",
             fg_color="#98a2b3" if not self.dark_mode_var.get() else "#475467",
             text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+        self.make_tool_button(
+            header_action_inner,
+            "Local Input",
+            "folder",
+            self.open_input_folder,
+            width=118,
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        network_input_button = self.make_tool_button(
+            header_action_inner,
+            "Network Input",
+            "network_folder",
+            self.open_network_input_folder,
+            width=132,
+        )
+        network_input_button.pack(side=tk.LEFT, padx=(0, 7))
+        self.attach_tooltip(network_input_button, "Open the shared Showers Programmer Input folder")
+        self.make_tool_button(header_action_inner, "Latest Batch", "clock", self.open_latest_batch, width=126).pack(side=tk.LEFT)
+
+        self.test_mode_banner = ctk.CTkFrame(
+            content,
+            fg_color="#b54708",
+            corner_radius=12,
+            border_width=1,
+            border_color="#fdb022",
+        )
+        self.test_mode_banner.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.test_mode_banner.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            self.test_mode_banner,
+            text="TEST MODE",
+            text_color="#ffffff",
+            font=("Segoe UI", 14, "bold"),
+        ).grid(row=0, column=0, padx=(14, 12), pady=10, sticky="w")
+        ctk.CTkLabel(
+            self.test_mode_banner,
+            textvariable=self.test_mode_banner_var,
+            text_color="#ffffff",
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+        ).grid(row=0, column=1, padx=(0, 12), pady=10, sticky="ew")
+        ctk.CTkButton(
+            self.test_mode_banner,
+            text="Exit Test Mode",
+            command=self.exit_test_mode,
+            width=126,
+            height=32,
+            corner_radius=9,
+            fg_color="#ffffff",
+            hover_color="#fff7ed",
+            text_color="#9a3412",
             font=("Segoe UI", 11, "bold"),
-        ).pack(side=tk.LEFT, padx=(0, 12))
-        self.make_tool_button(header_actions, "Open Input", "folder", self.open_input_folder, width=140).pack(side=tk.LEFT, padx=(0, 8))
-        self.make_tool_button(header_actions, "Latest Batch", "clock", self.open_latest_batch, width=145).pack(side=tk.LEFT)
+        ).grid(row=0, column=2, padx=(0, 12), pady=7, sticky="e")
+        self.test_mode_banner.grid_remove()
 
         table_outer = self.make_section(content, "Orders", "orders")
-        table_outer.grid(row=1, column=0, sticky="nsew")
+        table_outer.grid(row=2, column=0, sticky="nsew")
         table_outer.grid_columnconfigure(0, weight=1)
         table_outer.grid_rowconfigure(1, weight=1)
 
@@ -3936,13 +4181,32 @@ class ShowerProgrammerApp:
             width=164,
         )
         self.network_health_button.grid(row=1, column=1, rowspan=2, sticky="e", padx=(8, 0), pady=(9, 10))
+        self.cancel_task_button = self.make_tool_button(
+            bottom,
+            "Cancel",
+            "minus_circle",
+            self.cancel_background_task,
+            width=104,
+        )
+        self.cancel_task_button.grid(row=1, column=2, rowspan=2, sticky="e", padx=(8, 0), pady=(9, 10))
+        self.cancel_task_button.grid_remove()
+        self.exit_test_mode_button = self.make_tool_button(
+            bottom,
+            "Exit Test Mode",
+            "restore",
+            self.exit_test_mode,
+            width=128,
+        )
+        self.exit_test_mode_button.grid(row=1, column=3, rowspan=2, sticky="e", padx=(8, 0), pady=(9, 10))
+        self.exit_test_mode_button.grid_remove()
         self.make_tool_button(
             bottom,
             "Report Bug",
             "bug",
             self.open_bug_report,
             width=126,
-        ).grid(row=1, column=2, rowspan=2, sticky="e", padx=(8, 14), pady=(9, 10))
+        ).grid(row=1, column=4, rowspan=2, sticky="e", padx=(8, 14), pady=(9, 10))
+        self.update_test_mode_visual_state()
 
     def make_sidebar_button(
         self,
@@ -4141,14 +4405,14 @@ class ShowerProgrammerApp:
         frame = ctk.CTkFrame(
             parent,
             fg_color=self.CARD_BG,
-            corner_radius=16,
+            corner_radius=18,
             border_width=1,
             border_color=self.BORDER,
         )
         frame.grid_columnconfigure(0, weight=1)
 
-        header = ctk.CTkFrame(frame, fg_color="transparent", height=48)
-        header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
+        header = ctk.CTkFrame(frame, fg_color="transparent", height=50)
+        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(13, 8))
         header.grid_propagate(False)
 
         title_cluster = ctk.CTkFrame(header, fg_color="transparent")
@@ -4419,13 +4683,503 @@ class ShowerProgrammerApp:
         type(self).EDI_IMPORT_ORDERS_DIR = path
         return path
 
+    def queue_task_event(self, kind: str, payload: dict[str, object]) -> None:
+        """Bridge the reusable task manager onto the existing Tk worker queue."""
+        self.worker_queue.put((kind, payload))
+
+    def cancel_background_task(self) -> None:
+        """Request cancellation at the next safe task boundary."""
+        manager = getattr(self, "task_manager", None)
+        if manager is None or not manager.cancel():
+            self.status_var.set("The current operation cannot be cancelled at this point.")
+            return
+        self.status_var.set("Cancellation requested. Finishing the current safe step...")
+        self.record_activity_progress(self.status_var.get())
+
+    def run_managed_task(
+        self,
+        name: str,
+        worker: Callable[[shower_tasks.TaskContext], object],
+        *,
+        message: str,
+        total: int = 0,
+        cancellable: bool = True,
+        on_done: Callable[[object], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+        on_cancelled: Callable[[], None] | None = None,
+    ) -> bool:
+        """Start one production-safe worker using the shared progress/cancel contract.
+
+        Optional callbacks are always dispatched later on Tk's queue-drain thread,
+        never from the worker. This lets Settings, archive searches, and other
+        specialized screens use the same task manager without touching Tk from a
+        background thread.
+        """
+        if self.is_busy or getattr(self.task_manager, "active", None) is not None:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return False
+        self.start_background_activity(message, maximum=total or None)
+        try:
+            snapshot = self.task_manager.start(
+                name,
+                worker,
+                message=message,
+                total=total,
+                cancellable=cancellable,
+            )
+            handlers: dict[str, Callable[..., None]] = {}
+            if on_done is not None:
+                handlers["done"] = on_done
+            if on_error is not None:
+                handlers["error"] = on_error
+            if on_cancelled is not None:
+                handlers["cancelled"] = on_cancelled
+            if handlers:
+                self._managed_task_handlers[snapshot.task_id] = handlers
+            return True
+        except Exception as exc:
+            self.finish_background_activity()
+            self.show_structured_error(exc, title=f"{name} failed")
+            return False
+
+    def state_store_for_output(self, output_dir: Path | None = None) -> shower_state.StateStore:
+        target = Path(output_dir or self.output_dir_var.get()).resolve()
+        current = getattr(self, "state_store", None)
+        if isinstance(current, shower_state.StateStore) and current.path.parent == target:
+            return current
+        self.state_store = shower_state.StateStore.for_output(target)
+        try:
+            self.state_store.migrate_processing_history(target / "processing_history.json")
+        except Exception:
+            pass
+        return self.state_store
+
+    def record_performance(
+        self,
+        operation: str,
+        stage: str,
+        elapsed_ms: float,
+        metadata: dict[str, object] | None = None,
+        *,
+        output_dir: Path | None = None,
+    ) -> None:
+        try:
+            self.state_store_for_output(output_dir).record_performance(operation, stage, elapsed_ms, metadata)
+        except Exception:
+            pass
+
+    @contextmanager
+    def performance_stage(
+        self,
+        operation: str,
+        stage: str,
+        metadata: dict[str, object] | None = None,
+        *,
+        output_dir: Path | None = None,
+    ) -> Iterable[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.record_performance(
+                operation,
+                stage,
+                (time.perf_counter() - started) * 1000.0,
+                metadata,
+                output_dir=output_dir,
+            )
+
+    def show_structured_error(
+        self,
+        error: BaseException | object,
+        *,
+        title: str = "Shower Programmer",
+        process_order: shower_batch.ProcessOrder | None = None,
+    ) -> None:
+        structured = shower_errors.classify_exception(
+            error if isinstance(error, BaseException) else RuntimeError(str(error)),
+            title=title,
+        )
+        # When an operator has exactly one order selected, attach that order to
+        # otherwise-generic failures so the structured error dialog can offer a
+        # one-click diagnostic package without requiring each caller to repeat
+        # selection-resolution logic. This runs on Tk's event thread only.
+        if process_order is None:
+            try:
+                selected = self.selected_orders()
+            except Exception:
+                selected = []
+            if len(selected) == 1 and isinstance(selected[0], shower_batch.ProcessOrder):
+                process_order = selected[0]
+
+        aw_order = str(process_order.aw_order) if isinstance(process_order, shower_batch.ProcessOrder) else structured.aw_order
+        try:
+            self.state_store_for_output().record_error(
+                structured.code,
+                title,
+                structured.message,
+                aw_order=aw_order,
+                batch_key=structured.batch_key,
+                metadata=structured.details,
+            )
+        except Exception:
+            pass
+        if process_order is None or ctk is None:
+            messagebox.showerror(title, f"[{structured.code}]\n\n{structured.message}", parent=self.root)
+            return
+        owner = self.root
+        choice = messagebox._show(
+            "showerror",
+            title,
+            f"[{structured.code}]\n\n{structured.message}",
+            parent=owner,
+            kind="error",
+            buttons=[("Close", "close"), ("Create Diagnostic Package", "diagnostic")],
+            default="close",
+        )
+        if choice == "diagnostic":
+            self.create_diagnostic_package_for_order(process_order, error_context=structured)
+
+    def sync_order_lifecycle_state(
+        self,
+        order: shower_batch.ProcessOrder,
+        *,
+        result: shower_batch.BatchJobResult | None = None,
+        batch_key: str = "",
+        reason: str = "Scan reconciliation",
+        output_dir: Path | None = None,
+    ) -> str:
+        output = Path(output_dir or self.output_dir_var.get()).resolve()
+        store = self.state_store_for_output(output)
+        history = self.load_processing_history_for_output(output)
+        entry = self.history_entry_from_data(history, str(order.aw_order))
+        sent_at = str(entry.get("sent_at", "") or "")
+        deleted_at = str(entry.get("deleted_at", "") or "")
+        status = str(result.status if isinstance(result, shower_batch.BatchJobResult) else "")
+        in_input = not self.is_input_only_order(order) or bool(getattr(order, "source_pdf", None))
+        has_process_list = not self.is_input_only_order(order)
+        state = store.derive_lifecycle_state(
+            has_process_list=has_process_list,
+            in_input=in_input,
+            status=status,
+            sent_at=sent_at,
+            deleted_at=deleted_at,
+            archived=False,
+            test_mode=getattr(self, "test_mode_workspace", None) is not None,
+            # REACTIVATED is an audited transition, not a sticky resting state.
+            # Once the restored batch participates in a normal scan it becomes
+            # ACTIVE/READY/PROCESSED according to current production evidence.
+            reactivated=False,
+        )
+        store.transition_order(
+            str(order.aw_order),
+            state,
+            reason=reason,
+            batch_key=batch_key,
+            job_name=str(order.job_name),
+            customer=str(order.customer),
+            in_input=in_input,
+            test_mode=getattr(self, "test_mode_workspace", None) is not None,
+            sent_at=sent_at,
+            deleted_at=deleted_at,
+        )
+        setattr(order, "lifecycle_state", state)
+        return state
+
+    def sync_scanned_lifecycle_states(
+        self,
+        orders: list[shower_batch.ProcessOrder],
+        batches: list[dict[str, object]],
+        previews: list[shower_batch.BatchJobResult],
+    ) -> None:
+        preview_by_aw = {str(result.aw_order): result for result in previews}
+        batch_by_aw: dict[str, str] = {}
+        store = self.state_store_for_output()
+        for batch in batches:
+            stable_id = str(batch.get("stable_id", ""))
+            source = batch.get("path")
+            if isinstance(source, Path) and source.exists():
+                try:
+                    stable_identity = store.register_batch(source)
+                    stable_id = stable_identity.key
+                    batch["stable_id"] = stable_id
+                except Exception:
+                    pass
+            for order in batch.get("orders", []) if isinstance(batch.get("orders", []), list) else []:
+                if isinstance(order, shower_batch.ProcessOrder):
+                    batch_by_aw.setdefault(str(order.aw_order), stable_id)
+        for order in orders:
+            self.sync_order_lifecycle_state(
+                order,
+                result=preview_by_aw.get(str(order.aw_order)),
+                batch_key=batch_by_aw.get(str(order.aw_order), ""),
+            )
+
+    def update_test_mode_visual_state(self) -> None:
+        """Keep Test Mode unmistakable without changing production behavior."""
+        workspace = getattr(self, "test_mode_workspace", None)
+        active = workspace is not None
+        try:
+            self.root.title(
+                f"TEST MODE — Shower Programmer {self.APP_VERSION}"
+                if active
+                else f"Shower Programmer {self.APP_VERSION}"
+            )
+        except (AttributeError, tk.TclError):
+            pass
+        if hasattr(self, "exit_test_mode_button"):
+            try:
+                if active:
+                    self.exit_test_mode_button.grid()
+                else:
+                    self.exit_test_mode_button.grid_remove()
+            except (AttributeError, tk.TclError):
+                pass
+        if hasattr(self, "test_mode_banner"):
+            try:
+                if active:
+                    orders = list(getattr(self, "test_mode_orders", []))
+                    order_text = f"{len(orders)} archived order(s)" if orders else "archived test workspace"
+                    self.test_mode_banner_var.set(
+                        f"ISOLATED WORKSPACE — {order_text} — PRODUCTION SEND DISABLED — {Path(workspace).name}"
+                    )
+                    self.test_mode_banner.grid()
+                else:
+                    self.test_mode_banner_var.set("")
+                    self.test_mode_banner.grid_remove()
+            except (AttributeError, tk.TclError, TypeError):
+                pass
+
+    def enter_test_mode(self, entry: dict[str, object]) -> tuple[Path, list[str]]:
+        """Create an isolated archive workspace and switch the application into it."""
+        order = entry.get("order")
+        if not isinstance(order, shower_batch.ProcessOrder):
+            raise ValueError("Select an archived order before entering Test Mode.")
+        if getattr(self, "test_mode_workspace", None) is not None:
+            raise RuntimeError("Test Mode is already active. Exit it before opening another archived order.")
+        root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())).resolve()
+        workspace = root / "Test Workspace" / f"{datetime.now():%Y%m%d-%H%M%S}-{order.aw_order}"
+        order_dir = workspace / "Input" / "Orders"
+        process_dir = workspace / "Input" / "Process List"
+        output_dir = workspace / "Output"
+        self.ensure_workflow_folders(order_dir, process_dir, output_dir)
+        restored, process_file, warnings = self.copy_archived_order_for_testing(entry, order_dir, process_dir)
+        if not restored and process_file is None:
+            raise RuntimeError("The selected archived order could not be copied into the isolated Test Mode workspace.")
+        self._production_paths_before_test = (self.folder_var.get(), self.process_list_var.get(), self.output_dir_var.get())
+        self.test_mode_workspace = workspace
+        self.test_mode_orders = [order]
+        self.folder_var.set(str(order_dir))
+        self.process_list_var.set(str(process_dir))
+        self.output_dir_var.set(str(output_dir))
+        shower_cache.configure(output_dir / ".scan_cache")
+        self.state_store = shower_state.StateStore.for_output(output_dir)
+        self.state_store.transition_order(
+            str(order.aw_order),
+            shower_state.LifecycleState.TESTING,
+            reason="Opened archived order in isolated Test Mode",
+            job_name=str(order.job_name),
+            customer=str(order.customer),
+            in_input=True,
+            test_mode=True,
+            metadata={"workspace": str(workspace)},
+        )
+        self.update_test_mode_visual_state()
+        self.status_var.set(f"TEST MODE — isolated workspace for A&W {order.aw_order}. Production send is disabled.")
+        self.record_action(
+            "Enter Test Mode",
+            f"Opened isolated Test Mode for archived A&W {order.aw_order}.",
+            status="SUCCESS",
+            orders=[order],
+            details=f"Workspace={workspace}",
+        )
+        return workspace, warnings
+
+    @classmethod
+    def prepare_archived_batch_test_mode(
+        cls,
+        entries: list[dict[str, object]],
+        *,
+        batch_name: str,
+        archive_name: str,
+        runtime_root: Path,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> dict[str, object]:
+        """Build an isolated batch Test Mode workspace without touching Tk state.
+
+        This method is safe to run on the shared background task manager. The
+        corresponding activate_prepared_batch_test_mode() call is intentionally
+        UI-thread-only and performs the small Tk/state handoff afterwards.
+        """
+        valid_entries = cls.archive_action_entries({"kind": "batch", "children": entries})
+        if not valid_entries:
+            raise ValueError("Select an archived batch that contains at least one order.")
+
+        safe_batch = re.sub(r"[^A-Za-z0-9._-]+", "_", str(batch_name)).strip("._-")[:56] or "Archived_Batch"
+        workspace = Path(runtime_root).resolve() / "Test Workspace" / f"{datetime.now():%Y%m%d-%H%M%S}-BATCH-{safe_batch}"
+        order_dir = workspace / "Input" / "Orders"
+        process_dir = workspace / "Input" / "Process List"
+        output_dir = workspace / "Output"
+        cls.ensure_workflow_folders(order_dir, process_dir, output_dir)
+        restored, process_files, warnings = cls.copy_archived_batch_for_testing(
+            valid_entries,
+            order_dir,
+            process_dir,
+            task_context=task_context,
+        )
+        if not restored and not process_files:
+            raise RuntimeError("The selected archived batch could not be copied into the isolated Test Mode workspace.")
+        missing_sources = cls.archived_batch_test_missing_sources(valid_entries, order_dir)
+        if missing_sources:
+            details = "; ".join(missing_sources)
+            raise RuntimeError(
+                "The archived batch process list was prepared, but Test Mode could not restore "
+                f"the required PDF/DXF source files for: {details}. "
+                "The archive was left unchanged. Refresh Archives and retry; if the files are "
+                "stored under an older batch revision, the revision fallback should locate them."
+            )
+        return {
+            "workspace": workspace,
+            "order_dir": order_dir,
+            "process_dir": process_dir,
+            "output_dir": output_dir,
+            "entries": valid_entries,
+            "restored": restored,
+            "process_files": process_files,
+            "warnings": warnings,
+            "batch_name": str(batch_name),
+            "archive_name": str(archive_name),
+        }
+
+    def activate_prepared_batch_test_mode(self, prepared: dict[str, object]) -> tuple[Path, list[str]]:
+        """Switch Tk/application state to an already-prepared isolated batch workspace."""
+        if getattr(self, "test_mode_workspace", None) is not None:
+            raise RuntimeError("Test Mode is already active. Exit it before opening another archived batch.")
+        workspace = Path(prepared["workspace"])
+        order_dir = Path(prepared["order_dir"])
+        process_dir = Path(prepared["process_dir"])
+        output_dir = Path(prepared["output_dir"])
+        entries = self.archive_action_entries({"kind": "batch", "children": prepared.get("entries", [])})
+        batch_name = str(prepared.get("batch_name", "Archived Batch"))
+        archive_name = str(prepared.get("archive_name", ""))
+        warnings = [str(item) for item in prepared.get("warnings", [])] if isinstance(prepared.get("warnings", []), list) else []
+
+        self._production_paths_before_test = (self.folder_var.get(), self.process_list_var.get(), self.output_dir_var.get())
+        self.test_mode_workspace = workspace
+        self.test_mode_orders = [
+            entry["order"]
+            for entry in entries
+            if isinstance(entry.get("order"), shower_batch.ProcessOrder)
+        ]
+        self.folder_var.set(str(order_dir))
+        self.process_list_var.set(str(process_dir))
+        self.output_dir_var.set(str(output_dir))
+        shower_cache.configure(output_dir / ".scan_cache")
+        self.state_store = shower_state.StateStore.for_output(output_dir)
+        for entry in entries:
+            order = entry.get("order")
+            assert isinstance(order, shower_batch.ProcessOrder)
+            self.state_store.transition_order(
+                str(order.aw_order),
+                shower_state.LifecycleState.TESTING,
+                reason="Opened archived batch in isolated Test Mode",
+                batch_key=str(entry.get("batch_key", "")),
+                job_name=str(order.job_name),
+                customer=str(order.customer),
+                in_input=True,
+                test_mode=True,
+                metadata={
+                    "workspace": str(workspace),
+                    "archive": archive_name,
+                    "batch": batch_name,
+                    "batch_order_count": len(entries),
+                },
+            )
+        self.update_test_mode_visual_state()
+        self.status_var.set(
+            f"TEST MODE — isolated batch {batch_name} with {len(entries)} order(s). Production send is disabled."
+        )
+        self.record_action(
+            "Enter Batch Test Mode",
+            f"Opened isolated Test Mode for archive batch {batch_name} with {len(entries)} order(s).",
+            status="SUCCESS",
+            orders=self.test_mode_orders,
+            details=f"Archive={archive_name}; Workspace={workspace}",
+        )
+        return workspace, warnings
+
+    def enter_test_mode_batch(
+        self,
+        entries: list[dict[str, object]],
+        *,
+        batch_name: str,
+        archive_name: str,
+    ) -> tuple[Path, list[str]]:
+        """Synchronously prepare and activate a complete archived batch Test Mode workspace.
+
+        The archive UI uses prepare_archived_batch_test_mode() through the shared
+        task manager so large batches remain responsive; this wrapper remains
+        useful for tests and non-GUI callers.
+        """
+        if getattr(self, "test_mode_workspace", None) is not None:
+            raise RuntimeError("Test Mode is already active. Exit it before opening another archived batch.")
+        root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())).resolve()
+        prepared = self.prepare_archived_batch_test_mode(
+            entries,
+            batch_name=batch_name,
+            archive_name=archive_name,
+            runtime_root=root,
+        )
+        return self.activate_prepared_batch_test_mode(prepared)
+
+    def exit_test_mode(self, *, rescan: bool = True, closing: bool = False) -> None:
+        """Restore production paths and leave the isolated Test Mode workspace.
+
+        Normal operator exits rescan production input. Application shutdown passes
+        ``rescan=False`` so closing never starts fresh work after Test Mode is restored.
+        """
+        if getattr(self, "test_mode_workspace", None) is None:
+            return
+        prior = self._production_paths_before_test
+        workspace = self.test_mode_workspace
+        test_orders = list(getattr(self, "test_mode_orders", []))
+        self.test_mode_workspace = None
+        self.test_mode_orders = []
+        self._production_paths_before_test = None
+        if prior is not None:
+            self.folder_var.set(prior[0])
+            self.process_list_var.set(prior[1])
+            self.output_dir_var.set(prior[2])
+        shower_cache.configure(Path(self.output_dir_var.get()).resolve() / ".scan_cache")
+        self.state_store = shower_state.StateStore.for_output(Path(self.output_dir_var.get()).resolve())
+        self.update_test_mode_visual_state()
+        if closing:
+            self.status_var.set(f"Exited Test Mode before closing. Isolated files remain in {workspace}.")
+        else:
+            self.status_var.set(f"Exited Test Mode. Isolated files remain in {workspace} for review.")
+        self.record_action(
+            "Exit Test Mode",
+            (
+                f"Exited isolated Test Mode workspace containing {len(test_orders)} order(s) before application close."
+                if closing
+                else f"Exited isolated Test Mode workspace containing {len(test_orders)} order(s)."
+            ),
+            status="SUCCESS",
+            orders=test_orders,
+            details=f"Workspace={workspace}; Closing={closing}",
+        )
+        if rescan and not closing:
+            self.scan_orders()
+
     def scan_orders(self) -> None:
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         try:
             folder = Path(self.folder_var.get()).resolve()
-            self.apply_import_source_dir()
+            isolated_test_mode = getattr(self, "test_mode_workspace", None) is not None
+            if not isolated_test_mode:
+                self.apply_import_source_dir()
             process_list = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
             self.ensure_workflow_folders(folder, process_list, output_dir)
@@ -4433,18 +5187,88 @@ class ShowerProgrammerApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
 
-        self.record_action("Scan Orders", "Started scanning process lists and importing matching local inputs.", status="INFO")
-        self.start_background_activity("Scanning process lists and synchronizing current order inputs...", maximum=5)
-        worker = threading.Thread(
-            target=self.worker_scan_orders,
-            args=(folder, process_list, output_dir),
-            daemon=True,
+        scan_action = "Scan Test Workspace" if isolated_test_mode else "Scan Orders"
+        scan_message = (
+            "Scanning isolated Test Mode workspace..."
+            if isolated_test_mode
+            else "Scanning process lists and synchronizing current order inputs..."
         )
-        worker.start()
+        self.record_action(
+            scan_action,
+            "Started isolated Test Mode scan." if isolated_test_mode else "Started scanning process lists and importing matching local inputs.",
+            status="INFO",
+            orders=list(getattr(self, "test_mode_orders", [])) if isolated_test_mode else None,
+        )
+        self.run_managed_task(
+            "Scan Orders",
+            lambda task: self.worker_scan_orders(
+                folder,
+                process_list,
+                output_dir,
+                task_context=task,
+                isolated_test_mode=isolated_test_mode,
+            ),
+            message=scan_message,
+            total=5,
+            cancellable=True,
+        )
+
+    def refresh_local_orders(self) -> None:
+        """Rebuild the Orders view strictly from local folders without touching shared input.
+
+        Local deletion uses this refresh so the operator immediately sees the exact
+        state of Input\\Orders and Input\\Process List. A later explicit Scan Orders
+        remains the deliberate action that may synchronize the order back from the
+        shared network input.
+        """
+        if self.is_busy:
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
+        try:
+            folder = Path(self.folder_var.get()).resolve()
+            process_list = Path(self.process_list_var.get()).resolve()
+            output_dir = Path(self.output_dir_var.get()).resolve()
+            self.ensure_workflow_folders(folder, process_list, output_dir)
+        except Exception as exc:
+            messagebox.showerror("Invalid settings", str(exc), parent=self.root)
+            return
+
+        self.record_action(
+            "Refresh Local Orders",
+            "Refreshing the order list from local Input folders only; shared network input will not be synchronized.",
+            status="INFO",
+        )
+        self.run_managed_task(
+            "Refresh Local Orders",
+            lambda task: self.worker_scan_orders(
+                folder,
+                process_list,
+                output_dir,
+                task_context=task,
+                isolated_test_mode=False,
+                local_refresh_only=True,
+            ),
+            message="Refreshing the order list from local Input folders...",
+            total=5,
+            cancellable=True,
+        )
 
     def import_edi_orders(self) -> None:
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
+        if getattr(self, "test_mode_workspace", None) is not None:
+            messagebox.showinfo(
+                "Test Mode",
+                "Shared-network Import EDI is disabled while Test Mode is active. The archived test workspace is intentionally isolated from production network input.",
+                parent=self.root,
+            )
+            self.record_action(
+                "Import EDI Orders",
+                "Shared-network import was blocked because isolated Test Mode is active.",
+                status="WARNING",
+                orders=list(getattr(self, "test_mode_orders", [])),
+            )
             return
         try:
             folder = Path(self.folder_var.get()).resolve()
@@ -4456,13 +5280,19 @@ class ShowerProgrammerApp:
             messagebox.showerror("Invalid settings", str(exc))
             return
 
-        self.start_background_activity("Synchronizing missing order PDF/DXF files...", maximum=4)
-        worker = threading.Thread(
-            target=self.worker_import_edi_orders,
-            args=(folder, process_list, output_dir),
-            daemon=True,
+        self.record_action(
+            "Import EDI Orders",
+            "Started synchronizing missing order PDF/DXF files from shared input.",
+            status="INFO",
+            orders=self.selected_orders() or self.orders,
         )
-        worker.start()
+        self.run_managed_task(
+            "Import EDI Orders",
+            lambda task: self.worker_import_edi_orders(folder, process_list, output_dir, task_context=task),
+            message="Synchronizing missing order PDF/DXF files...",
+            total=4,
+            cancellable=True,
+        )
 
     def start_background_activity(self, message: str, maximum: int | None = None) -> None:
         self.is_busy = True
@@ -4479,6 +5309,8 @@ class ShowerProgrammerApp:
             self.progress.configure(mode="indeterminate", maximum=100, value=0)
             self.progress.start(12)
         self.status_var.set(message)
+        if hasattr(self, "cancel_task_button"):
+            self.cancel_task_button.grid()
         self.update_activity_detail()
 
     def finish_background_activity(self) -> None:
@@ -4491,6 +5323,8 @@ class ShowerProgrammerApp:
         self.activity_stage_message = ""
         self.activity_detail_var.set("")
         self.set_controls_enabled(True)
+        if hasattr(self, "cancel_task_button"):
+            self.cancel_task_button.grid_remove()
 
     @classmethod
     def load_process_list_batches(
@@ -4513,9 +5347,15 @@ class ShowerProgrammerApp:
                 raise RuntimeError(f"Could not read process list {source.name}: {exc}") from exc
             orders = shower_batch.visible_orders(loaded, config)
             batch_id = str(source.resolve()).casefold()
+            try:
+                stable_identity = shower_state.StateStore.batch_identity(source)
+                stable_id = stable_identity.key
+            except Exception:
+                stable_id = hashlib.sha256(source.name.casefold().encode("utf-8")).hexdigest()[:32]
             batches.append(
                 {
                     "id": batch_id,
+                    "stable_id": stable_id,
                     "path": source.resolve(),
                     "name": source.name,
                     "orders": orders,
@@ -4525,20 +5365,20 @@ class ShowerProgrammerApp:
 
     @staticmethod
     def unique_orders_from_batches(batches: list[dict[str, object]]) -> list[shower_batch.ProcessOrder]:
-        """Return one order object per A&W order while preserving batch order."""
-        unique: dict[str, shower_batch.ProcessOrder] = {}
-        for batch in batches:
-            batch_orders = batch.get("orders", [])
-            if not isinstance(batch_orders, list):
-                continue
-            for order in batch_orders:
-                if isinstance(order, shower_batch.ProcessOrder):
-                    unique.setdefault(str(order.aw_order), order)
-        return list(unique.values())
+        """Use the core A&W identity merger; no release-layer monkey patch is required."""
+        return shower_batch.unique_orders_from_batches(batches)
 
     @staticmethod
     def is_input_only_order(order: shower_batch.ProcessOrder) -> bool:
         return bool(getattr(order, "process_list_missing", False))
+
+    @classmethod
+    def orders_allow_network_input_delete(
+        cls,
+        orders: list[shower_batch.ProcessOrder] | tuple[shower_batch.ProcessOrder, ...],
+    ) -> bool:
+        """Allow shared deletion only when every targeted order is input-only."""
+        return bool(orders) and all(cls.is_input_only_order(order) for order in orders)
 
     @classmethod
     def input_only_orders_from_pdfs(
@@ -4577,17 +5417,17 @@ class ShowerProgrammerApp:
             setattr(order, "process_list_missing", True)
             setattr(order, "source_pdf", pdf)
             orders.append(order)
-            results.append(
-                shower_batch.BatchJobResult(
-                    aw_order=aw_order,
-                    job_name=job_name,
-                    customer="Input file only",
-                    items="—",
-                    status="ISSUES",
-                    input_pdf=pdf,
-                    issues=["No matching order exists in the current process list; this input cannot be processed."],
-                )
+            result = shower_batch.BatchJobResult(
+                aw_order=aw_order,
+                job_name=job_name,
+                customer="Input file only",
+                items="—",
+                status="ISSUES",
+                input_pdf=pdf,
+                issues=["No matching order exists in the current process list; this input cannot be processed."],
             )
+            setattr(result, "issue_codes", [shower_errors.ErrorCode.MISSING_PROCESS_ORDER])
+            results.append(result)
         return orders, results
 
     @classmethod
@@ -4689,38 +5529,90 @@ class ShowerProgrammerApp:
                 active_batches.append(active_batch)
         return active_batches, cls.unique_orders_from_batches(active_batches), hidden_count
 
-    def worker_scan_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
+    def worker_scan_orders(
+        self,
+        folder: Path,
+        process_list: Path,
+        output_dir: Path,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+        isolated_test_mode: bool = False,
+        local_refresh_only: bool = False,
+    ) -> None:
         scan_stage = "initializing the scan"
+
+        def check_cancelled() -> None:
+            if task_context is not None:
+                task_context.check_cancelled()
+
         try:
+            started_total = time.perf_counter()
+            check_cancelled()
             self.ensure_workflow_folders(folder, process_list, output_dir)
             shower_cache.configure(output_dir / ".scan_cache")
             shower_cache.reset_stats()
             progress_value = 0
             progress_max = 5
             self.queue_scan_progress(progress_value, progress_max, "Loading programming rules and saved overrides...")
+            check_cancelled()
+            stage_started = time.perf_counter()
             config = self.config_with_manual_overrides(folder, output_dir)
+            self.record_performance("Scan Orders", "Load configuration", (time.perf_counter() - stage_started) * 1000.0, output_dir=output_dir)
             progress_value += 1
-            self.queue_scan_progress(progress_value, progress_max, "Indexing the shared Showers Programmer Input folder...")
-            import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
-                self.prepare_import_source_snapshot()
-            )
-            self.queue_scan_progress(progress_value, progress_max, "Comparing shared process lists with the local Process List folder...")
-
-            def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
-                action = "Copying" if copied is None else ("Copied" if copied else "Already current")
-                display_done = min(total, done + 1) if copied is None else done
+            if isolated_test_mode or local_refresh_only:
                 self.queue_scan_progress(
-                    progress_value + done,
-                    max(progress_max, progress_value + total + 4),
-                    f"{action} process list {display_done}/{total}: {source.name}",
+                    progress_value,
+                    progress_max,
+                    (
+                        "TEST MODE: using only the isolated archive workspace; shared network input is disabled..."
+                        if isolated_test_mode
+                        else "LOCAL REFRESH: reading only local Input folders; shared network input is intentionally skipped..."
+                    ),
                 )
+                import_snapshot = {"files": [], "order_files": [], "entry_count": 0}
+                duplicate_files_removed: list[Path] = []
+                duplicate_cleanup_warnings: list[str] = []
+                process_list_import_summary: dict[str, object] = {
+                    "copied": [],
+                    "skipped": 0,
+                    "considered": 0,
+                    "source_missing": False,
+                    "direct": True,
+                }
+            else:
+                self.queue_scan_progress(progress_value, progress_max, "Indexing the shared Showers Programmer Input folder...")
+                check_cancelled()
+                stage_started = time.perf_counter()
+                import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
+                    self.prepare_import_source_snapshot()
+                )
+                check_cancelled()
+                self.record_performance(
+                    "Scan Orders",
+                    "Index shared input",
+                    (time.perf_counter() - stage_started) * 1000.0,
+                    {"entries": int(import_snapshot.get("entry_count", 0) or 0)},
+                    output_dir=output_dir,
+                )
+                check_cancelled()
+                self.queue_scan_progress(progress_value, progress_max, "Comparing shared process lists with the local Process List folder...")
 
-            process_list_import_summary = self.copy_process_lists_from_import_folder(
-                process_list,
-                progress_callback=process_list_progress,
-                import_snapshot=import_snapshot,
-            )
-            progress_value += int(process_list_import_summary.get("considered", 0) or 0)
+                def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
+                    action = "Copying" if copied is None else ("Copied" if copied else "Already current")
+                    display_done = min(total, done + 1) if copied is None else done
+                    self.queue_scan_progress(
+                        progress_value + done,
+                        max(progress_max, progress_value + total + 4),
+                        f"{action} process list {display_done}/{total}: {source.name}",
+                    )
+
+                check_cancelled()
+                process_list_import_summary = self.copy_process_lists_from_import_folder(
+                    process_list,
+                    progress_callback=process_list_progress,
+                    import_snapshot=import_snapshot,
+                )
+                progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             process_list_files = shower_batch.process_list_files(process_list)
             progress_value += 1
             self.queue_scan_progress(
@@ -4744,95 +5636,122 @@ class ShowerProgrammerApp:
                 )
 
             scan_stage = "reading local process lists"
+            check_cancelled()
+            stage_started = time.perf_counter()
             all_batches = self.load_process_list_batches(process_list, config, normalization_progress)
+            self.record_performance("Scan Orders", "Load process lists", (time.perf_counter() - stage_started) * 1000.0, {"batches": len(all_batches)}, output_dir=output_dir)
             copied_process_lists = [
                 path
                 for path in process_list_import_summary.get("copied", [])
                 if isinstance(path, Path)
             ]
-            reactivated_aw_orders = self.reactivate_reimported_process_list_orders(
-                all_batches,
-                copied_process_lists,
-                output_dir,
-            )
+            reactivated_aw_orders: list[str] = []
+            if not isolated_test_mode and not local_refresh_only:
+                reactivated_aw_orders.extend(
+                    self.reactivate_reimported_process_list_orders(
+                        all_batches,
+                        copied_process_lists,
+                        output_dir,
+                    )
+                )
+                reactivated_aw_orders.extend(
+                    self.reactivate_deleted_orders_available_in_shared_input(
+                        all_batches,
+                        import_snapshot,
+                        folder,
+                        output_dir,
+                    )
+                )
+                reactivated_aw_orders = list(dict.fromkeys(reactivated_aw_orders))
             if reactivated_aw_orders:
                 self.queue_scan_progress(
                     progress_value,
                     max(progress_max, progress_value + 3),
                     f"Reactivated {len(reactivated_aw_orders)} order(s) from process list batch(es) restored from shared input...",
                 )
-            self.queue_scan_progress(
-                progress_value,
-                max(progress_max, progress_value + 3),
-                "Checking production Sketches for orders already sent by another workstation...",
-            )
-            scan_stage = "checking Production Sketches"
-            (
-                production_sent_orders,
-                _production_sketch_matches,
-                production_reconciliation_warnings,
-                production_sketch_files_checked,
-            ) = self.reconcile_orders_sent_from_production(
-                all_batches,
-                output_dir,
-                self.SHOP_SKETCHES_DIR,
-            )
-            production_aw_orders = {
-                str(order.aw_order)
-                for order in production_sent_orders
-            }
+            production_sent_orders: list[shower_batch.ProcessOrder] = []
+            production_reconciliation_warnings: list[str] = []
+            production_sketch_files_checked = 0
+            production_aw_orders: set[str] = set()
             production_input_archived: list[Path] = []
             production_validated_sources_by_aw: dict[str, Iterable[str]] = {}
-            if production_sent_orders:
-                production_order_files = self.matching_order_files(
-                    folder,
-                    production_sent_orders,
-                    root_only=True,
-                    inspect_pdf_text=True,
-                )
-                if production_order_files:
-                    production_input_archived, production_archive_warnings = (
-                        self.archive_sent_input_files_for_orders(
-                            production_sent_orders,
-                            folder,
-                            process_list,
-                            include_process_lists=False,
-                        )
-                    )
-                    production_reconciliation_warnings.extend(production_archive_warnings)
-                    production_validated_sources_by_aw = getattr(
-                        self,
-                        "_last_archived_order_sources_by_aw",
-                        {},
-                    )
-            retired_batch_plans = self.completed_process_list_batches_from_history(
-                all_batches,
-                folder,
-                output_dir,
-            )
+            retired_batch_plans: list[dict[str, object]] = []
             retired_process_lists: list[Path] = []
             retired_process_list_warnings: list[str] = []
-            if retired_batch_plans:
+
+            if isolated_test_mode or local_refresh_only:
                 self.queue_scan_progress(
                     progress_value,
                     max(progress_max, progress_value + 3),
-                    f"Retiring {len(retired_batch_plans)} completed process-list batch(es) into the dated archive...",
+                    (
+                        "TEST MODE: skipping production-sketch reconciliation and automatic network/archive cleanup..."
+                        if isolated_test_mode
+                        else "LOCAL REFRESH: skipping production reconciliation, shared cleanup, and network synchronization..."
+                    ),
                 )
-                retired_process_lists, archive_warnings = self.archive_completed_process_list_batches(
-                    process_list,
-                    retired_batch_plans,
+            else:
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 3),
+                    "Checking production Sketches for orders already sent by another workstation...",
                 )
-                retired_process_list_warnings.extend(archive_warnings)
-            if retired_batch_plans:
-                all_batches = [
-                    batch
-                    for batch in all_batches
-                    if (
-                        isinstance(batch.get("path"), Path)
-                        and Path(batch["path"]).exists()
+                scan_stage = "checking Production Sketches"
+                (
+                    production_sent_orders,
+                    _production_sketch_matches,
+                    production_reconciliation_warnings,
+                    production_sketch_files_checked,
+                ) = self.reconcile_orders_sent_from_production(
+                    all_batches,
+                    output_dir,
+                    self.SHOP_SKETCHES_DIR,
+                )
+                production_aw_orders = {str(order.aw_order) for order in production_sent_orders}
+                if production_sent_orders:
+                    production_order_files = self.matching_order_files(
+                        folder,
+                        production_sent_orders,
+                        root_only=True,
+                        inspect_pdf_text=True,
                     )
-                ]
-                process_list_files = shower_batch.process_list_files(process_list)
+                    if production_order_files:
+                        production_input_archived, production_archive_warnings = (
+                            self.archive_sent_input_files_for_orders(
+                                production_sent_orders,
+                                folder,
+                                process_list,
+                                include_process_lists=False,
+                            )
+                        )
+                        production_reconciliation_warnings.extend(production_archive_warnings)
+                        production_validated_sources_by_aw = getattr(
+                            self,
+                            "_last_archived_order_sources_by_aw",
+                            {},
+                        )
+                retired_batch_plans = self.completed_process_list_batches_from_history(
+                    all_batches,
+                    folder,
+                    output_dir,
+                )
+                if retired_batch_plans:
+                    self.queue_scan_progress(
+                        progress_value,
+                        max(progress_max, progress_value + 3),
+                        f"Retiring {len(retired_batch_plans)} completed process-list batch(es) into the dated archive...",
+                    )
+                    retired_process_lists, archive_warnings = self.archive_completed_process_list_batches(
+                        process_list,
+                        retired_batch_plans,
+                    )
+                    retired_process_list_warnings.extend(archive_warnings)
+                    all_batches = [
+                        batch
+                        for batch in all_batches
+                        if isinstance(batch.get("path"), Path) and Path(batch["path"]).exists()
+                    ]
+                    process_list_files = shower_batch.process_list_files(process_list)
+
             active_process_orders = self.unique_orders_from_batches(all_batches)
             import_candidates = [
                 order
@@ -4846,70 +5765,98 @@ class ShowerProgrammerApp:
                 if str(order.aw_order) in missing_requirements
             ]
 
-            def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
-                action = "Copying" if copied is None else ("Copied" if copied else "Already local")
-                display_done = min(total, done + 1) if copied is None else done
-                self.queue_scan_progress(
-                    progress_value + done,
-                    max(progress_max, progress_value + total + 2),
-                    f"{action} order file {display_done}/{total}: {source.name}",
-                )
-
-            self.queue_scan_progress(
-                progress_value,
-                max(progress_max, progress_value + 2),
-                (
-                    f"Checking shared input for missing PDFs/DXFs on {len(gateway_orders)} active order(s)..."
-                    if gateway_orders
-                    else "All active order PDFs/DXFs are already available locally."
-                ),
-            )
-            scan_stage = "copying active order PDFs and DXFs"
-            import_summary = self.copy_edi_orders_for_process_orders(
-                folder,
-                gateway_orders,
-                progress_callback=order_file_progress,
-                import_snapshot=import_snapshot,
-                missing_requirements=missing_requirements,
-            )
-            scan_stage = "copying visible shared input files"
-            self.queue_scan_progress(
-                progress_value,
-                max(progress_max, progress_value + 2),
-                "Synchronizing visible shared order files into local Input...",
-            )
-            visible_import_summary = self.copy_visible_import_order_files(
-                folder,
-                import_snapshot,
-                progress_callback=order_file_progress,
-            )
-            targeted_copied = [path for path in import_summary.get("copied", []) if isinstance(path, Path)]
-            visible_copied = [path for path in visible_import_summary.get("copied", []) if isinstance(path, Path)]
-            import_summary["copied"] = list(dict.fromkeys(targeted_copied + visible_copied))
-            import_summary["considered"] = max(
-                int(import_summary.get("considered", 0) or 0),
-                int(visible_import_summary.get("considered", 0) or 0),
-            )
-            import_summary["skipped"] = int(visible_import_summary.get("skipped", 0) or 0)
-            if retired_batch_plans or production_sent_orders:
-                scan_stage = "clearing validated shared inputs"
+            if isolated_test_mode or local_refresh_only:
+                missing_count = len(gateway_orders)
                 self.queue_scan_progress(
                     progress_value,
                     max(progress_max, progress_value + 2),
-                    "Cleaning validated shared inputs for completed or already-sent orders...",
+                    (
+                        (
+                            f"TEST MODE: {missing_count} order(s) are missing a local PDF/DXF in the isolated workspace."
+                            if missing_count
+                            else "TEST MODE: all archived batch inputs are available in the isolated workspace."
+                        )
+                        if isolated_test_mode
+                        else (
+                            f"LOCAL REFRESH: {missing_count} process-list order(s) have no complete local PDF/DXF set and will remain hidden until the next Scan Orders import."
+                            if missing_count
+                            else "LOCAL REFRESH: all locally represented process-list orders have the required local input files."
+                        )
+                    ),
                 )
-                _retired_shared_files, shared_cleanup_warnings = self.clear_import_staging_folder(
-                    production_sent_orders,
-                    include_process_lists=False,
-                    completed_process_batches=retired_batch_plans,
-                    source_files=[
-                        path for path in import_snapshot.get("files", [])
-                        if isinstance(path, Path)
-                    ],
-                    validated_order_sources_by_aw=production_validated_sources_by_aw,
-                    protected_orders=import_candidates,
+                import_summary: dict[str, object] = {
+                    "copied": [],
+                    "skipped": 0,
+                    "considered": 0,
+                    "source_missing": False,
+                    "direct": True,
+                    "hardware_deleted": [],
+                }
+            else:
+                def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
+                    action = "Copying" if copied is None else ("Copied" if copied else "Already local")
+                    display_done = min(total, done + 1) if copied is None else done
+                    self.queue_scan_progress(
+                        progress_value + done,
+                        max(progress_max, progress_value + total + 2),
+                        f"{action} order file {display_done}/{total}: {source.name}",
+                    )
+
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 2),
+                    (
+                        f"Checking shared input for missing PDFs/DXFs on {len(gateway_orders)} active order(s)..."
+                        if gateway_orders
+                        else "All active order PDFs/DXFs are already available locally."
+                    ),
                 )
-                production_reconciliation_warnings.extend(shared_cleanup_warnings)
+                scan_stage = "copying active order PDFs and DXFs"
+                import_summary = self.copy_edi_orders_for_process_orders(
+                    folder,
+                    gateway_orders,
+                    progress_callback=order_file_progress,
+                    import_snapshot=import_snapshot,
+                    missing_requirements=missing_requirements,
+                )
+                scan_stage = "copying visible shared input files"
+                self.queue_scan_progress(
+                    progress_value,
+                    max(progress_max, progress_value + 2),
+                    "Synchronizing visible shared order files into local Input...",
+                )
+                visible_import_summary = self.copy_visible_import_order_files(
+                    folder,
+                    import_snapshot,
+                    progress_callback=order_file_progress,
+                )
+                targeted_copied = [path for path in import_summary.get("copied", []) if isinstance(path, Path)]
+                visible_copied = [path for path in visible_import_summary.get("copied", []) if isinstance(path, Path)]
+                import_summary["copied"] = list(dict.fromkeys(targeted_copied + visible_copied))
+                import_summary["considered"] = max(
+                    int(import_summary.get("considered", 0) or 0),
+                    int(visible_import_summary.get("considered", 0) or 0),
+                )
+                import_summary["skipped"] = int(visible_import_summary.get("skipped", 0) or 0)
+                if retired_batch_plans or production_sent_orders:
+                    scan_stage = "clearing validated shared inputs"
+                    self.queue_scan_progress(
+                        progress_value,
+                        max(progress_max, progress_value + 2),
+                        "Cleaning validated shared inputs for completed or already-sent orders...",
+                    )
+                    _retired_shared_files, shared_cleanup_warnings = self.clear_import_staging_folder(
+                        production_sent_orders,
+                        include_process_lists=False,
+                        completed_process_batches=retired_batch_plans,
+                        source_files=[
+                            path for path in import_snapshot.get("files", [])
+                            if isinstance(path, Path)
+                        ],
+                        validated_order_sources_by_aw=production_validated_sources_by_aw,
+                        protected_orders=import_candidates,
+                    )
+                    production_reconciliation_warnings.extend(shared_cleanup_warnings)
             scan_stage = "building the local order preview"
             active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
             local_order_files = [
@@ -4923,7 +5870,10 @@ class ShowerProgrammerApp:
             progress_value += int(import_summary.get("considered", 0) or 0)
             progress_value += 1
             self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Building grouped order list...")
+            check_cancelled()
+            stage_started = time.perf_counter()
             previews = shower_batch.preview_orders(orders, folder, config=config)
+            self.record_performance("Scan Orders", "Preview active orders", (time.perf_counter() - stage_started) * 1000.0, {"orders": len(orders)}, output_dir=output_dir)
             for result in previews:
                 if str(result.aw_order) not in duplicate_groups_by_aw:
                     continue
@@ -4946,6 +5896,7 @@ class ShowerProgrammerApp:
                 orders.extend(input_only_orders)
                 previews.extend(input_only_previews)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} active order(s).")
+            self.record_performance("Scan Orders", "Total", (time.perf_counter() - started_total) * 1000.0, {"orders": len(orders)}, output_dir=output_dir)
             self.worker_queue.put(
                 (
                     "scan_done",
@@ -4970,16 +5921,32 @@ class ShowerProgrammerApp:
                         "duplicate_groups_by_aw": duplicate_groups_by_aw,
                         "network_entries_indexed": int(import_snapshot.get("entry_count", 0) or 0),
                         "reactivated_aw_orders": reactivated_aw_orders,
+                        "isolated_test_mode": isolated_test_mode,
+                        "local_refresh_only": local_refresh_only,
                     },
                 )
             )
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
             if isinstance(exc, FileNotFoundError):
                 exc = RuntimeError(f"Scan stopped while {scan_stage}: {exc}")
             self.worker_queue.put(("scan_error", exc))
 
-    def worker_import_edi_orders(self, folder: Path, process_list: Path, output_dir: Path) -> None:
+    def worker_import_edi_orders(
+        self,
+        folder: Path,
+        process_list: Path,
+        output_dir: Path,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> None:
+        def check_cancelled() -> None:
+            if task_context is not None:
+                task_context.check_cancelled()
+
         try:
+            check_cancelled()
             progress_value = 0
             progress_max = 4
             self.queue_scan_progress(progress_value, progress_max, "Indexing the shared Showers Programmer Input folder...")
@@ -5034,6 +6001,7 @@ class ShowerProgrammerApp:
                     f"{action} order file {display_done}/{total}: {source.name}",
                 )
 
+            check_cancelled()
             missing_requirements = self.missing_order_input_requirements(folder, orders)
             missing_orders = [
                 order for order in orders
@@ -5066,6 +6034,8 @@ class ShowerProgrammerApp:
                     },
                 )
             )
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
             self.worker_queue.put(("scan_error", exc))
 
@@ -5380,6 +6350,32 @@ class ShowerProgrammerApp:
         return all(term in searchable for term in terms)
 
     @staticmethod
+    def action_history_filter_matches(
+        event: dict[str, object],
+        *,
+        action_filter: str = "All Actions",
+        status_filter: str = "All Results",
+        orders_only: bool = False,
+    ) -> bool:
+        action_value = str(event.get("action", "")).strip()
+        status_value = str(event.get("status", "INFO")).strip().upper()
+        if action_filter and action_filter != "All Actions" and action_value != action_filter:
+            return False
+        if status_filter and status_filter != "All Results" and status_value != status_filter.upper():
+            return False
+        if orders_only and not ShowerProgrammerApp.action_history_values(event, "orders"):
+            return False
+        return True
+
+    @staticmethod
+    def action_history_action_options(events: Iterable[dict[str, object]]) -> list[str]:
+        actions = sorted(
+            {str(event.get("action", "")).strip() for event in events if str(event.get("action", "")).strip()},
+            key=str.casefold,
+        )
+        return ["All Actions", *actions]
+
+    @staticmethod
     def action_history_values(event: dict[str, object], key: str) -> list[str]:
         """Normalize old or manually edited history fields for display."""
         value = event.get(key, [])
@@ -5409,6 +6405,190 @@ class ShowerProgrammerApp:
             ).hexdigest()
             unique[event_id] = event
         return sorted(unique.values(), key=lambda event: str(event.get("timestamp", "")), reverse=True)
+
+    @classmethod
+    def action_history_archive_paths_for_range(
+        cls,
+        archive_dir: Path,
+        date_from: datetime,
+        date_to: datetime,
+    ) -> list[Path]:
+        """Return only monthly history files that can intersect a requested date range."""
+        start = date_from.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        finish = date_to.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if finish < start:
+            start, finish = finish, start
+        paths: list[Path] = []
+        cursor = start
+        while cursor <= finish:
+            paths.append(Path(archive_dir) / f"actions-{cursor:%Y-%m}.jsonl")
+            if cursor.month == 12:
+                cursor = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                cursor = cursor.replace(month=cursor.month + 1)
+        return paths
+
+    def load_action_history_date_range_report(
+        self,
+        date_from: datetime,
+        date_to: datetime,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> dict[str, object]:
+        """Load one Action History window with operator-visible diagnostics.
+
+        The Settings Action History page uses this report-oriented loader so a
+        failure cannot collapse into a blank page. Every candidate file is
+        reported as missing, readable, invalid, or failed, and the worker emits
+        progress before each potentially slow disk operation.
+        """
+        start = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
+        finish = date_to.replace(hour=23, minute=59, second=59, microsecond=999999)
+        if finish < start:
+            start, finish = finish.replace(hour=0, minute=0, second=0, microsecond=0), start.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            )
+
+        candidates = [self.action_history_path()]
+        candidates.extend(self.action_history_archive_paths_for_range(self.action_history_archive_dir(), start, finish))
+        unique_paths: list[Path] = []
+        seen_paths: set[str] = set()
+        for path in candidates:
+            resolved = Path(path).resolve()
+            key = str(resolved).casefold()
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            unique_paths.append(resolved)
+
+        diagnostics: list[str] = [
+            f"Requested range: {start:%m/%d/%Y} through {finish:%m/%d/%Y}",
+            f"History folder: {self.action_history_dir()}",
+            f"Candidate files: {len(unique_paths)}",
+        ]
+        files_read = 0
+        missing_files = 0
+        invalid_lines_total = 0
+        raw_event_count = 0
+        events: list[dict[str, object]] = []
+        total_steps = max(len(unique_paths) + 3, 1)
+
+        if task_context is not None:
+            task_context.progress(0, total_steps, "Preparing Action History file list...")
+
+        lock = getattr(self, "action_history_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self.action_history_lock = lock
+
+        with lock:
+            for index, path in enumerate(unique_paths, start=1):
+                if task_context is not None:
+                    task_context.progress(
+                        index,
+                        total_steps,
+                        f"Checking history file {index}/{len(unique_paths)}: {path.name}",
+                    )
+                if not path.exists():
+                    missing_files += 1
+                    diagnostics.append(f"MISSING: {path}")
+                    continue
+                try:
+                    size_bytes = int(path.stat().st_size)
+                except OSError as exc:
+                    raise OSError(f"Could not inspect Action History file '{path}': {exc}") from exc
+                diagnostics.append(f"READING: {path} ({size_bytes:,} bytes)")
+                if task_context is not None:
+                    task_context.stage(f"Reading {path.name} ({size_bytes:,} bytes)...")
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    raise OSError(f"Could not read Action History file '{path}': {exc}") from exc
+
+                file_events: list[dict[str, object]] = []
+                invalid_lines = 0
+                for line_number, line in enumerate(text.splitlines(), start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        value = json.loads(line)
+                    except (ValueError, TypeError):
+                        invalid_lines += 1
+                        continue
+                    if isinstance(value, dict):
+                        file_events.append(value)
+                    else:
+                        invalid_lines += 1
+                files_read += 1
+                invalid_lines_total += invalid_lines
+                raw_event_count += len(file_events)
+                if invalid_lines:
+                    diagnostics.append(
+                        f"WARNING: {path.name} contained {invalid_lines} invalid line(s); valid records were retained."
+                    )
+                diagnostics.append(f"READ: {path.name} -> {len(file_events)} record(s)")
+
+                for event in file_events:
+                    stamp = self.parse_action_history_timestamp(event.get("timestamp"))
+                    if stamp is None or stamp < start or stamp > finish:
+                        continue
+                    events.append(event)
+
+        if task_context is not None:
+            task_context.progress(
+                len(unique_paths) + 1,
+                total_steps,
+                f"Filtering {raw_event_count} raw Action History record(s) to the requested dates...",
+            )
+
+        unique: dict[str, dict[str, object]] = {}
+        for event in events:
+            event_id = str(event.get("id", "")).strip() or hashlib.sha256(
+                json.dumps(event, ensure_ascii=True, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            unique[event_id] = event
+        sorted_events = sorted(unique.values(), key=lambda event: str(event.get("timestamp", "")), reverse=True)
+
+        diagnostics.append(f"Files read: {files_read}; missing: {missing_files}")
+        diagnostics.append(f"Raw records: {raw_event_count}; matching records: {len(sorted_events)}")
+        if invalid_lines_total:
+            diagnostics.append(f"Invalid JSON lines ignored: {invalid_lines_total}")
+        diagnostics.append("Action History file load completed successfully.")
+
+        if task_context is not None:
+            task_context.progress(
+                total_steps,
+                total_steps,
+                f"Loaded {len(sorted_events)} Action History record(s) from {files_read} file(s).",
+            )
+
+        return {
+            "events": sorted_events,
+            "diagnostics": diagnostics,
+            "files_read": files_read,
+            "missing_files": missing_files,
+            "invalid_lines": invalid_lines_total,
+            "raw_records": raw_event_count,
+            "matching_records": len(sorted_events),
+            "date_from": start.isoformat(),
+            "date_to": finish.isoformat(),
+        }
+
+    def load_action_history_date_range(
+        self,
+        date_from: datetime,
+        date_to: datetime,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> list[dict[str, object]]:
+        """Compatibility wrapper returning only records for the requested history window."""
+        report = self.load_action_history_date_range_report(
+            date_from,
+            date_to,
+            task_context=task_context,
+        )
+        events = report.get("events", [])
+        return list(events) if isinstance(events, list) else []
 
     @staticmethod
     def sent_process_signature(order: shower_batch.ProcessOrder) -> str:
@@ -5560,6 +6740,7 @@ class ShowerProgrammerApp:
             entry["sent_reconciled_at"] = reconciled_at
             entry.pop("deleted_at", None)
             entry.pop("deleted_process_signature", None)
+            entry.pop("deleted_scope", None)
 
         history_path = output_dir / "processing_history.json"
         try:
@@ -5651,6 +6832,22 @@ class ShowerProgrammerApp:
             entry.pop("deleted_at", None)
             entry.pop("deleted_process_signature", None)
         self.save_processing_history(history)
+        try:
+            store = self.state_store_for_output(Path(self.output_dir_var.get()).resolve())
+            for order in orders_sent:
+                store.transition_order(
+                    str(order.aw_order),
+                    shower_state.LifecycleState.SENT,
+                    reason="Output sent to production",
+                    job_name=str(order.job_name),
+                    customer=str(order.customer),
+                    in_input=False if archived else True,
+                    archived=bool(archived),
+                    sent_at=sent_at,
+                    deleted_at="",
+                )
+        except Exception:
+            pass
         self.update_sent_status_for_orders([str(order.aw_order) for order in orders_sent])
 
     @classmethod
@@ -5658,8 +6855,14 @@ class ShowerProgrammerApp:
         cls,
         orders_deleted: list[shower_batch.ProcessOrder],
         output_dir: Path,
+        deletion_scope_by_aw: dict[str, str] | None = None,
     ) -> None:
-        """Persist deletion receipts using an explicit path so workers never read Tk variables."""
+        """Persist deletion receipts using an explicit path so workers never read Tk variables.
+
+        ``deleted_scope`` preserves whether the operator removed one order or a full
+        batch for audit/history. A later explicit Scan Orders may reactivate either
+        scope when the required PDF/DXF is still available in shared input.
+        """
         if not orders_deleted:
             return
         history = cls.load_processing_history_for_output(Path(output_dir))
@@ -5675,7 +6878,23 @@ class ShowerProgrammerApp:
                 history_orders[str(order.aw_order)] = entry
             entry["deleted_at"] = deleted_at
             entry["deleted_process_signature"] = cls.sent_process_signature(order)
+            scope = str((deletion_scope_by_aw or {}).get(str(order.aw_order), "order")).strip().casefold()
+            entry["deleted_scope"] = "batch" if scope == "batch" else "order"
         cls.save_processing_history_for_output(Path(output_dir), history)
+        try:
+            store = shower_state.StateStore.for_output(Path(output_dir))
+            for order in orders_deleted:
+                store.transition_order(
+                    str(order.aw_order),
+                    shower_state.LifecycleState.DELETED_LOCAL,
+                    reason="Local order inputs explicitly deleted",
+                    job_name=str(order.job_name),
+                    customer=str(order.customer),
+                    in_input=False,
+                    deleted_at=deleted_at,
+                )
+        except Exception:
+            pass
 
     def mark_orders_deleted(self, orders_deleted: list[shower_batch.ProcessOrder]) -> None:
         """Persist an explicit local deletion so batch completion can be proven later."""
@@ -5696,6 +6915,125 @@ class ShowerProgrammerApp:
         sent = bool(entry.get("sent_at")) and str(entry.get("sent_process_signature", "")) == signature
         deleted = bool(entry.get("deleted_at")) and str(entry.get("deleted_process_signature", "")) == signature
         return sent or deleted
+
+    @classmethod
+    def reactivate_deleted_orders_available_in_shared_input(
+        cls,
+        batches: list[dict[str, object]],
+        import_snapshot: dict[str, object],
+        local_order_folder: Path,
+        output_dir: Path,
+    ) -> list[str]:
+        """Reactivate locally deleted orders only during an explicit shared-input scan.
+
+        A local delete is intentionally reversible: it removes the local PDF/DXF and
+        refreshes the local view, but a later operator-initiated Scan Orders should be
+        able to copy the same order back from the network. This check happens before
+        completed-batch retirement so a deletion receipt cannot retire the process list
+        before the shared PDF/DXF is synchronized again. Sent receipts remain terminal.
+        """
+        raw_sources = import_snapshot.get("order_files", import_snapshot.get("files", []))
+        source_files = [
+            path for path in raw_sources
+            if isinstance(path, Path) and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+        ] if isinstance(raw_sources, list) else []
+        if not source_files:
+            return []
+
+        all_orders = cls.unique_orders_from_batches(batches)
+        if not all_orders:
+            return []
+        missing = cls.missing_order_input_requirements(local_order_folder, all_orders)
+        if not missing:
+            return []
+
+        try:
+            history = cls.load_processing_history_for_output(Path(output_dir))
+        except Exception:
+            return []
+        history_orders = history.get("orders", {})
+        if not isinstance(history_orders, dict):
+            return []
+
+        reactivated: list[tuple[shower_batch.ProcessOrder, str]] = []
+        reactivated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for order in all_orders:
+            aw_order = str(order.aw_order)
+            requirement = missing.get(aw_order)
+            if not isinstance(requirement, dict):
+                continue
+            entry = history_orders.get(aw_order)
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("deleted_at"):
+                continue
+            if str(entry.get("deleted_process_signature", "")) != cls.sent_process_signature(order):
+                continue
+            # A valid sent receipt remains authoritative; a stale shared copy must not
+            # silently resurrect a production-complete order.
+            if entry.get("sent_at") and str(entry.get("sent_process_signature", "")) == cls.sent_process_signature(order):
+                continue
+
+            matching_sources = [
+                source
+                for source in source_files
+                if cls.file_matches_missing_order_requirement(
+                    source,
+                    order,
+                    requirement,
+                    inspect_pdf_text=source.suffix.lower() == ".pdf",
+                )
+            ]
+            if bool(requirement.get("pdf", False)) and not any(path.suffix.lower() == ".pdf" for path in matching_sources):
+                continue
+            raw_items = requirement.get("dxf_items", [])
+            missing_items = [int(item) for item in raw_items if str(item).isdigit()] if isinstance(raw_items, list) else []
+            if missing_items:
+                normalized_job = programmer.normalize_lookup(order.job_name)
+                job_number = cls.job_number_for_order(order)
+                matching_dxfs = [path for path in matching_sources if path.suffix.lower() == ".dxf"]
+                if any(
+                    not any(
+                        programmer.dxf_match_score(
+                            path,
+                            normalized_job,
+                            item_number,
+                            aw_order=aw_order,
+                            job_number=job_number,
+                        ) is not None
+                        for path in matching_dxfs
+                    )
+                    for item_number in missing_items
+                ):
+                    continue
+
+            previous_deleted_at = str(entry.pop("deleted_at", "") or "")
+            entry.pop("deleted_process_signature", None)
+            entry.pop("deleted_scope", None)
+            entry["reactivated_at"] = reactivated_at
+            entry["reactivated_source"] = "shared order input"
+            if previous_deleted_at:
+                entry["reactivated_from_deleted_at"] = previous_deleted_at
+            reactivated.append((order, previous_deleted_at))
+
+        if not reactivated:
+            return []
+        cls.save_processing_history_for_output(Path(output_dir), history)
+        try:
+            store = shower_state.StateStore.for_output(Path(output_dir))
+            for order, _previous_deleted_at in reactivated:
+                store.transition_order(
+                    str(order.aw_order),
+                    shower_state.LifecycleState.REACTIVATED,
+                    reason="Explicit Scan Orders found the locally deleted order in shared input",
+                    job_name=str(order.job_name),
+                    customer=str(order.customer),
+                    in_input=False,
+                    deleted_at="",
+                )
+        except Exception:
+            pass
+        return [str(order.aw_order) for order, _previous_deleted_at in reactivated]
 
     @classmethod
     def reactivate_reimported_process_list_orders(
@@ -5744,18 +7082,36 @@ class ShowerProgrammerApp:
             raw_orders = batch.get("all_orders", batch.get("orders", []))
             if not isinstance(raw_orders, list):
                 continue
-            for order in raw_orders:
-                if not isinstance(order, shower_batch.ProcessOrder):
-                    continue
-                aw_order = str(order.aw_order)
-                entry = history_orders.get(aw_order)
+            batch_orders = [
+                order for order in raw_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            ]
+            deleted_entries: list[tuple[shower_batch.ProcessOrder, dict[str, object]]] = []
+            for order in batch_orders:
+                entry = history_orders.get(str(order.aw_order))
                 if not isinstance(entry, dict):
                     continue
                 if not entry.get("deleted_at") and not entry.get("deleted_process_signature"):
                     continue
+                deleted_entries.append((order, entry))
 
+            # New receipts explicitly distinguish a single-order delete from a
+            # full-batch delete. A network process-list re-import must never bring
+            # back an individually deleted order. Legacy receipts predate this
+            # field, so only reactivate them when every current order in the batch
+            # carries a matching deletion receipt (the old full-batch pattern).
+            legacy_full_batch = bool(batch_orders) and len(deleted_entries) == len(batch_orders) and all(
+                str(entry.get("deleted_scope", "")).strip() == ""
+                for _order, entry in deleted_entries
+            )
+            for order, entry in deleted_entries:
+                scope = str(entry.get("deleted_scope", "")).strip().casefold()
+                if scope != "batch" and not legacy_full_batch:
+                    continue
+                aw_order = str(order.aw_order)
                 previous_deleted_at = str(entry.pop("deleted_at", "") or "")
                 entry.pop("deleted_process_signature", None)
+                entry.pop("deleted_scope", None)
                 entry["reactivated_at"] = reactivated_at
                 entry["reactivated_source"] = source.name
                 if previous_deleted_at:
@@ -5765,7 +7121,31 @@ class ShowerProgrammerApp:
         if not reactivated:
             return []
         cls.save_processing_history_for_output(Path(output_dir), history)
-        return list(dict.fromkeys(reactivated))
+        unique_reactivated = list(dict.fromkeys(reactivated))
+        try:
+            store = shower_state.StateStore.for_output(Path(output_dir))
+            for batch in batches:
+                source_value = batch.get("path")
+                stable_id = str(batch.get("stable_id", ""))
+                raw_orders = batch.get("all_orders", batch.get("orders", []))
+                if not isinstance(raw_orders, list):
+                    continue
+                for order in raw_orders:
+                    if isinstance(order, shower_batch.ProcessOrder) and str(order.aw_order) in unique_reactivated:
+                        store.transition_order(
+                            str(order.aw_order),
+                            shower_state.LifecycleState.REACTIVATED,
+                            reason="Shared process-list batch was re-imported",
+                            batch_key=stable_id,
+                            job_name=str(order.job_name),
+                            customer=str(order.customer),
+                            in_input=True,
+                            deleted_at="",
+                            metadata={"source": str(source_value or "")},
+                        )
+        except Exception:
+            pass
+        return unique_reactivated
 
     def history_for_order(self, aw_order: str) -> dict[str, object]:
         try:
@@ -6883,11 +8263,18 @@ class ShowerProgrammerApp:
         batch_id = self.tree_row_batches.get(row_id)
         order = self.order_for_tree_row(row_id)
         selected_orders = self.selected_orders()
+        selected_order_snapshot = tuple(selected_orders)
+        selected_batch_snapshot = frozenset(
+            self.tree_row_batches[selected_row_id]
+            for selected_row_id in self.tree.selection()
+            if selected_row_id in self.tree_row_batches
+        )
         if batch_id:
             batch = self.process_batches.get(batch_id, {})
             title = "Process List Batch Actions"
             subtitle = str(batch.get("name", "Process List"))
             action_text = "Delete Local Batch"
+            network_action_text = "Delete Local + Network Batch"
             network_delete_available = self.batch_allows_network_input_delete(batch)
         elif order is not None:
             title = "Order Actions"
@@ -6897,7 +8284,8 @@ class ShowerProgrammerApp:
                 else f"{order.aw_order}  {order.job_name}"
             )
             action_text = "Delete Local Input Files"
-            network_delete_available = False
+            network_action_text = "Delete Local + Network Input Files"
+            network_delete_available = self.orders_allow_network_input_delete(selected_orders)
         else:
             return "break"
 
@@ -6912,7 +8300,11 @@ class ShowerProgrammerApp:
                 "text": action_text,
                 "icon": "trash",
                 "destructive": True,
-                "command": self.delete_selected_local_order_inputs,
+                "command": lambda orders=selected_order_snapshot, batches=selected_batch_snapshot: self.delete_order_inputs(
+                    orders,
+                    batches,
+                    include_network=False,
+                ),
             },
         ]
         if not batch_id and order is not None:
@@ -6947,10 +8339,14 @@ class ShowerProgrammerApp:
         if network_delete_available:
             actions.append(
                 {
-                    "text": "Delete Local + Network Batch",
+                    "text": network_action_text,
                     "icon": "trash",
                     "destructive": True,
-                    "command": lambda: self.delete_selected_local_order_inputs(include_network=True),
+                    "command": lambda orders=selected_order_snapshot, batches=selected_batch_snapshot: self.delete_order_inputs(
+                        orders,
+                        batches,
+                        include_network=True,
+                    ),
                 }
             )
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
@@ -7001,6 +8397,14 @@ class ShowerProgrammerApp:
     def format_programming_evidence_panel(panel: dict[str, object]) -> str:
         rotation = panel.get("rotation")
         angle = float(panel.get("angle_correction") or 0.0)
+        if isinstance(rotation, (int, float)):
+            rotation_value = 0.0 if abs(float(rotation)) < 0.005 else float(rotation)
+            rotation_text = f"{rotation_value:.2f}".rstrip("0").rstrip(".")
+            if not rotation_text or rotation_text == "-0":
+                rotation_text = "0"
+        else:
+            rotation_text = "None"
+        angle_text = f"{angle:+.2f}" if abs(angle) >= 0.005 else "0"
         lines = [
             f"Machine: {panel.get('machine', 'Not identified')}",
             f"Glass: {panel.get('glass_type', 'Not identified')}",
@@ -7008,8 +8412,8 @@ class ShowerProgrammerApp:
             f"Process-list hint: {panel.get('process_hint', 'None')}",
             f"Source DXF: {panel.get('source_dxf', 'None')}",
             f"Indicator corner: {panel.get('indicator', 'None')}",
-            f"DXF rotation: {rotation if rotation is not None else 'None'} deg",
-            f"Out-of-square correction: {angle:+.6f} deg",
+            f"DXF rotation: {rotation_text} deg",
+            f"Out-of-square correction: {angle_text} deg",
         ]
         hinge_side = str(panel.get("hinge_side", "Not applicable"))
         if hinge_side != "Not applicable":
@@ -7197,7 +8601,12 @@ class ShowerProgrammerApp:
                 pass
         return target, warnings
 
-    def create_diagnostic_package_for_order(self, process_order: shower_batch.ProcessOrder) -> None:
+    def create_diagnostic_package_for_order(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        *,
+        error_context: shower_errors.ShowerProgrammerError | None = None,
+    ) -> None:
         if self.diagnostic_worker_active:
             messagebox.showinfo("Diagnostic package", "Another diagnostic package is already being prepared.", parent=self.root)
             return
@@ -7237,6 +8646,14 @@ class ShowerProgrammerApp:
                     "programming_evidence": evidence,
                     "configuration": self.redacted_configuration_snapshot(config),
                     "action_history": actions,
+                    "lifecycle": self.state_store_for_output(output_dir).order_state(str(process_order.aw_order)),
+                    "lifecycle_events": self.state_store_for_output(output_dir).lifecycle_events(str(process_order.aw_order)),
+                    "recent_performance": self.state_store_for_output(output_dir).recent_performance(100),
+                    "structured_error": {
+                        "code": error_context.code,
+                        "message": error_context.message,
+                        "details": error_context.details,
+                    } if error_context is not None else {},
                 }
                 target = self.diagnostics_directory() / (
                     f"ShowerProgrammer-{process_order.aw_order}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
@@ -7266,6 +8683,9 @@ class ShowerProgrammerApp:
                         details=[("File", package.name), ("Folder", str(package.parent)), ("Warnings", str(len(warnings)))],
                         parent=self.root,
                         button_text="Done",
+                        secondary_button_text="Open Folder",
+                        secondary_button_command=lambda folder=package.parent: os.startfile(str(folder.resolve())),
+                        secondary_button_icon="folder",
                     )
 
                 try:
@@ -7288,10 +8708,10 @@ class ShowerProgrammerApp:
     def batch_allows_network_input_delete(cls, batch: dict[str, object]) -> bool:
         """Restrict shared-folder deletion to the input-only synthetic batch."""
         batch_orders = batch.get("orders", [])
-        return bool(batch_orders) and isinstance(batch_orders, list) and all(
-            isinstance(order, shower_batch.ProcessOrder) and cls.is_input_only_order(order)
-            for order in batch_orders
-        )
+        if not isinstance(batch_orders, list):
+            return False
+        orders = [order for order in batch_orders if isinstance(order, shower_batch.ProcessOrder)]
+        return len(orders) == len(batch_orders) and cls.orders_allow_network_input_delete(orders)
 
     @classmethod
     def network_input_files_for_orders(
@@ -7337,41 +8757,103 @@ class ShowerProgrammerApp:
         return delete_batches
 
     def delete_selected_local_order_inputs(self, include_network: bool = False) -> None:
-        """Prepare a potentially large input cleanup without blocking Tk's UI thread."""
+        """Delete using the Treeview's current selection outside a context-menu snapshot."""
+        orders = tuple(self.selected_orders())
+        selected_batch_ids = frozenset(
+            self.tree_row_batches[row_id]
+            for row_id in self.tree.selection()
+            if row_id in self.tree_row_batches
+        )
+        self.delete_order_inputs(orders, selected_batch_ids, include_network=include_network)
+
+    def delete_order_inputs(
+        self,
+        orders: tuple[shower_batch.ProcessOrder, ...] | list[shower_batch.ProcessOrder],
+        selected_batch_ids: frozenset[str] | set[str],
+        *,
+        include_network: bool = False,
+    ) -> None:
+        """Prepare cleanup from an immutable context-menu selection snapshot.
+
+        Context-menu Toplevel focus/teardown must never decide which files are
+        deleted.  The caller captures the exact orders and selected batch ids before
+        the menu is retired, then this method validates and starts the background
+        discovery task from that snapshot.
+        """
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
-        orders = self.selected_orders()
-        if not orders:
-            messagebox.showinfo("No selection", "Select one or more orders or a process-list batch first.")
+
+        frozen_orders = [
+            order
+            for order in orders
+            if isinstance(order, shower_batch.ProcessOrder)
+        ]
+        frozen_batch_ids = {str(batch_id) for batch_id in selected_batch_ids if str(batch_id)}
+        if not frozen_orders:
+            messagebox.showinfo(
+                "No selection",
+                "Select one or more orders or a process-list batch first.",
+                parent=self.root,
+            )
             return
+
         try:
+            fully_selected_batches = self.batches_fully_selected_for_local_delete(
+                frozen_orders,
+                frozen_batch_ids,
+            )
+            deletion_scope_by_aw = {
+                str(order.aw_order): (
+                    "batch"
+                    if any(
+                        str(batch_id) in fully_selected_batches
+                        for batch_id in self.order_batch_ids.get(str(order.aw_order), [])
+                    )
+                    else "order"
+                )
+                for order in frozen_orders
+            }
             local_order_folder = Path(self.folder_var.get()).resolve()
             process_list_root = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
             network_source = Path(self.import_source_var.get()).resolve() if include_network else None
         except Exception as exc:
-            messagebox.showerror("Invalid local input folder", str(exc))
+            self.status_var.set("Could not prepare the selected order cleanup.")
+            self.show_structured_error(exc, title="Order cleanup could not start")
             return
 
-        if include_network and any(not self.is_input_only_order(order) for order in orders):
+        if include_network and not self.orders_allow_network_input_delete(frozen_orders):
             messagebox.showwarning(
                 "Network deletion unavailable",
-                "Local and network deletion is available only for the Input Without Process List batch.",
+                "Local and network deletion is available only for orders in Input Without Process List.",
                 parent=self.root,
             )
             return
 
-        self.start_background_activity(
-            "Finding files for the selected order cleanup...",
-            maximum=100,
+        scope_text = "local + network" if include_network else "local"
+        self.status_var.set(
+            f"Delete requested for {len(frozen_orders)} order(s). Preparing {scope_text} file cleanup..."
         )
-        threading.Thread(
-            target=self.worker_prepare_local_order_delete,
-            args=(orders, local_order_folder, process_list_root, output_dir, network_source, include_network),
-            name="shower-delete-prepare",
-            daemon=True,
-        ).start()
+        cleanup_detail = "local + network" if include_network else "local only"
+        started = self.run_managed_task(
+            "Prepare Order Cleanup",
+            lambda task: self.worker_prepare_local_order_delete(
+                frozen_orders,
+                local_order_folder,
+                process_list_root,
+                output_dir,
+                network_source,
+                include_network,
+                deletion_scope_by_aw=deletion_scope_by_aw,
+                task_context=task,
+            ),
+            message=f"Finding files for the selected order cleanup ({cleanup_detail})...",
+            total=100,
+            cancellable=True,
+        )
+        if not started and not self.is_busy:
+            self.status_var.set("Order cleanup did not start. Review the current status or error message.")
 
     def worker_prepare_local_order_delete(
         self,
@@ -7381,9 +8863,14 @@ class ShowerProgrammerApp:
         output_dir: Path,
         network_source: Path | None,
         include_network: bool,
-    ) -> None:
+        *,
+        deletion_scope_by_aw: dict[str, str] | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> dict[str, object]:
         """Identify local/network cleanup targets before asking the operator to confirm."""
         try:
+            if task_context is not None:
+                task_context.check_cancelled()
             self.queue_scan_progress(5, 100, "Finding matching local PDF/DXF input files...")
             files = self.matching_order_files(
                 local_order_folder,
@@ -7395,32 +8882,24 @@ class ShowerProgrammerApp:
             if network_source is not None:
                 self.queue_scan_progress(18, 100, "Checking the shared input folder for matching files...")
                 network_files = self.network_input_files_for_orders(network_source, orders)
+            if task_context is not None:
+                task_context.check_cancelled()
             self.queue_scan_progress(30, 100, "Cleanup targets identified; waiting for confirmation...")
-            self.worker_queue.put(
-                (
-                    "delete_preview_ready",
-                    {
-                        "orders": orders,
-                        "local_order_folder": local_order_folder,
-                        "process_list_root": process_list_root,
-                        "output_dir": output_dir,
-                        "network_source": network_source,
-                        "include_network": include_network,
-                        "files": files,
-                        "network_files": network_files,
-                    },
-                )
-            )
+            return {
+                "orders": orders,
+                "local_order_folder": local_order_folder,
+                "process_list_root": process_list_root,
+                "output_dir": output_dir,
+                "network_source": network_source,
+                "include_network": include_network,
+                "deletion_scope_by_aw": dict(deletion_scope_by_aw or {}),
+                "files": files,
+                "network_files": network_files,
+            }
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
-            self.worker_queue.put(
-                (
-                    "delete_error",
-                    {
-                        "stage": "preparing the cleanup",
-                        "error": exc,
-                    },
-                )
-            )
+            raise RuntimeError(f"Could not prepare the order cleanup: {exc}") from exc
 
     @staticmethod
     def local_order_delete_confirmation_message(data: dict[str, object]) -> tuple[str, str]:
@@ -7471,9 +8950,18 @@ class ShowerProgrammerApp:
         title = "Delete local and network input" if include_network else "Delete local order input"
         return title, "".join(message_parts)
 
-    def worker_delete_local_order_inputs(self, data: dict[str, object]) -> None:
+    def worker_delete_local_order_inputs(
+        self,
+        data: dict[str, object],
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> dict[str, object]:
         """Perform the confirmed cleanup and report granular progress through the main activity bar."""
         try:
+            def check_cancelled() -> None:
+                if task_context is not None:
+                    task_context.check_cancelled()
+            check_cancelled()
             orders = [
                 order for order in data.get("orders", [])
                 if isinstance(order, shower_batch.ProcessOrder)
@@ -7509,17 +8997,13 @@ class ShowerProgrammerApp:
                 )
                 warnings.extend(network_warnings)
                 if timed_out or len(deleted_network) != len(network_files):
-                    self.worker_queue.put(
-                        (
-                            "delete_incomplete",
-                            {
-                                "deleted_network": deleted_network,
-                                "network_files": network_files,
-                                "warnings": warnings,
-                            },
-                        )
-                    )
-                    return
+                    return {
+                        "incomplete": True,
+                        "deleted_network": deleted_network,
+                        "network_files": network_files,
+                        "warnings": warnings,
+                    }
+                check_cancelled()
             else:
                 self.queue_scan_progress(35, 100, "No shared input files need removal.")
 
@@ -7566,7 +9050,14 @@ class ShowerProgrammerApp:
 
             self.queue_scan_progress(78, 100, "Updating deleted-order history...")
             try:
-                self.mark_orders_deleted_for_output(successfully_deleted_orders, output_dir)
+                self.mark_orders_deleted_for_output(
+                    successfully_deleted_orders,
+                    output_dir,
+                    deletion_scope_by_aw={
+                        str(key): str(value)
+                        for key, value in (data.get("deletion_scope_by_aw", {}) or {}).items()
+                    } if isinstance(data.get("deletion_scope_by_aw", {}), dict) else None,
+                )
             except Exception as exc:
                 warnings.append(f"Could not save deleted-order receipt: {exc}")
 
@@ -7629,32 +9120,23 @@ class ShowerProgrammerApp:
                     except Exception as exc:
                         warnings.append(f"Could not move process list {source.name} to recovery: {exc}")
 
+            check_cancelled()
             self.queue_scan_progress(97, 100, "Refreshing the active order list...")
-            self.worker_queue.put(
-                (
-                    "delete_done",
-                    {
-                        **data,
-                        "deleted": deleted,
-                        "deleted_network": deleted_network,
-                        "deleted_process_lists": deleted_process_lists,
-                        "successfully_deleted_orders": successfully_deleted_orders,
-                        "completed_batches": completed_batches,
-                        "warnings": warnings,
-                        "include_network": include_network,
-                    },
-                )
-            )
+            return {
+                **data,
+                "incomplete": False,
+                "deleted": deleted,
+                "deleted_network": deleted_network,
+                "deleted_process_lists": deleted_process_lists,
+                "successfully_deleted_orders": successfully_deleted_orders,
+                "completed_batches": completed_batches,
+                "warnings": warnings,
+                "include_network": include_network,
+            }
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
-            self.worker_queue.put(
-                (
-                    "delete_error",
-                    {
-                        "stage": "removing the selected inputs",
-                        "error": exc,
-                    },
-                )
-            )
+            raise RuntimeError(f"Could not remove the selected inputs: {exc}") from exc
 
     def apply_local_order_delete_result(self, data: dict[str, object]) -> None:
         """Apply worker cleanup results to Tk widgets only after background I/O finishes."""
@@ -7744,7 +9226,22 @@ class ShowerProgrammerApp:
             if len(warnings) > 10:
                 detail += f"\n...and {len(warnings) - 10} more"
         self.status_var.set(detail.split("\n", 1)[0])
+        self.record_action(
+            "Delete Local + Network Inputs" if include_network else "Delete Local Inputs",
+            f"Removed local input for {len(successfully_deleted_orders)} order(s).",
+            status="WARNING" if warnings or len(successfully_deleted_orders) != len(orders) else "SUCCESS",
+            orders=successfully_deleted_orders or orders,
+            details=(
+                f"Local files moved to recovery={len(deleted)}; shared files deleted={len(deleted_network)}; "
+                f"process-list files moved to recovery={len(deleted_process_lists)}; warnings={len(warnings)}"
+            ),
+        )
         messagebox.showinfo("Order input cleanup complete", detail, parent=self.root)
+        self.status_var.set("Order cleanup complete. Refreshing local Input folders only...")
+        try:
+            self.root.after(100, self.refresh_local_orders)
+        except (AttributeError, tk.TclError):
+            pass
 
     def on_orders_tree_selection(self, _event: tk.Event | None = None) -> None:
         """Selecting a process-list batch also selects every order in that batch."""
@@ -7895,18 +9392,28 @@ class ShowerProgrammerApp:
                 "review": values[self.ORDER_TREE_INDEX["review"]] if len(values) > self.ORDER_TREE_INDEX["review"] else "",
                 "issues": values[self.ORDER_TREE_INDEX["issues"]] if len(values) > self.ORDER_TREE_INDEX["issues"] else "",
             }
-        self.start_background_activity(f"Validating {len(orders)} selected order(s)...", maximum=len(orders))
+        validation_message = f"Validating {len(orders)} selected order(s)..."
         self.record_action(
             "Validate Selected",
             f"Started validation for {len(orders)} selected order(s).",
             status="INFO",
             orders=orders,
         )
-        threading.Thread(
-            target=self.worker_validate_selected_orders,
-            args=(orders, folder, output_dir, config, row_state),
-            daemon=True,
-        ).start()
+        self.run_managed_task(
+            "Validate Selected",
+            lambda task: self.worker_validate_selected_orders(
+                orders,
+                folder,
+                output_dir,
+                config,
+                row_state,
+                task_context=task,
+            ),
+            message=validation_message,
+            total=len(orders),
+            cancellable=True,
+            on_error=lambda error: self.worker_queue.put(("validation_error", {"orders": orders, "error": error})),
+        )
 
     def worker_validate_selected_orders(
         self,
@@ -7915,8 +9422,12 @@ class ShowerProgrammerApp:
         output_dir: Path,
         config: dict[str, object],
         row_state: dict[str, dict[str, str]],
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> None:
         try:
+            if task_context is not None:
+                task_context.check_cancelled()
             requirements = self.missing_order_input_requirements(folder, orders)
             history_data = self.load_processing_history_for_output(output_dir)
             validations: list[dict[str, object]] = []
@@ -7986,8 +9497,14 @@ class ShowerProgrammerApp:
                     }
                 )
                 self.queue_scan_progress(index, len(orders), f"Validated {aw_order} ({index}/{len(orders)})")
+                if task_context is not None:
+                    task_context.progress(index, len(orders), f"Validated A&W {aw_order} ({index}/{len(orders)})")
             self.worker_queue.put(("validation_done", {"orders": orders, "validations": validations}))
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
+            if task_context is not None:
+                raise
             self.worker_queue.put(("validation_error", {"orders": orders, "error": exc}))
 
     def run_orders(
@@ -8038,11 +9555,8 @@ class ShowerProgrammerApp:
                     return
                 force = True
 
-        self.is_busy = True
-        self.set_controls_enabled(False)
-        self.progress.stop()
-        self.progress.configure(mode="determinate", maximum=len(orders), value=0)
-        self.status_var.set(("Processing" if apply else "Dry running") + f" {len(orders)} order(s)...")
+        operation_name = "Process Orders" if apply else "Validate Run"
+        operation_message = ("Processing" if apply else "Dry running") + f" {len(orders)} order(s)..."
         self.record_action(
             "Process Orders" if apply else "Validate Run",
             f"Started {'REMAKE ' if remake_items_by_order is not None else ''}{'processing' if apply else 'dry run'} for {len(orders)} order(s).",
@@ -8051,12 +9565,25 @@ class ShowerProgrammerApp:
             details=f"Skip sketch={skip_pdf}; skip DXF={skip_dxf}; overwrite={force}",
         )
 
-        worker = threading.Thread(
-            target=self.worker_run_batch,
-            args=(orders, apply, folder, output_dir, process_list_path, force, skip_pdf, skip_dxf, remake_items_by_order),
-            daemon=True,
+        self.run_managed_task(
+            operation_name,
+            lambda task: self.worker_run_batch(
+                orders,
+                apply,
+                folder,
+                output_dir,
+                process_list_path,
+                force,
+                skip_pdf,
+                skip_dxf,
+                remake_items_by_order,
+                task_context=task,
+            ),
+            message=operation_message,
+            total=len(orders),
+            cancellable=True,
+            on_error=lambda error: self.worker_queue.put(("error", error)),
         )
-        worker.start()
 
     def existing_output_conflicts(
         self,
@@ -8088,8 +9615,12 @@ class ShowerProgrammerApp:
         skip_pdf: bool,
         skip_dxf: bool,
         remake_items_by_order: dict[str, set[int]] | None,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> None:
         try:
+            if task_context is not None:
+                task_context.check_cancelled()
             run_folder = self.next_batch_run_folder(output_dir, process_list_path) if apply else output_dir / "Reviews" / "DryRun"
             sketch_dir, programs_dir, report_dir = self.output_dirs_for_run(run_folder)
             if apply and force:
@@ -8105,6 +9636,19 @@ class ShowerProgrammerApp:
                 # latest run intentionally skips DXF output.
                 self.remove_order_program_files(orders, programs_dir)
             config = self.config_with_manual_overrides(folder, output_dir)
+            completed = 0
+
+            def report_result(result: shower_batch.BatchJobResult) -> None:
+                nonlocal completed
+                completed += 1
+                self.worker_queue.put(("result", result))
+                if task_context is not None:
+                    task_context.progress(
+                        completed,
+                        len(orders),
+                        f"{result.status}: A&W {result.aw_order} ({completed}/{len(orders)})",
+                    )
+
             run = shower_batch.run_batch(
                 orders=orders,
                 folder=folder,
@@ -8117,14 +9661,20 @@ class ShowerProgrammerApp:
                 skip_pdf=skip_pdf,
                 skip_dxf=skip_dxf,
                 remake_items_by_order=remake_items_by_order,
-                progress=lambda result: self.worker_queue.put(("result", result)),
+                progress=report_result,
             )
+            if task_context is not None:
+                task_context.check_cancelled()
             if apply:
                 processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.write_run_manifest(run, run_folder, sketch_dir, programs_dir, report_dir, processed_at, remake_items_by_order, skip_pdf, skip_dxf)
                 self.update_processing_history(run, output_dir, processed_at, run_folder, remake_items_by_order, skip_pdf, skip_dxf)
             self.worker_queue.put(("done", (run, run_folder)))
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
+            if task_context is not None:
+                raise
             self.worker_queue.put(("error", exc))
 
     def write_run_manifest(
@@ -8695,6 +10245,100 @@ class ShowerProgrammerApp:
                             self.send_review_progress = None
                     if self.send_review_status_var is not None:
                         self.send_review_status_var.set(message)
+                elif kind == "task_progress":
+                    data = payload
+                    assert isinstance(data, dict)
+                    total = int(data.get("total", 0) or 0)
+                    current = int(data.get("current", 0) or 0)
+                    message = str(data.get("message", "Working..."))
+                    if total > 0:
+                        percent = max(0.0, min(99.0, (current / max(total, 1)) * 100.0))
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate", maximum=100, value=percent)
+                    self.status_var.set(message)
+                    self.record_activity_progress(message)
+                elif kind == "task_done":
+                    data = payload
+                    assert isinstance(data, dict)
+                    name = str(data.get("name", "Background task"))
+                    result = data.get("result")
+                    task_id = str(data.get("task_id", ""))
+                    handlers = self._managed_task_handlers.pop(task_id, {}) if task_id else {}
+                    self.record_performance(name, "Managed task total", float(data.get("elapsed_ms", 0.0) or 0.0))
+                    done_handler = handlers.get("done")
+                    if done_handler is not None:
+                        self.finish_background_activity()
+                        done_handler(result)
+                        continue
+                    if name == "Prepare Order Cleanup" and isinstance(result, dict):
+                        self.finish_background_activity()
+                        title, message = self.local_order_delete_confirmation_message(result)
+                        if not messagebox.askyesno(title, message, parent=self.root):
+                            self.status_var.set("Order input cleanup canceled.")
+                            continue
+                        self.run_managed_task(
+                            "Delete Order Inputs",
+                            lambda task, cleanup=result: self.worker_delete_local_order_inputs(cleanup, task_context=task),
+                            message="Removing selected order inputs...",
+                            total=100,
+                            cancellable=True,
+                        )
+                    elif name == "Delete Order Inputs" and isinstance(result, dict):
+                        self.finish_background_activity()
+                        if bool(result.get("incomplete", False)):
+                            deleted_network = [path for path in result.get("deleted_network", []) if isinstance(path, Path)]
+                            network_files = [path for path in result.get("network_files", []) if isinstance(path, Path)]
+                            warnings = [str(value) for value in result.get("warnings", [])]
+                            detail = (
+                                f"Removed {len(deleted_network)} of {len(network_files)} validated shared input file(s). "
+                                "Local files were kept so cleanup can be reviewed and retried."
+                            )
+                            if warnings:
+                                detail += "\n\n" + "\n".join(warnings[:8])
+                            self.status_var.set("Shared input cleanup was incomplete; local files were kept.")
+                            cleanup_orders = [
+                                order for order in result.get("orders", [])
+                                if isinstance(order, shower_batch.ProcessOrder)
+                            ]
+                            self.record_action(
+                                "Delete Local + Network Inputs",
+                                "Shared-network cleanup was incomplete; local files were intentionally kept.",
+                                status="WARNING",
+                                orders=cleanup_orders,
+                                details=detail,
+                            )
+                            messagebox.showwarning("Network cleanup incomplete", detail, parent=self.root)
+                        else:
+                            self.apply_local_order_delete_result(result)
+                    # Scan/import workers keep their established completion payloads.
+                elif kind == "task_cancelled":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    task_id = str(data.get("task_id", ""))
+                    handlers = self._managed_task_handlers.pop(task_id, {}) if task_id else {}
+                    self.record_performance(str(data.get("name", "Background task")), "Cancelled", float(data.get("elapsed_ms", 0.0) or 0.0))
+                    cancelled_handler = handlers.get("cancelled")
+                    if cancelled_handler is not None:
+                        cancelled_handler()
+                    else:
+                        self.status_var.set(f"{data.get('name', 'Operation')} cancelled safely.")
+                        self.record_action(str(data.get("name", "Background task")), "Cancelled by operator.", status="WARNING")
+                elif kind == "task_error":
+                    data = payload
+                    assert isinstance(data, dict)
+                    self.finish_background_activity()
+                    name = str(data.get("name", "Background task"))
+                    error = data.get("error", RuntimeError("Unknown background task error"))
+                    task_id = str(data.get("task_id", ""))
+                    handlers = self._managed_task_handlers.pop(task_id, {}) if task_id else {}
+                    self.record_performance(name, "Failed", float(data.get("elapsed_ms", 0.0) or 0.0))
+                    error_handler = handlers.get("error")
+                    if error_handler is not None:
+                        error_handler(error if isinstance(error, BaseException) else RuntimeError(str(error)))
+                    else:
+                        self.status_var.set(f"{name} failed.")
+                        self.show_structured_error(error, title=f"{name} failed")
                 elif kind == "import_duplicates":
                     data = payload
                     assert isinstance(data, dict)
@@ -8717,13 +10361,13 @@ class ShowerProgrammerApp:
                     if not messagebox.askyesno(title, message, parent=self.root):
                         self.status_var.set("Order input cleanup canceled.")
                         continue
-                    self.start_background_activity("Removing selected order inputs...", maximum=100)
-                    threading.Thread(
-                        target=self.worker_delete_local_order_inputs,
-                        args=(data,),
-                        name="shower-delete-inputs",
-                        daemon=True,
-                    ).start()
+                    self.run_managed_task(
+                        "Delete Order Inputs",
+                        lambda task, cleanup=data: self.worker_delete_local_order_inputs(cleanup, task_context=task),
+                        message="Removing selected order inputs...",
+                        total=100,
+                        cancellable=True,
+                    )
                 elif kind == "delete_incomplete":
                     data = payload
                     assert isinstance(data, dict)
@@ -8761,12 +10405,7 @@ class ShowerProgrammerApp:
                     assert isinstance(run, shower_batch.BatchRunResult)
                     self.last_reports = run
                     self.last_run_folder = run_folder if isinstance(run_folder, Path) else self.latest_run_folder(Path(self.output_dir_var.get()).resolve())
-                    self.is_busy = False
-                    self.activity_started_at = 0.0
-                    self.activity_last_progress_at = 0.0
-                    self.activity_stage_message = ""
-                    self.activity_detail_var.set("")
-                    self.set_controls_enabled(True)
+                    self.finish_background_activity()
                     for result in run.results:
                         self.insert_or_update_result(result)
                     counts = shower_batch.count_statuses(run.results)
@@ -8793,7 +10432,10 @@ class ShowerProgrammerApp:
                     self.finish_background_activity()
                     self.status_var.set("Error")
                     self.record_action("Process Orders", "Batch processing failed.", status="FAILED", details=payload)
-                    messagebox.showerror("Batch failed", friendly_error_message("Batch processing", payload))
+                    self.show_structured_error(
+                        payload if isinstance(payload, BaseException) else RuntimeError(str(payload)),
+                        title="Batch processing failed",
+                    )
                 elif kind == "scan_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -8830,6 +10472,14 @@ class ShowerProgrammerApp:
                         for aw_order, groups in duplicate_groups_by_aw.items()
                         if isinstance(groups, list)
                     }
+                    try:
+                        self.sync_scanned_lifecycle_states(
+                            [order for order in orders if isinstance(order, shower_batch.ProcessOrder)],
+                            batches,
+                            [result for result in previews if isinstance(result, shower_batch.BatchJobResult)],
+                        )
+                    except Exception as exc:
+                        self.record_action("Lifecycle Reconciliation", "Could not fully synchronize SQLite lifecycle state.", status="WARNING", details=exc)
                     self.tree.delete(*self.tree.get_children())
                     self.tree_rows.clear()
                     self.tree_row_orders.clear()
@@ -8870,7 +10520,13 @@ class ShowerProgrammerApp:
                     if isinstance(reactivated_aw_orders, list) and reactivated_aw_orders:
                         scan_message += (
                             f" Reactivated {len(reactivated_aw_orders)} previously deleted order(s) "
-                            "because their process-list batch was restored from shared input."
+                            "because an explicit scan found their required files in shared input."
+                        )
+                        self.record_action(
+                            "Reactivate Deleted Orders",
+                            f"Reactivated {len(reactivated_aw_orders)} previously deleted order(s) because an explicit scan found their required files in shared input.",
+                            status="SUCCESS",
+                            orders=[str(value) for value in reactivated_aw_orders],
                         )
                     hidden_missing_orders = int(data.get("hidden_missing_orders", 0) or 0)
                     if hidden_missing_orders:
@@ -8883,8 +10539,19 @@ class ShowerProgrammerApp:
                     scan_status = "WARNING" if any(
                         (retired_process_list_warnings, production_reconciliation_warnings, duplicate_cleanup_warnings)
                     ) else "SUCCESS"
+                    isolated_scan = bool(data.get("isolated_test_mode", False))
+                    local_refresh = bool(data.get("local_refresh_only", False))
+                    if isolated_scan:
+                        scan_message += " Test Mode remained isolated; shared network import and production cleanup were skipped."
+                    elif local_refresh:
+                        scan_message = (
+                            f"Local refresh complete: {len(self.orders)} active order(s) represented by files currently in local Input. "
+                            "Shared network input was not scanned; use Scan Orders when you want deleted/missing orders imported again."
+                        )
+                        if hidden_missing_orders:
+                            scan_message += f" {hidden_missing_orders} process-list order(s) remain hidden because their local PDF/DXF is missing."
                     self.record_action(
-                        "Scan Orders",
+                        "Scan Test Workspace" if isolated_scan else "Refresh Local Orders" if local_refresh else "Scan Orders",
                         scan_message,
                         status=scan_status,
                         orders=[order for order in orders if isinstance(order, shower_batch.ProcessOrder)],
@@ -8912,7 +10579,18 @@ class ShowerProgrammerApp:
                         messages.append(f"Removed {len(duplicate_files_removed)} selected duplicate file(s).")
                     if isinstance(duplicate_cleanup_warnings, list) and duplicate_cleanup_warnings:
                         messages.append(f"Duplicate cleanup notes: {len(duplicate_cleanup_warnings)}.")
-                    self.status_var.set(" ".join(message for message in messages if message))
+                    import_message = " ".join(message for message in messages if message)
+                    self.status_var.set(import_message)
+                    imported_orders = [
+                        order for order in orders
+                        if isinstance(order, shower_batch.ProcessOrder)
+                    ] if isinstance(orders, list) else []
+                    self.record_action(
+                        "Import EDI Orders",
+                        import_message or "Shared input synchronization completed.",
+                        status="WARNING" if duplicate_cleanup_warnings else "SUCCESS",
+                        orders=imported_orders,
+                    )
                 elif kind == "scan_error":
                     self.finish_background_activity()
                     message = str(payload)
@@ -8933,7 +10611,10 @@ class ShowerProgrammerApp:
                     else:
                         self.status_var.set("Scan failed")
                         self.record_action("Scan Orders", "Order scan failed.", status="FAILED", details=payload)
-                        messagebox.showerror("Scan failed", friendly_error_message("Order scan", payload))
+                        self.show_structured_error(
+                            payload if isinstance(payload, BaseException) else RuntimeError(str(payload)),
+                            title="Scan failed",
+                        )
                 elif kind == "validation_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -8976,7 +10657,10 @@ class ShowerProgrammerApp:
                         orders=valid_orders,
                         details=error,
                     )
-                    messagebox.showerror("Validation failed", friendly_error_message("Validate Selected", error))
+                    self.show_structured_error(
+                        error if isinstance(error, BaseException) else RuntimeError(str(error)),
+                        title="Validation failed",
+                    )
                 elif kind == "send_done":
                     data = payload
                     assert isinstance(data, dict)
@@ -12111,11 +13795,12 @@ a {{ color: #1f4e79; }}
 
     @staticmethod
     def dxf_units_text(unit_label: str, inches_per_unit: float) -> str:
+        """Return only the value shown beneath the separate DXF Units heading."""
         if unit_label == "in" and abs(inches_per_unit - 1.0) <= 1e-9:
-            return "DXF units: inches"
+            return "inches"
         if unit_label == "mm":
-            return "DXF units: millimeters"
-        return f"DXF units: {unit_label}"
+            return "millimeters"
+        return str(unit_label)
 
     @staticmethod
     def dxf_insunits(path: Path) -> str:
@@ -12147,22 +13832,18 @@ a {{ color: #1f4e79; }}
 
     @staticmethod
     def format_degrees(value: float) -> str:
-        text = f"{value:.8f}".rstrip("0").rstrip(".")
-        return text if text else "0"
+        """Format DXF-reference degrees adaptively with at most six decimals."""
+        text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+        return "0" if text in {"-0", ""} else text
 
     @staticmethod
     def panel_rotation_summary(panel: programmer.Panel) -> str:
+        """Return only the effective degree value beneath the DXF Rotation heading."""
         base = panel.rotation_degrees
         if base is None:
-            return "DXF rotation: none"
+            return "none"
         total = base + panel.angle_correction_degrees
-        if abs(panel.angle_correction_degrees) > 1e-9:
-            return (
-                f"DXF rotation: {ShowerProgrammerApp.format_degrees(total)} deg "
-                f"({ShowerProgrammerApp.format_degrees(base)} + "
-                f"{ShowerProgrammerApp.format_degrees(panel.angle_correction_degrees)} correction)"
-            )
-        return f"DXF rotation: {ShowerProgrammerApp.format_degrees(base)} deg"
+        return f"{ShowerProgrammerApp.format_degrees(total)} deg"
 
     def save_editor_state_positions(
         self,
@@ -14301,12 +15982,33 @@ try {{
                 continue
 
     def send_sketches_to_shop(self) -> None:
+        if getattr(self, "test_mode_workspace", None) is not None:
+            messagebox.showwarning(
+                "Test Mode",
+                "Production sending is disabled while Test Mode is active. Exit Test Mode before sending files to the shop.",
+                parent=self.root,
+            )
+            return
         self.send_outputs_to_shop(include_sketches=True, include_programs=False, archive_inputs=False, review_before_send=True)
 
     def send_programs_to_shop(self) -> None:
+        if getattr(self, "test_mode_workspace", None) is not None:
+            messagebox.showwarning(
+                "Test Mode",
+                "Production sending is disabled while Test Mode is active. Exit Test Mode before sending files to the shop.",
+                parent=self.root,
+            )
+            return
         self.send_outputs_to_shop(include_sketches=False, include_programs=True, archive_inputs=False, review_before_send=True)
 
     def send_all_to_shop(self) -> None:
+        if getattr(self, "test_mode_workspace", None) is not None:
+            messagebox.showwarning(
+                "Test Mode",
+                "Production sending is disabled while Test Mode is active. Exit Test Mode before sending files to the shop.",
+                parent=self.root,
+            )
+            return
         if self.is_busy:
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
@@ -14750,10 +16452,9 @@ try {{
             orders=orders,
             details=f"Sketches={len(sketch_paths)}; programs={len(dxf_paths)}; archive inputs={archive_inputs}",
         )
-        self.start_background_activity("Sending generated files to shop folders...", maximum=send_steps)
-        worker = threading.Thread(
-            target=self.worker_send_outputs,
-            args=(
+        self.run_managed_task(
+            "Send Output",
+            lambda task: self.worker_send_outputs(
                 sketch_paths,
                 dxf_paths,
                 missing,
@@ -14763,10 +16464,13 @@ try {{
                 orders,
                 order_folder,
                 process_list_path,
+                task_context=task,
             ),
-            daemon=True,
+            message="Sending generated files to shop folders...",
+            total=send_steps,
+            cancellable=True,
+            on_error=lambda error: self.worker_queue.put(("send_error", error)),
         )
-        worker.start()
 
     @staticmethod
     def review_send_row_starts_open(_status_tag: str) -> bool:
@@ -15477,8 +17181,12 @@ try {{
         orders: list[shower_batch.ProcessOrder],
         order_folder: Path,
         process_list_path: Path,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> None:
         try:
+            if task_context is not None:
+                task_context.check_cancelled()
             copied: list[Path] = []
             archived: list[Path] = []
             archive_warnings: list[str] = []
@@ -15489,9 +17197,13 @@ try {{
 
             def advance(message: str, remaining_hint: int = 1) -> None:
                 nonlocal progress_value, progress_max
+                if task_context is not None:
+                    task_context.check_cancelled()
                 progress_value += 1
                 progress_max = max(progress_max, progress_value + max(remaining_hint, 0))
                 self.queue_scan_progress(progress_value, progress_max, message)
+                if task_context is not None:
+                    task_context.progress(progress_value, progress_max, message)
 
             def sketch_copy_progress(source: Path, _target: Path, phase: str) -> None:
                 if phase == "starting":
@@ -15552,6 +17264,8 @@ try {{
                     advance(f"Cleared input staging {done}/{total}: {source.name}", total - done)
 
                 advance("Clearing Showers Programmer Input...", 1)
+                if task_context is not None:
+                    task_context.check_cancelled()
                 import_deleted, input_cleanup_warnings = self.clear_import_staging_folder(
                     sent_orders,
                     include_process_lists=False,
@@ -15563,6 +17277,8 @@ try {{
                         {},
                     ),
                 )
+            if task_context is not None:
+                task_context.check_cancelled()
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
             self.worker_queue.put(
                 (
@@ -15578,7 +17294,11 @@ try {{
                     },
                 )
             )
+        except shower_tasks.TaskCancelled:
+            raise
         except Exception as exc:
+            if task_context is not None:
+                raise
             self.worker_queue.put(("send_error", exc))
 
     def successfully_sent_orders(
@@ -18894,6 +20614,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         toolbar.grid_columnconfigure(0, weight=1)
         query_var = tk.StringVar(value="")
         scope_var = tk.StringVar(value="Last 7 Days")
+        action_filter_var = tk.StringVar(value="All Actions")
+        status_filter_var = tk.StringVar(value="All Results")
+        orders_only_var = tk.BooleanVar(value=False)
         count_var = tk.StringVar(value="")
         query_entry = ctk.CTkEntry(
             toolbar,
@@ -18922,6 +20645,48 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             font=("Segoe UI", 10, "bold"),
         )
         scope_control.grid(row=0, column=1, padx=(0, 8), pady=12)
+
+        filter_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+        filter_row.grid(row=1, column=0, columnspan=4, sticky="ew", padx=12, pady=(0, 12))
+        filter_row.grid_columnconfigure(5, weight=1)
+        ctk.CTkLabel(filter_row, text="Action", text_color=self.MUTED, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, padx=(0, 6))
+        action_filter_menu = ctk.CTkOptionMenu(
+            filter_row,
+            variable=action_filter_var,
+            values=["All Actions"],
+            width=205,
+            height=32,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        action_filter_menu.grid(row=0, column=1, padx=(0, 12))
+        ctk.CTkLabel(filter_row, text="Result", text_color=self.MUTED, font=("Segoe UI", 10, "bold")).grid(row=0, column=2, padx=(0, 6))
+        status_filter_menu = ctk.CTkOptionMenu(
+            filter_row,
+            variable=status_filter_var,
+            values=["All Results", "SUCCESS", "INFO", "WARNING", "FAILED", "ERROR"],
+            width=132,
+            height=32,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        status_filter_menu.grid(row=0, column=3, padx=(0, 12))
+        orders_only_check = ctk.CTkCheckBox(
+            filter_row,
+            text="Order actions only",
+            variable=orders_only_var,
+            command=lambda: refresh_history(),
+            progress_color=self.ACCENT,
+            text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        )
+        orders_only_check.grid(row=0, column=4, sticky="w")
 
         body = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=14, border_width=1, border_color=self.BORDER)
         body.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 10))
@@ -18986,10 +20751,24 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         def refresh_history(*_args: object) -> None:
             query = query_var.get().strip()
+            all_events = self.load_action_history_events(scope_var.get())
+            action_options = self.action_history_action_options(all_events)
+            try:
+                action_filter_menu.configure(values=action_options)
+            except (tk.TclError, ValueError):
+                pass
+            if action_filter_var.get() not in action_options:
+                action_filter_var.set("All Actions")
             events = [
                 event
-                for event in self.load_action_history_events(scope_var.get())
+                for event in all_events
                 if self.action_history_matches(event, query)
+                and self.action_history_filter_matches(
+                    event,
+                    action_filter=action_filter_var.get(),
+                    status_filter=status_filter_var.get(),
+                    orders_only=bool(orders_only_var.get()),
+                )
             ]
             tree.delete(*tree.get_children())
             event_rows.clear()
@@ -19051,6 +20830,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         refresh_button.grid(row=0, column=3, padx=(0, 12), pady=12)
         query_entry.bind("<Return>", lambda _event: refresh_history())
         scope_control.configure(command=lambda _value: refresh_history())
+        action_filter_menu.configure(command=lambda _value: refresh_history())
+        status_filter_menu.configure(command=lambda _value: refresh_history())
         tree.bind("<<TreeviewSelect>>", show_selected_details)
         refresh_history()
         self.bring_window_to_front(dialog, make_transient=False)
@@ -19063,6 +20844,26 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             messagebox.showerror("Input folder not found", f"Could not find:\n{path}")
             return
         os.startfile(path)
+
+    def open_network_input_folder(self) -> None:
+        """Open the configured shared import folder without blocking the UI."""
+        try:
+            path = self.apply_import_source_dir()
+        except Exception as exc:
+            messagebox.showerror("Network input folder", f"The configured network input path is invalid.\n\n{exc}")
+            return
+        if not path.exists():
+            messagebox.showerror(
+                "Network input folder not found",
+                f"Could not find the configured shared input folder:\n\n{path}",
+            )
+            return
+        try:
+            os.startfile(path)
+        except OSError as exc:
+            messagebox.showerror("Could not open network input", f"{path}\n\n{exc}")
+            return
+        self.status_var.set(f"Opened shared network input folder: {path}")
 
     def install_shortcut(self) -> None:
         script = programmer.project_root() / "Create-ShowerProgrammerShortcut.ps1"
@@ -19588,22 +21389,100 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         refresh_labels()
         self.bring_window_to_front(dialog, make_transient=False)
 
+    def retire_settings_window(self, window: tk.Toplevel) -> None:
+        """Hide and unregister a damaged Settings shell without recursively destroying it.
+
+        Complex CustomTkinter windows can contain descendants whose ``<Destroy>``
+        callbacks abort Tk's recursive destroy sequence on Windows. The visible
+        symptom is an empty native Toplevel whose title bar remains alive. Do not
+        run that fragile recursion when a Settings shell is already damaged: hide
+        it, remove it from application reuse, and let process shutdown reclaim it.
+        """
+        try:
+            setattr(window, "_shower_settings_retired", True)
+        except Exception:
+            pass
+        windows = getattr(self, "managed_page_windows", None)
+        if isinstance(windows, dict) and windows.get("settings") is window:
+            windows.pop("settings", None)
+        try:
+            if self.settings_tabview is not None:
+                owner = self.settings_tabview.winfo_toplevel()
+                if owner is window:
+                    self.settings_tabview = None
+        except (AttributeError, tk.TclError):
+            self.settings_tabview = None
+        try:
+            grabber = window.grab_current()
+            if grabber is not None:
+                grab_path = str(grabber)
+                window_path = str(window)
+                if grabber is window or grab_path.startswith(f"{window_path}."):
+                    grabber.grab_release()
+        except Exception:
+            pass
+        try:
+            window.attributes("-topmost", False)
+        except Exception:
+            pass
+        try:
+            window.withdraw()
+        except Exception:
+            pass
+
+    def settings_window_reusable(self, window: tk.Toplevel) -> bool:
+        """Return True only for a live, populated Settings window that can be shown again."""
+        if bool(getattr(window, "_shower_settings_retired", False)):
+            return False
+        try:
+            if not bool(window.winfo_exists()):
+                return False
+            return bool(window.winfo_children())
+        except (AttributeError, tk.TclError):
+            return False
+
     def open_settings(self, initial_tab: str = "Preferences") -> None:
-        """Open the consolidated application settings workspace."""
+        """Open the persistent application settings workspace.
+
+        Settings is intentionally hidden rather than destroyed when the operator
+        closes it. This avoids the Windows/CustomTkinter failure mode where one
+        descendant raises during recursive destruction after its siblings have
+        already disappeared, leaving a blank native Toplevel that can no longer
+        close. Hidden Settings windows reopen instantly with their widgets intact.
+        """
         if ctk is None:
             self.open_config()
             return
         existing = self.managed_page_window("settings")
+        if existing is not None and not self.settings_window_reusable(existing):
+            self.retire_settings_window(existing)
+            existing = None
         if existing is not None:
             try:
+                setattr(existing, "_shower_settings_hidden", False)
                 if self.settings_tabview is not None:
                     self.settings_tabview.set(initial_tab)
+                    ensure_tab = getattr(existing, "_settings_ensure_tab", None)
+                    if callable(ensure_tab):
+                        ensure_tab(initial_tab)
             except (AttributeError, tk.TclError, ValueError):
                 pass
             self.bring_page_window_to_front(existing)
+            try:
+                existing.after_idle(lambda window=existing: self.maximize_window(window))
+            except (AttributeError, tk.TclError):
+                pass
+            activate_selected = getattr(existing, "_settings_activate_selected", None)
+            if callable(activate_selected):
+                try:
+                    existing.after_idle(activate_selected)
+                except (AttributeError, tk.TclError):
+                    pass
             return
 
         dialog = ctk.CTkToplevel(self.root)
+        setattr(dialog, "_shower_settings_hidden", False)
+        setattr(dialog, "_shower_settings_retired", False)
         dialog.title("Shower Programmer Settings")
         dialog.configure(fg_color=self.APP_BG)
         dialog.minsize(1080, 700)
@@ -19654,27 +21533,185 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except (AttributeError, tk.TclError):
             pass
         self.settings_tabview = tabview
-        for tab_name in ("Preferences", "Folder Setup", "Hinge Detection", "Archives", "Recovery", "Backup & Restore", "Action History"):
+        tab_builders = {
+            "Preferences": lambda: self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog),
+            "Folder Setup": lambda: self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog),
+            "Hinge Detection": lambda: self.build_hinge_settings_tab(tabview.tab("Hinge Detection"), dialog),
+            "Archives": lambda: self.build_archive_settings_tab(tabview.tab("Archives"), dialog),
+            "Recovery": lambda: self.build_recovery_settings_tab(tabview.tab("Recovery"), dialog),
+            "Backup & Restore": lambda: self.build_configuration_backup_tab(tabview.tab("Backup & Restore"), dialog),
+            "Action History": lambda: self.build_action_history_settings_tab(tabview.tab("Action History"), dialog),
+        }
+        for tab_name in tab_builders:
             tabview.add(tab_name)
-        self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog)
-        self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog)
-        self.build_hinge_settings_tab(tabview.tab("Hinge Detection"), dialog)
-        self.build_archive_settings_tab(tabview.tab("Archives"), dialog)
-        self.build_recovery_settings_tab(tabview.tab("Recovery"), dialog)
-        self.build_configuration_backup_tab(tabview.tab("Backup & Restore"), dialog)
-        self.build_action_history_settings_tab(tabview.tab("Action History"))
+        built_tabs: set[str] = set()
+
+        def ensure_tab_built(tab_name: str) -> None:
+            name = str(tab_name or "Preferences")
+            if name in built_tabs:
+                return
+            builder = tab_builders.get(name)
+            if builder is None:
+                return
+            try:
+                builder()
+            except Exception as exc:
+                # Never leave a partially constructed Settings tab looking like an
+                # empty data page. Surface widget-construction failures directly in
+                # the affected tab so the operator has an actionable error to report.
+                built_tabs.add(name)
+                parent = tabview.tab(name)
+                message = f"{exc.__class__.__name__}: {str(exc).strip() or 'Unknown Settings tab construction error'}"
+                try:
+                    failure = ctk.CTkFrame(
+                        parent,
+                        fg_color=self.CARD_BG,
+                        corner_radius=14,
+                        border_width=2,
+                        border_color=self.DANGER,
+                    )
+                    failure.place(relx=0.5, rely=0.48, anchor=tk.CENTER, relwidth=0.88)
+                    ctk.CTkLabel(
+                        failure,
+                        text=f"{name} could not finish opening",
+                        text_color=self.DANGER,
+                        font=("Segoe UI", 18, "bold"),
+                        anchor="w",
+                    ).pack(fill=tk.X, padx=18, pady=(16, 5))
+                    ctk.CTkLabel(
+                        failure,
+                        text=(
+                            "The Settings tab stopped while constructing its controls before its data loader could run. "
+                            "The technical error is shown below so this can be diagnosed without guessing."
+                        ),
+                        text_color=self.TEXT,
+                        font=("Segoe UI", 11),
+                        justify="left",
+                        wraplength=950,
+                        anchor="w",
+                    ).pack(fill=tk.X, padx=18, pady=(0, 8))
+                    error_box = ctk.CTkTextbox(
+                        failure,
+                        height=90,
+                        fg_color=self.ENTRY_BG,
+                        border_width=1,
+                        border_color=self.BORDER,
+                        text_color=self.TEXT,
+                        font=("Consolas", 11),
+                    )
+                    error_box.pack(fill=tk.X, padx=18, pady=(0, 16))
+                    error_box.insert("1.0", message)
+                    error_box.configure(state="disabled")
+                except Exception:
+                    pass
+                try:
+                    self.record_action(
+                        "Settings Tab Build Failure",
+                        f"{name} could not finish opening.",
+                        status="ERROR",
+                        details=message,
+                    )
+                except Exception:
+                    pass
+                return
+            built_tabs.add(name)
+
+        setattr(dialog, "_settings_ensure_tab", ensure_tab_built)
         try:
             tabview.set(initial_tab)
         except ValueError:
-            tabview.set("Preferences")
+            initial_tab = "Preferences"
+            tabview.set(initial_tab)
+        ensure_tab_built(initial_tab)
+
+        def activate_selected_tab() -> None:
+            try:
+                selected = str(tabview.get())
+            except (AttributeError, tk.TclError):
+                return
+            ensure_tab_built(selected)
+            if selected == "Archives":
+                activate_archive = getattr(dialog, "_archive_activate", None)
+                if callable(activate_archive):
+                    activate_archive()
+            elif selected == "Action History":
+                activate_history = getattr(dialog, "_action_history_activate", None)
+                if callable(activate_history):
+                    activate_history()
+
+        def settings_tab_changed() -> None:
+            # Build expensive/complex tabs only when selected. Preferences therefore
+            # opens with the smallest possible widget tree and zero archive I/O.
+            activate_selected_tab()
+
+        try:
+            tabview.configure(command=settings_tab_changed)
+        except (AttributeError, tk.TclError, ValueError):
+            pass
+        setattr(dialog, "_settings_activate_selected", activate_selected_tab)
 
         def clear_reference(event: tk.Event | None = None) -> None:
             if event is not None and getattr(event, "widget", None) is not dialog:
                 return
-            self.settings_tabview = None
+            if self.settings_tabview is tabview:
+                self.settings_tabview = None
+
+        def close_settings(_event: tk.Event | None = None) -> str | None:
+            # Do not destroy this complex CTk widget tree on an ordinary close.
+            # Withdrawing is equivalent to closing from the operator's perspective
+            # and completely avoids the blank-shell failure caused by descendant
+            # Destroy bindings aborting Tcl's recursive Toplevel destruction.
+            cancel_archive = getattr(dialog, "_archive_cancel", None)
+            if callable(cancel_archive):
+                try:
+                    cancel_archive()
+                except Exception:
+                    pass
+            cancel_history = getattr(dialog, "_action_history_cancel", None)
+            if callable(cancel_history):
+                try:
+                    cancel_history()
+                except Exception:
+                    pass
+            try:
+                grabber = dialog.grab_current()
+                if grabber is not None:
+                    grab_path = str(grabber)
+                    dialog_path = str(dialog)
+                    if grabber is dialog or grab_path.startswith(f"{dialog_path}."):
+                        grabber.grab_release()
+            except Exception:
+                pass
+            try:
+                dialog.attributes("-topmost", False)
+            except Exception:
+                pass
+            try:
+                setattr(dialog, "_shower_settings_hidden", True)
+                dialog.withdraw()
+            except (AttributeError, tk.TclError):
+                self.retire_settings_window(dialog)
+
+            def restore_main_focus() -> None:
+                try:
+                    if bool(self.root.winfo_exists()):
+                        self.root.deiconify()
+                        self.root.lift()
+                        self.root.focus_force()
+                except (AttributeError, tk.TclError):
+                    pass
+
+            try:
+                self.root.after_idle(restore_main_focus)
+            except tk.TclError:
+                pass
+            return "break" if _event is not None else None
 
         dialog.bind("<Destroy>", clear_reference, add="+")
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.bind("<Escape>", close_settings)
+        dialog.protocol("WM_DELETE_WINDOW", close_settings)
+        dialog.after_idle(activate_selected_tab)
+        dialog.after_idle(lambda: self.maximize_window(dialog))
         self.bring_window_to_front(dialog, make_transient=False)
 
     @staticmethod
@@ -19773,12 +21810,14 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         *,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        state_store: shower_state.StateStore | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> tuple[list[dict[str, object]], list[str]]:
-        """Build a fast order-level archive view for the requested date range.
+        """Build the requested archive window using a persistent SQLite index.
 
-        Initial archive browsing intentionally uses filename-based PDF/DXF mapping.
-        Full PDF text correlation is deferred until an operator restores a specific
-        order, which prevents a large archive from spending minutes opening PDFs.
+        Each dated archive folder is fingerprinted once. Unchanged dates are served
+        directly from SQLite, while only new/modified dates re-read process lists.
+        PDF text remains deferred until a specific order is restored.
         """
         order_folder = Path(order_folder).resolve()
         process_root = Path(process_list_path).resolve()
@@ -19793,68 +21832,149 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             date_to=date_to,
         )
 
-        work: list[tuple[str, Path, Path]] = []
-        for process_archive in process_archives:
-            archive_name = process_archive.name
-            order_archive = order_folder / archive_name
-            for process_file in cls.archive_process_list_files(process_archive):
-                work.append((archive_name, order_archive, process_file))
-
-        def load_process_file(item: tuple[str, Path, Path]) -> tuple[str, Path, Path, list[shower_batch.ProcessOrder], str]:
-            archive_name, order_archive, process_file = item
-            try:
-                orders = shower_batch.load_process_orders_from_file(process_file)
-                return archive_name, order_archive, process_file, orders, ""
-            except Exception as exc:
-                return archive_name, order_archive, process_file, [], str(exc)
-
-        loaded: list[tuple[str, Path, Path, list[shower_batch.ProcessOrder], str]] = []
-        if len(work) <= 1:
-            loaded = [load_process_file(item) for item in work]
-        else:
-            with ThreadPoolExecutor(max_workers=min(6, len(work)), thread_name_prefix="shower-archive-lists") as executor:
-                loaded = list(executor.map(load_process_file, work))
-
-        archive_candidates: dict[str, list[Path]] = {}
-        for archive_name, order_archive, process_file, orders, error in loaded:
-            if error:
-                warnings.append(f"Could not read archived process list {process_file.name}: {error}")
-                continue
-            if archive_name not in archive_candidates:
+        def entries_from_cached_records(records: list[shower_state.ArchiveRecord]) -> list[dict[str, object]]:
+            cached_entries: list[dict[str, object]] = []
+            for record in records:
                 try:
-                    archive_candidates[archive_name] = [
-                        path
-                        for path in order_archive.iterdir()
-                        if path.is_file() and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
-                    ] if order_archive.exists() else []
-                except OSError:
-                    archive_candidates[archive_name] = []
-            candidates = archive_candidates[archive_name]
-            for order in orders:
-                try:
-                    matched = cls.matching_order_files(
-                        order_archive,
-                        [order],
-                        root_only=True,
-                        inspect_pdf_text=False,
-                        candidate_files=candidates,
-                    )
-                except Exception as exc:
-                    warnings.append(f"Could not map archived filenames for A&W {order.aw_order}: {exc}")
-                    matched = []
-                entries.append(
+                    raw_order = json.loads(record.order_json)
+                    restored_orders = shower_batch.process_orders_from_cache([raw_order])
+                except Exception:
+                    restored_orders = []
+                if not restored_orders:
+                    continue
+                process_file = Path(record.process_list_path)
+                order_archive = Path(record.order_archive_dir)
+                cached_entries.append(
                     {
-                        "archive_name": archive_name,
-                        "archive_date": cls.archive_date_from_name(archive_name),
-                        "batch_name": process_file.name,
-                        "order": order,
+                        "archive_name": record.archive_name,
+                        "archive_date": cls.archive_date_from_name(record.archive_name),
+                        "batch_name": record.batch_name,
+                        "batch_key": record.batch_key,
+                        "order": restored_orders[0],
                         "order_archive_dir": order_archive,
                         "process_archive_dir": process_file.parent,
                         "process_list_files": [process_file],
-                        "order_files": matched,
+                        "order_files": [Path(value) for value in record.order_files],
                         "_fast_file_mapping": True,
+                        "_sqlite_indexed": True,
                     }
                 )
+            return cached_entries
+
+        total_archives = max(len(process_archives), 1)
+        for archive_index, process_archive in enumerate(process_archives, start=1):
+            if task_context is not None:
+                task_context.progress(
+                    archive_index - 1,
+                    total_archives,
+                    f"Indexing archive date {archive_index}/{len(process_archives)}: {process_archive.name}",
+                )
+            archive_name = process_archive.name
+            order_archive = order_folder / archive_name
+            if state_store is not None and state_store.archive_folder_current(
+                archive_name,
+                process_archive,
+                order_archive,
+            ):
+                entries.extend(entries_from_cached_records(state_store.archive_records([archive_name])))
+                continue
+
+            process_files = cls.archive_process_list_files(process_archive)
+
+            def load_process_file(process_file: Path) -> tuple[Path, list[shower_batch.ProcessOrder], str]:
+                try:
+                    return process_file, shower_batch.load_process_orders_from_file(process_file), ""
+                except Exception as exc:
+                    return process_file, [], str(exc)
+
+            if len(process_files) <= 1:
+                loaded = [load_process_file(path) for path in process_files]
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=min(6, len(process_files)),
+                    thread_name_prefix="shower-archive-lists",
+                ) as executor:
+                    loaded = list(executor.map(load_process_file, process_files))
+
+            try:
+                candidates = [
+                    path
+                    for path in order_archive.iterdir()
+                    if path.is_file() and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                ] if order_archive.exists() else []
+            except OSError:
+                candidates = []
+
+            indexed_records: list[shower_state.ArchiveRecord] = []
+            for process_file, orders, error in loaded:
+                if error:
+                    warnings.append(f"Could not read archived process list {process_file.name}: {error}")
+                    continue
+                try:
+                    batch_identity = shower_state.StateStore.batch_identity(process_file)
+                    batch_key = batch_identity.key
+                except Exception:
+                    batch_key = hashlib.sha256(process_file.name.casefold().encode("utf-8")).hexdigest()[:32]
+                cached_orders = shower_batch.process_orders_to_cache(orders)
+                cached_by_aw = {
+                    str(value.get("aw_order", "")): value
+                    for value in cached_orders
+                    if isinstance(value, dict)
+                }
+                for order in orders:
+                    try:
+                        matched = cls.matching_order_files(
+                            order_archive,
+                            [order],
+                            root_only=True,
+                            inspect_pdf_text=False,
+                            candidate_files=candidates,
+                        )
+                    except Exception as exc:
+                        warnings.append(f"Could not map archived filenames for A&W {order.aw_order}: {exc}")
+                        matched = []
+                    entries.append(
+                        {
+                            "archive_name": archive_name,
+                            "archive_date": cls.archive_date_from_name(archive_name),
+                            "batch_name": process_file.name,
+                            "batch_key": batch_key,
+                            "order": order,
+                            "order_archive_dir": order_archive,
+                            "process_archive_dir": process_file.parent,
+                            "process_list_files": [process_file],
+                            "order_files": matched,
+                            "_fast_file_mapping": True,
+                            "_sqlite_indexed": state_store is not None,
+                        }
+                    )
+                    indexed_records.append(
+                        shower_state.ArchiveRecord(
+                            archive_name=archive_name,
+                            archive_date=(cls.archive_date_from_name(archive_name) or datetime.min).date().isoformat(),
+                            batch_key=batch_key,
+                            batch_name=process_file.name,
+                            aw_order=str(order.aw_order),
+                            job_name=str(order.job_name),
+                            customer=str(order.customer),
+                            process_list_path=str(process_file.resolve()),
+                            order_archive_dir=str(order_archive.resolve()),
+                            order_files=tuple(str(path.resolve()) for path in matched),
+                            order_json=json.dumps(cached_by_aw.get(str(order.aw_order), {}), sort_keys=True),
+                        )
+                    )
+            if task_context is not None:
+                task_context.check_cancelled()
+            if state_store is not None:
+                try:
+                    state_store.replace_archive_folder(
+                        archive_name,
+                        process_archive,
+                        order_archive,
+                        indexed_records,
+                    )
+                except Exception as exc:
+                    warnings.append(f"Could not update the SQLite archive index for {archive_name}: {exc}")
 
         def inventory_sort_key(entry: dict[str, object]) -> tuple[float, tuple[tuple[int, object], ...], tuple[tuple[int, object], ...]]:
             stamp = entry.get("archive_date")
@@ -19864,6 +21984,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             aw_order = str(getattr(order, "aw_order", ""))
             return timestamp, cls.natural_sort_key(batch_name), cls.natural_sort_key(aw_order)
 
+        if task_context is not None:
+            task_context.progress(total_archives, total_archives, "Archive order index is ready.")
         return sorted(entries, key=inventory_sort_key, reverse=True), warnings
 
     @classmethod
@@ -19873,13 +21995,22 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         *,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> tuple[list[dict[str, object]], list[str]]:
         """Index processing run folders without opening archived PDFs or reports."""
         output_dir = Path(output_dir).resolve()
         runs_root = output_dir / "Runs"
         warnings: list[str] = []
         runs: list[dict[str, object]] = []
-        for date_dir in cls.archive_date_directories(runs_root, date_from=date_from, date_to=date_to):
+        date_dirs = cls.archive_date_directories(runs_root, date_from=date_from, date_to=date_to)
+        total_dates = max(len(date_dirs), 1)
+        for date_index, date_dir in enumerate(date_dirs, start=1):
+            if task_context is not None:
+                task_context.progress(
+                    date_index - 1,
+                    total_dates,
+                    f"Indexing processing runs {date_index}/{len(date_dirs)}: {date_dir.name}",
+                )
             try:
                 run_folders = sorted(
                     (path for path in date_dir.iterdir() if path.is_dir()),
@@ -19917,7 +22048,240 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         "orders": [],
                     }
                 )
+        if task_context is not None:
+            task_context.progress(total_dates, total_dates, "Processing run index is ready.")
         return runs, warnings
+
+    @classmethod
+    def archive_batch_number(cls, batch_name: object) -> str:
+        """Return the stable numeric batch identifier embedded in a process-list name.
+
+        A+W process-list filenames may be recopied or revised over time, but the
+        batch number itself identifies the logical batch. Prefer an explicit
+        ``Batch 1234`` token and fall back to a standalone multi-digit number.
+        """
+        stem = Path(str(batch_name or "")).stem.strip()
+        explicit = re.search(r"(?i)\bbatch[\s._-]*(\d{2,})\b", stem)
+        if explicit:
+            return explicit.group(1).lstrip("0") or "0"
+        numeric_tokens = re.findall(r"(?<!\d)(\d{3,})(?!\d)", stem)
+        if numeric_tokens:
+            return numeric_tokens[-1].lstrip("0") or "0"
+        return ""
+
+    @classmethod
+    def archive_batch_group_key(cls, batch_name: object) -> str:
+        """Return one logical archive grouping key for all revisions of a batch."""
+        number = cls.archive_batch_number(batch_name)
+        if number:
+            return f"batch:{number}"
+        normalized = re.sub(r"[^a-z0-9]+", "", Path(str(batch_name or "Archived Batch")).stem.casefold())
+        return f"name:{normalized or 'archivedbatch'}"
+
+    @staticmethod
+    def archive_entry_revision_sort_key(entry: dict[str, object]) -> tuple[float, int, str]:
+        """Sort archive revisions newest-first, using file mtime as a same-day tiebreaker."""
+        stamp = entry.get("archive_date")
+        archive_time = stamp.timestamp() if isinstance(stamp, datetime) else 0.0
+        newest_mtime = 0
+        raw_process = entry.get("process_list_files", [])
+        if isinstance(raw_process, list):
+            for path in raw_process:
+                if not isinstance(path, Path):
+                    continue
+                try:
+                    newest_mtime = max(newest_mtime, int(path.stat().st_mtime_ns))
+                except OSError:
+                    continue
+        return archive_time, newest_mtime, str(entry.get("batch_name", "")).casefold()
+
+    @classmethod
+    def consolidate_archive_batch_entries(
+        cls,
+        entries: Iterable[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """Collapse repeated archived process-list revisions into one logical batch.
+
+        The newest revision is authoritative for batch metadata and duplicate A&W
+        orders. Orders that existed only in an older revision are retained so a
+        revised batch remains historically complete. Any logical batch with more
+        than one archived revision uses one scoped synthetic XLSX for restore/Test
+        Mode so old XLS exports and competing revision files cannot collide.
+        """
+        valid = [
+            entry for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("order"), shower_batch.ProcessOrder)
+        ]
+        valid.sort(key=cls.archive_entry_revision_sort_key, reverse=True)
+        grouped: dict[str, dict[str, object]] = {}
+        for entry in valid:
+            batch_name = str(entry.get("batch_name", "Archived Process List"))
+            group_key = cls.archive_batch_group_key(batch_name)
+            group = grouped.get(group_key)
+            if group is None:
+                group = {
+                    "group_key": group_key,
+                    "batch_number": cls.archive_batch_number(batch_name),
+                    "batch_name": batch_name,
+                    "display_name": f"Batch {cls.archive_batch_number(batch_name)}" if cls.archive_batch_number(batch_name) else batch_name,
+                    "archive_name": str(entry.get("archive_name", "")),
+                    "archive_date": entry.get("archive_date"),
+                    "authoritative_process_list_files": [
+                        path for path in entry.get("process_list_files", [])
+                        if isinstance(path, Path)
+                    ] if isinstance(entry.get("process_list_files", []), list) else [],
+                    "revision_keys": [],
+                    "revision_order_dirs": [],
+                    "revision_sources_by_aw": {},
+                    "latest_revision_aw_orders": set(),
+                    "orders_by_aw": {},
+                }
+                grouped[group_key] = group
+
+            revision_key = (
+                str(entry.get("archive_name", "")),
+                str(entry.get("batch_name", "")),
+                str(entry.get("batch_key", "")),
+            )
+            revision_keys = group["revision_keys"]
+            assert isinstance(revision_keys, list)
+            if revision_key not in revision_keys:
+                revision_keys.append(revision_key)
+            revision_order_dirs = group["revision_order_dirs"]
+            assert isinstance(revision_order_dirs, list)
+            order_archive_dir = entry.get("order_archive_dir")
+            if isinstance(order_archive_dir, Path) and order_archive_dir not in revision_order_dirs:
+                revision_order_dirs.append(order_archive_dir)
+
+            if len(revision_keys) == 1:
+                latest_orders = group["latest_revision_aw_orders"]
+                assert isinstance(latest_orders, set)
+                order = entry.get("order")
+                if isinstance(order, shower_batch.ProcessOrder):
+                    latest_orders.add(str(order.aw_order))
+
+            order = entry.get("order")
+            if not isinstance(order, shower_batch.ProcessOrder):
+                continue
+            aw_order = str(order.aw_order)
+            revision_sources_by_aw = group["revision_sources_by_aw"]
+            assert isinstance(revision_sources_by_aw, dict)
+            order_revision_sources = revision_sources_by_aw.setdefault(aw_order, [])
+            assert isinstance(order_revision_sources, list)
+            order_revision_sources.append(
+                {
+                    "archive_name": str(entry.get("archive_name", "")),
+                    "archive_date": entry.get("archive_date"),
+                    "batch_name": str(entry.get("batch_name", "")),
+                    "batch_key": str(entry.get("batch_key", "")),
+                    "order_archive_dir": order_archive_dir,
+                    "order_files": [
+                        path for path in entry.get("order_files", []) if isinstance(path, Path)
+                    ] if isinstance(entry.get("order_files", []), list) else [],
+                }
+            )
+            orders_by_aw = group["orders_by_aw"]
+            assert isinstance(orders_by_aw, dict)
+            orders_by_aw.setdefault(aw_order, entry)
+
+        consolidated: list[dict[str, object]] = []
+        for group in grouped.values():
+            orders_by_aw = group.pop("orders_by_aw")
+            revision_keys = group.pop("revision_keys")
+            revision_order_dirs = group.pop("revision_order_dirs")
+            revision_sources_by_aw = group.pop("revision_sources_by_aw")
+            latest_aw_orders = group.pop("latest_revision_aw_orders")
+            assert isinstance(orders_by_aw, dict)
+            assert isinstance(revision_keys, list)
+            assert isinstance(revision_order_dirs, list)
+            assert isinstance(revision_sources_by_aw, dict)
+            assert isinstance(latest_aw_orders, set)
+            children: list[dict[str, object]] = []
+            authoritative_process = list(group.get("authoritative_process_list_files", []))
+            union_aw_orders = set(orders_by_aw)
+            # A multi-revision archive is safer and faster in Test Mode when it is
+            # represented by one clean XLSX generated from the consolidated order
+            # union. This avoids restoring an arbitrary legacy XLS revision, avoids
+            # duplicate/same-name process lists, and prevents a five-revision batch
+            # from paying Excel conversion cost just to enter the isolated workspace.
+            needs_synthetic = len(revision_keys) > 1 or not union_aw_orders.issubset(latest_aw_orders)
+            for aw_order, original in orders_by_aw.items():
+                clone = dict(original)
+                clone["_archive_batch_group_key"] = str(group.get("group_key", ""))
+                clone["_archive_batch_revision_count"] = len(revision_keys)
+                clone["_archive_batch_authoritative_process_files"] = list(authoritative_process)
+                clone["_archive_batch_needs_synthetic_process_list"] = needs_synthetic
+                clone["_archive_order_revision_sources"] = [
+                    dict(source)
+                    for source in revision_sources_by_aw.get(str(aw_order), [])
+                    if isinstance(source, dict)
+                ]
+                clone["_archive_batch_revision_order_dirs"] = list(revision_order_dirs)
+                children.append(clone)
+            children.sort(
+                key=lambda child: cls.natural_sort_key(str(getattr(child.get("order"), "aw_order", "")))
+            )
+            consolidated.append(
+                {
+                    **group,
+                    "revision_count": len(revision_keys),
+                    "revision_keys": list(revision_keys),
+                    "revision_order_dirs": list(revision_order_dirs),
+                    "children": children,
+                    "action_children": children,
+                    "needs_synthetic_process_list": needs_synthetic,
+                }
+            )
+
+        consolidated.sort(
+            key=lambda group: (
+                (group.get("archive_date").timestamp() if isinstance(group.get("archive_date"), datetime) else 0.0),
+                cls.natural_sort_key(str(group.get("display_name", group.get("batch_name", "")))),
+            ),
+            reverse=True,
+        )
+        return consolidated
+
+    @staticmethod
+    def archive_batch_sent_summary(entries: Iterable[dict[str, object]]) -> str:
+        """Summarize per-order sent receipts for one logical archive batch."""
+        valid = [entry for entry in entries if isinstance(entry, dict)]
+        if not valid:
+            return "No"
+        sent_dates: list[datetime] = []
+        sent_count = 0
+        for entry in valid:
+            sent_at = str(entry.get("_sent_at", "") or "").strip()
+            if not sent_at:
+                continue
+            sent_count += 1
+            try:
+                sent_dates.append(datetime.fromisoformat(sent_at))
+            except ValueError:
+                continue
+        if sent_count == 0:
+            return "No"
+        prefix = "Sent" if sent_count == len(valid) else f"Partial {sent_count}/{len(valid)}"
+        if not sent_dates:
+            return prefix
+        first = min(sent_dates)
+        last = max(sent_dates)
+        if first.date() == last.date():
+            return f"{prefix} {first:%m/%d/%y}"
+        return f"{prefix} {first:%m/%d/%y}-{last:%m/%d/%y}"
+
+    @staticmethod
+    def archive_batch_input_summary(entries: Iterable[dict[str, object]]) -> str:
+        """Summarize whether all, some, or none of a logical batch is in active Input."""
+        valid = [entry for entry in entries if isinstance(entry, dict)]
+        if not valid:
+            return "No"
+        active_count = sum(1 for entry in valid if bool(entry.get("_active_copy", False)))
+        if active_count == len(valid):
+            return "Yes"
+        if active_count == 0:
+            return "No"
+        return f"Partial {active_count}/{len(valid)}"
 
     @classmethod
     def archive_browser_sort_value(cls, value: object, column: str) -> tuple[int, object]:
@@ -20040,6 +22404,457 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             process_file = None
         return restored, process_file, warnings
 
+    @staticmethod
+    def archive_action_entries(target: dict[str, object] | None) -> list[dict[str, object]]:
+        """Return order archive rows represented by an order or collapsed batch selection."""
+        if not isinstance(target, dict):
+            return []
+        if isinstance(target.get("order"), shower_batch.ProcessOrder):
+            return [target]
+        if target.get("kind") != "batch":
+            return []
+        children = target.get("action_children", target.get("children", []))
+        if not isinstance(children, list):
+            return []
+        return [
+            child
+            for child in children
+            if isinstance(child, dict) and isinstance(child.get("order"), shower_batch.ProcessOrder)
+        ]
+
+    @staticmethod
+    def archive_batch_test_process_list_name(archive_name: str, batch_name: str) -> str:
+        """Return a deterministic fallback process-list name for an archived batch test copy."""
+        stem = Path(str(batch_name or "Archived Batch")).stem
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")[:64] or "Archived_Batch"
+        date_part = re.sub(r"[^0-9A-Za-z.-]+", "_", str(archive_name or "Archive")).strip("._-")[:24]
+        return f"Archive Test Batch {date_part}_{safe}.xlsx"
+
+    @classmethod
+    def write_archive_test_batch_process_list(
+        cls,
+        target_dir: Path,
+        entries: list[dict[str, object]],
+        *,
+        archive_name: str = "",
+        batch_name: str = "",
+    ) -> Path:
+        """Write one synthetic process list containing every order in a selected archive batch."""
+        target_dir = Path(target_dir)
+        if target_dir.suffix:
+            target_dir = target_dir.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / cls.archive_batch_test_process_list_name(archive_name, batch_name)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Archive Batch Test"
+        for entry in entries:
+            order = entry.get("order") if isinstance(entry, dict) else None
+            if not isinstance(order, shower_batch.ProcessOrder):
+                continue
+            for item_number, item in sorted(order.items.items()):
+                row = [""] * 22
+                row[2] = item.width_text
+                row[3] = item.height_text
+                row[6] = f"{order.aw_order}-{item_number}"
+                row[7] = " | ".join(item.processing)
+                row[8] = item.delivery_date
+                row[10] = item.customer or order.customer
+                row[13] = order.job_name
+                row[21] = " | ".join(item.machine_hints)
+                sheet.append(row)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp.xlsx")
+        try:
+            workbook.save(temporary)
+            workbook.close()
+            os.replace(temporary, target)
+        finally:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+            temporary.unlink(missing_ok=True)
+        return target
+
+    @classmethod
+    def archived_order_files_across_revisions(
+        cls,
+        entry: dict[str, object],
+        order: shower_batch.ProcessOrder,
+    ) -> tuple[list[Path], list[str]]:
+        """Resolve one archived order's PDF/DXF across all known batch revisions.
+
+        Multi-revision batches can archive a newer process list on a date where the
+        physical order files were not moved again. The consolidated batch keeps the
+        newest order metadata, but Test Mode must therefore search the newest archive
+        first and fall back through older revision folders for the actual PDF/DXF.
+        The newest revision containing each artifact type wins, which avoids copying
+        competing historical PDFs or DXFs into the isolated workspace.
+        """
+        warnings: list[str] = []
+        revision_sources = entry.get("_archive_order_revision_sources", [])
+        source_records = [
+            source for source in revision_sources if isinstance(source, dict)
+        ] if isinstance(revision_sources, list) else []
+        if not source_records:
+            source_records = [
+                {
+                    "archive_name": str(entry.get("archive_name", "")),
+                    "order_archive_dir": entry.get("order_archive_dir"),
+                    "order_files": [
+                        path for path in entry.get("order_files", []) if isinstance(path, Path)
+                    ] if isinstance(entry.get("order_files", []), list) else [],
+                }
+            ]
+
+        search_dirs: list[Path] = []
+        for source in source_records:
+            archive_dir = source.get("order_archive_dir")
+            if isinstance(archive_dir, Path) and archive_dir not in search_dirs:
+                search_dirs.append(archive_dir)
+        raw_batch_dirs = entry.get("_archive_batch_revision_order_dirs", [])
+        if isinstance(raw_batch_dirs, list):
+            for archive_dir in raw_batch_dirs:
+                if isinstance(archive_dir, Path) and archive_dir not in search_dirs:
+                    search_dirs.append(archive_dir)
+
+        stored_by_dir: dict[str, list[Path]] = {}
+        for source in source_records:
+            archive_dir = source.get("order_archive_dir")
+            if not isinstance(archive_dir, Path):
+                continue
+            key = os.path.normcase(os.path.abspath(str(archive_dir)))
+            raw_files = source.get("order_files", [])
+            if isinstance(raw_files, list):
+                stored_by_dir.setdefault(key, []).extend(
+                    path for path in raw_files if isinstance(path, Path)
+                )
+
+        selected_pdf: list[Path] = []
+        selected_dxf: list[Path] = []
+
+        def mapped_for_directory(archive_dir: Path, *, inspect_pdf_text: bool) -> list[Path]:
+            key = os.path.normcase(os.path.abspath(str(archive_dir)))
+            mapped = [
+                path for path in stored_by_dir.get(key, [])
+                if path.exists() and path.is_file() and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+            ]
+            if not archive_dir.exists():
+                return mapped
+            exact = cls.matching_order_files(
+                archive_dir,
+                [order],
+                root_only=True,
+                inspect_pdf_text=inspect_pdf_text,
+            )
+            return sorted(
+                {Path(candidate) for candidate in [*mapped, *exact]},
+                key=lambda candidate: candidate.name.casefold(),
+            )
+
+        # First pass is filename/DXF based only. Most production files contain the
+        # A&W or job token in their names, so this avoids opening unrelated PDFs
+        # while walking several historical revision folders.
+        for archive_dir in search_dirs:
+            try:
+                mapped = mapped_for_directory(archive_dir, inspect_pdf_text=False)
+            except Exception as exc:
+                warnings.append(
+                    f"Could not correlate archived files for A&W {order.aw_order} "
+                    f"in {archive_dir.name}: {exc}"
+                )
+                continue
+            if not selected_pdf:
+                selected_pdf = [path for path in mapped if path.suffix.lower() == ".pdf"]
+            if not selected_dxf:
+                selected_dxf = [path for path in mapped if path.suffix.lower() == ".dxf"]
+            if selected_pdf and selected_dxf:
+                break
+
+        # Only if no PDF filename matched anywhere do we pay for PDF text
+        # inspection. This preserves the old broad correlation fallback without
+        # repeatedly opening every PDF in every batch revision.
+        if not selected_pdf:
+            for archive_dir in search_dirs:
+                try:
+                    mapped = mapped_for_directory(archive_dir, inspect_pdf_text=True)
+                except Exception as exc:
+                    warnings.append(
+                        f"Could not inspect archived PDFs for A&W {order.aw_order} "
+                        f"in {archive_dir.name}: {exc}"
+                    )
+                    continue
+                selected_pdf = [path for path in mapped if path.suffix.lower() == ".pdf"]
+                if selected_pdf:
+                    break
+
+        selected = sorted(
+            {Path(path) for path in [*selected_pdf, *selected_dxf]},
+            key=lambda candidate: (candidate.suffix.lower(), candidate.name.casefold()),
+        )
+        return selected, warnings
+
+    @classmethod
+    def archived_batch_test_missing_sources(
+        cls,
+        entries: list[dict[str, object]],
+        order_folder: Path,
+    ) -> list[str]:
+        """Return archived Test Mode orders missing a copied PDF or DXF."""
+        missing: list[str] = []
+        for entry in entries:
+            order = entry.get("order") if isinstance(entry, dict) else None
+            if not isinstance(order, shower_batch.ProcessOrder):
+                continue
+            try:
+                matched = cls.matching_order_files(
+                    Path(order_folder),
+                    [order],
+                    root_only=True,
+                    inspect_pdf_text=False,
+                )
+                suffixes = {path.suffix.lower() for path in matched}
+                if ".pdf" not in suffixes:
+                    matched = cls.matching_order_files(
+                        Path(order_folder),
+                        [order],
+                        root_only=True,
+                        inspect_pdf_text=True,
+                    )
+            except Exception as exc:
+                missing.append(f"A&W {order.aw_order} (validation error: {exc})")
+                continue
+            if not matched:
+                missing.append(f"A&W {order.aw_order} (no archived PDF/DXF restored)")
+        return missing
+
+    @classmethod
+    def copy_archived_batch_for_testing(
+        cls,
+        entries: list[dict[str, object]],
+        order_folder: Path,
+        process_list_path: Path,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> tuple[list[Path], list[Path], list[str]]:
+        """Restore a complete archived process-list batch without modifying its dated archive."""
+        valid_entries = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("order"), shower_batch.ProcessOrder)
+        ]
+        if not valid_entries:
+            return [], [], ["The selected archive batch does not contain any valid order records."]
+
+        order_folder = Path(order_folder)
+        order_folder.mkdir(parents=True, exist_ok=True)
+        process_root = Path(process_list_path)
+        if process_root.suffix:
+            process_root = process_root.parent
+        process_root.mkdir(parents=True, exist_ok=True)
+        warnings: list[str] = []
+        archive_sources: dict[str, Path] = {}
+        process_sources: dict[str, Path] = {}
+        force_synthetic_process_list = any(
+            bool(entry.get("_archive_batch_needs_synthetic_process_list"))
+            for entry in valid_entries
+        )
+        revision_count = max(
+            (int(entry.get("_archive_batch_revision_count", 1) or 1) for entry in valid_entries),
+            default=1,
+        )
+        if force_synthetic_process_list and revision_count > 1 and task_context is not None:
+            task_context.progress(
+                0,
+                max(len(valid_entries), 1),
+                f"Consolidating {revision_count} archived revisions into one clean XLSX process list...",
+            )
+        authoritative_process_files: list[Path] = []
+        for entry in valid_entries:
+            raw_authoritative = entry.get("_archive_batch_authoritative_process_files", [])
+            if not isinstance(raw_authoritative, list):
+                continue
+            for source in raw_authoritative:
+                if isinstance(source, Path) and source not in authoritative_process_files:
+                    authoritative_process_files.append(source)
+
+        for entry_index, entry in enumerate(valid_entries, start=1):
+            if task_context is not None:
+                task_context.progress(
+                    entry_index - 1,
+                    len(valid_entries),
+                    f"Matching archived order {entry_index}/{len(valid_entries)}...",
+                )
+                task_context.check_cancelled()
+            order = entry.get("order")
+            assert isinstance(order, shower_batch.ProcessOrder)
+            mapped, mapping_warnings = cls.archived_order_files_across_revisions(entry, order)
+            warnings.extend(mapping_warnings)
+            entry["order_files"] = mapped
+            entry["_fast_file_mapping"] = False
+            if task_context is not None:
+                revision_count = int(entry.get("_archive_batch_revision_count", 1) or 1)
+                task_context.progress(
+                    entry_index - 1,
+                    len(valid_entries),
+                    f"A&W {order.aw_order}: found {len(mapped)} archived source file(s) across {revision_count} revision(s).",
+                )
+            for source in mapped:
+                try:
+                    key = str(source.resolve()).casefold()
+                except OSError:
+                    key = str(source).casefold()
+                archive_sources[key] = source
+            raw_process = (
+                []
+                if force_synthetic_process_list
+                else authoritative_process_files or entry.get("process_list_files", [])
+            )
+            if isinstance(raw_process, list):
+                for source in raw_process:
+                    if not isinstance(source, Path):
+                        continue
+                    try:
+                        key = str(source.resolve()).casefold()
+                    except OSError:
+                        key = str(source).casefold()
+                    process_sources[key] = source
+
+        restored: list[Path] = []
+        ordered_sources = sorted(archive_sources.values(), key=lambda candidate: candidate.name.casefold())
+        ordered_process_sources = sorted(process_sources.values(), key=lambda candidate: candidate.name.casefold())
+        total_steps = max(len(valid_entries) + len(ordered_sources) + len(ordered_process_sources) + 1, 1)
+        completed_steps = len(valid_entries)
+        for source in ordered_sources:
+            if task_context is not None:
+                task_context.progress(
+                    completed_steps,
+                    total_steps,
+                    f"Restoring archived order file {completed_steps - len(valid_entries) + 1}/{len(ordered_sources)}: {source.name}",
+                )
+                task_context.check_cancelled()
+            if not source.exists() or not source.is_file():
+                continue
+            target = order_folder / source.name
+            try:
+                if target.exists():
+                    same = target.stat().st_size == source.stat().st_size and cls.sha256_file(target) == cls.sha256_file(source)
+                    if same:
+                        restored.append(target)
+                        continue
+                    target = cls.unique_target_path(target)
+                cls.copy_file_atomically(source, target)
+                restored.append(target)
+            except OSError as exc:
+                warnings.append(f"Could not restore {source.name}: {exc}")
+            finally:
+                completed_steps += 1
+
+        restored_process_lists: list[Path] = []
+        for source in ordered_process_sources:
+            if task_context is not None:
+                task_context.progress(
+                    completed_steps,
+                    total_steps,
+                    f"Restoring archived process list: {source.name}",
+                )
+                task_context.check_cancelled()
+            if not source.exists() or not source.is_file():
+                continue
+            target = process_root / source.name
+            try:
+                if target.exists():
+                    same = target.stat().st_size == source.stat().st_size and cls.sha256_file(target) == cls.sha256_file(source)
+                    if same:
+                        restored_process_lists.append(target)
+                        continue
+                    target = cls.unique_target_path(target)
+                cls.copy_file_atomically(source, target)
+                restored_process_lists.append(target)
+            except OSError as exc:
+                warnings.append(f"Could not restore process list {source.name}: {exc}")
+            finally:
+                completed_steps += 1
+
+        if not restored_process_lists:
+            if task_context is not None:
+                task_context.progress(
+                    completed_steps,
+                    total_steps,
+                    (
+                        f"Creating one consolidated XLSX process list from {revision_count} archive revisions..."
+                        if revision_count > 1
+                        else "Creating a scoped process list for the archived batch..."
+                    ),
+                )
+                task_context.check_cancelled()
+            try:
+                restored_process_lists.append(
+                    cls.write_archive_test_batch_process_list(
+                        process_root,
+                        valid_entries,
+                        archive_name=str(valid_entries[0].get("archive_name", "")),
+                        batch_name=str(valid_entries[0].get("batch_name", "Archived Batch")),
+                    )
+                )
+            except Exception as exc:
+                warnings.append(f"Could not create a fallback archive batch process list: {exc}")
+        if task_context is not None:
+            task_context.progress(total_steps, total_steps, "Archived batch restore is ready.")
+        return restored, restored_process_lists, warnings
+
+    @classmethod
+    def return_archived_batch_to_archive(
+        cls,
+        entries: list[dict[str, object]],
+        order_folder: Path,
+        process_list_path: Path,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> tuple[list[Path], list[str]]:
+        """Return all active copies for an archived batch while preserving the original archive."""
+        returned: list[Path] = []
+        warnings: list[str] = []
+        seen: set[str] = set()
+        valid_entries = cls.archive_action_entries({"kind": "batch", "children": entries})
+        for entry_index, entry in enumerate(valid_entries, start=1):
+            if task_context is not None:
+                order = entry.get("order")
+                aw_order = str(order.aw_order) if isinstance(order, shower_batch.ProcessOrder) else ""
+                task_context.progress(
+                    entry_index - 1,
+                    max(len(valid_entries), 1),
+                    f"Returning archived order {entry_index}/{len(valid_entries)}" + (f" — A&W {aw_order}" if aw_order else "") + "...",
+                )
+                task_context.check_cancelled()
+            entry_returned, entry_warnings = cls.return_archived_order_to_archive(entry, order_folder, process_list_path)
+            warnings.extend(entry_warnings)
+            for path in entry_returned:
+                key = str(Path(path)).casefold()
+                if key not in seen:
+                    returned.append(Path(path))
+                    seen.add(key)
+
+        if valid_entries:
+            process_root = Path(process_list_path)
+            if process_root.suffix:
+                process_root = process_root.parent
+            fallback = process_root / cls.archive_batch_test_process_list_name(
+                str(valid_entries[0].get("archive_name", "")),
+                str(valid_entries[0].get("batch_name", "Archived Batch")),
+            )
+            try:
+                fallback.unlink(missing_ok=True)
+            except OSError as exc:
+                warnings.append(f"Could not remove {fallback.name}: {exc}")
+        if task_context is not None:
+            task_context.progress(
+                max(len(valid_entries), 1),
+                max(len(valid_entries), 1),
+                "Archived batch return is complete.",
+            )
+        return returned, warnings
+
     @classmethod
     def return_archived_order_to_archive(
         cls,
@@ -20122,13 +22937,24 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         *,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> tuple[list[dict[str, object]], list[str]]:
         """Load and enrich archived-input rows without touching Tk widgets."""
+        store = self.state_store_for_output(output_dir)
+        started = time.perf_counter()
         loaded_inventory, loaded_warnings = self.archived_order_inventory(
             order_folder,
             process_list_root,
             date_from=date_from,
             date_to=date_to,
+            state_store=store,
+            task_context=task_context,
+        )
+        store.record_performance(
+            "Archive Browser",
+            "Load order archive window",
+            (time.perf_counter() - started) * 1000.0,
+            {"records": len(loaded_inventory)},
         )
         try:
             history = self.load_processing_history_for_output(output_dir)
@@ -20142,7 +22968,14 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except OSError:
             active_candidates = []
 
-        for entry in loaded_inventory:
+        total_inventory = max(len(loaded_inventory), 1)
+        for entry_index, entry in enumerate(loaded_inventory, start=1):
+            if task_context is not None and (entry_index == 1 or entry_index % 25 == 0):
+                task_context.progress(
+                    entry_index - 1,
+                    total_inventory,
+                    f"Checking active-input state {entry_index}/{len(loaded_inventory)}...",
+                )
             order = entry.get("order")
             if not isinstance(order, shower_batch.ProcessOrder):
                 continue
@@ -20178,12 +23011,14 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         *,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> tuple[list[dict[str, object]], list[str]]:
         """Load run folders and correlate processing-history order rows."""
         runs, warnings = self.archived_run_inventory(
             output_dir,
             date_from=date_from,
             date_to=date_to,
+            task_context=task_context,
         )
         by_path: dict[str, dict[str, object]] = {}
         for run in runs:
@@ -20239,28 +23074,42 @@ Write-Output "AutoCAD saved $count DXF file(s)."
     def build_archive_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         """Browse recent archives quickly, grouped by batch, with on-demand paging."""
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(2, weight=1)
+        parent.grid_rowconfigure(3, weight=1)
 
-        header = ctk.CTkFrame(parent, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
-        header.grid_columnconfigure(0, weight=1)
+        header = ctk.CTkFrame(
+            parent,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        header.grid_columnconfigure(1, weight=1)
+        archive_icon = ctk.CTkFrame(header, fg_color=self.ACCENT_LIGHT, corner_radius=12, width=46, height=46)
+        archive_icon.grid(row=0, column=0, rowspan=2, sticky="w", padx=(14, 10), pady=12)
+        archive_icon.grid_propagate(False)
+        ctk.CTkLabel(
+            archive_icon,
+            text="",
+            image=self.ctk_button_icon("archive", 22, self.ACCENT_DARK).get("image"),
+        ).pack(expand=True)
         ctk.CTkLabel(
             header,
             text="Archive Browser",
             font=("Segoe UI", 18, "bold"),
             text_color=self.TEXT,
             anchor="w",
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=1, sticky="w", pady=(11, 0))
         ctk.CTkLabel(
             header,
             text=(
-                "Starts with the most recent seven days. Filter by date, search the loaded records, "
-                "sort by a column, or load another seven days when older history is needed."
+                "Browse archived source batches or processing runs. The default view is the most recent seven days; "
+                "use the date range or Load 7 More Days only when older history is needed."
             ),
             font=("Segoe UI", 10),
             text_color=self.MUTED,
             anchor="w",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ).grid(row=1, column=1, sticky="w", pady=(2, 11))
 
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         initial_from = today - timedelta(days=6)
@@ -20274,19 +23123,19 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         filters = ctk.CTkFrame(parent, fg_color="transparent")
         filters.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
         filters.grid_columnconfigure(1, weight=1)
-        mode_menu = ctk.CTkOptionMenu(
+        mode_menu = ctk.CTkSegmentedButton(
             filters,
             variable=mode_var,
             values=["Orders / Sketch Archives", "Processing Runs"],
-            width=190,
             height=34,
-            fg_color=self.PANEL_BG,
-            button_color=self.ACCENT,
-            button_hover_color=self.ACCENT_DARK,
-            dropdown_fg_color=self.CARD_BG,
+            selected_color=self.ACCENT,
+            selected_hover_color=self.ACCENT_DARK,
+            unselected_color=self.PANEL_BG,
+            unselected_hover_color=self.BUTTON_HOVER,
             text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
         )
-        mode_menu.grid(row=0, column=0, padx=(0, 8), sticky="w")
+        mode_menu.grid(row=0, column=0, padx=(0, 10), sticky="w")
         search_entry = ctk.CTkEntry(
             filters,
             textvariable=search_var,
@@ -20326,7 +23175,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         date_row = ctk.CTkFrame(filters, fg_color="transparent")
         date_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(7, 0))
-        date_row.grid_columnconfigure(6, weight=1)
+        date_row.grid_columnconfigure(7, weight=1)
         ctk.CTkLabel(date_row, text="Archive date", font=("Segoe UI", 10, "bold"), text_color=self.MUTED).grid(row=0, column=0, padx=(0, 6))
         from_entry = ctk.CTkEntry(date_row, textvariable=from_var, width=118, height=32, placeholder_text="From")
         from_entry.grid(row=0, column=1, padx=(0, 5))
@@ -20335,7 +23184,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         to_entry.grid(row=0, column=3, padx=(0, 7))
 
         body = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
-        body.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        body.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
         columns = ("archive", "aw", "job", "customer", "files", "sent", "active")
@@ -20366,12 +23215,72 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             "Orders / Sketch Archives": None,
             "Processing Runs": None,
         }
-        archive_status_var = tk.StringVar(value="Loading the most recent seven days in the background...")
+        archive_status_var = tk.StringVar(
+            value="Archives are ready. Open this tab to load the most recent seven days."
+        )
         archive_result_queue: queue.Queue[dict[str, object]] = queue.Queue()
+        archive_task_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
+        archive_task_meta: dict[str, dict[str, object]] = {}
+        archive_task_manager = shower_tasks.BackgroundTaskManager(
+            lambda kind, payload: archive_task_events.put((kind, payload))
+        )
         refresh_inflight: set[str] = set()
+        refresh_needed: dict[str, bool] = {
+            "Orders / Sketch Archives": True,
+            "Processing Runs": True,
+        }
         sort_column = "archive"
         sort_descending = True
         request_serial = 0
+        archive_poll_after_id: str | None = None
+        archive_cancelled_for_hide = False
+
+        progress_card = ctk.CTkFrame(
+            parent,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        progress_card.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        progress_card.grid_columnconfigure(0, weight=1)
+        archive_progress_title_var = tk.StringVar(value="Archive browser ready")
+        archive_progress_detail_var = tk.StringVar(
+            value="Select Archives to load the requested date range."
+        )
+        ctk.CTkLabel(
+            progress_card,
+            textvariable=archive_progress_title_var,
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(9, 2))
+        archive_progress_bar = ModernProgressBar(progress_card, self, height=10)
+        archive_progress_bar.grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 4))
+        ctk.CTkLabel(
+            progress_card,
+            textvariable=archive_progress_detail_var,
+            font=("Segoe UI", 9),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", padx=(12, 8), pady=(0, 9))
+        archive_cancel_button = self.make_tool_button(
+            progress_card,
+            "Cancel",
+            "close",
+            lambda: cancel_archive_load(),
+            width=88,
+        )
+        archive_cancel_button.grid(row=0, column=1, rowspan=2, padx=(0, 8), pady=8)
+        archive_retry_button = self.make_tool_button(
+            progress_card,
+            "Retry",
+            "refresh",
+            lambda: apply_date_filter(),
+            width=88,
+        )
+        archive_retry_button.grid(row=0, column=2, rowspan=2, padx=(0, 12), pady=8)
+        archive_cancel_button.configure(state="disabled")
 
         def current_mode() -> str:
             return str(mode_var.get() or "Orders / Sketch Archives")
@@ -20478,7 +23387,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         def group_sort_key(group: dict[str, object]) -> tuple[int, object]:
             if sort_column == "#0":
-                return self.archive_browser_sort_value(group.get("batch_name", ""), "job")
+                return self.archive_browser_sort_value(group.get("display_name", group.get("batch_name", "")), "job")
             if sort_column == "archive":
                 return self.archive_browser_sort_value(group.get("archive_name", ""), "archive")
             return self.archive_browser_sort_value(group.get("archive_name", ""), "archive")
@@ -20492,34 +23401,38 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             groups: list[dict[str, object]] = []
 
             if mode == "Orders / Sketch Archives":
-                grouped: dict[tuple[str, str], dict[str, object]] = {}
-                for entry in inventories[mode]:
-                    if not entry_matches_filters(entry):
+                consolidated_groups = self.consolidate_archive_batch_entries(inventories[mode])
+                for consolidated in consolidated_groups:
+                    full_children = consolidated.get("action_children", [])
+                    if not isinstance(full_children, list):
                         continue
-                    order = entry.get("order")
-                    if not isinstance(order, shower_batch.ProcessOrder):
-                        continue
-                    batch_name = str(entry.get("batch_name", "Archived Process List"))
-                    haystack = " ".join((
-                        str(entry.get("archive_name", "")),
-                        batch_name,
-                        str(order.aw_order),
-                        order.job_name,
-                        order.customer,
+                    batch_label = str(consolidated.get("display_name", consolidated.get("batch_name", "Archived Batch")))
+                    group_query_match = not query or query in " ".join((
+                        batch_label,
+                        str(consolidated.get("batch_name", "")),
+                        str(consolidated.get("archive_name", "")),
                     )).casefold()
-                    if query and query not in haystack:
+                    visible_children: list[dict[str, object]] = []
+                    for entry in full_children:
+                        if not isinstance(entry, dict) or not entry_matches_filters(entry):
+                            continue
+                        order = entry.get("order")
+                        if not isinstance(order, shower_batch.ProcessOrder):
+                            continue
+                        haystack = " ".join((
+                            str(entry.get("archive_name", "")),
+                            str(entry.get("batch_name", "")),
+                            batch_label,
+                            str(order.aw_order),
+                            order.job_name,
+                            order.customer,
+                        )).casefold()
+                        if query and not group_query_match and query not in haystack:
+                            continue
+                        visible_children.append(entry)
+                    if not visible_children:
                         continue
-                    key = (str(entry.get("archive_name", "")), batch_name)
-                    group = grouped.setdefault(
-                        key,
-                        {
-                            "archive_name": key[0],
-                            "batch_name": batch_name,
-                            "children": [],
-                        },
-                    )
-                    group["children"].append(entry)
-                groups = list(grouped.values())
+                    groups.append({**consolidated, "children": visible_children, "action_children": full_children})
             else:
                 for run in inventories[mode]:
                     batch_name = str(run.get("batch_name", "Run"))
@@ -20566,11 +23479,25 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                                 raw_files = child.get("order_files", [])
                                 if isinstance(raw_files, list):
                                     file_total += len([path for path in raw_files if isinstance(path, Path)])
-                    parent_values = (str(group.get("archive_name", "")), "", "", f"{len(children)} order(s)", file_total, "", "")
+                    revision_count = int(group.get("revision_count", 1) or 1)
+                    order_summary = f"{len(children)} order(s)"
+                    if revision_count > 1:
+                        order_summary += f" · {revision_count} revisions"
+                    batch_scope = group.get("action_children", children)
+                    batch_entries = batch_scope if isinstance(batch_scope, list) else children
+                    parent_values = (
+                        str(group.get("archive_name", "")),
+                        "",
+                        "",
+                        order_summary,
+                        file_total,
+                        self.archive_batch_sent_summary(batch_entries),
+                        self.archive_batch_input_summary(batch_entries),
+                    )
                 parent_id = tree.insert(
                     "",
                     tk.END,
-                    text=str(group.get("batch_name", "")),
+                    text=str(group.get("display_name", group.get("batch_name", ""))),
                     values=parent_values,
                     open=auto_open,
                     tags=("BATCH",),
@@ -20616,6 +23543,59 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 pass
             refresh_headings()
 
+        def set_archive_progress(
+            title: str,
+            detail: str,
+            *,
+            current: int = 0,
+            total: int = 0,
+            state: str = "idle",
+        ) -> None:
+            archive_progress_title_var.set(str(title))
+            archive_progress_detail_var.set(str(detail))
+            archive_progress_bar.stop()
+            if total > 0:
+                archive_progress_bar.configure(
+                    mode="determinate",
+                    maximum=max(total, 1),
+                    value=max(0, min(current, total)),
+                    progress_color=(
+                        self.DANGER if state == "error"
+                        else self.WARNING if state == "cancelled"
+                        else self.PROGRESS_FILL
+                    ),
+                )
+            elif state == "loading":
+                archive_progress_bar.configure(mode="indeterminate", progress_color=self.PROGRESS_FILL)
+                archive_progress_bar.start()
+            else:
+                archive_progress_bar.configure(
+                    mode="determinate",
+                    maximum=1,
+                    value=1 if state in {"complete", "warning"} else 0,
+                    progress_color=(
+                        self.DANGER if state == "error"
+                        else self.WARNING if state in {"cancelled", "warning"}
+                        else self.PROGRESS_FILL
+                    ),
+                )
+            try:
+                archive_cancel_button.configure(state="normal" if state == "loading" else "disabled")
+                archive_retry_button.configure(state="disabled" if state == "loading" else "normal")
+            except (tk.TclError, ValueError):
+                pass
+
+        def cancel_archive_load() -> None:
+            if archive_task_manager.cancel():
+                archive_status_var.set("Cancelling archive load at the next safe boundary...")
+                set_archive_progress(
+                    "Cancelling archive load...",
+                    "Finishing the current archive item safely before stopping.",
+                    state="loading",
+                )
+            else:
+                archive_status_var.set("No archive load is currently running.")
+
         def start_load(
             date_from: datetime,
             date_to: datetime,
@@ -20627,63 +23607,96 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             if mode in refresh_inflight:
                 archive_status_var.set(f"{mode} is already loading...")
                 return
+            if archive_task_manager.active is not None:
+                archive_status_var.set("Another Settings archive operation is already running...")
+                return
             try:
                 order_folder = Path(self.folder_var.get()).resolve()
                 process_list_root = Path(self.process_list_var.get()).resolve()
                 output_dir = Path(self.output_dir_var.get()).resolve()
             except Exception as exc:
                 archive_status_var.set(f"Archive history could not start: {exc}")
+                set_archive_progress(
+                    "Archive load could not start",
+                    str(exc),
+                    state="error",
+                )
                 return
             request_serial += 1
             request_id = request_serial
             refresh_inflight.add(mode)
-            archive_status_var.set(
+            refresh_needed[mode] = True
+            range_days = max((date_to - date_from).days + 1, 1)
+            loading_message = (
                 f"Loading {mode.lower()} for {date_from:%m/%d/%Y} through {date_to:%m/%d/%Y}..."
             )
+            archive_status_var.set(loading_message)
+            set_archive_progress(
+                f"Loading {mode}",
+                loading_message,
+                current=0,
+                total=range_days,
+                state="loading",
+            )
 
-            def worker() -> None:
-                try:
-                    if mode == "Processing Runs":
-                        loaded, warnings = self.load_archive_run_settings_inventory(
-                            output_dir,
-                            date_from=date_from,
-                            date_to=date_to,
-                        )
-                    else:
-                        loaded, warnings = self.load_archive_settings_inventory(
-                            order_folder,
-                            process_list_root,
-                            output_dir,
-                            date_from=date_from,
-                            date_to=date_to,
-                        )
-                except Exception as exc:
-                    loaded, warnings = [], [str(exc)]
-                archive_result_queue.put(
-                    {
-                        "request_id": request_id,
-                        "mode": mode,
-                        "replace": replace,
-                        "date_from": date_from,
-                        "date_to": date_to,
-                        "inventory": loaded,
-                        "warnings": warnings,
-                    }
+            def worker(task: shower_tasks.TaskContext) -> dict[str, object]:
+                task.stage(
+                    f"Loading {mode.lower()} for {date_from:%m/%d/%Y} through {date_to:%m/%d/%Y}..."
                 )
+                if mode == "Processing Runs":
+                    loaded, warnings = self.load_archive_run_settings_inventory(
+                        output_dir,
+                        date_from=date_from,
+                        date_to=date_to,
+                        task_context=task,
+                    )
+                else:
+                    loaded, warnings = self.load_archive_settings_inventory(
+                        order_folder,
+                        process_list_root,
+                        output_dir,
+                        date_from=date_from,
+                        date_to=date_to,
+                        task_context=task,
+                    )
+                task.check_cancelled()
+                return {
+                    "request_id": request_id,
+                    "mode": mode,
+                    "replace": replace,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "inventory": loaded,
+                    "warnings": warnings,
+                }
 
-            threading.Thread(target=worker, name="shower-settings-archive-load", daemon=True).start()
-            dialog.after(100, poll_archive_refresh)
-
-        def poll_archive_refresh() -> None:
             try:
-                payload = archive_result_queue.get_nowait()
-            except queue.Empty:
-                try:
-                    if dialog.winfo_exists():
-                        dialog.after(100, poll_archive_refresh)
-                except tk.TclError:
-                    pass
+                snapshot = archive_task_manager.start(
+                    f"Settings Archive Browser - {mode}",
+                    worker,
+                    message=f"Loading {mode.lower()}...",
+                    total=range_days,
+                    cancellable=True,
+                )
+            except Exception as exc:
+                refresh_inflight.discard(mode)
+                refresh_needed[mode] = True
+                archive_status_var.set(f"Archive load could not start: {exc}")
+                set_archive_progress(
+                    "Archive load could not start",
+                    str(exc),
+                    state="error",
+                )
                 return
+            archive_task_meta[snapshot.task_id] = {
+                "mode": mode,
+                "request_id": request_id,
+                "replace": replace,
+                "date_from": date_from,
+                "date_to": date_to,
+            }
+
+        def apply_archive_payload(payload: dict[str, object]) -> None:
             mode = str(payload.get("mode", "Orders / Sketch Archives"))
             refresh_inflight.discard(mode)
             loaded = payload.get("inventory", [])
@@ -20719,19 +23732,109 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     loaded_ranges[mode] = (payload["date_from"], payload["date_to"])
                 else:
                     loaded_ranges[mode] = (min(prior[0], payload["date_from"]), max(prior[1], payload["date_to"]))
+            refresh_needed[mode] = False
+            if mode == current_mode():
+                render()
+                notes = inventory_warnings[mode]
+                loaded_message = (
+                    f"Loaded {len(inventories[mode])} archive record(s)"
+                    + (f" with {len(notes)} note(s)." if notes else ".")
+                )
+                archive_status_var.set(loaded_message)
+                elapsed_ms = float(payload.get("_elapsed_ms", 0.0) or 0.0)
+                detail = loaded_message
+                if notes:
+                    detail += f" First note: {str(notes[0]).strip()}"
+                if elapsed_ms > 0:
+                    detail += f" Finished in {elapsed_ms / 1000.0:.1f}s."
+                set_archive_progress(
+                    "Archive load complete" if not notes else "Archive load complete with notes",
+                    detail,
+                    current=1,
+                    total=1,
+                    state="complete" if not notes else "warning",
+                )
+
+        def poll_archive_refresh() -> None:
+            nonlocal archive_poll_after_id, archive_cancelled_for_hide
             try:
                 if not dialog.winfo_exists():
                     return
             except tk.TclError:
                 return
-            if mode == current_mode():
-                render()
-                notes = inventory_warnings[mode]
-                archive_status_var.set(
-                    f"Loaded {len(inventories[mode])} archive record(s)"
-                    + (f" with {len(notes)} note(s)." if notes else ".")
-                )
-            self.status_var.set(f"Archive browser loaded {len(inventories[mode])} record(s) for {mode}.")
+            while True:
+                try:
+                    kind, event = archive_task_events.get_nowait()
+                except queue.Empty:
+                    break
+                task_id = str(event.get("task_id", ""))
+                meta = archive_task_meta.get(task_id, {})
+                mode = str(meta.get("mode", current_mode()))
+                if kind == "task_progress":
+                    message = str(event.get("message", "Loading archive history..."))
+                    current = int(event.get("current", 0) or 0)
+                    total = int(event.get("total", 0) or 0)
+                    progress_message = f"{message} ({current}/{total})" if total > 0 else message
+                    archive_status_var.set(progress_message)
+                    set_archive_progress(
+                        f"Loading {mode}",
+                        progress_message,
+                        current=current,
+                        total=total,
+                        state="loading",
+                    )
+                elif kind == "task_done":
+                    archive_task_meta.pop(task_id, None)
+                    result = event.get("result")
+                    if isinstance(result, dict):
+                        result["_elapsed_ms"] = float(event.get("elapsed_ms", 0.0) or 0.0)
+                        archive_result_queue.put(result)
+                    else:
+                        refresh_inflight.discard(mode)
+                        refresh_needed[mode] = True
+                        message = "Archive task completed without a valid inventory result."
+                        archive_status_var.set(message)
+                        set_archive_progress("Archive load failed", message, state="error")
+                elif kind == "task_cancelled":
+                    archive_task_meta.pop(task_id, None)
+                    refresh_inflight.discard(mode)
+                    refresh_needed[mode] = True
+                    archive_status_var.set(f"{mode} load cancelled safely.")
+                    set_archive_progress(
+                        "Archive load cancelled",
+                        "No partial archive result was applied. Use Retry or reopen Archives to load again.",
+                        state="cancelled",
+                    )
+                    if archive_cancelled_for_hide:
+                        archive_cancelled_for_hide = False
+                        try:
+                            if (
+                                not bool(getattr(dialog, "_shower_settings_hidden", False))
+                                and self.settings_tabview is not None
+                                and str(self.settings_tabview.get()) == "Archives"
+                            ):
+                                dialog.after_idle(activate_archive_tab)
+                        except (AttributeError, tk.TclError):
+                            pass
+                elif kind == "task_error":
+                    archive_task_meta.pop(task_id, None)
+                    refresh_inflight.discard(mode)
+                    refresh_needed[mode] = True
+                    error = event.get("error", RuntimeError("Unknown archive load failure"))
+                    message = str(error).strip() or "Unknown archive load failure"
+                    archive_status_var.set(f"Archive load failed: {message}")
+                    set_archive_progress(
+                        "Archive load failed",
+                        message,
+                        state="error",
+                    )
+            while True:
+                try:
+                    payload = archive_result_queue.get_nowait()
+                except queue.Empty:
+                    break
+                apply_archive_payload(payload)
+            archive_poll_after_id = dialog.after(100, poll_archive_refresh)
 
         def apply_date_filter() -> None:
             try:
@@ -20762,82 +23865,284 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             from_var.set(f"{next_start.month}/{next_start.day}/{next_start.year}")
             start_load(next_start, next_end, replace=False)
 
-        def selected_entry() -> dict[str, object] | None:
+        def selected_target() -> dict[str, object] | None:
             selection = tree.selection()
-            if not selection:
+            if not selection or current_mode() != "Orders / Sketch Archives":
                 return None
-            entry = rows.get(selection[0])
-            if current_mode() != "Orders / Sketch Archives" or not isinstance(entry, dict):
-                return None
-            return entry if isinstance(entry.get("order"), shower_batch.ProcessOrder) else None
+            target = rows.get(selection[0])
+            return target if isinstance(target, dict) else None
+
+        def selected_entries() -> list[dict[str, object]]:
+            return self.archive_action_entries(selected_target())
 
         def restore_selected() -> None:
-            entry = selected_entry()
-            if entry is None:
-                messagebox.showinfo("Select archived order", "Select an order row under a collapsed batch first.", parent=dialog)
+            target = selected_target()
+            entries = self.archive_action_entries(target)
+            if not entries:
+                messagebox.showinfo("Select archived content", "Select an archived order or its batch first.", parent=dialog)
                 return
-            order = entry.get("order")
-            assert isinstance(order, shower_batch.ProcessOrder)
-            restored, process_file, warnings = self.copy_archived_order_for_testing(
-                entry,
-                Path(self.folder_var.get()).resolve(),
-                Path(self.process_list_var.get()).resolve(),
+            is_batch = bool(target and target.get("kind") == "batch")
+            if not is_batch:
+                entry = entries[0]
+                order = entry.get("order")
+                assert isinstance(order, shower_batch.ProcessOrder)
+                restored, process_file, warnings = self.copy_archived_order_for_testing(
+                    entry,
+                    Path(self.folder_var.get()).resolve(),
+                    Path(self.process_list_var.get()).resolve(),
+                )
+                entry["_active_copy"] = bool(restored)
+                render()
+                self.scan_orders()
+                message = (
+                    f"A&W {order.aw_order} is ready for archive testing.\n\n"
+                    f"Order files copied: {len(restored)}\n"
+                    f"Scoped process list: {process_file.name if process_file else 'Not created'}\n\n"
+                    "The original dated archive was not modified."
+                )
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                self.record_action(
+                    "Restore Archived Order",
+                    f"Restored archived A&W {order.aw_order} into active Input for testing.",
+                    status="WARNING" if warnings else "SUCCESS",
+                    orders=[order],
+                    details=f"Order files={len(restored)}; process list={process_file.name if process_file else 'not created'}",
+                )
+                messagebox.showinfo("Archived order restored for testing", message, parent=dialog)
+                return
+
+            batch_name = str(target.get("batch_name", "Archived Batch")) if target else "Archived Batch"
+            order_folder = Path(self.folder_var.get()).resolve()
+            process_list_root = Path(self.process_list_var.get()).resolve()
+
+            def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[Path], list[str]]:
+                return self.copy_archived_batch_for_testing(
+                    entries,
+                    order_folder,
+                    process_list_root,
+                    task_context=task,
+                )
+
+            def completed(result: object) -> None:
+                if not isinstance(result, tuple) or len(result) != 3:
+                    self.show_structured_error(RuntimeError("Archived batch restore completed without a valid result."), title="Archive batch restore failed")
+                    return
+                restored, process_files, warnings = result
+                for entry in entries:
+                    entry["_active_copy"] = bool(restored)
+                render()
+                self.scan_orders()
+                message = (
+                    f"Batch {batch_name} is ready in active Input for testing.\n\n"
+                    f"Orders restored: {len(entries)}\n"
+                    f"Order PDF/DXF files copied: {len(restored)}\n"
+                    f"Process list files restored: {len(process_files)}\n\n"
+                    "The original dated archive was not modified."
+                )
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                self.record_action(
+                    "Restore Archived Batch",
+                    f"Restored archive batch {batch_name} with {len(entries)} order(s) into active Input.",
+                    status="WARNING" if warnings else "SUCCESS",
+                    orders=[entry["order"] for entry in entries if isinstance(entry.get("order"), shower_batch.ProcessOrder)],
+                    details=f"Order files={len(restored)}; process-list files={len(process_files)}",
+                )
+                messagebox.showinfo("Archived batch restored for testing", message, parent=dialog)
+
+            self.run_managed_task(
+                "Restore Archived Batch",
+                worker,
+                message=f"Restoring archived batch {batch_name}...",
+                total=max(len(entries), 1),
+                cancellable=True,
+                on_done=completed,
+                on_cancelled=lambda: archive_status_var.set(f"Restore cancelled safely for {batch_name}."),
             )
-            entry["_active_copy"] = bool(restored)
-            render()
-            self.scan_orders()
-            message = (
-                f"A&W {order.aw_order} is ready for archive testing.\n\n"
-                f"Order files copied: {len(restored)}\n"
-                f"Scoped process list: {process_file.name if process_file else 'Not created'}\n\n"
-                "The original dated archive was not modified."
+
+        def open_test_mode_selected() -> None:
+            target = selected_target()
+            entries = self.archive_action_entries(target)
+            if not entries:
+                messagebox.showinfo("Select archived content", "Select an archived order or its batch first.", parent=dialog)
+                return
+            is_batch = bool(target and target.get("kind") == "batch")
+            if not is_batch:
+                try:
+                    workspace, warnings = self.enter_test_mode(entries[0])
+                except Exception as exc:
+                    self.show_structured_error(exc, title="Could not start Test Mode")
+                    return
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                self.scan_orders()
+                message = (
+                    f"Test Mode is active for the archived order.\n\n{workspace}\n\n"
+                    "Processing writes only to this workspace, and production Send actions are disabled until Test Mode is exited."
+                )
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                messagebox.showinfo("Test Mode active", message, parent=self.root)
+                return
+
+            if getattr(self, "test_mode_workspace", None) is not None:
+                messagebox.showwarning(
+                    "Test Mode already active",
+                    "Exit the current Test Mode workspace before opening another archived batch.",
+                    parent=dialog,
+                )
+                return
+            batch_name = str(target.get("batch_name", "Archived Batch"))
+            archive_name = str(target.get("archive_name", ""))
+            runtime_root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())).resolve()
+
+            def worker(task: shower_tasks.TaskContext) -> dict[str, object]:
+                return self.prepare_archived_batch_test_mode(
+                    entries,
+                    batch_name=batch_name,
+                    archive_name=archive_name,
+                    runtime_root=runtime_root,
+                    task_context=task,
+                )
+
+            def completed(result: object) -> None:
+                if not isinstance(result, dict):
+                    self.show_structured_error(RuntimeError("Batch Test Mode preparation returned an invalid result."), title="Could not start Test Mode")
+                    return
+                try:
+                    workspace, warnings = self.activate_prepared_batch_test_mode(result)
+                except Exception as exc:
+                    self.show_structured_error(exc, title="Could not start Test Mode")
+                    return
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                self.scan_orders()
+                message = (
+                    f"Test Mode is active for batch {batch_name} with {len(entries)} order(s).\n\n{workspace}\n\n"
+                    "Processing writes only to this isolated batch workspace, and production Send actions are disabled until Test Mode is exited."
+                )
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                messagebox.showinfo("Batch Test Mode active", message, parent=self.root)
+
+            self.run_managed_task(
+                "Prepare Batch Test Mode",
+                worker,
+                message=f"Preparing isolated Test Mode for {batch_name}...",
+                total=max(len(entries), 1),
+                cancellable=True,
+                on_done=completed,
+                on_cancelled=lambda: archive_status_var.set(f"Batch Test Mode preparation cancelled safely for {batch_name}."),
             )
-            if warnings:
-                message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:6])
-            messagebox.showinfo("Archived order restored for testing", message, parent=dialog)
 
         def return_selected() -> None:
-            entry = selected_entry()
-            if entry is None:
-                messagebox.showinfo("Select archived order", "Select an order row under a batch first.", parent=dialog)
+            target = selected_target()
+            entries = self.archive_action_entries(target)
+            if not entries:
+                messagebox.showinfo("Select archived content", "Select an archived order or its batch first.", parent=dialog)
                 return
-            order = entry.get("order")
-            assert isinstance(order, shower_batch.ProcessOrder)
-            if not messagebox.askyesno(
-                "Return active copies to archive?",
-                f"Return active Input copies for A&W {order.aw_order} to archive {entry.get('archive_name', '')}?\n\n"
-                "The dated archive copy is preserved. A generated Archive Test process list will be removed.",
-                parent=dialog,
-            ):
+            is_batch = bool(target and target.get("kind") == "batch")
+            if is_batch:
+                label = str(target.get("batch_name", "Archived Batch"))
+                prompt = (
+                    f"Return active Input copies for all {len(entries)} order(s) in {label}?\n\n"
+                    "The original dated archive is preserved and restored process-list copies are removed or returned."
+                )
+            else:
+                order = entries[0].get("order")
+                assert isinstance(order, shower_batch.ProcessOrder)
+                label = f"A&W {order.aw_order}"
+                prompt = (
+                    f"Return active Input copies for {label} to archive {entries[0].get('archive_name', '')}?\n\n"
+                    "The dated archive copy is preserved. A generated Archive Test process list will be removed."
+                )
+            if not messagebox.askyesno("Return active copies to archive?", prompt, parent=dialog):
                 return
-            returned, warnings = self.return_archived_order_to_archive(
-                entry,
-                Path(self.folder_var.get()).resolve(),
-                Path(self.process_list_var.get()).resolve(),
+
+            order_folder = Path(self.folder_var.get()).resolve()
+            process_list_root = Path(self.process_list_var.get()).resolve()
+            if not is_batch:
+                returned, warnings = self.return_archived_order_to_archive(entries[0], order_folder, process_list_root)
+                for entry in entries:
+                    entry["_active_copy"] = False
+                render()
+                self.scan_orders()
+                message = f"Returned/removed {len(returned)} active file(s) for {label}."
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                self.record_action(
+                    "Return Archived Order",
+                    f"Returned active test/input copies for {label} to its archive.",
+                    status="WARNING" if warnings else "SUCCESS",
+                    orders=[order],
+                    details=f"Returned/removed files={len(returned)}",
+                )
+                messagebox.showinfo("Archive return complete", message, parent=dialog)
+                return
+
+            def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
+                return self.return_archived_batch_to_archive(
+                    entries,
+                    order_folder,
+                    process_list_root,
+                    task_context=task,
+                )
+
+            def completed(result: object) -> None:
+                if not isinstance(result, tuple) or len(result) != 2:
+                    self.show_structured_error(RuntimeError("Archived batch return completed without a valid result."), title="Archive return failed")
+                    return
+                returned, warnings = result
+                for entry in entries:
+                    entry["_active_copy"] = False
+                render()
+                self.scan_orders()
+                message = f"Returned/removed {len(returned)} active file(s) for {label}."
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                self.record_action(
+                    "Return Archived Batch",
+                    f"Returned active copies for archive batch {label}.",
+                    status="WARNING" if warnings else "SUCCESS",
+                    orders=[entry["order"] for entry in entries if isinstance(entry.get("order"), shower_batch.ProcessOrder)],
+                    details=f"Returned/removed files={len(returned)}",
+                )
+                messagebox.showinfo("Archive batch return complete", message, parent=dialog)
+
+            self.run_managed_task(
+                "Return Archived Batch",
+                worker,
+                message=f"Returning active copies for {label}...",
+                total=max(len(entries), 1),
+                cancellable=True,
+                on_done=completed,
+                on_cancelled=lambda: archive_status_var.set(f"Archive return cancelled safely for {label}."),
             )
-            entry["_active_copy"] = False
-            render()
-            self.scan_orders()
-            message = f"Returned/removed {len(returned)} active file(s) for A&W {order.aw_order}."
-            if warnings:
-                message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:6])
-            messagebox.showinfo("Archive return complete", message, parent=dialog)
 
         def archive_sent_inputs() -> None:
             if current_mode() != "Orders / Sketch Archives":
                 messagebox.showinfo("Switch archive view", "Archive Sent Inputs is available in Orders / Sketch Archives.", parent=dialog)
                 return
+            target = selected_target()
+            scoped_entries = self.archive_action_entries(target)
+            source_entries = scoped_entries if scoped_entries else inventories[current_mode()]
             candidates = [
                 entry
-                for entry in inventories[current_mode()]
+                for entry in source_entries
                 if isinstance(entry.get("order"), shower_batch.ProcessOrder)
                 and str(entry.get("_sent_at", "")).strip()
                 and active_copy_exists(entry)
             ]
             if not candidates:
+                scope_text = "the selected order/batch" if scoped_entries else "the loaded archive range"
                 messagebox.showinfo(
                     "No sent inputs to archive",
-                    "No active Input files were found for the loaded archived orders that are already marked Sent.",
+                    f"No active Input files were found for already-sent orders in {scope_text}.",
                     parent=dialog,
                 )
                 return
@@ -20848,28 +24153,96 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 parent=dialog,
             ):
                 return
-            returned_count = 0
-            warnings: list[str] = []
-            for entry in candidates:
-                returned, entry_warnings = self.return_archived_order_to_archive(
-                    entry,
-                    Path(self.folder_var.get()).resolve(),
-                    Path(self.process_list_var.get()).resolve(),
+            order_folder = Path(self.folder_var.get()).resolve()
+            process_list_root = Path(self.process_list_var.get()).resolve()
+
+            def worker(task: shower_tasks.TaskContext) -> tuple[int, list[str]]:
+                returned_count = 0
+                warnings: list[str] = []
+                for index, entry in enumerate(candidates, start=1):
+                    order = entry.get("order")
+                    aw_order = str(order.aw_order) if isinstance(order, shower_batch.ProcessOrder) else ""
+                    task.progress(
+                        index - 1,
+                        len(candidates),
+                        f"Archiving already-sent input {index}/{len(candidates)}" + (f" — A&W {aw_order}" if aw_order else "") + "...",
+                    )
+                    returned, entry_warnings = self.return_archived_order_to_archive(entry, order_folder, process_list_root)
+                    returned_count += len(returned)
+                    warnings.extend(entry_warnings)
+                task.progress(len(candidates), len(candidates), "Already-sent input cleanup is complete.")
+                return returned_count, warnings
+
+            def completed(result: object) -> None:
+                if not isinstance(result, tuple) or len(result) != 2:
+                    self.show_structured_error(RuntimeError("Sent-input archive cleanup returned an invalid result."), title="Archive cleanup failed")
+                    return
+                returned_count, warnings = result
+                for entry in candidates:
+                    entry["_active_copy"] = False
+                render()
+                self.scan_orders()
+                message = f"Returned/removed {returned_count} active file(s) for {len(candidates)} already-sent order(s)."
+                if warnings:
+                    message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
+                self.record_action(
+                    "Archive Sent Inputs",
+                    f"Archived active Input copies for {len(candidates)} already-sent order(s).",
+                    status="WARNING" if warnings else "SUCCESS",
+                    orders=[entry["order"] for entry in candidates if isinstance(entry.get("order"), shower_batch.ProcessOrder)],
+                    details=f"Returned/removed files={returned_count}",
                 )
-                returned_count += len(returned)
-                warnings.extend(entry_warnings)
-                entry["_active_copy"] = False
-            render()
-            self.scan_orders()
-            message = f"Returned/removed {returned_count} active file(s) for {len(candidates)} already-sent order(s)."
-            if warnings:
-                message += "\n\nNOTES\n" + "\n".join(f"- {warning}" for warning in warnings[:8])
-            messagebox.showinfo("Sent inputs archived", message, parent=dialog)
+                messagebox.showinfo("Sent inputs archived", message, parent=dialog)
+
+            self.run_managed_task(
+                "Archive Sent Inputs",
+                worker,
+                message=f"Archiving active copies for {len(candidates)} already-sent order(s)...",
+                total=max(len(candidates), 1),
+                cancellable=True,
+                on_done=completed,
+                on_cancelled=lambda: archive_status_var.set("Sent-input archive cleanup cancelled safely."),
+            )
+
+        def update_archive_action_buttons(_event: tk.Event | None = None) -> None:
+            if current_mode() != "Orders / Sketch Archives":
+                archive_selection_var.set("Processing Runs is read-only. Switch to Orders / Sketch Archives for restore actions.")
+                for button in (return_archive_button, test_mode_button, restore_input_button):
+                    button.configure(state="disabled")
+                return
+            target = selected_target()
+            entries = self.archive_action_entries(target)
+            if not entries:
+                archive_selection_var.set("Select an order or collapsed batch to enable archive actions.")
+                return_archive_button.configure(text="Return to Archive", state="disabled")
+                test_mode_button.configure(text="Open Test Mode", state="disabled")
+                restore_input_button.configure(text="Restore to Input", state="disabled")
+                return
+            if target and target.get("kind") == "batch":
+                archive_selection_var.set(
+                    f"Batch selected: {target.get('batch_name', 'Archived Batch')} — {len(entries)} order(s). Actions apply to the full batch."
+                )
+                return_archive_button.configure(text="Return Batch", state="normal")
+                test_mode_button.configure(text="Batch Test Mode", state="normal")
+                restore_input_button.configure(text="Restore Batch", state="normal")
+            else:
+                order = entries[0].get("order")
+                archive_selection_var.set(f"Order selected: A&W {getattr(order, 'aw_order', '')}. Actions apply to this order only.")
+                return_archive_button.configure(text="Return Order", state="normal")
+                test_mode_button.configure(text="Order Test Mode", state="normal")
+                restore_input_button.configure(text="Restore Order", state="normal")
 
         def mode_changed(_value: str | None = None) -> None:
             update_mode_controls()
+            update_archive_action_buttons()
             mode = current_mode()
-            if loaded_ranges[mode] is None and mode not in refresh_inflight:
+            if mode in refresh_inflight:
+                return
+            if refresh_needed.get(mode, True):
+                loaded_range = loaded_ranges.get(mode)
+                if loaded_range is not None:
+                    start_load(loaded_range[0], loaded_range[1], replace=True)
+                    return
                 try:
                     date_from, date_to = self.normalize_archive_date_filter(from_var.get(), to_var.get())
                 except ValueError:
@@ -20886,26 +24259,53 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         self.make_tool_button(date_row, "Apply Dates", "refresh", apply_date_filter, width=112).grid(row=0, column=4, padx=(0, 7))
         self.make_tool_button(date_row, "Last 7 Days", "history", reset_last_seven_days, width=112).grid(row=0, column=5, padx=(0, 7))
+        self.make_tool_button(date_row, "Load 7 More Days", "history", load_more, width=142).grid(
+            row=0, column=6, padx=(0, 7)
+        )
         ctk.CTkLabel(
             date_row,
-            text="Leave either From or To blank to search one date.",
+            text="One blank date = single-day search.",
             font=("Segoe UI", 9),
             text_color=self.MUTED,
             anchor="w",
-        ).grid(row=0, column=6, sticky="w")
+        ).grid(row=0, column=7, sticky="w")
 
-        footer = ctk.CTkFrame(parent, fg_color="transparent")
-        footer.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
-        footer.grid_columnconfigure(1, weight=1)
-        self.make_tool_button(footer, "Refresh Range", "refresh", apply_date_filter, width=120).grid(row=0, column=0, sticky="w")
-        self.make_tool_button(footer, "Load 7 More Days", "history", load_more, width=142).grid(row=0, column=1, sticky="w", padx=(8, 0))
-        self.make_tool_button(footer, "Archive Sent Inputs", "archive", archive_sent_inputs, width=164).grid(row=0, column=2, padx=(8, 0))
-        self.make_tool_button(footer, "Return to Archive", "archive", return_selected, width=148).grid(row=0, column=3, padx=(8, 0))
-        ctk.CTkButton(
+        archive_selection_var = tk.StringVar(value="Select an order or collapsed batch to enable archive actions.")
+        footer = ctk.CTkFrame(
+            parent,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        footer.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
             footer,
-            text="Restore for Testing",
-            command=restore_selected,
-            width=158,
+            textvariable=archive_selection_var,
+            font=("Segoe UI", 10, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=5, sticky="ew", padx=12, pady=(10, 2))
+        ctk.CTkLabel(
+            footer,
+            textvariable=archive_status_var,
+            font=("Segoe UI", 9),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=5, sticky="ew", padx=12, pady=(0, 8))
+        self.make_tool_button(footer, "Archive Sent Inputs", "archive", archive_sent_inputs, width=158).grid(
+            row=2, column=0, sticky="w", padx=(12, 0), pady=(0, 10)
+        )
+        return_archive_button = self.make_tool_button(footer, "Return to Archive", "archive", return_selected, width=132)
+        return_archive_button.grid(row=2, column=2, padx=(8, 0), pady=(0, 10))
+        restore_input_button = self.make_tool_button(footer, "Restore to Input", "restore", restore_selected, width=136)
+        restore_input_button.grid(row=2, column=3, padx=(8, 0), pady=(0, 10))
+        test_mode_button = ctk.CTkButton(
+            footer,
+            text="Open Test Mode",
+            command=open_test_mode_selected,
+            width=142,
             height=36,
             corner_radius=9,
             fg_color=self.ACCENT,
@@ -20913,19 +24313,54 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             text_color="#ffffff",
             font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("restore", 15, "#ffffff", "left"),
-        ).grid(row=0, column=4, padx=(8, 0))
-        ctk.CTkLabel(
-            footer,
-            textvariable=archive_status_var,
-            font=("Segoe UI", 10),
-            text_color=self.MUTED,
-            anchor="w",
-        ).grid(row=1, column=0, columnspan=5, sticky="ew", pady=(8, 0))
+        )
+        test_mode_button.grid(row=2, column=4, padx=(8, 12), pady=(0, 10))
 
+        tree.bind("<<TreeviewSelect>>", update_archive_action_buttons, add="+")
         update_mode_controls()
+        update_archive_action_buttons()
         refresh_headings()
-        refresh = reset_last_seven_days
-        dialog.after(100, refresh)
+
+        def activate_archive_tab() -> None:
+            nonlocal archive_cancelled_for_hide
+            mode = current_mode()
+            if mode in refresh_inflight:
+                return
+            if archive_task_manager.active is not None:
+                archive_status_var.set("Finishing the previous archive operation...")
+                return
+            archive_cancelled_for_hide = False
+            if refresh_needed.get(mode, True):
+                loaded_range = loaded_ranges.get(mode)
+                if loaded_range is not None:
+                    start_load(loaded_range[0], loaded_range[1], replace=True)
+                else:
+                    reset_last_seven_days()
+                return
+            if loaded_ranges.get(mode) is None:
+                reset_last_seven_days()
+            else:
+                render()
+
+        def cancel_archive_settings_work() -> None:
+            nonlocal archive_cancelled_for_hide
+            # Settings is persistent/withdrawn in v1.03+, so keep the lightweight
+            # queue poll alive. It must observe task_cancelled/task_done events or
+            # refresh_inflight can remain stuck forever after Settings is hidden.
+            for mode in refresh_needed:
+                refresh_needed[mode] = True
+            if archive_task_manager.cancel():
+                archive_cancelled_for_hide = True
+                archive_status_var.set("Archive load cancelled because Settings was closed.")
+                set_archive_progress(
+                    "Archive load stopping",
+                    "The current archive item will finish safely, then the tab will refresh when reopened.",
+                    state="loading",
+                )
+
+        setattr(dialog, "_archive_activate", activate_archive_tab)
+        setattr(dialog, "_archive_cancel", cancel_archive_settings_work)
+        archive_poll_after_id = dialog.after(100, poll_archive_refresh)
 
     def build_recovery_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -21152,6 +24587,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         application.grid_columnconfigure((0, 1), weight=1)
         buttons = (
             ("Open Input Folder", "folder", self.open_input_folder),
+            ("Open Network Input", "network_folder", self.open_network_input_folder),
             ("Open Latest Batch", "clock", self.open_latest_batch),
             ("Open Diagnostics Folder", "folder", self.open_diagnostics_folder),
             ("Check for Updates", "refresh", self.check_for_updates),
@@ -21194,9 +24630,37 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.add_path_row(folder_body, 2, "Process Lists", self.process_list_var, self.choose_process_list)
         self.add_path_row(folder_body, 3, "Output", self.output_dir_var, self.choose_output_dir)
 
+        quick_access = ctk.CTkFrame(
+            parent,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        quick_access.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        quick_access.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            quick_access,
+            text="Quick Folder Access",
+            font=("Segoe UI", 11, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 8))
+        quick_buttons = ctk.CTkFrame(quick_access, fg_color="transparent")
+        quick_buttons.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 12))
+        self.make_tool_button(quick_buttons, "Open Local Input", "folder", self.open_input_folder, width=142).pack(side=tk.LEFT)
+        self.make_tool_button(
+            quick_buttons,
+            "Open Network Input",
+            "network_folder",
+            self.open_network_input_folder,
+            width=164,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        self.make_tool_button(quick_buttons, "Open Output", "open_folder", self.open_output_folder, width=128).pack(side=tk.LEFT, padx=(8, 0))
+
         status_var = tk.StringVar(value="")
         footer = ctk.CTkFrame(parent, fg_color="transparent")
-        footer.grid(row=1, column=0, sticky="ew", padx=10)
+        footer.grid(row=2, column=0, sticky="ew", padx=10)
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             footer,
@@ -21478,16 +24942,25 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         code_list.bind("<Double-1>", lambda _event: show_editor(selected_code()) if selected_code() else None)
         code_list.bind("<Delete>", lambda _event: remove_selected())
 
-    def build_action_history_settings_tab(self, parent: tk.Widget) -> None:
+    def build_action_history_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel | None = None) -> None:
+        """Build a date-windowed, non-blocking Action History browser."""
         parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        initial_from = today - timedelta(days=6)
         query_var = tk.StringVar(value="")
-        scope_var = tk.StringVar(value="Last 7 Days")
+        from_var = tk.StringVar(value=f"{initial_from.month}/{initial_from.day}/{initial_from.year}")
+        to_var = tk.StringVar(value=f"{today.month}/{today.day}/{today.year}")
+        action_filter_var = tk.StringVar(value="All Actions")
+        status_filter_var = tk.StringVar(value="All Results")
+        orders_only_var = tk.BooleanVar(value=False)
         count_var = tk.StringVar(value="")
         details_var = tk.StringVar(value="Select an action to view its full details.")
+        load_status_var = tk.StringVar(value="Action History is ready to load the most recent seven days.")
 
         toolbar = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
-        toolbar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 10))
+        toolbar.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 8))
         toolbar.grid_columnconfigure(0, weight=1)
         query_entry = ctk.CTkEntry(
             toolbar,
@@ -21496,26 +24969,168 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             border_color=self.BORDER,
             fg_color=self.ENTRY_BG,
             text_color=self.TEXT,
-            placeholder_text="Search actions, order numbers, Job Nrs, names, or details",
+            placeholder_text="Search actions, A&W orders, Job Nrs, names, or details",
             font=("Segoe UI", 11),
         )
-        query_entry.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=10)
-        scope_control = ctk.CTkSegmentedButton(
-            toolbar,
-            values=["Last 7 Days", "Archive", "All"],
-            variable=scope_var,
-            height=34,
-            selected_color=self.ACCENT,
-            selected_hover_color=self.ACCENT_DARK,
-            unselected_color=self.BUTTON_BG,
-            unselected_hover_color=self.BUTTON_HOVER,
+        query_entry.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(10, 6))
+
+        date_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+        date_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 6))
+        date_row.grid_columnconfigure(7, weight=1)
+        ctk.CTkLabel(date_row, text="History dates", text_color=self.MUTED, font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=0, padx=(0, 6)
+        )
+        from_entry = ctk.CTkEntry(date_row, textvariable=from_var, width=118, height=32, placeholder_text="From")
+        from_entry.grid(row=0, column=1, padx=(0, 5))
+        ctk.CTkLabel(date_row, text="to", text_color=self.MUTED, font=("Segoe UI", 10)).grid(
+            row=0, column=2, padx=(0, 5)
+        )
+        to_entry = ctk.CTkEntry(date_row, textvariable=to_var, width=118, height=32, placeholder_text="To / single date")
+        to_entry.grid(row=0, column=3, padx=(0, 7))
+
+        filter_row = ctk.CTkFrame(toolbar, fg_color="transparent")
+        filter_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 10))
+        filter_row.grid_columnconfigure(5, weight=1)
+        ctk.CTkLabel(filter_row, text="Action", text_color=self.MUTED, font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=0, padx=(0, 6)
+        )
+        action_filter_menu = ctk.CTkOptionMenu(
+            filter_row,
+            variable=action_filter_var,
+            values=["All Actions"],
+            width=220,
+            height=32,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        action_filter_menu.grid(row=0, column=1, padx=(0, 12))
+        ctk.CTkLabel(filter_row, text="Result", text_color=self.MUTED, font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=2, padx=(0, 6)
+        )
+        status_filter_menu = ctk.CTkOptionMenu(
+            filter_row,
+            variable=status_filter_var,
+            values=["All Results", "SUCCESS", "INFO", "WARNING", "FAILED", "ERROR"],
+            width=132,
+            height=32,
+            fg_color=self.PANEL_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            dropdown_fg_color=self.CARD_BG,
+            text_color=self.TEXT,
+        )
+        status_filter_menu.grid(row=0, column=3, padx=(0, 12))
+        ctk.CTkCheckBox(
+            filter_row,
+            text="Order actions only",
+            variable=orders_only_var,
+            command=lambda: render_history(),
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            border_color=self.BORDER,
+            checkmark_color="#ffffff",
             text_color=self.TEXT,
             font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=4, sticky="w")
+
+        progress_card = ctk.CTkFrame(
+            parent,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
         )
-        scope_control.grid(row=0, column=1, padx=(0, 8), pady=10)
+        progress_card.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+        progress_card.grid_columnconfigure(0, weight=1)
+        history_progress_bar = ModernProgressBar(progress_card, self, height=9)
+        history_progress_bar.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=(10, 4))
+        ctk.CTkLabel(
+            progress_card,
+            textvariable=load_status_var,
+            text_color=self.MUTED,
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 4))
+
+        diagnostics_container = ctk.CTkFrame(progress_card, fg_color="transparent")
+        diagnostics_container.grid_columnconfigure(0, weight=1)
+        history_diagnostics = ctk.CTkTextbox(
+            diagnostics_container,
+            height=108,
+            corner_radius=8,
+            border_width=1,
+            border_color=self.BORDER,
+            fg_color=self.ENTRY_BG,
+            text_color=self.TEXT,
+            font=("Consolas", 10),
+            wrap="word",
+        )
+        history_diagnostics.grid(row=0, column=0, sticky="ew", padx=12, pady=(0, 8))
+        history_diagnostics.insert(
+            "1.0",
+            "Action History diagnostics\n"
+            "Waiting to start the requested seven-day/date-range load...",
+        )
+        history_diagnostics.configure(state="disabled")
+        progress_actions = ctk.CTkFrame(diagnostics_container, fg_color="transparent")
+        progress_actions.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+        self.make_tool_button(
+            progress_actions,
+            "Retry Load",
+            "refresh",
+            lambda: refresh_history(),
+            width=112,
+        ).pack(side=tk.LEFT)
+        self.make_tool_button(
+            progress_actions,
+            "Open History Folder",
+            "folder",
+            lambda: open_history_folder(),
+            width=148,
+        ).pack(side=tk.LEFT, padx=(7, 0))
+        self.make_tool_button(
+            progress_actions,
+            "Copy Diagnostics",
+            "copy",
+            lambda: copy_history_diagnostics(),
+            width=142,
+        ).pack(side=tk.LEFT, padx=(7, 0))
+
+        diagnostics_expanded = tk.BooleanVar(value=False)
+
+        def set_history_diagnostics_expanded(expanded: bool) -> None:
+            diagnostics_expanded.set(bool(expanded))
+            if expanded:
+                diagnostics_container.grid(row=3, column=0, sticky="ew", pady=(0, 0))
+                diagnostics_toggle_button.configure(text="▼ Diagnostics")
+            else:
+                diagnostics_container.grid_forget()
+                diagnostics_toggle_button.configure(text="▶ Diagnostics")
+
+        def toggle_history_diagnostics() -> None:
+            set_history_diagnostics_expanded(not diagnostics_expanded.get())
+
+        diagnostics_toggle_button = ctk.CTkButton(
+            progress_card,
+            text="▶ Diagnostics",
+            command=toggle_history_diagnostics,
+            width=124,
+            height=26,
+            corner_radius=7,
+            fg_color="transparent",
+            hover_color=self.PANEL_BG,
+            border_width=0,
+            text_color=self.MUTED,
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        )
+        diagnostics_toggle_button.grid(row=2, column=0, sticky="w", padx=9, pady=(0, 6))
 
         body = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
-        body.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        body.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 8))
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
         columns = ("time", "action", "status", "orders", "jobs", "message")
@@ -21523,11 +25138,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         for column, label in zip(columns, ("Time", "Action", "Result", "Orders", "Job Nrs", "Details")):
             tree.heading(column, text=label)
         tree.column("time", width=155, minwidth=135, stretch=False)
-        tree.column("action", width=145, minwidth=110, stretch=False)
-        tree.column("status", width=85, minwidth=75, stretch=False, anchor=tk.CENTER)
-        tree.column("orders", width=170, minwidth=120, stretch=False)
-        tree.column("jobs", width=170, minwidth=120, stretch=False)
-        tree.column("message", width=420, minwidth=260, stretch=True)
+        tree.column("action", width=170, minwidth=120, stretch=False)
+        tree.column("status", width=90, minwidth=75, stretch=False, anchor=tk.CENTER)
+        tree.column("orders", width=180, minwidth=120, stretch=False)
+        tree.column("jobs", width=180, minwidth=120, stretch=False)
+        tree.column("message", width=460, minwidth=280, stretch=True)
         for status, color in (("SUCCESS", self.SUCCESS), ("WARNING", self.WARNING), ("FAILED", self.DANGER), ("ERROR", self.DANGER)):
             tree.tag_configure(status, foreground=color)
         y_scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
@@ -21538,11 +25153,80 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         x_scroll.grid(row=1, column=0, sticky="ew", padx=(10, 0), pady=(0, 8))
 
         event_rows: dict[str, dict[str, object]] = {}
+        loaded_events: list[dict[str, object]] = []
+        history_task_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
+        history_task_manager = shower_tasks.BackgroundTaskManager(
+            lambda kind, payload: history_task_events.put((kind, payload))
+        )
+        history_poll_after_id: str | None = None
+        history_refresh_needed = True
+        history_diagnostic_lines: list[str] = []
 
-        def refresh_history(*_args: object) -> None:
+        def set_history_diagnostics(lines: Iterable[object] | object) -> None:
+            nonlocal history_diagnostic_lines
+            if isinstance(lines, (str, bytes)):
+                values = [str(lines)]
+            elif isinstance(lines, Iterable):
+                values = [str(value) for value in lines]
+            else:
+                values = [str(lines)]
+            history_diagnostic_lines = [value.rstrip() for value in values if value is not None]
+            try:
+                history_diagnostics.configure(state="normal")
+                history_diagnostics.delete("1.0", tk.END)
+                history_diagnostics.insert("1.0", "\n".join(history_diagnostic_lines) or "No diagnostic details available.")
+                history_diagnostics.see(tk.END)
+                history_diagnostics.configure(state="disabled")
+            except (AttributeError, tk.TclError):
+                pass
+
+        def append_history_diagnostic(message: object) -> None:
+            text = str(message).strip()
+            if not text or (history_diagnostic_lines and history_diagnostic_lines[-1] == text):
+                return
+            set_history_diagnostics([*history_diagnostic_lines, text])
+
+        def copy_history_diagnostics() -> None:
+            text = "\n".join(history_diagnostic_lines).strip() or load_status_var.get().strip()
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                load_status_var.set("Action History diagnostics copied to the clipboard.")
+            except (AttributeError, tk.TclError) as exc:
+                append_history_diagnostic(f"COPY ERROR: {exc.__class__.__name__}: {exc}")
+
+        def open_history_folder() -> None:
+            path = self.action_history_dir()
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                os.startfile(str(path.resolve()))
+            except Exception as exc:
+                append_history_diagnostic(f"OPEN FOLDER ERROR: {exc.__class__.__name__}: {exc}")
+                load_status_var.set(f"Could not open Action History folder: {exc}")
+
+        def set_history_progress(current: int, total: int, message: str) -> None:
+            safe_total = max(int(total), 1)
+            history_progress_bar.configure(maximum=safe_total, value=max(0, min(int(current), safe_total)))
+            load_status_var.set(str(message))
+
+        def render_history(*_args: object) -> None:
+            query = query_var.get().strip()
+            action_options = self.action_history_action_options(loaded_events)
+            try:
+                action_filter_menu.configure(values=action_options)
+            except (tk.TclError, ValueError):
+                pass
+            if action_filter_var.get() not in action_options:
+                action_filter_var.set("All Actions")
             events = [
-                event for event in self.load_action_history_events(scope_var.get())
-                if self.action_history_matches(event, query_var.get().strip())
+                event for event in loaded_events
+                if self.action_history_matches(event, query)
+                and self.action_history_filter_matches(
+                    event,
+                    action_filter=action_filter_var.get(),
+                    status_filter=status_filter_var.get(),
+                    orders_only=bool(orders_only_var.get()),
+                )
             ]
             tree.delete(*tree.get_children())
             event_rows.clear()
@@ -21565,6 +25249,134 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             count_var.set(f"{min(len(events), 5000)} matching action(s){suffix}")
             details_var.set("Select an action to view its full details.")
 
+        def selected_history_range() -> tuple[datetime, datetime]:
+            date_from, date_to = self.normalize_archive_date_filter(from_var.get(), to_var.get())
+            from_var.set(f"{date_from.month}/{date_from.day}/{date_from.year}")
+            to_var.set(f"{date_to.month}/{date_to.day}/{date_to.year}")
+            return date_from, date_to
+
+        def refresh_history(*_args: object) -> None:
+            nonlocal history_refresh_needed
+            if history_task_manager.active is not None:
+                load_status_var.set("Action History is already loading...")
+                return
+            try:
+                date_from, date_to = selected_history_range()
+            except ValueError as exc:
+                load_status_var.set(str(exc))
+                if dialog is not None:
+                    messagebox.showerror("Invalid history date", str(exc), parent=dialog)
+                return
+            history_refresh_needed = False
+            count_var.set("Loading action history...")
+            details_var.set("Reading only the requested Action History date range...")
+            set_history_diagnostics(
+                [
+                    "Action History load starting...",
+                    f"Requested range: {from_var.get()} through {to_var.get()}",
+                    f"History folder: {self.action_history_dir()}",
+                    f"Current history file: {self.action_history_path()}",
+                    f"Archive folder: {self.action_history_archive_dir()}",
+                ]
+            )
+            set_history_progress(0, 1, f"Loading Action History from {from_var.get()} through {to_var.get()}...")
+
+            def worker(task: shower_tasks.TaskContext) -> dict[str, object]:
+                return self.load_action_history_date_range_report(date_from, date_to, task_context=task)
+
+            try:
+                history_task_manager.start(
+                    "Load Action History",
+                    worker,
+                    message=f"Loading Action History from {from_var.get()} through {to_var.get()}...",
+                    total=1,
+                    cancellable=True,
+                )
+            except Exception as exc:
+                history_refresh_needed = True
+                load_status_var.set(f"Action History could not start: {exc}")
+
+        def reset_last_seven_days() -> None:
+            current_today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_from = current_today - timedelta(days=6)
+            from_var.set(f"{date_from.month}/{date_from.day}/{date_from.year}")
+            to_var.set(f"{current_today.month}/{current_today.day}/{current_today.year}")
+            refresh_history()
+
+        def cancel_history_load() -> None:
+            nonlocal history_refresh_needed
+            history_refresh_needed = True
+            if history_task_manager.cancel():
+                load_status_var.set("Stopping Action History load at the next safe boundary...")
+
+        def poll_history_tasks() -> None:
+            nonlocal history_poll_after_id, history_refresh_needed, loaded_events
+            while True:
+                try:
+                    kind, event = history_task_events.get_nowait()
+                except queue.Empty:
+                    break
+                if kind == "task_progress":
+                    message = str(event.get("message", "Loading Action History..."))
+                    set_history_progress(
+                        int(event.get("current", 0)),
+                        int(event.get("total", 0)),
+                        message,
+                    )
+                    append_history_diagnostic(f"STATUS: {message}")
+                elif kind == "task_done":
+                    result = event.get("result", {})
+                    if isinstance(result, dict):
+                        result_events = result.get("events", [])
+                        loaded_events = list(result_events) if isinstance(result_events, list) else []
+                        result_diagnostics = result.get("diagnostics", [])
+                        if isinstance(result_diagnostics, list):
+                            set_history_diagnostics(result_diagnostics)
+                    else:
+                        loaded_events = list(result) if isinstance(result, list) else []
+                    history_refresh_needed = False
+                    elapsed_ms = float(event.get("elapsed_ms", 0.0) or 0.0)
+                    set_history_progress(1, 1, f"Rendering {len(loaded_events)} Action History record(s)...")
+                    append_history_diagnostic(f"Rendering {len(loaded_events)} matching record(s) into the table...")
+                    try:
+                        render_history()
+                    except Exception as exc:
+                        history_refresh_needed = True
+                        load_status_var.set(f"Action History render failed: {exc.__class__.__name__}: {exc}")
+                        count_var.set("Action History could not render")
+                        append_history_diagnostic(f"RENDER ERROR: {exc.__class__.__name__}: {exc}")
+                        set_history_diagnostics_expanded(True)
+                    else:
+                        set_history_progress(
+                            1,
+                            1,
+                            f"Action History ready: {len(loaded_events)} record(s) loaded in {elapsed_ms / 1000.0:.2f}s.",
+                        )
+                        append_history_diagnostic(
+                            f"READY: {len(loaded_events)} record(s) loaded and rendered in {elapsed_ms / 1000.0:.2f}s."
+                        )
+                elif kind == "task_cancelled":
+                    history_refresh_needed = True
+                    elapsed_ms = float(event.get("elapsed_ms", 0.0) or 0.0)
+                    load_status_var.set("Action History load cancelled safely. Press Retry Load or Apply Range to try again.")
+                    append_history_diagnostic(f"CANCELLED after {elapsed_ms / 1000.0:.2f}s.")
+                elif kind == "task_error":
+                    history_refresh_needed = True
+                    error = event.get("error", RuntimeError("Unknown Action History load failure"))
+                    error_text = f"{error.__class__.__name__}: {str(error).strip() or 'Unknown error'}"
+                    load_status_var.set(f"Action History load failed: {error_text}")
+                    count_var.set("Action History could not load")
+                    append_history_diagnostic(f"LOAD ERROR: {error_text}")
+                    traceback_text = str(event.get("traceback", "")).strip()
+                    if traceback_text:
+                        append_history_diagnostic(traceback_text)
+                    set_history_diagnostics_expanded(True)
+            if dialog is not None:
+                try:
+                    history_poll_after_id = dialog.after(100, poll_history_tasks)
+                except tk.TclError:
+                    history_poll_after_id = None
+
         def show_details(_event: tk.Event | None = None) -> None:
             selection = tree.selection()
             event = event_rows.get(selection[0]) if selection else None
@@ -21582,11 +25394,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 parts.append(detail)
             details_var.set("  |  ".join(part for part in parts if part))
 
-        search_button = ctk.CTkButton(
+        ctk.CTkButton(
             toolbar,
-            text="Search",
-            command=refresh_history,
-            width=92,
+            text="Filter Loaded",
+            command=render_history,
+            width=112,
             height=34,
             corner_radius=9,
             fg_color=self.ACCENT,
@@ -21594,13 +25406,28 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             text_color="#ffffff",
             font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("search", 13, "#ffffff", "left"),
+        ).grid(row=0, column=1, padx=(0, 8), pady=(10, 6))
+        self.make_header_refresh_button(toolbar, refresh_history, "Reload this Action History date range").grid(
+            row=0, column=2, padx=(0, 12), pady=(10, 6)
         )
-        search_button.grid(row=0, column=2, padx=(0, 8), pady=10)
-        self.make_header_refresh_button(toolbar, refresh_history, "Reload action history from disk").grid(
-            row=0, column=3, padx=(0, 12), pady=10
+        self.make_tool_button(date_row, "Apply Range", "refresh", refresh_history, width=112).grid(
+            row=0, column=4, padx=(0, 7)
         )
+        self.make_tool_button(date_row, "Last 7 Days", "history", reset_last_seven_days, width=112).grid(
+            row=0, column=5, padx=(0, 7)
+        )
+        cancel_button = self.make_tool_button(date_row, "Cancel Load", "close", cancel_history_load, width=112)
+        cancel_button.grid(row=0, column=6, padx=(0, 7))
+        ctk.CTkLabel(
+            date_row,
+            text="Leave either date blank to load one day.",
+            text_color=self.MUTED,
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).grid(row=0, column=7, sticky="w")
+
         detail_row = ctk.CTkFrame(parent, fg_color="transparent")
-        detail_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
+        detail_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 8))
         detail_row.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             detail_row,
@@ -21609,15 +25436,32 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             font=("Segoe UI", 10),
             anchor="w",
             justify="left",
-            wraplength=900,
+            wraplength=1100,
         ).grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(detail_row, textvariable=count_var, text_color=self.MUTED, font=("Segoe UI", 10)).grid(
             row=0, column=1, sticky="e", padx=(12, 0)
         )
-        query_entry.bind("<Return>", lambda _event: refresh_history())
-        scope_control.configure(command=lambda _value: refresh_history())
+
+        query_entry.bind("<Return>", lambda _event: render_history())
+        from_entry.bind("<Return>", lambda _event: refresh_history())
+        to_entry.bind("<Return>", lambda _event: refresh_history())
+        action_filter_menu.configure(command=lambda _value: render_history())
+        status_filter_menu.configure(command=lambda _value: render_history())
         tree.bind("<<TreeviewSelect>>", show_details)
-        parent.after(350, refresh_history)
+
+        def activate_action_history() -> None:
+            if history_task_manager.active is not None:
+                return
+            # Reopening the persistent Settings window intentionally refreshes the
+            # selected seven-day/date-range view so newly recorded actions appear.
+            refresh_history()
+
+        if dialog is not None:
+            setattr(dialog, "_action_history_activate", activate_action_history)
+            setattr(dialog, "_action_history_cancel", cancel_history_load)
+            history_poll_after_id = dialog.after(100, poll_history_tasks)
+        else:
+            parent.after_idle(refresh_history)
 
     def open_action_history(self) -> None:
         self.open_settings("Action History")

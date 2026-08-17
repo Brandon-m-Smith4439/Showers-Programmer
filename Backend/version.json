@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.97",
-  "version_number": 97,
-  "marker": "VERSION_0_97_REIMPORTED_BATCH_REACTIVATION",
-  "release_name": "Re-imported Batch Reactivation",
-  "release_date": "2026-08-13",
+  "version": "Version 1.17",
+  "version_number": 117,
+  "marker": "VERSION_1_17_ADAPTIVE_DXF_ROTATION_DISPLAY",
+  "release_name": "Adaptive DXF Rotation Display",
+  "release_date": "2026-08-17",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

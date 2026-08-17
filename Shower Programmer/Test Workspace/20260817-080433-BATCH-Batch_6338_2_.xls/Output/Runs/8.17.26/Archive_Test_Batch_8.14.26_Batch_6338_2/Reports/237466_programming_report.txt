@@ -1,0 +1,15 @@
+Shower Programmer APPLY
+A&W order: 237466
+Job/SO: 89601496 7047 RIDGEVIEW
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-080433-BATCH-Batch_6338_2_.xls\Input\Orders\Glass Order EVOLUTION_89601496 7047 RIDGEVIEW.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-080433-BATCH-Batch_6338_2_.xls\Output\Runs\8.17.26\Archive_Test_Batch_8.14.26_Batch_6338_2\Sketches\237466.pdf
+
+Items:
+- P1: 237466.1 | DENVER 1 | 34 x 93.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side left; hinges down, hinge code AV1E037: hinge side left; hinges down, automatic sketch marker nudged 16.4924 pt to avoid corner text or fabrication
+  dxf: 89601496 7047 RIDGEVIEW_1__P1.dxf -> 23746601.dxf (90 deg)
+  indicator: bottom_left
+- P2: 237466.2 | DENVER 1 | 76.75 x 94
+  reasons: panel fabrication keyword in PDF text, process list machine: DENVER 1, automatic sketch marker nudged 26.8328 pt to avoid corner text or fabrication
+  dxf: 89601496 7047 RIDGEVIEW_2__P2.dxf -> 23746602.dxf (90 deg)
+  indicator: bottom_left

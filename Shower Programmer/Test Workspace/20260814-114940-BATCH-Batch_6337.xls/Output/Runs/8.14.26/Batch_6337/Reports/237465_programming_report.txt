@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 237465
+Job/SO: 89601496.2 7047 RIDGEVIEW
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260814-114940-BATCH-Batch_6337.xls\Input\Orders\Glass Order EVOLUTION_89601496.2 7047 RIDGEVIEW.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260814-114940-BATCH-Batch_6337.xls\Output\Runs\8.14.26\Batch_6337\Sketches\237465.pdf
+
+Items:
+- P1: 237465.1 | WJ | 30.625 x 96
+  reasons: water-jet keyword in PDF text, process list machine: WJ, WJ DXF output scaled 25.4x to millimeters, WJ rotation follows top_left marker
+  dxf: 89601496.2 7047 RIDGEVIEW_1__P1.dxf -> 23746501.dxf (90 deg)
+  indicator: top_left
+- P2: 237465.2 | DENVER 1 | 95.5 x 26.25
+  reasons: door-like keyword in PDF text, dimensions from process list, process list machine: DENVER 1, hinge side right; hinges down, hinge code AV1E037: hinge side right; hinges down, automatic sketch marker nudged 25.2982 pt to avoid corner text or fabrication
+  dxf: 89601496.2 7047 RIDGEVIEW_2__P2.dxf -> 23746502.dxf (-89.85 deg)
+  indicator: top_right
+  angle correction: 0.149989 deg (auto DXF hinge/bottom side 0.25 over 95.5)

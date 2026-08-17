@@ -952,6 +952,16 @@ def panel_machine_decision_evidence(panel: Panel) -> dict[str, Any]:
     }
 
 
+def format_display_decimal(value: float, places: int = 2) -> str:
+    """Return concise operator-facing decimals without changing calculation precision."""
+    numeric = float(value)
+    threshold = 0.5 * (10 ** -places)
+    if abs(numeric) < threshold:
+        numeric = 0.0
+    text = f"{numeric:.{places}f}".rstrip("0").rstrip(".")
+    return text if text and text != "-0" else "0"
+
+
 def format_machine_decision_evidence(panel: Panel) -> str:
     evidence = panel_machine_decision_evidence(panel)
     rotation = evidence["rotation"]
@@ -962,13 +972,13 @@ def format_machine_decision_evidence(panel: Panel) -> str:
         f"Size: {evidence['dimensions']}",
         f"Process hint: {evidence['process_hint']}",
         f"DXF: {evidence['source_dxf']}",
-        f"Orientation: {rotation:g} deg" if isinstance(rotation, (int, float)) else "Orientation: none",
+        f"Orientation: {format_display_decimal(rotation, places=4)} deg" if isinstance(rotation, (int, float)) else "Orientation: none",
         f"Indicator: {evidence['indicator']}",
     ]
     if evidence["hinge_side"] != "Not applicable":
         lines.append(f"Hinges: {evidence['hinge_side']} side, {'up' if evidence['hinges_up'] else 'down'}")
     if abs(angle) >= 0.000001:
-        lines.append(f"OOS correction: {angle:+.6f} deg")
+        lines.append(f"OOS correction: {float(angle):+.4f} deg")
     lines.append(f"Manual override: {'yes' if evidence['manual_override'] else 'no'}")
     reasons = evidence["reasons"] or ["No machine evidence recorded."]
     lines.append("Why:")
@@ -5087,14 +5097,14 @@ def build_report(job: Job, apply: bool, skip_pdf: bool, skip_dxf: bool) -> str:
             elif panel.source_dxf and panel.output_dxf:
                 lines.append(
                     f"  dxf: {panel.source_dxf.name} -> {panel.output_dxf.name} "
-                    f"({effective_rotation(panel):g} deg)"
+                    f"({format_display_decimal(effective_rotation(panel), places=4)} deg)"
                 )
             else:
                 lines.append("  dxf: missing source")
         if panel.indicator_corner:
             lines.append(f"  indicator: {panel.indicator_corner}")
         if panel.angle_correction_degrees:
-            detail = f"  angle correction: {panel.angle_correction_degrees:g} deg"
+            detail = f"  angle correction: {format_display_decimal(panel.angle_correction_degrees, places=4)} deg"
             if panel.angle_correction_reason:
                 detail += f" ({panel.angle_correction_reason})"
             lines.append(detail)

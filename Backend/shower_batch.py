@@ -5,7 +5,9 @@ from __future__ import annotations
 
 # UNMARKED_SKETCH_AND_ORDER_PDF_V12: process-list mapping for unmarked pages and order-number PDF names.
 # OOS_DIMENSION_RECONCILIATION_V93: reconcile A+W overall size with sketch edge size using proven DXF OOS geometry.
+# DXF_SKETCH_ENVELOPE_RECONCILIATION_V111: reconcile near A+W irregular dimensions when sketch and source DXF envelope agree.
 # DXF_GEOMETRY_DIMENSION_RECONCILIATION_V94: accept alternate sketch edge dimensions only when source DXF geometry proves them.
+# LEGACY_XLS_FAST_CONVERSION_V115: reuse content-identical conversions and suppress slow Excel update/event work.
 
 import argparse
 import csv
@@ -16,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -28,6 +31,7 @@ from pypdf import PdfReader
 
 import shower_programmer as programmer
 import shower_cache
+import shower_errors
 
 
 DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
@@ -38,6 +42,11 @@ PROCESS_LIST_CACHE_SCHEMA = 2
 ProcessListProgress = Callable[[str, Path, str], None]
 PDF_DIMENSION_MATCH_TOLERANCE = 0.20
 OOS_DXF_OVERALL_TOLERANCE = 0.08
+# When the sketch dimensions match the source DXF envelope exactly, allow a
+# small A+W process-size variance for proven irregular/OOS geometry. This is
+# intentionally separate from the normal PDF tolerance and from the stricter
+# A+W-to-DXF overall check used by the original OOS rule.
+OOS_PROCESS_DXF_VARIANCE_TOLERANCE = 0.25
 OOS_DXF_EDGE_TOLERANCE = 0.35
 OOS_MIN_SHIFT_INCHES = 1.0 / 32.0
 OOS_MAX_SHIFT_INCHES = 2.0
@@ -326,7 +335,7 @@ def load_process_orders(path: Path) -> list[ProcessOrder]:
             merge_process_order(merged, order)
     if not merged and errors:
         raise RuntimeError("No process-list orders could be loaded.\n" + "\n".join(errors))
-    return sorted(merged.values(), key=lambda order: (int(order.aw_order), order.job_name))
+    return sorted(merge_process_orders_by_aw(list(merged.values())), key=lambda order: (int(order.aw_order), order.job_name))
 
 
 def load_process_orders_from_file(
@@ -484,18 +493,104 @@ def load_process_orders_from_legacy_xls(
     )
 
 
+def converted_xlsx_source_hash_path(target: Path) -> Path:
+    """Sidecar used to reuse a converted workbook after timestamp-only source changes."""
+    return Path(target).with_name(f"{Path(target).name}.source.sha256")
+
+
+def legacy_xls_conversion_cache_matches(path: Path, target: Path) -> bool:
+    """Return True when an existing conversion still represents the XLS content.
+
+    Network recopies commonly refresh timestamps even when the process list bytes
+    are unchanged. Comparing a cached source hash avoids paying Excel startup and
+    SaveAs costs again for the same logical workbook.
+    """
+    path = Path(path)
+    target = Path(target)
+    if not target.exists():
+        return False
+    try:
+        if target.stat().st_mtime_ns >= path.stat().st_mtime_ns:
+            return True
+    except OSError:
+        return False
+    sidecar = converted_xlsx_source_hash_path(target)
+    try:
+        expected = sidecar.read_text(encoding="ascii").strip().casefold()
+    except OSError:
+        return False
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return False
+    try:
+        current = shower_cache.cached_file_sha256("legacy_xls_conversion_source_v1", path).casefold()
+    except OSError:
+        return False
+    return current == expected
+
+
+def remember_legacy_xls_conversion_source(path: Path, target: Path) -> None:
+    """Persist the exact XLS content hash represented by a converted XLSX."""
+    try:
+        digest = shower_cache.cached_file_sha256("legacy_xls_conversion_source_v1", Path(path))
+        sidecar = converted_xlsx_source_hash_path(Path(target))
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        temporary = sidecar.with_name(f".{sidecar.name}.{os.getpid()}.tmp")
+        temporary.write_text(digest, encoding="ascii")
+        os.replace(temporary, sidecar)
+    except OSError:
+        # Conversion remains valid even if the optimization sidecar cannot be written.
+        return
+
+
+def legacy_xls_excel_conversion_script(source_text: str, target_text: str) -> str:
+    """Return a low-overhead Excel COM conversion script for binary XLS files."""
+    return (
+        "$Source = @'\n"
+        + source_text
+        + "\n'@\n$Target = @'\n"
+        + target_text
+        + "\n'@\n"
+        + r"""
+$ErrorActionPreference = 'Stop'
+$excel = $null
+$workbook = $null
+try {
+  $excel = New-Object -ComObject Excel.Application
+  $excel.Visible = $false
+  $excel.DisplayAlerts = $false
+  $excel.ScreenUpdating = $false
+  $excel.EnableEvents = $false
+  $excel.AskToUpdateLinks = $false
+  try { $excel.AutomationSecurity = 3 } catch {}
+  try { $excel.Calculation = -4135 } catch {}
+  # UpdateLinks=0 and ReadOnly=$true avoid unnecessary link refresh/write work
+  # while the legacy process list is being normalized for read-only parsing.
+  $workbook = $excel.Workbooks.Open($Source, 0, $true)
+  try { $workbook.CheckCompatibility = $false } catch {}
+  $workbook.SaveAs($Target, 51)
+  $workbook.Close($false)
+} finally {
+  if ($workbook -ne $null) {
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+  }
+  if ($excel -ne $null) {
+    $excel.Quit()
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+  }
+}
+"""
+    )
+
+
 def convert_legacy_xls_to_xlsx(
     path: Path,
     progress_callback: ProcessListProgress | None = None,
 ) -> Path:
     target = converted_xlsx_path(path)
-    try:
-        if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
-            if progress_callback:
-                progress_callback("normalized", path, f"Using cached {target.name}")
-            return target
-    except OSError:
-        pass
+    if legacy_xls_conversion_cache_matches(path, target):
+        if progress_callback:
+            progress_callback("normalized", path, f"Using cached {target.name}; Excel conversion skipped")
+        return target
 
     target.parent.mkdir(parents=True, exist_ok=True)
     source_text = str(path.resolve())
@@ -509,39 +604,13 @@ def convert_legacy_xls_to_xlsx(
         except OSError:
             pass
         target_text = str(staging.resolve())
-        script = (
-            "$Source = @'\n"
-            + source_text
-            + "\n'@\n$Target = @'\n"
-            + target_text
-            + "\n'@\n"
-            + r"""
-$ErrorActionPreference = 'Stop'
-$excel = $null
-$workbook = $null
-try {
-  $excel = New-Object -ComObject Excel.Application
-  $excel.Visible = $false
-  $excel.DisplayAlerts = $false
-  $workbook = $excel.Workbooks.Open($Source)
-  $workbook.SaveAs($Target, 51)
-  $workbook.Close($false)
-} finally {
-  if ($workbook -ne $null) {
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
-  }
-  if ($excel -ne $null) {
-    $excel.Quit()
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
-  }
-}
-"""
-        )
+        script = legacy_xls_excel_conversion_script(source_text, target_text)
+        started = time.monotonic()
         if progress_callback:
             progress_callback(
                 "normalizing",
                 path,
-                f"Converting legacy XLS to XLSX (attempt {attempt}/{attempts})",
+                f"Opening legacy XLS in hidden Excel (attempt {attempt}/{attempts}; links/events disabled)",
             )
         excel_processes_before = excel_process_ids()
         try:
@@ -556,8 +625,10 @@ try {
             if not staging.exists():
                 raise RuntimeError("Excel completed without creating the converted workbook")
             staging.replace(target)
+            remember_legacy_xls_conversion_source(path, target)
+            elapsed = time.monotonic() - started
             if progress_callback:
-                progress_callback("normalized", path, f"Created {target.name}")
+                progress_callback("normalized", path, f"Created {target.name} in {elapsed:.1f}s")
             return target
         except Exception as exc:
             last_error = exc
@@ -567,7 +638,8 @@ try {
             except OSError:
                 pass
             if progress_callback:
-                progress_callback("retry", path, f"Conversion attempt {attempt} did not finish")
+                elapsed = time.monotonic() - started
+                progress_callback("retry", path, f"Conversion attempt {attempt} did not finish after {elapsed:.1f}s")
 
     detail = (
         f"Excel did not finish auto-converting it after {attempts} attempts of {timeout_seconds} seconds"
@@ -604,12 +676,11 @@ def preconvert_legacy_xls_files(
         ):
             continue
         target = converted_xlsx_path(path)
-        try:
-            if target.exists() and target.stat().st_mtime >= path.stat().st_mtime:
-                converted[path] = target
-                continue
-        except OSError:
-            pass
+        if legacy_xls_conversion_cache_matches(path, target):
+            converted[path] = target
+            if progress_callback:
+                progress_callback("normalized", path, f"Using cached {target.name}; Excel conversion skipped")
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         staging = target.with_name(f".{target.stem}.batch.xlsx")
         pending.append((path, target, staging))
@@ -638,10 +709,16 @@ try {{
   $excel = New-Object -ComObject Excel.Application
   $excel.Visible = $false
   $excel.DisplayAlerts = $false
+  $excel.ScreenUpdating = $false
+  $excel.EnableEvents = $false
+  $excel.AskToUpdateLinks = $false
+  try {{ $excel.AutomationSecurity = 3 }} catch {{}}
+  try {{ $excel.Calculation = -4135 }} catch {{}}
   foreach ($job in $jobs) {{
     $workbook = $null
     try {{
-      $workbook = $excel.Workbooks.Open($job.Source)
+      $workbook = $excel.Workbooks.Open($job.Source, 0, $true)
+      try {{ $workbook.CheckCompatibility = $false }} catch {{}}
       $workbook.SaveAs($job.Target, 51)
       $workbook.Close($false)
     }} finally {{
@@ -679,6 +756,7 @@ try {{
             if not staging.exists():
                 raise RuntimeError(f"Excel did not create {staging.name}")
             staging.replace(target)
+            remember_legacy_xls_conversion_source(path, target)
             converted[path] = target
             if progress_callback:
                 progress_callback("normalized", path, f"Created {target.name} locally")
@@ -1187,6 +1265,62 @@ def merge_process_order(
                 target_item.machine_hints.append(machine_hint)
         target_item.rows.extend(item.rows)
 
+
+
+
+def merge_process_orders_by_aw(orders: Iterable[ProcessOrder]) -> list[ProcessOrder]:
+    """Combine split process-list records using A&W order as the durable identity."""
+    merged: dict[str, ProcessOrder] = {}
+    sequence: list[str] = []
+    for order in orders:
+        aw_order = str(order.aw_order).strip()
+        if not aw_order:
+            continue
+        target = merged.get(aw_order)
+        if target is None:
+            target = clone_process_order(order)
+            merged[aw_order] = target
+            sequence.append(aw_order)
+            continue
+        if not target.job_name and order.job_name:
+            target.job_name = order.job_name
+        if not target.customer and order.customer:
+            target.customer = order.customer
+        for item_number, item in order.items.items():
+            target_item = target.items.get(item_number)
+            if target_item is None:
+                target.items[item_number] = ProcessItem(
+                    item=item.item,
+                    width_text=item.width_text,
+                    height_text=item.height_text,
+                    delivery_date=item.delivery_date,
+                    customer=item.customer,
+                    processing=list(item.processing),
+                    machine_hints=list(item.machine_hints),
+                    rows=list(item.rows),
+                )
+                continue
+            for field_name in ("width_text", "height_text", "delivery_date", "customer"):
+                if not getattr(target_item, field_name) and getattr(item, field_name):
+                    setattr(target_item, field_name, getattr(item, field_name))
+            for value in item.processing:
+                if value not in target_item.processing:
+                    target_item.processing.append(value)
+            for value in item.machine_hints:
+                if value not in target_item.machine_hints:
+                    target_item.machine_hints.append(value)
+            target_item.rows.extend(item.rows)
+    return [merged[aw_order] for aw_order in sequence]
+
+
+def unique_orders_from_batches(batches: list[dict[str, object]]) -> list[ProcessOrder]:
+    """Return one merged ProcessOrder per A&W order across visible batches."""
+    ordered: list[ProcessOrder] = []
+    for batch in batches:
+        batch_orders = batch.get("orders", [])
+        if isinstance(batch_orders, list):
+            ordered.extend(order for order in batch_orders if isinstance(order, ProcessOrder))
+    return merge_process_orders_by_aw(ordered)
 
 def clone_process_order(order: ProcessOrder) -> ProcessOrder:
     cloned = ProcessOrder(aw_order=order.aw_order, job_name=order.job_name, customer=order.customer)
@@ -1786,14 +1920,16 @@ def _record_manual_dimension_override(process_order: ProcessOrder) -> None:
 def _dxf_oos_profile(
     path: Path,
     expected: tuple[float, float],
+    actual: tuple[float, float] | None = None,
 ) -> dict[str, object] | None:
     """Describe alternate sketch dimensions proven by the source DXF.
 
-    A+W process lists can report the axis-aligned bounding size while the PDF
-    sketch reports a physical edge length or edge span.  That can happen on a
-    parallelogram, trapezoid, or other intentionally out-of-square shower
-    piece.  The fallback remains strict: the DXF overall bounds must match the
-    A+W size and the DXF must contain real non-axis-aligned outer geometry.
+    A+W process lists can report a different size representation than the PDF
+    sketch on a parallelogram, trapezoid, or other intentionally out-of-square
+    shower piece. The original fallback requires the DXF overall bounds to
+    match A+W. A second, still-strict path is available when ``actual`` is
+    supplied: the PDF sketch must match the source-DXF envelope, A+W must stay
+    within a small process-size variance, and the DXF must prove real skew.
     """
     segments = programmer.collect_dxf_outer_line_segments(path)
     if len(segments) < 4:
@@ -1820,6 +1956,25 @@ def _dxf_oos_profile(
             abs(width - expected_height) <= OOS_DXF_OVERALL_TOLERANCE
             and abs(height - expected_width) <= OOS_DXF_OVERALL_TOLERANCE
         )
+        match_basis = "aw_dxf_bounds"
+        if not direct and not swapped and actual is not None:
+            sketch_matches_dxf = dimensions_match(
+                (width, height),
+                actual,
+                tolerance=OOS_DXF_OVERALL_TOLERANCE,
+            )
+            direct = (
+                sketch_matches_dxf
+                and abs(width - expected_width) <= OOS_PROCESS_DXF_VARIANCE_TOLERANCE
+                and abs(height - expected_height) <= OOS_PROCESS_DXF_VARIANCE_TOLERANCE
+            )
+            swapped = (
+                sketch_matches_dxf
+                and abs(width - expected_height) <= OOS_PROCESS_DXF_VARIANCE_TOLERANCE
+                and abs(height - expected_width) <= OOS_PROCESS_DXF_VARIANCE_TOLERANCE
+            )
+            if direct or swapped:
+                match_basis = "sketch_dxf_envelope"
         if not direct and not swapped:
             continue
 
@@ -1885,6 +2040,9 @@ def _dxf_oos_profile(
             "skew_shift": skew_shift,
             "width_candidates": width_candidates,
             "height_candidates": height_candidates,
+            "match_basis": match_basis,
+            "process_width_delta": abs(width - expected_width),
+            "process_height_delta": abs(height - expected_height),
         }
         if swapped:
             profile = {
@@ -1899,6 +2057,9 @@ def _dxf_oos_profile(
                 "skew_shift": skew_shift,
                 "width_candidates": height_candidates,
                 "height_candidates": width_candidates,
+                "match_basis": match_basis,
+                "process_width_delta": abs(height - expected_width),
+                "process_height_delta": abs(width - expected_height),
             }
         return profile
     return None
@@ -1955,6 +2116,7 @@ def _find_oos_dxf_evidence(
     process_order: ProcessOrder,
     item_number: int,
     expected: tuple[float, float],
+    actual: tuple[float, float] | None = None,
 ) -> tuple[Path, dict[str, object]] | None:
     panel = programmer.Panel(
         int(item_number),
@@ -1972,7 +2134,7 @@ def _find_oos_dxf_evidence(
     )
     if source is None:
         return None
-    profile = _dxf_oos_profile(source, expected)
+    profile = _dxf_oos_profile(source, expected, actual)
     if profile is None:
         return None
     return source, profile
@@ -2013,22 +2175,43 @@ def reconcile_out_of_square_dimension_match(
         return False
 
     candidate_indices = [list(candidates) for candidates in strict_candidates]
-    evidence_by_expected: dict[int, tuple[Path, dict[str, object]]] = {}
+    evidence_by_expected: dict[int, dict[int, tuple[Path, dict[str, object]]]] = {}
     for expected_index in unmatched_indices:
         item, width, height = expected[expected_index]
         evidence = _find_oos_dxf_evidence(folder, process_order, item, (width, height))
-        if evidence is None:
-            return False
-        source, profile = evidence
-        matches = [
-            actual_index
-            for actual_index, (_page, actual_width, actual_height) in enumerate(actual)
-            if _pdf_dimensions_match_oos_profile((actual_width, actual_height), profile)
-        ]
+        matches: list[int] = []
+        evidence_by_actual: dict[int, tuple[Path, dict[str, object]]] = {}
+        if evidence is not None:
+            source, profile = evidence
+            for actual_index, (_page, actual_width, actual_height) in enumerate(actual):
+                if _pdf_dimensions_match_oos_profile((actual_width, actual_height), profile):
+                    matches.append(actual_index)
+                    evidence_by_actual[actual_index] = (source, profile)
+        else:
+            # Some A+W irregular-shape process dimensions are not the raw DXF
+            # bounds. In that case, evaluate each sketch candidate against the
+            # source DXF itself. This path is accepted only when the sketch
+            # matches the DXF envelope, A+W stays within the narrow process
+            # variance, and the same DXF proves non-axis-aligned geometry.
+            for actual_index, (_page, actual_width, actual_height) in enumerate(actual):
+                candidate_evidence = _find_oos_dxf_evidence(
+                    folder,
+                    process_order,
+                    item,
+                    (width, height),
+                    (actual_width, actual_height),
+                )
+                if candidate_evidence is None:
+                    continue
+                source, profile = candidate_evidence
+                if not _pdf_dimensions_match_oos_profile((actual_width, actual_height), profile):
+                    continue
+                matches.append(actual_index)
+                evidence_by_actual[actual_index] = (source, profile)
         if not matches:
             return False
         candidate_indices[expected_index] = matches
-        evidence_by_expected[expected_index] = (source, profile)
+        evidence_by_expected[expected_index] = evidence_by_actual
 
     assignment: dict[int, int] = {}
     assignment_order = sorted(range(len(expected)), key=lambda index: len(candidate_indices[index]))
@@ -2053,8 +2236,8 @@ def reconcile_out_of_square_dimension_match(
 
     for expected_index in unmatched_indices:
         item, width, height = expected[expected_index]
-        source, profile = evidence_by_expected[expected_index]
         actual_index = assignment[expected_index]
+        source, profile = evidence_by_expected[expected_index][actual_index]
         _page, actual_width, actual_height = actual[actual_index]
         matched_edge = _matched_oos_edge_pair((actual_width, actual_height), profile)
         edge_width, edge_height = matched_edge or (
@@ -2065,16 +2248,25 @@ def reconcile_out_of_square_dimension_match(
             float(profile.get("width_shift", 0.0)),
             float(profile.get("height_shift", 0.0)),
         )))
-        _record_dimension_match_note(
-            process_order,
-            item,
-            (
+        match_basis = str(profile.get("match_basis", "aw_dxf_bounds"))
+        if match_basis == "sketch_dxf_envelope":
+            width_delta = float(profile.get("process_width_delta", abs(width - actual_width)))
+            height_delta = float(profile.get("process_height_delta", abs(height - actual_height)))
+            note = (
+                f"A+W process size {width:g} x {height:g} reconciled to sketch "
+                f"{actual_width:g} x {actual_height:g} because the sketch matches the "
+                f"source DXF envelope ({source.name}) and the DXF proves OOS geometry "
+                f"(edge {edge_width:g} x {edge_height:g}; OOS shift {shift:g} in; "
+                f"A+W/DXF delta {width_delta:g} x {height_delta:g} in)."
+            )
+        else:
+            note = (
                 f"A+W overall size {width:g} x {height:g} reconciled to sketch "
                 f"{actual_width:g} x {actual_height:g} by DXF OOS geometry "
                 f"({source.name}; edge {edge_width:g} x {edge_height:g}; "
                 f"OOS shift {shift:g} in)."
-            ),
-        )
+            )
+        _record_dimension_match_note(process_order, item, note)
     return True
 
 
@@ -2129,6 +2321,52 @@ def format_dimension_pairs(dimensions: Iterable[tuple[int, float, float]]) -> st
     return ", ".join(f"P{item} {width:g} x {height:g}" for item, width, height in dimensions)
 
 
+def dimension_mismatch_difference_lines(
+    process_order: ProcessOrder,
+    actual_values: list[tuple[int, float, float]],
+) -> list[str]:
+    """Explain the closest process-list/sketch numeric difference per item."""
+    lines: list[str] = []
+    for item, expected_width, expected_height in process_order_dimensions(process_order):
+        best: tuple[float, int, float, float, float, float] | None = None
+        for page, actual_width, actual_height in actual_values:
+            direct = (
+                abs(expected_width - actual_width),
+                abs(expected_height - actual_height),
+                actual_width,
+                actual_height,
+            )
+            swapped = (
+                abs(expected_width - actual_height),
+                abs(expected_height - actual_width),
+                actual_height,
+                actual_width,
+            )
+            for width_delta, height_delta, matched_width, matched_height in (direct, swapped):
+                score = max(width_delta, height_delta) + width_delta + height_delta
+                candidate = (score, page, width_delta, height_delta, matched_width, matched_height)
+                if best is None or candidate[0] < best[0]:
+                    best = candidate
+        if best is None:
+            continue
+        _score, page, width_delta, height_delta, _matched_width, _matched_height = best
+        over_width = max(0.0, width_delta - PDF_DIMENSION_MATCH_TOLERANCE)
+        over_height = max(0.0, height_delta - PDF_DIMENSION_MATCH_TOLERANCE)
+        detail = (
+            f"  P{item} vs PDF page {page + 1}: width difference {width_delta:.4f} in; "
+            f"height difference {height_delta:.4f} in; normal tolerance {PDF_DIMENSION_MATCH_TOLERANCE:.4f} in"
+        )
+        exceeded: list[str] = []
+        if over_width > 0:
+            exceeded.append(f"width exceeds tolerance by {over_width:.4f} in")
+        if over_height > 0:
+            exceeded.append(f"height exceeds tolerance by {over_height:.4f} in")
+        if exceeded:
+            detail += " (" + "; ".join(exceeded) + ")"
+        lines.append(detail)
+    return lines
+
+
 def dimension_mismatch_message(
     process_order: ProcessOrder,
     pdf_path: Path,
@@ -2143,6 +2381,7 @@ def dimension_mismatch_message(
         f"  PDF page {page + 1}: {width:g} x {height:g}"
         for page, width, height in actual_values
     ] or ["  Unknown"]
+    difference_lines = dimension_mismatch_difference_lines(process_order, actual_values)
     return (
         f"A&W {process_order.aw_order} does not match the piece dimensions in:\n"
         f"{pdf_path.name}\n\n"
@@ -2150,6 +2389,7 @@ def dimension_mismatch_message(
         + "\n".join(expected_lines)
         + "\n\nSKETCH\n"
         + "\n".join(sketch_lines)
+        + ("\n\nNUMERIC DIFFERENCE\n" + "\n".join(difference_lines) if difference_lines else "")
         + "\n\nWHAT THE PROGRAMMER CHECKED\n"
         "The normal dimension match failed. The programmer also checked the matching DXF for "
         "out-of-square, raked, or other alternate edge geometry, but could not prove that the two "
@@ -2177,7 +2417,13 @@ def validate_process_order_pdf_dimensions(
     if manual_dimension_match_override_enabled(config, process_order.aw_order):
         _record_manual_dimension_override(process_order)
         return
-    raise RuntimeError(dimension_mismatch_message(process_order, pdf_path, actual_values))
+    raise shower_errors.ShowerProgrammerError(
+        code=shower_errors.ErrorCode.DIMENSION_MISMATCH,
+        title="Dimension mismatch",
+        message=dimension_mismatch_message(process_order, pdf_path, actual_values),
+        aw_order=str(process_order.aw_order),
+        details={"pdf": str(pdf_path)},
+    )
 
 
 def validate_process_order_pdf_dimension_values(
@@ -2196,7 +2442,13 @@ def validate_process_order_pdf_dimension_values(
     if manual_dimension_match_override_enabled(config, process_order.aw_order):
         _record_manual_dimension_override(process_order)
         return
-    raise RuntimeError(dimension_mismatch_message(process_order, pdf_path, actual))
+    raise shower_errors.ShowerProgrammerError(
+        code=shower_errors.ErrorCode.DIMENSION_MISMATCH,
+        title="Dimension mismatch",
+        message=dimension_mismatch_message(process_order, pdf_path, actual),
+        aw_order=str(process_order.aw_order),
+        details={"pdf": str(pdf_path)},
+    )
 
 
 def job_number_pdf_candidates(

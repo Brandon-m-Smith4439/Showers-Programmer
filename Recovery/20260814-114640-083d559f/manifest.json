@@ -1,0 +1,20 @@
+{
+  "allowed_roots": [
+    "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders"
+  ],
+  "bundle_id": "20260814-114640-083d559f",
+  "created_at": "2026-08-14T11:46:40",
+  "expires_at": "2026-08-21T11:46:40",
+  "files": [
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders\\Glass Order 8609 Reedy Crrek 18_89620410M. Rigo. 8609 Reedy Creek.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order 8609 Reedy Crrek 18_89620410M. Rigo. 8609 Reedy Creek.pdf",
+      "restored": false,
+      "size": 131805
+    }
+  ],
+  "orders": [
+    "INPUT-472ABF2E"
+  ],
+  "schema": 1
+}

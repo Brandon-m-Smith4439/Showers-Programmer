@@ -1,0 +1,15 @@
+Shower Programmer APPLY
+A&W order: 237464
+Job/SO: 89600380.2 2625 SPRINGWAY
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-074532-BATCH-Batch_6337.xls\Input\Orders\Glass Order VISTA_89600380.2 2625 SPRINGWAY.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-074532-BATCH-Batch_6337.xls\Output\Runs\8.17.26\Batch_6337\Sketches\237464.pdf
+
+Items:
+- P1: 237464.1 | DENVER 2 | 80 x 29.5
+  reasons: no cutouts/fabrication detected, dimensions from process list, process list machine: DENVER 2, Denver panel uses square right side down
+  dxf: 89600380.2 2625 SPRINGWAY_1__P1.dxf -> 23746401.dxf (-90 deg)
+  indicator: top_right
+- P2: 237464.2 | DENVER 1 | 28 x 79.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side right; hinges down, hinge code GEN037: hinge side right; hinges down, automatic sketch marker nudged 12 pt to avoid corner text or fabrication
+  dxf: 89600380.2 2625 SPRINGWAY_2__P2.dxf -> 23746402.dxf (-90 deg)
+  indicator: top_right

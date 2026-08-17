@@ -55,24 +55,30 @@ class Version095BackgroundResponsivenessTests(unittest.TestCase):
             self.assertTrue(all(item[1] == 3 for item in progress))
 
     def test_delete_entry_point_only_schedules_background_discovery(self) -> None:
-        source = inspect.getsource(gui.ShowerProgrammerApp.delete_selected_local_order_inputs)
-        self.assertIn("worker_prepare_local_order_delete", source)
-        self.assertIn("threading.Thread", source)
-        self.assertNotIn("matching_order_files(", source)
-        self.assertNotIn("delete_import_paths_bounded(", source)
+        entry_source = inspect.getsource(gui.ShowerProgrammerApp.delete_selected_local_order_inputs)
+        worker_source = inspect.getsource(gui.ShowerProgrammerApp.delete_order_inputs)
+        self.assertIn("delete_order_inputs", entry_source)
+        self.assertIn("worker_prepare_local_order_delete", worker_source)
+        self.assertIn("run_managed_task", worker_source)
+        combined = entry_source + worker_source
+        self.assertNotIn("threading.Thread", combined)
+        self.assertNotIn("matching_order_files(", combined)
+        self.assertNotIn("delete_import_paths_bounded(", combined)
 
     def test_archive_settings_initial_refresh_is_deferred_and_threaded(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.build_archive_settings_tab)
-        self.assertIn('name="shower-settings-archive-load"', source)
-        self.assertIn("dialog.after(100, refresh)", source)
+        self.assertIn("run_managed_task", source)
         self.assertIn("load_archive_settings_inventory", source)
+        self.assertIn("task_context=task", source)
+        self.assertNotIn('threading.Thread(target=worker, name="shower-settings-archive-load"', source)
         self.assertNotIn("self.archived_order_inventory(", source)
 
     def test_other_settings_history_tabs_defer_their_initial_disk_load(self) -> None:
         recovery_source = inspect.getsource(gui.ShowerProgrammerApp.build_recovery_settings_tab)
         history_source = inspect.getsource(gui.ShowerProgrammerApp.build_action_history_settings_tab)
         self.assertIn("dialog.after(250, refresh)", recovery_source)
-        self.assertIn("parent.after(350, refresh_history)", history_source)
+        self.assertIn("def activate_action_history()", history_source)
+        self.assertIn("parent.after_idle(refresh_history)", history_source)
 
     def test_archive_inventory_enrichment_is_ui_free_and_reuses_one_active_file_list(self) -> None:
         app = gui.ShowerProgrammerApp.__new__(gui.ShowerProgrammerApp)
@@ -116,7 +122,7 @@ class Version095BackgroundResponsivenessTests(unittest.TestCase):
             order = shower_batch.ProcessOrder("900006", "12345678 TEST JOB", "Customer")
             order.items[1] = shower_batch.ProcessItem(1, width_text='30"', height_text='80"')
 
-            app.worker_delete_local_order_inputs(
+            result = app.worker_delete_local_order_inputs(
                 {
                     "orders": [order],
                     "files": [source],
@@ -128,12 +134,8 @@ class Version095BackgroundResponsivenessTests(unittest.TestCase):
                 }
             )
 
-            events = []
-            while not app.worker_queue.empty():
-                events.append(app.worker_queue.get_nowait())
-            kinds = [kind for kind, _payload in events]
-            self.assertIn("delete_done", kinds)
-            self.assertNotIn("delete_error", kinds)
+            self.assertFalse(result.get("incomplete", False))
+            self.assertEqual([order.aw_order for order in result.get("successfully_deleted_orders", [])], ["900006"])
             self.assertFalse(source.exists())
             history = gui.ShowerProgrammerApp.load_processing_history_for_output(output_dir)
             self.assertIn("900006", history["orders"])

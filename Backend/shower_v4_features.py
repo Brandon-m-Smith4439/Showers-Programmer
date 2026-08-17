@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Version 0.97 production-safety features for Shower Programmer.
+"""Version 1.15 production-safety integration for Shower Programmer.
 
-This module intentionally patches the existing V40-era core at startup instead
-of duplicating the large GUI, batch, and programming modules.  It is loaded by
-``shower_programmer_v4.py`` for source runs and packaged EXE builds.
+Mature workflow behavior now lives in the core GUI/batch modules. This layer is
+kept for the remaining release integrations that still benefit from isolation,
+and is intentionally shrinking as stable behavior migrates into core. It is
+loaded by ``shower_programmer_v4.py`` for source runs and packaged EXE builds.
 """
 
 from __future__ import annotations
@@ -46,6 +47,26 @@ from __future__ import annotations
 # VERSION_0_95_BACKGROUND_RESPONSIVENESS
 # VERSION_0_96_FAST_FILTERED_ARCHIVE_BROWSER
 # VERSION_0_97_REIMPORTED_BATCH_REACTIVATION
+# VERSION_0_98_PROFESSIONAL_WORKFLOW_CORE
+# VERSION_0_99_VISUAL_POLISH_BATCH_ARCHIVE_ACTIONS
+# VERSION_1_00_OPERATOR_AUDIT_TEST_MODE_POLISH
+# VERSION_1_01_SETTINGS_WINDOW_LIFECYCLE
+# VERSION_1_02_SETTINGS_NATIVE_SHELL_TEARDOWN
+# VERSION_1_03_SETTINGS_PERSISTENT_CLOSE
+# VERSION_1_04_SETTINGS_DATA_LIFECYCLE
+# VERSION_1_05_HISTORY_RANGE_ARCHIVE_POLISH
+# VERSION_1_06_ACTION_HISTORY_DIAGNOSTICS
+# VERSION_1_07_ARCHIVE_REVISION_HISTORY_POLISH
+# VERSION_1_08_ARCHIVE_BATCH_STATUS_DELETE_REFRESH
+# VERSION_1_09_LOCAL_DELETE_REFRESH_REIMPORT
+# VERSION_1_10_DELETE_ACTION_DIAGNOSTIC_ACCESS
+# VERSION_1_11_IRREGULAR_DIMENSION_RECONCILIATION
+# VERSION_1_12_DELETE_CONTEXT_SELECTION_RELIABILITY
+# VERSION_1_13_DELETE_SCOPE_TYPE_SAFETY
+# VERSION_1_14_TEST_MODE_VISIBILITY_DXF_DISPLAY
+# VERSION_1_15_ARCHIVE_MULTI_REVISION_XLS_POLISH
+# VERSION_1_16_ARCHIVE_REVISION_FILE_HANDOFF
+# VERSION_1_17_ADAPTIVE_DXF_ROTATION_DISPLAY
 
 import copy
 import hashlib
@@ -433,52 +454,36 @@ def validate_waterjet_internal_radius(panel: Any, config: dict[str, Any] | None,
 
 
 def merge_process_orders_by_aw(orders: Iterable[Any], shower_batch: Any) -> list[Any]:
-    """Combine split process-list rows for the same A&W order across batches."""
-
+    """Compatibility delegate; production merging now lives in shower_batch core."""
+    core_merge = getattr(shower_batch, "merge_process_orders_by_aw", None)
+    if callable(core_merge):
+        return core_merge(orders)
+    # Test/plugin stubs from older releases may not expose the new core helper.
     merged: dict[str, Any] = {}
-    order_sequence: list[str] = []
     for order in orders:
         aw_order = str(getattr(order, "aw_order", "")).strip()
         if not aw_order:
             continue
         target = merged.get(aw_order)
         if target is None:
-            target = shower_batch.clone_process_order(order) if hasattr(shower_batch, "clone_process_order") else copy.deepcopy(order)
-            merged[aw_order] = target
-            order_sequence.append(aw_order)
+            merged[aw_order] = shower_batch.clone_process_order(order)
             continue
-        if not getattr(target, "job_name", "") and getattr(order, "job_name", ""):
-            target.job_name = order.job_name
-        if not getattr(target, "customer", "") and getattr(order, "customer", ""):
-            target.customer = order.customer
-        target_items = getattr(target, "items", {})
         for item_number, item in getattr(order, "items", {}).items():
-            target_item = target_items.get(item_number)
-            if target_item is None:
-                target_items[item_number] = copy.deepcopy(item)
-                continue
-            for field_name in ("width_text", "height_text", "delivery_date", "customer"):
-                if not getattr(target_item, field_name, "") and getattr(item, field_name, ""):
-                    setattr(target_item, field_name, getattr(item, field_name))
-            for field_name in ("processing", "machine_hints", "rows"):
-                target_values = getattr(target_item, field_name, None)
-                incoming_values = getattr(item, field_name, None)
-                if not isinstance(target_values, list) or not isinstance(incoming_values, list):
-                    continue
-                for value in incoming_values:
-                    if field_name == "rows" or value not in target_values:
-                        target_values.append(value)
-    return [merged[aw_order] for aw_order in order_sequence]
+            target.items.setdefault(item_number, copy.deepcopy(item))
+    return list(merged.values())
 
 
 def unique_orders_from_batches(batches: list[dict[str, object]], shower_batch: Any) -> list[Any]:
+    """Compatibility delegate; production batch de-duplication now lives in core."""
+    core_unique = getattr(shower_batch, "unique_orders_from_batches", None)
+    if callable(core_unique):
+        return core_unique(batches)
     ordered: list[Any] = []
     for batch in batches:
-        batch_orders = batch.get("orders", [])
-        if isinstance(batch_orders, list):
-            ordered.extend(order for order in batch_orders if isinstance(order, shower_batch.ProcessOrder))
+        values = batch.get("orders", [])
+        if isinstance(values, list):
+            ordered.extend(values)
     return merge_process_orders_by_aw(ordered, shower_batch)
-
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -1222,7 +1227,6 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         original_analyze = programmer.analyze_panels
         original_validate_constraints = programmer.validate_panel_constraints
         original_assign_dxf_paths = programmer.assign_dxf_paths
-        original_batch_load = shower_batch.load_process_orders
         original_start_send = gui.ShowerProgrammerApp.start_send_outputs_worker
         original_draw_dxf = gui.ShowerProgrammerApp.draw_order_review_dxf
         original_send_details = gui.ShowerProgrammerApp.send_complete_details
@@ -1248,12 +1252,6 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
             original_assign_dxf_paths(job, dxf_folder, dxf_output_dir, config)
             for panel in getattr(job, "panels", []):
                 validate_waterjet_internal_radius(panel, config, programmer)
-
-        def batch_load_v4(path: Path) -> list[Any]:
-            return merge_process_orders_by_aw(original_batch_load(path), shower_batch)
-
-        def unique_orders_v4(batches: list[dict[str, object]]) -> list[Any]:
-            return unique_orders_from_batches(batches, shower_batch)
 
         def copy_outputs_v4(
             self: Any,
@@ -1370,8 +1368,69 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                     raise RuntimeError("Version 0.96 archive browser helpers are unavailable.")
                 if not hasattr(gui.ShowerProgrammerApp, "reactivate_reimported_process_list_orders"):
                     raise RuntimeError("Version 0.97 re-imported process-list reactivation is unavailable.")
+                required_professional_helpers = (
+                    "run_managed_task",
+                    "cancel_background_task",
+                    "sync_order_lifecycle_state",
+                    "enter_test_mode",
+                    "exit_test_mode",
+                    "show_structured_error",
+                    "create_diagnostic_package_for_order",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_professional_helpers):
+                    raise RuntimeError("Version 0.98 professional workflow helpers are unavailable.")
+                required_v099_helpers = (
+                    "open_network_input_folder",
+                    "archive_action_entries",
+                    "copy_archived_batch_for_testing",
+                    "return_archived_batch_to_archive",
+                    "prepare_archived_batch_test_mode",
+                    "activate_prepared_batch_test_mode",
+                    "enter_test_mode_batch",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_v099_helpers):
+                    raise RuntimeError("Version 0.99 visual/archive batch helpers are unavailable.")
+                required_v100_helpers = (
+                    "action_history_filter_matches",
+                    "action_history_action_options",
+                    "apply_local_order_delete_result",
+                    "worker_scan_orders",
+                    "build_action_history_settings_tab",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_v100_helpers):
+                    raise RuntimeError("Version 1.00 operator-audit/Test Mode helpers are unavailable.")
+                if not hasattr(gui, "shower_state") or not hasattr(gui.shower_state, "StateStore"):
+                    raise RuntimeError("SQLite lifecycle state store is unavailable.")
+                if not hasattr(gui, "shower_tasks") or not hasattr(gui.shower_tasks, "BackgroundTaskManager"):
+                    raise RuntimeError("Central background task manager is unavailable.")
+                if not hasattr(gui, "shower_errors") or not hasattr(gui.shower_errors, "ShowerProgrammerError"):
+                    raise RuntimeError("Structured operator errors are unavailable.")
+                if not hasattr(shower_batch, "unique_orders_from_batches"):
+                    raise RuntimeError("Core split-batch merge is unavailable.")
                 if not hasattr(gui.shower_cache, "cached_file_sha256"):
                     raise RuntimeError("Cached duplicate-file hashing is unavailable.")
+                professional_scratch = report_path.parent / "v098_professional_self_test"
+                professional_scratch.mkdir(parents=True, exist_ok=True)
+                state_store = gui.shower_state.StateStore.for_output(professional_scratch)
+                state_store.transition_order(
+                    "SELFTEST-098",
+                    gui.shower_state.LifecycleState.ACTIVE,
+                    reason="Version 0.98 self-test",
+                    in_input=True,
+                )
+                if state_store.order_state("SELFTEST-098").get("lifecycle_state") != gui.shower_state.LifecycleState.ACTIVE:
+                    raise RuntimeError("SQLite lifecycle transition self-test failed.")
+                state_store.record_performance("Self Test", "SQLite", 1.0, {"version": "0.98"})
+                if not state_store.recent_performance(1):
+                    raise RuntimeError("Performance instrumentation self-test failed.")
+                structured = gui.shower_errors.classify_exception(RuntimeError("dimension match self-test"))
+                if structured.code != gui.shower_errors.ErrorCode.DIMENSION_MISMATCH:
+                    raise RuntimeError("Structured error-code self-test failed.")
+                identity_source = professional_scratch / "Batch 9800.xlsx"
+                identity_source.write_bytes(b"stable-batch-self-test")
+                identity = gui.shower_state.StateStore.batch_identity(identity_source)
+                if not identity.key or identity.normalized_name != "batch 9800":
+                    raise RuntimeError("Stable batch identity self-test failed.")
                 mirror_rows = [
                     ['1/4" Mirror'],
                     ["", "", '42"', '83"', "", "", "900001-1", "INTERNAL CUTOUT MACRO", "", "", "Customer", "", "", "12345678 MIRROR JOB", "", "", "", "", "", "", "", "Waterjet"],
@@ -1443,6 +1502,100 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "reimported_process_list_reactivation": True,
                         "deleted_receipt_reactivation_audit": True,
                         "version_0_97_reimported_batch_reactivation": True,
+                        "sqlite_lifecycle_state_model": True,
+                        "stable_batch_identity": True,
+                        "centralized_background_task_manager": True,
+                        "cancellable_long_operations": True,
+                        "sqlite_archive_index": True,
+                        "performance_instrumentation": True,
+                        "structured_operator_errors": True,
+                        "one_click_failure_diagnostics": True,
+                        "isolated_archive_test_mode": True,
+                        "reduced_release_monkey_patching": True,
+                        "workflow_idempotency_regressions": True,
+                        "version_0_98_professional_workflow_core": True,
+                        "visual_polish_refresh": True,
+                        "network_input_quick_access": True,
+                        "archive_batch_actions": True,
+                        "archive_batch_test_mode": True,
+                        "archive_batch_background_tasks": True,
+                        "version_0_99_visual_polish_batch_archive_actions": True,
+                        "column_header_borders": True,
+                        "isolated_batch_test_mode_scan": True,
+                        "comprehensive_order_action_history": True,
+                        "action_history_filters": True,
+                        "preferences_network_input_access": True,
+                        "full_batch_archive_action_scope": True,
+                        "version_1_00_operator_audit_test_mode_polish": True,
+                        "settings_close_releases_ui": True,
+                        "lazy_archive_settings_activation": True,
+                        "settings_archive_independent_task_runner": True,
+                        "version_1_01_settings_window_lifecycle": True,
+                        "verified_settings_toplevel_destroy": True,
+                        "settings_blank_shell_rejection": True,
+                        "settings_close_retry_safety": True,
+                        "version_1_02_settings_native_shell_teardown": True,
+                        "persistent_settings_window_close": True,
+                        "lazy_settings_tab_construction": True,
+                        "settings_destroy_recursion_avoided": True,
+                        "version_1_03_settings_persistent_close": True,
+                        "archive_tab_progress_feedback": True,
+                        "persistent_archive_tab_reactivation": True,
+                        "action_history_tab_reactivation": True,
+                        "archive_error_retry_state": True,
+                        "version_1_04_settings_data_lifecycle": True,
+                        "action_history_seven_day_window": True,
+                        "action_history_date_range_loading": True,
+                        "action_history_background_loader": True,
+                        "archive_tab_simplified_actions": True,
+                        "settings_default_maximized": True,
+                        "version_1_05_history_range_archive_polish": True,
+                        "action_history_tab_build_repair": True,
+                        "action_history_diagnostic_progress": True,
+                        "action_history_loader_file_diagnostics": True,
+                        "settings_tab_build_error_surface": True,
+                        "background_task_tracebacks": True,
+                        "version_1_06_action_history_diagnostics": True,
+                        "action_history_collapsible_diagnostics": True,
+                        "archive_batch_revision_consolidation": True,
+                        "archive_batch_authoritative_process_list": True,
+                        "version_1_07_archive_revision_history_polish": True,
+                        "archive_batch_sent_input_summary": True,
+                        "dimension_mismatch_numeric_diagnostics": True,
+                        "version_1_08_archive_batch_status_delete_refresh": True,
+                        "post_delete_local_only_refresh": True,
+                        "manual_scan_deleted_order_reimport": True,
+                        "local_delete_scope_audit": True,
+                        "version_1_09_local_delete_refresh_reimport": True,
+                        "context_menu_action_dispatch_resilience": True,
+                        "diagnostic_package_open_folder": True,
+                        "delete_cleanup_progress_dispatch": True,
+                        "version_1_10_delete_action_diagnostic_access": True,
+                        "dxf_sketch_envelope_dimension_reconciliation": True,
+                        "process_dxf_variance_guard": True,
+                        "version_1_11_irregular_dimension_reconciliation": True,
+                        "context_delete_selection_snapshot": True,
+                        "context_action_error_surface": True,
+                        "input_only_order_network_delete": True,
+                        "version_1_12_delete_context_selection_reliability": True,
+                        "delete_scope_list_mapping_safe": True,
+                        "delete_multi_batch_scope_resolution": True,
+                        "version_1_13_delete_scope_type_safety": True,
+                        "dxf_reference_two_decimal_display": True,
+                        "test_mode_prominent_banner": True,
+                        "test_mode_exit_before_shutdown": True,
+                        "version_1_14_test_mode_visibility_dxf_display": True,
+                        "legacy_xls_fast_conversion_cache": True,
+                        "legacy_xls_excel_low_overhead_open": True,
+                        "archive_multi_revision_synthetic_xlsx": True,
+                        "dxf_reference_four_decimal_display": True,
+                        "version_1_15_archive_multi_revision_xls_polish": True,
+                        "archive_revision_order_file_fallback": True,
+                        "archive_test_mode_requires_source_files": True,
+                        "archive_revision_file_search_filename_first": True,
+                        "version_1_16_archive_revision_file_handoff": True,
+                        "dxf_reference_adaptive_six_decimal_display": True,
+                        "version_1_17_adaptive_dxf_rotation_display": True,
                     }
                 )
             except Exception as exc:
@@ -1458,8 +1611,6 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         programmer.analyze_panels = analyze_panels_v4
         programmer.validate_panel_constraints = validate_constraints_v4
         programmer.assign_dxf_paths = assign_dxf_paths_v4
-        shower_batch.load_process_orders = batch_load_v4
-        gui.ShowerProgrammerApp.unique_orders_from_batches = staticmethod(unique_orders_v4)
         gui.ShowerProgrammerApp.copy_outputs_to_folder = copy_outputs_v4
         gui.ShowerProgrammerApp.start_send_outputs_worker = start_send_v4
         gui.ShowerProgrammerApp.worker_send_outputs = worker_send_v4
@@ -1503,6 +1654,26 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_0_92_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_93_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_0_94_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_95_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_96_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_97_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_98_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_0_99_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_00_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_01_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_02_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_03_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_04_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_05_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_06_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_07_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_08_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_09_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_10_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_11_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_12_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_13_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_14_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 
@@ -1529,9 +1700,8 @@ def _run_v4_self_tests(programmer: Any, shower_batch: Any, gui: Any, scratch_par
     first.items[1] = shower_batch.ProcessItem(1, width_text='30"', height_text='80"')
     second = shower_batch.ProcessOrder("900001", "12345678 TEST", "Customer")
     second.items[2] = shower_batch.ProcessItem(2, width_text='24"', height_text='80"')
-    merged = unique_orders_from_batches(
-        [{"orders": [first]}, {"orders": [second]}],
-        shower_batch,
+    merged = shower_batch.unique_orders_from_batches(
+        [{"orders": [first]}, {"orders": [second]}]
     )
     if len(merged) != 1 or set(merged[0].items) != {1, 2}:
         raise RuntimeError("Split-batch order merge self-test failed.")

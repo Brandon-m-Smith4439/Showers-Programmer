@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786626517314572800,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260813-161727-BATCH-Batch_6338.xlsx\\Input\\Orders\\Glass Order EVOLUTION_89601496 7047 RIDGEVIEW.pdf",
+    "sha256": "864e94758d40db3c60e382f749309bd4141987683a19d22fe8bd2a53f87ef74c",
+    "size": 214713
+  },
+  "value": [
+    [
+      1,
+      34.0,
+      93.5
+    ],
+    [
+      2,
+      76.75,
+      94.0
+    ]
+  ]
+}

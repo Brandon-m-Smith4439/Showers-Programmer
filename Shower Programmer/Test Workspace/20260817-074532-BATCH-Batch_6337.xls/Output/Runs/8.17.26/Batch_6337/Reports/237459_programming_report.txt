@@ -1,0 +1,11 @@
+Shower Programmer APPLY
+A&W order: 237459
+Job/SO: 89510733 1220 DADE
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-074532-BATCH-Batch_6337.xls\Input\Orders\Glass Order MIDLAM_89510733 1220 DADE.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-074532-BATCH-Batch_6337.xls\Output\Runs\8.17.26\Batch_6337\Sketches\237459.pdf
+
+Items:
+- P1: 237459.1 | DENVER 1 | 24.5625 x 80.5
+  reasons: door-like keyword in PDF text, process list machine: DENVER 1, hinge side left; hinges down, hinge code GEN037: hinge side left; hinges down, automatic sketch marker nudged 20 pt to avoid corner text or fabrication
+  dxf: 89510733 1220 DADE_1__P1.dxf -> 23745901.dxf (90 deg)
+  indicator: bottom_left

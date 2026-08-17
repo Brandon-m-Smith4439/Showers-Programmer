@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786623828917015300,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260814-114940-BATCH-Batch_6337.xls\\Input\\Orders\\Glass Order VISTA_89600380 2625 SPRINGWAY.pdf",
+    "sha256": "b7ce8a3c36dc4e27ee12732ff1c940b3f61a15af7c7df224c07c20258b029283",
+    "size": 214975
+  },
+  "value": [
+    [
+      1,
+      29.5,
+      80.0
+    ],
+    [
+      2,
+      28.0,
+      79.5
+    ]
+  ]
+}

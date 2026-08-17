@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786623832428917400,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260813-162555-BATCH-Batch_6337.xls\\Input\\Orders\\Glass Order JOHNSTON_89579577.3 1001 CODDINGTON.pdf",
+    "sha256": "f8c24fc13d0f26115eeb1e627c4f3d766b11f12a9c1096bc04b5c82af82d7c85",
+    "size": 208860
+  },
+  "value": [
+    [
+      1,
+      22.5625,
+      71.5
+    ]
+  ]
+}

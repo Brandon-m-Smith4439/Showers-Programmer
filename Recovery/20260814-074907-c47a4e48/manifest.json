@@ -1,0 +1,44 @@
+{
+  "allowed_roots": [
+    "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders"
+  ],
+  "bundle_id": "20260814-074907-c47a4e48",
+  "created_at": "2026-08-14T07:49:07",
+  "expires_at": "2026-08-21T07:49:07",
+  "files": [
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders\\87526205 ENDHAVEN 5_1.dxf",
+      "quarantined_path": "files\\root-1\\87526205 ENDHAVEN 5_1.dxf",
+      "restored": false,
+      "size": 12516
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders\\87526205 ENDHAVEN 5_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\87526205 ENDHAVEN 5_1__P1.dxf",
+      "restored": false,
+      "size": 12390
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders\\87526205 ENDHAVEN 5_2.dxf",
+      "quarantined_path": "files\\root-1\\87526205 ENDHAVEN 5_2.dxf",
+      "restored": false,
+      "size": 9847
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders\\87526205 ENDHAVEN 5_2__P2.dxf",
+      "quarantined_path": "files\\root-1\\87526205 ENDHAVEN 5_2__P2.dxf",
+      "restored": false,
+      "size": 9684
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Input\\Orders\\Glass Order HOPPER_87526205 ENDHAVEN 5.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order HOPPER_87526205 ENDHAVEN 5.pdf",
+      "restored": false,
+      "size": 215966
+    }
+  ],
+  "orders": [
+    "236460"
+  ],
+  "schema": 1
+}

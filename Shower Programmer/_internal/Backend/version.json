@@ -1,9 +1,9 @@
 {
-  "version": "Version 0.96",
-  "version_number": 96,
-  "marker": "VERSION_0_96_FAST_FILTERED_ARCHIVE_BROWSER",
-  "release_name": "Fast Filtered Archive Browser",
-  "release_date": "2026-08-13",
+  "version": "Version 1.17",
+  "version_number": 117,
+  "marker": "VERSION_1_17_ADAPTIVE_DXF_ROTATION_DISPLAY",
+  "release_name": "Adaptive DXF Rotation Display",
+  "release_date": "2026-08-17",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }
