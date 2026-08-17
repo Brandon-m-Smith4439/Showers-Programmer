@@ -59,6 +59,8 @@ set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,dxf_reference_two_decimal_display,test_mode
 set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,legacy_xls_fast_conversion_cache,legacy_xls_excel_low_overhead_open,archive_multi_revision_synthetic_xlsx,dxf_reference_four_decimal_display,version_1_15_archive_multi_revision_xls_polish"
 set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,archive_revision_order_file_fallback,archive_test_mode_requires_source_files,archive_revision_file_search_filename_first,version_1_16_archive_revision_file_handoff"
 set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,dxf_reference_adaptive_six_decimal_display,version_1_17_adaptive_dxf_rotation_display"
+set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,sent_cleanup_second_sweep,completed_process_list_local_orphan_guard,reverse_location_remake_detection,process_all_location_remake_auto,version_1_18_sent_cleanup_remake_auto"
+set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,remake_location_variant_detection,remake_location_stem_scope_guard,version_1_19_remake_location_variants"
 
 echo.
 echo ========================================

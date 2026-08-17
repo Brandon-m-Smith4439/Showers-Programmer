@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 237444
+Job/SO: 89256152.2R CAROLINA RIVER 328
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-084832-BATCH-Batch_6331.xls\Input\Orders\Glass Order PULTE_89256152.2R CAROLINA RIVER 328.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-084832-BATCH-Batch_6331.xls\Output\Runs\8.17.26\Batch_6331\Sketches\237444.pdf
+
+Items:
+- P1: 237444.1 | DENVER 2 | 15.25 x 45.25
+  reasons: panel fabrication keyword in PDF text, process list says WJ, but no WJ-only fabrication found, process-list fabrication suggests DENVER 2, bilateral SCU4 panel keeps bottom-left tempered logo opposite top-right marker, FP-S raked right edge detected from DXF; CNC bottom flattened by 0.28364 deg
+  dxf: 89256152.2R CAROLINA RIVER 328_1__P1.dxf -> 23744401.dxf (-89.7164 deg)
+  indicator: top_right
+  angle correction: 0.2836 deg (auto DXF bottom side 0.0835396 over 16.875)
+  WARNING: FP-S cut-in/cut-out detected; manual DXF review required.
+
+Batch issues:
+- P1: FP-S cut; review DXF

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786560124258680300,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-101642-BATCH-Batch_6331.xls\\Input\\Orders\\Glass Order 89225225 - REMAKE Jeff Miller Po# 72326.pdf",
+    "sha256": "8bed38f33607108d745b137c2e49cb494719b587f3f419a089ab031f74f819d5",
+    "size": 139945
+  },
+  "value": [
+    [
+      1,
+      39.5625,
+      80.75
+    ]
+  ]
+}

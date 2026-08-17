@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786560228199862000,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-084832-BATCH-Batch_6331.xls\\Input\\Orders\\Glass Order TIM KNIGHT_89339991.2 3615 POTTER RD.pdf",
+    "sha256": "2df8a7c2e33d11c5fbc1f12ccfca9242825d00af217bef516cb48acf9b336065",
+    "size": 220365
+  },
+  "value": [
+    [
+      1,
+      28.25,
+      79.5
+    ],
+    [
+      2,
+      42.0,
+      79.9375
+    ]
+  ]
+}

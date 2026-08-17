@@ -1,0 +1,206 @@
+{
+  "allowed_roots": [
+    "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders"
+  ],
+  "bundle_id": "20260817-084155-7ba45714",
+  "created_at": "2026-08-17T08:41:55",
+  "expires_at": "2026-08-24T08:41:55",
+  "files": [
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\87234045.3 SPRING GROVE 29_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\87234045.3 SPRING GROVE 29_1__P1.dxf",
+      "restored": false,
+      "size": 11067
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\87234045.3 SPRING GROVE 29_2__P3.dxf",
+      "quarantined_path": "files\\root-1\\87234045.3 SPRING GROVE 29_2__P3.dxf",
+      "restored": false,
+      "size": 12188
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\88524505 SPRING GROVE 120_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\88524505 SPRING GROVE 120_1__P1.dxf",
+      "restored": false,
+      "size": 11113
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\88617058 BRATTON 47_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\88617058 BRATTON 47_1__P1.dxf",
+      "restored": false,
+      "size": 10938
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_1.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_1.dxf",
+      "restored": false,
+      "size": 10175
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_1__P1.dxf",
+      "restored": false,
+      "size": 10153
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_2.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_2.dxf",
+      "restored": false,
+      "size": 8146
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_2__P2.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_2__P2.dxf",
+      "restored": false,
+      "size": 8396
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_3.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_3.dxf",
+      "restored": false,
+      "size": 8198
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_3__P3.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_3__P3.dxf",
+      "restored": false,
+      "size": 8448
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_4.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_4.dxf",
+      "restored": false,
+      "size": 8157
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_4__P4.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_4__P4.dxf",
+      "restored": false,
+      "size": 8407
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_5.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_5.dxf",
+      "restored": false,
+      "size": 10254
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89366422.2 700 POLE BRANCH_5__P5.dxf",
+      "quarantined_path": "files\\root-1\\89366422.2 700 POLE BRANCH_5__P5.dxf",
+      "restored": false,
+      "size": 10220
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89414930.6.2 8710 SOUTHSHORE_1.dxf",
+      "quarantined_path": "files\\root-1\\89414930.6.2 8710 SOUTHSHORE_1.dxf",
+      "restored": false,
+      "size": 11771
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89414930.6.2 8710 SOUTHSHORE_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\89414930.6.2 8710 SOUTHSHORE_1__P1.dxf",
+      "restored": false,
+      "size": 11761
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89414930.6.2 8710 SOUTHSHORE_2.dxf",
+      "quarantined_path": "files\\root-1\\89414930.6.2 8710 SOUTHSHORE_2.dxf",
+      "restored": false,
+      "size": 9968
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89414930.6.2 8710 SOUTHSHORE_2__P2.dxf",
+      "quarantined_path": "files\\root-1\\89414930.6.2 8710 SOUTHSHORE_2__P2.dxf",
+      "restored": false,
+      "size": 9795
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89525220 RIVERWALK 502_1__P1.dxf",
+      "quarantined_path": "files\\root-1\\89525220 RIVERWALK 502_1__P1.dxf",
+      "restored": false,
+      "size": 10758
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89525220 RIVERWALK 502_2__P2.dxf",
+      "quarantined_path": "files\\root-1\\89525220 RIVERWALK 502_2__P2.dxf",
+      "restored": false,
+      "size": 13012
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89644307 TW71 43393035_1.dxf",
+      "quarantined_path": "files\\root-1\\89644307 TW71 43393035_1.dxf",
+      "restored": false,
+      "size": 10891
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89644307 TW71 43393035_1__38 Clear Tempered 25-316 x 72  (62lb).dxf",
+      "quarantined_path": "files\\root-1\\89644307 TW71 43393035_1__38 Clear Tempered 25-316 x 72  (62lb).dxf",
+      "restored": false,
+      "size": 10493
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89644307 TW71 43393035_2.dxf",
+      "quarantined_path": "files\\root-1\\89644307 TW71 43393035_2.dxf",
+      "restored": false,
+      "size": 11923
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\89644307 TW71 43393035_2__38 Clear Tempered 28 x 71-12  (68.4lb).dxf",
+      "quarantined_path": "files\\root-1\\89644307 TW71 43393035_2__38 Clear Tempered 28 x 71-12  (68.4lb).dxf",
+      "restored": false,
+      "size": 11905
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order 89644307 TW71 43393035.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order 89644307 TW71 43393035.pdf",
+      "restored": false,
+      "size": 212702
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order AVENCIA_89525220 RIVERWALK 502.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order AVENCIA_89525220 RIVERWALK 502.pdf",
+      "restored": false,
+      "size": 219259
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order GERRARD_89414930.6.2 8710 SOUTHSHORE.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order GERRARD_89414930.6.2 8710 SOUTHSHORE.pdf",
+      "restored": false,
+      "size": 214730
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order MATTAMY_88617058 BRATTON 47.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order MATTAMY_88617058 BRATTON 47.pdf",
+      "restored": false,
+      "size": 148312
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order MI HOMES_87234045.3 SPRING GROVE 29.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order MI HOMES_87234045.3 SPRING GROVE 29.pdf",
+      "restored": false,
+      "size": 162083
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order MI HOMES_88524505 SPRING GROVE 120.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order MI HOMES_88524505 SPRING GROVE 120.pdf",
+      "restored": false,
+      "size": 150176
+    },
+    {
+      "original_path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Input\\Orders\\Glass Order SCHUMACHER_89366422.2 700 POLE BRANCH.pdf",
+      "quarantined_path": "files\\root-1\\Glass Order SCHUMACHER_89366422.2 700 POLE BRANCH.pdf",
+      "restored": false,
+      "size": 298051
+    }
+  ],
+  "orders": [
+    "INPUT-6FFA9A2E",
+    "INPUT-92BE44C8",
+    "INPUT-C1F1D71E",
+    "INPUT-E17051B9",
+    "INPUT-F621B20E",
+    "INPUT-F9D4A09E",
+    "INPUT-FB997DC9"
+  ],
+  "schema": 1
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786477848475048000,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-084746-BATCH-Batch_6318.xls\\Input\\Orders\\Glass Order MCGEE HUNTLEY_88732368 2112 ARDEN.pdf",
+    "sha256": "04fb1d746e848f36a23b6fcdee6883f16bd6713e7006cf3984e6789aedb07ae5",
+    "size": 216506
+  },
+  "value": [
+    [
+      1,
+      29.625,
+      67.0
+    ],
+    [
+      2,
+      28.0,
+      66.5
+    ]
+  ]
+}

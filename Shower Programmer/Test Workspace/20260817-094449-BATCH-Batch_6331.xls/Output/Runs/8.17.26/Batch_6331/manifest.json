@@ -1,0 +1,25 @@
+{
+  "created": "2026-08-17 09:45:06",
+  "programs": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-094449-BATCH-Batch_6331.xls\\Output\\Runs\\8.17.26\\Batch_6331\\Programs",
+  "remake_items_by_order": {
+    "237440": [
+      2
+    ],
+    "237443": [
+      1
+    ],
+    "237444": [
+      1
+    ],
+    "237446": [
+      1
+    ],
+    "237447": [
+      1
+    ]
+  },
+  "reports": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-094449-BATCH-Batch_6331.xls\\Output\\Runs\\8.17.26\\Batch_6331\\Reports",
+  "sketches": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-094449-BATCH-Batch_6331.xls\\Output\\Runs\\8.17.26\\Batch_6331\\Sketches",
+  "skip_dxf_output": false,
+  "skip_sketch_output": false
+}

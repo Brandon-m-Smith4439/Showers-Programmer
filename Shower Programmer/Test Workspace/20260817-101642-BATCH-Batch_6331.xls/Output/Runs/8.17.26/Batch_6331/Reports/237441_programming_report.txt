@@ -1,0 +1,16 @@
+Shower Programmer APPLY
+A&W order: 237441
+Job/SO: 89082997.2R CAROLINA RIDGE 105
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-101642-BATCH-Batch_6331.xls\Input\Orders\Glass Order PULTE_89082997.2R CAROLINA RIDGE 105.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-101642-BATCH-Batch_6331.xls\Output\Runs\8.17.26\Batch_6331\Sketches\237441.pdf
+Remake: P1, P2
+
+Items:
+- P1: 237441.1 | label only | 33.25 x 100.812
+  remake: yes
+  reasons: no cutouts/fabrication detected, process list has no cutting machine, remake item, REMAKE auto-detected from PDF Location
+  dxf: skipped
+- P2: 237441.2 | label only | 33.3125 x 100.938
+  remake: yes
+  reasons: no cutouts/fabrication detected, process list has no cutting machine, remake item, REMAKE auto-detected from PDF Location
+  dxf: skipped

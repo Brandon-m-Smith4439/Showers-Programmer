@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "source": {
+    "mtime_ns": 1786560272412162200,
+    "path": "C:\\Users\\brandon.m.smith\\My Projects\\Showers Programmer\\Shower Programmer\\Test Workspace\\20260817-101642-BATCH-Batch_6331.xls\\Input\\Orders\\Glass Order KEYSTONE_89338927.2 WINDMERE 15.pdf",
+    "sha256": "35d03d390b88010bed31dd0f77bec6af849ae81d4f1ff55ca7d18dc7a41d985a",
+    "size": 238258
+  },
+  "value": [
+    [
+      1,
+      43.9375,
+      80.1875
+    ],
+    [
+      2,
+      43.75,
+      80.1875
+    ],
+    [
+      3,
+      27.1875,
+      80.0
+    ],
+    [
+      4,
+      28.125,
+      79.5
+    ]
+  ]
+}

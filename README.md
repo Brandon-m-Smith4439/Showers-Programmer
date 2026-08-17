@@ -2,7 +2,9 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.17 - Adaptive DXF Rotation Display**
+Current release: **Version 1.19 - REMAKE Location Variant Detection**
+
+Version 1.19 REMAKE Location detection recognizes `REMAK`, `REMAKE`, `REMAKES`, `REMAKED`, `REMAKING`, and other `REMAK...` forms when they appear in the parsed A+W Location field, including reverse-extracted forms such as `REMAKESLocation:`. Matching remains Location-scoped so unrelated REMAKE notes do not alter routing.
 
 
 Version 1.17 makes the **DXF Rotation** reference value adaptive: whole-number rotations show no decimal, concise values keep only meaningful decimals, and detailed values can use up to six decimal places with rounding at the sixth. The formatting is display-only; geometry/CNC calculations keep full precision.

@@ -2,6 +2,25 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.19] - 2026-08-17
+
+### Changed
+- Location-based REMAKE routing now accepts the common Location forms **REMAK**, **REMAKE**, **REMAKES**, **REMAKED**, **REMAKING**, and other Location tokens beginning with the `REMAK` stem. The same variants are recognized in reverse-extracted A+W text such as `REMAKESLocation:`.
+- Variant matching remains scoped strictly to parsed **Location** values. REMAKE wording in project names, customer notes, hardware notes, or other PDF text does not automatically route an order as a remake.
+
+### Regression Coverage
+- Added executable coverage for all supported REMAKE Location variants in both conventional and reverse-extracted field layouts, plus false-positive guards for unrelated REMAKE notes and normal Location values.
+
+## [Version 1.18] - 2026-08-17
+
+### Fixed
+- Sent-input cleanup performs a lightweight late-arrival sweep before completed process-list retirement and keeps the process list active when a matching sent input still cannot be archived, preventing a sent local file from becoming **Input Without Process List**.
+- Location-based REMAKE detection now handles reverse-extracted A+W fields such as `REMAKELocation:` as well as conventional `Location: REMAKE`.
+- **Process All** automatically routes a PDF-proven REMAKE through remake processing without requiring the manual REMAKE batch selection.
+
+### Regression Coverage
+- Added coverage for late local inputs during sent cleanup, locked sent inputs preventing process-list retirement, reverse Location extraction, and automatic Process All REMAKE routing.
+
 ## [Version 1.17] - 2026-08-17
 
 ### Changed

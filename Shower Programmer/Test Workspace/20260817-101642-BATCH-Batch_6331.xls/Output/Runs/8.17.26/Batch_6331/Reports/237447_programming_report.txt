@@ -1,0 +1,25 @@
+Shower Programmer APPLY
+A&W order: 237447
+Job/SO: 89398736.2 8610 BUTTERFIELD
+Input PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-101642-BATCH-Batch_6331.xls\Input\Orders\Glass Order TERRY PHINNEY_89398736.2 8610 BUTTERFIELD.pdf
+Output PDF: C:\Users\brandon.m.smith\My Projects\Showers Programmer\Shower Programmer\Test Workspace\20260817-101642-BATCH-Batch_6331.xls\Output\Runs\8.17.26\Batch_6331\Sketches\237447.pdf
+Remake: P1
+
+Items:
+- P1: 237447.1 | DENVER 2 | 41 x 47.1875
+  remake: yes
+  reasons: no cutouts/fabrication detected, process list says WJ, but no WJ-only fabrication found, process-list fabrication suggests DENVER 2, process list Diamon Fusion, remake item, REMAKE auto-detected from PDF Location
+  diamon fusion: yes
+  dxf: 89398736.2 8610 BUTTERFIELD_1__P1.dxf -> 23744701.dxf (90 deg)
+  indicator: bottom_left
+- P2: 237447.2 | label only | 29.875 x 84.5
+  remake: X out; not programmed
+  reasons: no cutouts/fabrication detected, not in process list; X out, not selected for remake; X out
+  dxf: skipped
+- P3: 237447.3 | label only | 29.9375 x 85
+  remake: X out; not programmed
+  reasons: panel fabrication keyword in PDF text, not in process list; X out, not selected for remake; X out
+  dxf: skipped
+
+Batch issues:
+- Sketch page not in list; crossed out: P2, P3

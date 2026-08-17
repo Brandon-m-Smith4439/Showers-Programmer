@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 1.15 production-safety integration for Shower Programmer.
+"""Version 1.18 production-safety integration for Shower Programmer.
 
 Mature workflow behavior now lives in the core GUI/batch modules. This layer is
 kept for the remaining release integrations that still benefit from isolation,
@@ -67,6 +67,8 @@ from __future__ import annotations
 # VERSION_1_15_ARCHIVE_MULTI_REVISION_XLS_POLISH
 # VERSION_1_16_ARCHIVE_REVISION_FILE_HANDOFF
 # VERSION_1_17_ADAPTIVE_DXF_ROTATION_DISPLAY
+# VERSION_1_18_SENT_CLEANUP_REMAKE_AUTO
+# VERSION_1_19_REMAKE_LOCATION_VARIANTS
 
 import copy
 import hashlib
@@ -1596,6 +1598,14 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "version_1_16_archive_revision_file_handoff": True,
                         "dxf_reference_adaptive_six_decimal_display": True,
                         "version_1_17_adaptive_dxf_rotation_display": True,
+                        "sent_cleanup_second_sweep": True,
+                        "completed_process_list_local_orphan_guard": True,
+                        "reverse_location_remake_detection": True,
+                        "process_all_location_remake_auto": True,
+                        "version_1_18_sent_cleanup_remake_auto": True,
+                        "remake_location_variant_detection": True,
+                        "remake_location_stem_scope_guard": True,
+                        "version_1_19_remake_location_variants": True,
                     }
                 )
             except Exception as exc:
@@ -1674,6 +1684,11 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_1_12_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_1_13_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_1_14_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_15_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_16_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_17_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_18_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_19_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 

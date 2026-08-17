@@ -2623,7 +2623,7 @@ def open_process_order_pdf(
 LOCATION_FIELD_RE = re.compile(
     r"location\s*:\s*(.*?)"
     r"(?="
-    r"\s*(?:marks?|project(?:\s*#)?|shape|quantity|glass|page)\s*:"
+    r"\s*(?:marks?|project(?:\s*#)?|shape|quantity|glass|page|notes?|customer\s+notes?|printed\s+on|delivery\s+date|address|supplier)\s*:"
     r"|\s+measurements\s+are\s+in\s+inches"
     r"|\s+page\s+\d+\s+of\s+\d+"
     r"|$"
@@ -2633,27 +2633,71 @@ LOCATION_FIELD_RE = re.compile(
 
 
 def pdf_location_values(reader: PdfReader) -> list[str]:
-    """Return A+W Location values from overview and piece-page content.
+    """Return A+W Location values despite both common PDF extraction orders.
 
-    A+W PDF text extraction sometimes joins the preceding value directly to
-    ``Location:`` (for example ``MASTERLocation:``) or places the location
-    value on the next visual line.  Collapsing page whitespace before applying
-    the field-boundary expression handles both forms without treating an
-    unrelated REMAKE note elsewhere on the page as the Location value.
+    A+W sketches are not text-extracted consistently.  Some files expose the
+    field in normal label/value order (``Location: REMAKE``), while others put
+    the visual value immediately *before* the label (``REMAKELocation:`` or
+    ``MASTER LEFTLocation:``).  Preserve the existing forward-field parser and
+    additionally capture only values that are directly joined to the Location
+    label on the same extracted line.  Requiring direct adjacency avoids
+    treating an unrelated project name or REMAKE note as the Location value.
     """
     values: list[str] = []
     for page in reader.pages:
-        text = re.sub(r"\s+", " ", page.extract_text() or "").strip()
+        raw_text = page.extract_text() or ""
+
+        # Reverse extraction seen in production A+W PDFs:
+        # ``MASTER LEFTLocation:`` / ``REMAKELocation:``.  Only accept a prefix
+        # when the value is physically joined to the label (no whitespace
+        # immediately before ``Location``); normal ``Project ... Location:``
+        # text therefore cannot become a false Location value.
+        for label_match in re.finditer(r"location\s*:", raw_text, flags=re.IGNORECASE):
+            start = label_match.start()
+            if start <= 0 or raw_text[start - 1].isspace():
+                continue
+            line_start = max(raw_text.rfind("\n", 0, start), raw_text.rfind("\r", 0, start)) + 1
+            prefix = raw_text[line_start:start].strip(" :-\t")
+            if not prefix or ":" in prefix or len(prefix) > 80:
+                continue
+            value = re.sub(r"\s+", " ", prefix).strip(" :-")
+            if value and value not in values:
+                values.append(value)
+
+        # Forward extraction covers conventional ``Location: value`` layouts
+        # and multiline values while respecting the existing field boundaries.
+        text = re.sub(r"\s+", " ", raw_text).strip()
         for match in LOCATION_FIELD_RE.finditer(text):
+            # A joined prefix such as ``MASTER LEFTLocation:`` is reverse
+            # extraction and was already handled above.  Do not reinterpret
+            # the text *after* that colon as a conventional Location value.
+            if match.start() > 0 and not text[match.start() - 1].isspace():
+                continue
             value = re.sub(r"\s+", " ", match.group(1)).strip(" :-")
-            if value:
+            if value and value not in values:
                 values.append(value)
     return values
 
 
+def location_value_indicates_remake(value: str) -> bool:
+    """Return True for supported REMAKE forms inside an A+W Location value.
+
+    A+W Location text is occasionally truncated or inflected by upstream data
+    entry/extraction (for example ``REMAK``, ``REMAKE``, ``REMAKES``,
+    ``REMAKED``, ``REMAKING``, or another token beginning with the ``REMAK``
+    stem).  Match that stem only after the caller
+    has isolated the Location field so unrelated REMAKE notes elsewhere in the
+    sketch cannot change production routing.
+    """
+    normalized = re.sub(r"[^A-Z]+", " ", str(value).upper()).strip()
+    if not normalized:
+        return False
+    return any(token.startswith("REMAK") for token in normalized.split())
+
+
 def pdf_location_indicates_remake(reader: PdfReader) -> bool:
-    """Detect REMAKE whenever the A+W Location field says REMAKE."""
-    return any(re.search(r"\bREMAKE\b", value, re.IGNORECASE) for value in pdf_location_values(reader))
+    """Detect supported REMAKE forms whenever the A+W Location field says so."""
+    return any(location_value_indicates_remake(value) for value in pdf_location_values(reader))
 
 
 def prepare_job(
@@ -2667,7 +2711,11 @@ def prepare_job(
 ) -> tuple[programmer.Job, PdfReader, list[str]]:
     process_order = clone_process_order(process_order)
     pdf_path, reader = open_process_order_pdf(folder, process_order, config=config)
-    if remake_items is None and pdf_location_indicates_remake(reader):
+    location_remake_detected = remake_items is None and pdf_location_indicates_remake(reader)
+    if location_remake_detected:
+        # Empty means all process-list pieces.  This is the same remake route
+        # used by the manual REMAKE batch option, but it is now driven directly
+        # by the PDF Location field for Process All / Process Selected.
         remake_items = set()
     panels = programmer.analyze_panels(reader, config, process_order.aw_order)
     item_remaps = match_process_items_to_sketch_pages(reader, panels, process_order, config, remake_items)
@@ -2689,6 +2737,10 @@ def prepare_job(
         else remake_items
     )
     selected_remake_items = programmer.apply_remake_selection(panels, effective_remake_items)
+    if location_remake_detected:
+        for panel in panels:
+            if panel.remake and "REMAKE auto-detected from PDF Location" not in panel.reasons:
+                panel.reasons.append("REMAKE auto-detected from PDF Location")
 
     job = programmer.Job(
         pdf_path=pdf_path,

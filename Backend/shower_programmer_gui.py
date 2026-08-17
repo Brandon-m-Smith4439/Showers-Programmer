@@ -17444,6 +17444,26 @@ try {{
                 for order in batch_orders:
                     if isinstance(order, shower_batch.ProcessOrder):
                         cleanup_orders.setdefault(str(order.aw_order), order)
+        def local_order_candidate_snapshot() -> dict[str, tuple[Path, int, int]]:
+            """Capture root-level order inputs without invoking expensive matching logic."""
+            snapshot: dict[str, tuple[Path, int, int]] = {}
+            try:
+                candidates = list(order_folder.iterdir())
+            except OSError:
+                return snapshot
+            for path in candidates:
+                try:
+                    if not path.is_file() or path.suffix.lower() not in self.ORDER_FILE_EXTENSIONS:
+                        continue
+                    if path.suffix.lower() == ".pdf" and path.name.casefold().startswith(self.HARDWARE_LIST_PREFIX):
+                        continue
+                    stat = path.stat()
+                except OSError:
+                    continue
+                snapshot[path.name.casefold()] = (path, int(stat.st_size), int(stat.st_mtime_ns))
+            return snapshot
+
+        initial_order_snapshot = local_order_candidate_snapshot()
         order_files = self.matching_order_files(
             order_folder,
             list(cleanup_orders.values()),
@@ -17536,8 +17556,6 @@ try {{
                 for aw_order, matched_names in archived_mappings:
                     if matched_names:
                         validated_sources_by_aw[aw_order] = matched_names
-        self._last_archived_order_sources_by_aw = validated_sources_by_aw
-
         planned_process_files: list[Path] = []
         if process_list_files is not None:
             planned_process_files.extend(process_list_files)
@@ -17560,6 +17578,90 @@ try {{
             done += 1
             if progress_callback is not None:
                 progress_callback(done, max(total_sources, 1), source)
+
+        # Files can arrive in local Input while a send is completing (for
+        # example a delayed copy finishing after the first archive inventory).
+        # Do not call ``matching_order_files`` again here: the normal send path
+        # intentionally pays for that full match only once, then reuses its
+        # validated results. Instead, compare cheap root-level snapshots and
+        # inspect only files that are known sent inputs or that appeared/changed
+        # after the initial inventory.
+        known_terminal_names = {path.name.casefold() for path in order_files}
+        for names in validated_sources_by_aw.values():
+            known_terminal_names.update(name.casefold() for name in names)
+
+        def candidate_matches_terminal_orders(
+            source: Path,
+            *,
+            already_known: bool,
+        ) -> bool:
+            source_key = source.name.casefold()
+            matched_any = False
+            for aw_order, order in cleanup_orders.items():
+                known_names = validated_sources_by_aw.get(aw_order, set())
+                if any(name.casefold() == source_key for name in known_names):
+                    matched_any = True
+                    continue
+                if already_known:
+                    continue
+                if self.file_matches_process_orders(source, [order], inspect_pdf_text=True):
+                    validated_sources_by_aw.setdefault(aw_order, set()).add(source.name)
+                    matched_any = True
+            if matched_any:
+                known_terminal_names.add(source_key)
+            return matched_any or already_known
+
+        def changed_or_known_terminal_candidates(
+            baseline: dict[str, tuple[Path, int, int]],
+        ) -> tuple[list[Path], dict[str, tuple[Path, int, int]]]:
+            current = local_order_candidate_snapshot()
+            candidates: list[Path] = []
+            for key, (source, size, mtime_ns) in current.items():
+                prior = baseline.get(key)
+                changed_since_baseline = (
+                    prior is None
+                    or prior[1] != size
+                    or prior[2] != mtime_ns
+                )
+                already_known = key in known_terminal_names
+                if not already_known and not changed_since_baseline:
+                    continue
+                if candidate_matches_terminal_orders(source, already_known=already_known):
+                    candidates.append(source)
+            return sorted(candidates, key=lambda candidate: candidate.name.lower()), current
+
+        sweep_baseline = initial_order_snapshot
+        for sweep_number in range(2):
+            late_order_files, current_snapshot = changed_or_known_terminal_candidates(sweep_baseline)
+            sweep_baseline = current_snapshot
+            if not late_order_files:
+                break
+
+            warnings.append(
+                f"Detected {len(late_order_files)} local input file(s) that arrived during sent-input cleanup or remained after the first archive pass; "
+                f"running cleanup sweep {sweep_number + 2}."
+            )
+            for source in late_order_files:
+                try:
+                    archived.append(self.move_file_to_folder(source, order_archive_dir))
+                except (OSError, shutil.Error) as exc:
+                    order_archive_failed = True
+                    warnings.append(f"Could not archive late input {source.name}: {exc}")
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done, max(total_sources, done, 1), source)
+
+        remaining_terminal_inputs, _final_snapshot = changed_or_known_terminal_candidates(sweep_baseline)
+        if remaining_terminal_inputs:
+            order_archive_failed = True
+            names = ", ".join(path.name for path in remaining_terminal_inputs[:6])
+            extra = f" and {len(remaining_terminal_inputs) - 6} more" if len(remaining_terminal_inputs) > 6 else ""
+            warnings.append(
+                "Kept the completed process list active because sent order input files are still present locally: "
+                f"{names}{extra}. The next scan can retry cleanup without orphaning those inputs."
+            )
+
+        self._last_archived_order_sources_by_aw = validated_sources_by_aw
 
         verified_process_files: list[Path] = []
         if plans:
