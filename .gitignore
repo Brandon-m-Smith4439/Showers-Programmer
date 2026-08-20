@@ -2,20 +2,32 @@
 /Input/
 /Output/
 /Diagnostics/
+/Recovery/
+/History/
+/shower_programmer_ui_settings.json
 
-# Local input and generated output for the packaged application
-/Shower Programmer/Input/
-/Shower Programmer/Output/
-/Shower Programmer/Diagnostics/
+# Installed one-folder application and all of its local runtime state.
+# The publishable one-folder build lives in release/Shower-Programmer-Windows.zip.
+/Shower Programmer/
 
 # Generated Python bytecode
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Generated build and temporary output
-build/
-tmp/
+/build/
+/tmp/
+/tests/_verification/
+/tests/known_orders/
+/--self-test-output
+/*-self-test*/
 
 # Local crash reports and updater audit folders
 ErrorReports/
 .update-audit-*/
+
+# Only the updater package and its manifest belong in the release folder.
+/release/*
+!/release/Shower-Programmer-Windows.zip
+!/release/Shower-Programmer-Windows.json
