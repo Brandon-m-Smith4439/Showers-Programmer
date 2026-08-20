@@ -12,6 +12,8 @@ from __future__ import annotations
 # REMAKE_BANNER_PLACEMENT_V94: use the same fixed-large, glass-anchored placement contract as DIAMON FUSION.
 # PPH_DXF_HINGE_SIDE_CONFIRMATION_V35: use unambiguous PPH radius pairs to confirm the DXF hinge side.
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: orient proven symmetric SCU4 panels opposite a bottom-left logo.
+# WATERJET_ELLIPSE_GEOMETRY_V123: preserve DXF ellipse vectors and recognize A+W prefix-radius notation.
+# FPS_HINGE_KICK_OUT_V132: give proven FP-S hinge-side kick-out geometry priority over hinge defaults.
 
 import argparse
 import copy
@@ -230,6 +232,7 @@ class Panel:
     remake_font_size: float | None = None
     indicator_size: float | None = None
     waterjet_indicator_size: float | None = None
+    mirror_glass: bool = False
     hide_label: bool = False
     hide_indicator: bool = False
     hide_diamon_fusion: bool = False
@@ -788,6 +791,7 @@ def classify_panel(panel: Panel, config: dict[str, Any], aw_order: str) -> Panel
     has_denver_fabrication = any(k in fabrication_upper for k in denver_fabrication_keywords)
     has_only_allowed_extra = any(k in upper for k in label_only_allow)
     has_mirror = has_mirror_glass_type(panel.text, config)
+    panel.mirror_glass = has_mirror
     panel.diamon_fusion = "DIAMON" in upper or "DIAMOND FUSION" in upper
 
     if panel.width is None or panel.height is None:
@@ -1007,9 +1011,12 @@ def count_fp_marks(text: str) -> int:
 
 def has_radius_text(text: str) -> bool:
     upper = text.upper()
+    waterjet_radius = r"(?:3/8|1/2|0?\.375|0?\.5)"
     return bool(
         re.search(
-            r"\b(?:3/8|1/2|0?\.375|0?\.5)\s*(?:\"|IN(?:CH(?:ES)?)?)?\s*RADIUS\b|\bRADIUS\b",
+            rf"\b{waterjet_radius}\s*(?:\"|IN(?:CH(?:ES)?)?)?\s*RADIUS\b"
+            rf"|\bR(?:ADIUS)?\s*[:=]?\s*{waterjet_radius}\b"
+            r"|\bRADIUS\b",
             upper,
         )
     )
@@ -1323,7 +1330,7 @@ def waterjet_allowed_indicator_corners(panel: Panel | None = None) -> set[str]:
 
 
 def waterjet_indicator_corner_order(panel: Panel | None = None) -> tuple[str, str]:
-    return ("top_right", "bottom_left") if panel_is_landscape(panel) else ("top_left", "bottom_right")
+    return ("bottom_left", "top_right") if panel_is_landscape(panel) else ("top_left", "bottom_right")
 
 
 def waterjet_allowed_indicator_corner(corner: str | None, panel: Panel | None = None) -> str | None:
@@ -1500,6 +1507,12 @@ def has_door_programming_evidence(panel: Panel, config: dict[str, Any]) -> bool:
     return False
 
 
+def has_explicit_hinge_programming_evidence(panel: Panel, config: dict[str, Any]) -> bool:
+    """Require piece-level hinge evidence, excluding order-header words such as DOOR REMAKE."""
+    upper = panel_combined_text(panel).upper()
+    return has_pph_hinge(panel) or has_hinge_label_text(upper, config) or bool(re.search(r"\bHINGES?\b", upper))
+
+
 def has_pph_hinge(panel: Panel) -> bool:
     upper = panel_combined_text(panel).upper()
     compact = re.sub(r"[^A-Z0-9]", "", upper)
@@ -1514,7 +1527,12 @@ def enforce_configured_hinge_orientation(panel: Panel, config: dict[str, Any]) -
     configured = configured_hinge_orientation(panel_combined_text(panel), config)
     if configured is None:
         return
-    hinges_up = has_door_cut_in(panel, config) or configured
+    geometry_requires_hinges_up = bool(
+        panel.source_dxf is not None
+        and panel.hinge_side in {"left", "right"}
+        and fps_hinge_side_has_cut_in(panel, panel.hinge_side, config)
+    )
+    hinges_up = has_door_cut_in(panel, config) or geometry_requires_hinges_up or configured
 
     original_corner = panel.indicator_corner
     if panel.hinge_side in {"left", "right"}:
@@ -1656,7 +1674,10 @@ def denver_grabber_corner_for_panel(panel: Panel, rotation_degrees: float | None
 
 
 def default_waterjet_indicator_corner(panel: Panel) -> str:
-    return "top_right" if panel_is_landscape(panel) else "top_left"
+    # A landscape WJ source already has its long side horizontal, so its
+    # unrotated program aligns with the lower-left marker.  The opposite
+    # top-right marker represents the flipped orientation.
+    return "bottom_left" if panel_is_landscape(panel) else "top_left"
 
 
 def denver_grabber_rotation_for_corner(corner: str, panel: Panel | None = None) -> float | None:
@@ -2224,11 +2245,15 @@ def adjust_wj_indicator_corner(panel: Panel) -> None:
     if panel.source_dxf is None:
         return
     corners = dxf_square_corners(panel.source_dxf)
+    preferred = default_waterjet_indicator_corner(panel)
     if not corners:
-        panel.indicator_corner = waterjet_allowed_indicator_corner(panel.indicator_corner, panel) or default_waterjet_indicator_corner(panel)
+        if panel.indicator_corner != preferred:
+            panel.indicator_corner = preferred
+            panel.reasons.append(f"WJ marker aligned with unrotated source: {preferred}")
         return
-    preferred = waterjet_allowed_indicator_corner(panel.indicator_corner, panel) or default_waterjet_indicator_corner(panel)
     if preferred in corners:
+        if panel.indicator_corner != preferred:
+            panel.reasons.append(f"WJ marker aligned with source orientation: {preferred}")
         panel.indicator_corner = preferred
         return
     for candidate in waterjet_indicator_corner_order(panel):
@@ -2268,7 +2293,18 @@ def wj_rotation_for_indicator_corner(
     if not corner:
         return None
     if not wj_needs_quarter_turn_for_horizontal_output(panel):
-        return None
+        # Landscape WJ sources are already long-side horizontal. Their two
+        # production-safe indicator positions therefore represent the source
+        # orientation and its 180-degree flip, not a quarter turn. This is
+        # especially important for mirror cutouts, where Process DXF Again
+        # must follow a manually flipped indicator without standing the glass
+        # on its short side.
+        landscape_mapping = {
+            "bottom_left": 0.0,
+            "top_right": 180.0,
+        }
+        allowed_corner = corner if allow_manual_corner else waterjet_allowed_indicator_corner(corner, panel)
+        return landscape_mapping.get(allowed_corner)
     rules = config.get("rules", {})
     mapping = rules.get("waterjet_tall_rotation_by_indicator", {})
     if not isinstance(mapping, dict):
@@ -2310,7 +2346,7 @@ def apply_manual_wj_rotation_for_indicator(panel: Panel, config: dict[str, Any])
         )
     if rotation is None:
         return
-    if abs((panel.rotation_degrees or 0) - rotation) > 1e-6:
+    if panel.rotation_degrees is None or abs(panel.rotation_degrees - rotation) > 1e-6:
         panel.rotation_degrees = rotation
         reason = f"WJ rotation follows manual {panel.indicator_corner} marker"
         if reason not in panel.reasons:
@@ -2388,6 +2424,8 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
     if side is None and has_pph_hinge(panel):
         side = dxf_pph_hinge_side_candidate(panel.source_dxf)
         pph_radius_confirmation = side is not None
+    if side is None and panel.hinge_side in {"left", "right"}:
+        side = panel.hinge_side
     if side is None:
         return
     standard_dxf_cut_in = dxf_hinge_side_has_cut_in(panel.source_dxf, side, config)
@@ -2396,7 +2434,12 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
         side,
         config,
     )
-    dxf_cut_in = standard_dxf_cut_in or fps_short_transition
+    fps_kick_out_transition = (
+        has_fps_edgework(panel)
+        and has_explicit_hinge_programming_evidence(panel, config)
+        and dxf_side_has_kick_out_transition(panel.source_dxf, side, config)
+    )
+    dxf_cut_in = standard_dxf_cut_in or fps_short_transition or fps_kick_out_transition
     previous = panel.hinge_side or "unknown"
     side_changed = panel.hinge_side != side
     if side_changed:
@@ -2421,6 +2464,8 @@ def adjust_denver_door_hinge_side_from_dxf(panel: Panel, config: dict[str, Any])
         remove_hinge_side_reasons(panel)
         if fps_short_transition:
             panel.reasons.append(f"hinge side {side}; hinges up from DXF FP-S cut transition")
+        elif fps_kick_out_transition:
+            panel.reasons.append(f"hinge side {side}; hinges up from DXF FP-S kick-out transition")
         else:
             panel.reasons.append(f"hinge side {side}; hinges up from DXF K-cut/kick-in/jut-out")
         moved_off_hinge = True
@@ -2509,7 +2554,94 @@ def fps_hinge_side_has_cut_in(panel: Panel, side: str, config: dict[str, Any]) -
         return False
     if dxf_hinge_side_has_cut_in(panel.source_dxf, side, config):
         return True
-    return has_fps_edgework(panel) and dxf_side_has_short_cut_transition(panel.source_dxf, side, config)
+    if not has_fps_edgework(panel):
+        return False
+    if dxf_side_has_short_cut_transition(panel.source_dxf, side, config):
+        return True
+    return has_explicit_hinge_programming_evidence(panel, config) and dxf_side_has_kick_out_transition(
+        panel.source_dxf,
+        side,
+        config,
+    )
+
+
+def dxf_side_has_kick_out_transition(path: Path, side: str, config: dict[str, Any]) -> bool:
+    """Detect a shallow V-shaped FP-S kick-out formed by a short and long edge run.
+
+    A+W may describe the bottom kick-out with a short side segment below the
+    normal outer-segment filter. Requiring two connected, opposing side offsets
+    keeps a simple full-height raked edge from being mistaken for a kick-out.
+    """
+    if side not in {"left", "right"}:
+        return False
+    segments = collect_dxf_outer_line_segments(path)
+    if not segments:
+        return False
+    points = [point for start, end in segments for point in (start, end)]
+    min_x = min(x for x, _y in points)
+    max_x = max(x for x, _y in points)
+    min_y = min(y for _x, y in points)
+    max_y = max(y for _x, y in points)
+    width = max_x - min_x
+    height = max_y - min_y
+    if width <= 0 or height <= 0:
+        return False
+
+    rules = config.get("rules", {})
+    min_offset = parse_float(rules.get("auto_dxf_cut_in_min_offset", 0.03125), 0.03125)
+    min_kick_offset = parse_float(rules.get("auto_dxf_fps_kick_out_min_offset", 0.0625), 0.0625)
+    min_short_ratio = parse_float(rules.get("auto_dxf_fps_kick_out_min_short_ratio", 0.04), 0.04)
+    max_short_ratio = parse_float(rules.get("auto_dxf_fps_kick_out_max_short_ratio", 0.25), 0.25)
+    min_long_ratio = parse_float(rules.get("auto_dxf_fps_kick_out_min_long_ratio", 0.55), 0.55)
+    tolerance = max(0.05, min(width, height) * 0.005)
+    side_tolerance = max(0.35, min(width, height) * 0.025)
+
+    candidates: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for start, end in segments:
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        if abs(dy) < max(1.0, abs(dx) * 4.0):
+            continue
+        if not segment_near_side(start, end, side, min_x, max_x, min_y, max_y, side_tolerance):
+            continue
+        candidates.append((start, end))
+
+    def same_point(first: tuple[float, float], second: tuple[float, float]) -> bool:
+        return math.dist(first, second) <= tolerance
+
+    for index, first in enumerate(candidates):
+        for second in candidates[index + 1 :]:
+            shared: tuple[float, float] | None = None
+            first_outer: tuple[float, float] | None = None
+            second_outer: tuple[float, float] | None = None
+            for first_point, first_other in ((first[0], first[1]), (first[1], first[0])):
+                for second_point, second_other in ((second[0], second[1]), (second[1], second[0])):
+                    if same_point(first_point, second_point):
+                        shared = ((first_point[0] + second_point[0]) / 2, (first_point[1] + second_point[1]) / 2)
+                        first_outer = first_other
+                        second_outer = second_other
+                        break
+                if shared is not None:
+                    break
+            if shared is None or first_outer is None or second_outer is None:
+                continue
+            first_span = abs(shared[1] - first_outer[1])
+            second_span = abs(shared[1] - second_outer[1])
+            short_span, long_span = sorted((first_span, second_span))
+            if not (height * min_short_ratio <= short_span <= height * max_short_ratio):
+                continue
+            if long_span < height * min_long_ratio:
+                continue
+            first_offset = shared[0] - first_outer[0]
+            second_offset = second_outer[0] - shared[0]
+            if first_offset * second_offset >= 0:
+                continue
+            if min(abs(first_offset), abs(second_offset)) + tolerance < max(min_offset, min_kick_offset):
+                continue
+            if max(first_outer[1], second_outer[1], shared[1]) - min(first_outer[1], second_outer[1], shared[1]) < height * 0.85:
+                continue
+            return True
+    return False
 
 
 def dxf_side_has_short_cut_transition(path: Path, side: str, config: dict[str, Any]) -> bool:
@@ -4581,6 +4713,12 @@ def apply_indicator_nudge_for_corner(
     if precise_edges and machine == "WJ":
         nudge_x = parse_float(nudge_cfg.get("waterjet_outline_x", 0), 0)
         nudge_y = parse_float(nudge_cfg.get("waterjet_outline_y", 0), 0)
+        # Mirror sketches use the same WJ corner/orientation rules as shower
+        # pieces, but their detected glass outline is already the authoritative
+        # marker anchor. The legacy page-level upward lift made bottom markers
+        # visibly float above that corner.
+        if panel is not None and panel.mirror_glass:
+            nudge_y = 0.0
         if panel is not None:
             nudge_x += panel.indicator_nudge_x
             nudge_y += panel.indicator_nudge_y
@@ -4849,8 +4987,12 @@ def transform_dxf(
                 except ValueError:
                     index += 1
                     continue
-                nx = (x * cos_a - y * sin_a) * scale + translate_x
-                ny = (x * sin_a + y * cos_a) * scale + translate_y
+                is_vector = is_dxf_entity_vector(entity_type, code)
+                nx = (x * cos_a - y * sin_a) * scale
+                ny = (x * sin_a + y * cos_a) * scale
+                if not is_vector:
+                    nx += translate_x
+                    ny += translate_y
                 pairs[index][1] = format_number(nx)
                 pairs[y_index][1] = format_number(ny)
         if in_entities and abs(scale - 1.0) > 1e-9 and is_scaled_entity_length_code(entity_type, code):
@@ -4877,6 +5019,15 @@ def is_scaled_entity_length_code(entity_type: str, code: str) -> bool:
     return False
 
 
+def is_dxf_entity_vector(entity_type: str, code: str) -> bool:
+    """Return whether a DXF coordinate pair is a vector instead of a point.
+
+    An ELLIPSE stores its center in 10/20 and its major-axis vector in 11/21.
+    Translating that vector turns a small radius into an enormous detached arc.
+    """
+    return entity_type == "ELLIPSE" and code == "11"
+
+
 def find_next_code(pairs: list[list[str]], start: int, wanted: str, entity_start: int) -> int | None:
     for idx in range(start, min(start + 8, len(pairs))):
         code = pairs[idx][0].strip()
@@ -4891,15 +5042,20 @@ def collect_entity_points(pairs: list[list[str]]) -> list[tuple[float, float]]:
     points: list[tuple[float, float]] = []
     in_entities = False
     entity_start = 0
+    entity_type = ""
     for index, pair in enumerate(pairs):
         code, value = pair[0].strip(), pair[1].strip()
         if code == "2" and value.upper() == "ENTITIES":
             in_entities = True
         if in_entities and code == "0":
-            if value.upper() == "ENDSEC":
+            entity_type = value.upper()
+            if entity_type == "ENDSEC":
                 in_entities = False
+                entity_type = ""
             entity_start = index
         if in_entities and code in {"10", "11", "12", "13", "14", "15", "16", "17", "18"}:
+            if is_dxf_entity_vector(entity_type, code):
+                continue
             y_index = find_next_code(pairs, index + 1, str(int(code) + 10), entity_start)
             if y_index is None:
                 continue

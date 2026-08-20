@@ -2,7 +2,16 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.19 - REMAKE Location Variant Detection**
+Current release: **Version 1.22 - Centralized Configuration Workspace**
+
+
+Version 1.22 adds a comprehensive **Settings > Configuration** workspace for editing the active programmer configuration without opening JSON by hand. The editor discovers every non-note config value, organizes settings into Labels/PDF, Indicators, DXF Output, Machine Routing, Detection Rules, Orientation/Geometry, REMAKE/Overrides, and Advanced sections, and provides search plus type-appropriate editors. Save validates the full configuration and highlights warnings/errors, but validation is advisory: an operator can deliberately **Save Anyway** after acknowledging the warning. Each save is atomic and creates a rotating pre-save configuration backup.
+
+Version 1.21 hardens production reliability with a durable Send transaction journal, startup recovery discovery, post-send integrity checks, automatic SQLite pre-migration backups, stable operator-facing error codes with Copy Diagnostics, persistent previous-runtime rollback, and a no-output Production Rule Test console. It also begins moving deterministic business rules out of the large GUI/batch modules into independently tested `Backend\shower_rules` modules, while operational lifecycle/recovery behavior lives in `Backend\shower_reliability.py`.
+
+Version 1.20 hardens the production workflow around seven areas: direct dependency-free reading of normal legacy `.xls` process lists with Excel as fallback only; an Archive Revision Inspector; a one-click System Health dashboard; a sanitized real-order regression library; per-stage Scan Orders timing diagnostics; a `TestModeProvenance.json` manifest for archive handoffs; and a non-destructive pre-release smoke test that runs before the EXE build.
+
+**Version 1.20 R2 correction:** the System Health SQLite integrity probe now closes its database handle explicitly after `PRAGMA quick_check`, preventing Windows from holding temporary/test SQLite files open during rebuild cleanup.
 
 Version 1.19 REMAKE Location detection recognizes `REMAK`, `REMAKE`, `REMAKES`, `REMAKED`, `REMAKING`, and other `REMAK...` forms when they appear in the parsed A+W Location field, including reverse-extracted forms such as `REMAKESLocation:`. Matching remains Location-scoped so unrelated REMAKE notes do not alter routing.
 
@@ -38,6 +47,22 @@ Archived Orders/Sketches consolidate repeated process-list revisions by the nume
 6. Mark reviewed orders checked.
 7. Use **Review / Send** to send sketches and programs to the production folders and archive completed input files.
 
+## Centralized Configuration Workspace (Version 1.22)
+
+Settings > **Configuration** is the comprehensive editor for `shower_programmer_config.json`:
+
+- **Labels & PDF:** order-label placement, DIAMON FUSION presentation, REMAKE-independent PDF controls, and related visual settings.
+- **Indicators:** Denver/WJ marker sizing, nudge/offset controls, text avoidance, and hinge-side detection thresholds used by sketch placement.
+- **DXF Output:** output scaling plus DXF unit/measurement headers.
+- **Machine Routing:** Denver minimum-size and Water Jet fit/routing controls.
+- **Detection Rules:** hinge, door, fabrication, mirror, Water Jet, label-only, and other configured keyword lists.
+- **Orientation & Geometry:** automatic angle correction, DXF hinge-side logic, FP-S thresholds, hinge-code orientations, and tall-WJ rotation maps.
+- **REMAKE & Overrides:** REMAKE presentation controls plus exact order override JSON.
+- **Advanced:** any configuration key not yet assigned to a specialized section. Future keys are still surfaced automatically.
+
+Use the search box to filter by friendly label, exact JSON path, or description. **Validate Configuration** can be run without saving. **Save Configuration** always validates first and marks the affected cards; if validation reports a problem, the operator can return to editing or explicitly save the entered values anyway. The program does not silently normalize failed validation. A pre-save copy is kept under `Output\Configuration Backups` before the active JSON is atomically replaced.
+
+
 ## Settings Window Lifecycle and Responsiveness (Versions 1.03-1.07)
 
 Settings uses a persistent hide/show lifecycle so Windows and CustomTkinter do not recursively destroy the complex Settings widget tree on every close:
@@ -67,6 +92,16 @@ Version 0.99 builds on the professional 0.98 core with faster operator access an
 - **Batch Test Mode:** The archived process list is restored as a batch whenever available, all matching order inputs share one isolated workspace, each order receives a TESTING lifecycle record in that workspace SQLite database, and production Send remains blocked.
 - **Context-aware archive controls:** Archive action buttons change their labels and scope according to whether an order or batch is selected. Archive Sent Inputs uses the selected scope when present.
 - **Visual polish:** Main-header quick actions, archive controls, table spacing, section surfaces, and Folder Setup were refined for a cleaner production-dashboard appearance without changing programming rules.
+
+## Professional Hardening (Version 1.20)
+
+- **Direct legacy XLS ingestion:** Standard Excel 97-2003 BIFF8 process lists are parsed directly, normally avoiding Excel startup entirely. Encrypted or unusual workbooks fall back to the existing hidden-Excel conversion path instead of failing the scan.
+- **Archive Revision Inspector:** Select a logical archived batch and expand **Revision Details** to see revision dates/process-list files, order deltas, and where each PDF/DXF was resolved from.
+- **System Health:** Settings > System Health checks local/network paths, write permissions, archive/cache access, SQLite integrity, and the optional Excel fallback without blocking the main UI.
+- **Known-order regression corpus:** Sanitized geometry/process facts from real diagnostic cases live under `tests/known_orders` and are executed during release validation. Customer PDFs/DXFs are not embedded in the corpus.
+- **Scan timing evidence:** The activity area keeps the most recent Scan Orders stage summary so unusually slow network indexing, process-list parsing, input synchronization, or PDF/DXF preview work is visible immediately.
+- **Test Mode provenance:** Each isolated Test Workspace contains `TestModeProvenance.json`, recording the process list plus the archive revision that supplied each restored PDF/DXF.
+- **Pre-release smoke validation:** The rebuild BAT runs a temporary-workspace integration smoke test before the integrated source self-test/PyInstaller build and verifies its production sentinel remains unchanged.
 
 ## Professional Workflow Core (Version 0.98)
 
@@ -296,3 +331,8 @@ See `Backend\README\_ShowerProgrammer.md` for command-line details, output behav
 ## Version 1.15
 
 Legacy XLS normalization is cached by content, multi-revision archive batches use one consolidated synthetic XLSX in Test Mode, and DXF Reference unit/rotation values are simplified; Version 1.17 uses adaptive degree display up to six decimals.
+
+
+## Version 1.21 build corrections
+
+R2 closes SQLite handles in the migration-safety regression fixtures. R3 applies the same deterministic close/commit discipline to the pre-release reliability smoke test so Windows can remove its temporary `RELIABILITY_OUTPUT` database after validation.

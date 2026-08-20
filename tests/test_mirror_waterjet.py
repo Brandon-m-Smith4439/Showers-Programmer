@@ -40,6 +40,7 @@ class MirrorWaterjetTests(unittest.TestCase):
         )
 
         self.assertEqual(panel.machine, "WJ")
+        self.assertTrue(panel.mirror_glass)
         self.assertFalse(panel.label_only)
         self.assertFalse(panel.skip_dxf)
         self.assertIn("mirror glass type always uses WJ", panel.reasons)
@@ -68,6 +69,7 @@ class MirrorWaterjetTests(unittest.TestCase):
         shower_batch.apply_process_hints([panel], order, CONFIG)
 
         self.assertEqual(panel.machine, "WJ")
+        self.assertTrue(panel.mirror_glass)
         self.assertFalse(panel.label_only)
         self.assertFalse(panel.skip_dxf)
 

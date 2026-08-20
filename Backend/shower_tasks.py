@@ -117,46 +117,45 @@ class BackgroundTaskManager:
 
         def run() -> None:
             context = TaskContext(snapshot, cancel_event, emit_progress)
+            terminal_kind = "task_done"
+            terminal_payload: dict[str, Any]
             try:
                 emit_progress(snapshot)
                 result = worker(context)
                 context.check_cancelled()
-                self._event_callback(
-                    "task_done",
-                    {
-                        "task_id": snapshot.task_id,
-                        "name": snapshot.name,
-                        "result": result,
-                        "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
-                    },
-                )
+                terminal_payload = {
+                    "task_id": snapshot.task_id,
+                    "name": snapshot.name,
+                    "result": result,
+                    "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
+                }
             except TaskCancelled as exc:
-                self._event_callback(
-                    "task_cancelled",
-                    {
-                        "task_id": snapshot.task_id,
-                        "name": snapshot.name,
-                        "error": exc,
-                        "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
-                    },
-                )
+                terminal_kind = "task_cancelled"
+                terminal_payload = {
+                    "task_id": snapshot.task_id,
+                    "name": snapshot.name,
+                    "error": exc,
+                    "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
+                }
             except Exception as exc:
-                self._event_callback(
-                    "task_error",
-                    {
-                        "task_id": snapshot.task_id,
-                        "name": snapshot.name,
-                        "error": exc,
-                        "traceback": traceback.format_exc(),
-                        "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
-                    },
-                )
+                terminal_kind = "task_error"
+                terminal_payload = {
+                    "task_id": snapshot.task_id,
+                    "name": snapshot.name,
+                    "error": exc,
+                    "traceback": traceback.format_exc(),
+                    "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
+                }
             finally:
                 with self._lock:
                     if self._active is snapshot:
                         self._active = None
                         self._cancel_event = None
                         self._thread = None
+
+            # A terminal callback may immediately start the next workflow stage.
+            # Release this task first so that chained managed tasks are accepted.
+            self._event_callback(terminal_kind, terminal_payload)
 
         thread = threading.Thread(target=run, name=f"shower-task-{name.casefold().replace(' ', '-')}", daemon=True)
         with self._lock:

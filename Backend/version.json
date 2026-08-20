@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.19",
-  "version_number": 119,
-  "marker": "VERSION_1_19_REMAKE_LOCATION_VARIANTS",
-  "release_name": "REMAKE Location Variant Detection",
-  "release_date": "2026-08-17",
+  "version": "Version 1.34",
+  "version_number": 134,
+  "marker": "VERSION_1_34_PREVIEW_SCAN_CONFIGURATION",
+  "release_name": "Clear OOS Preview and Faster Configuration",
+  "release_date": "2026-08-20",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

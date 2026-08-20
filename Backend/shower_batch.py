@@ -8,6 +8,7 @@ from __future__ import annotations
 # DXF_SKETCH_ENVELOPE_RECONCILIATION_V111: reconcile near A+W irregular dimensions when sketch and source DXF envelope agree.
 # DXF_GEOMETRY_DIMENSION_RECONCILIATION_V94: accept alternate sketch edge dimensions only when source DXF geometry proves them.
 # LEGACY_XLS_FAST_CONVERSION_V115: reuse content-identical conversions and suppress slow Excel update/event work.
+# DIRECT_LEGACY_XLS_READER_V120: read normal BIFF8 process lists directly; Excel is fallback only.
 
 import argparse
 import csv
@@ -32,6 +33,15 @@ from pypdf import PdfReader
 import shower_programmer as programmer
 import shower_cache
 import shower_errors
+import shower_legacy_xls
+from shower_rules import dimensions as dimension_rules
+from shower_rules import machine as machine_rules
+from shower_rules import orientation as orientation_rules
+from shower_rules.remake import (
+    location_value_indicates_remake,
+    pdf_location_indicates_remake,
+    pdf_location_values,
+)
 
 
 DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
@@ -477,8 +487,32 @@ def load_process_orders_from_legacy_xls(
 ) -> list[ProcessOrder]:
     raw_prefix = read_file_prefix(path, 512)
     if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
-        converted = convert_legacy_xls_to_xlsx(path, progress_callback)
-        return load_process_orders_from_workbook(converted)
+        # Normal Excel 97-2003 process lists are BIFF8 files inside an OLE
+        # compound container. Read that format directly first so a routine scan
+        # does not pay the cost of launching Excel simply to normalize rows.
+        # Excel COM remains a compatibility fallback for encrypted/unusual files.
+        started = time.monotonic()
+        try:
+            rows = shower_legacy_xls.load_rows(path)
+            orders = load_process_orders_from_rows(rows)
+            if orders:
+                if progress_callback:
+                    progress_callback(
+                        "normalized",
+                        path,
+                        f"Read binary XLS directly in {time.monotonic() - started:.2f}s; Excel conversion skipped",
+                    )
+                return orders
+            raise shower_legacy_xls.LegacyXlsError("No process-list orders were found in the direct BIFF read")
+        except Exception as exc:
+            if progress_callback:
+                progress_callback(
+                    "retry",
+                    path,
+                    f"Direct XLS read was unavailable ({exc}); using hidden Excel fallback",
+                )
+            converted = convert_legacy_xls_to_xlsx(path, progress_callback)
+            return load_process_orders_from_workbook(converted)
 
     text_prefix = decode_text_file(path)[:2048].lstrip().lower()
     if text_prefix.startswith("<?xml") or text_prefix.startswith("<workbook"):
@@ -656,9 +690,16 @@ def preconvert_legacy_xls_files(
     paths: Iterable[Path],
     progress_callback: ProcessListProgress | None = None,
 ) -> dict[Path, Path]:
-    """Convert new local binary XLS exports in one hidden Excel session."""
+    """Prepare legacy XLS inputs without proactively launching Excel.
+
+    Version 1.20 reads ordinary BIFF8 workbooks directly when each process
+    list is loaded.  Keeping this pre-pass lightweight avoids paying Excel
+    startup cost for files the direct reader can parse.  The returned mapping
+    only contains a previously converted XLSX whose content-hash cache still
+    matches the source; unusual/encrypted XLS files fall back to Excel later in
+    ``load_process_orders_from_legacy_xls``.
+    """
     converted: dict[Path, Path] = {}
-    pending: list[tuple[Path, Path, Path]] = []
     for raw_path in paths:
         path = Path(raw_path).resolve()
         if path.suffix.lower() != ".xls":
@@ -679,101 +720,19 @@ def preconvert_legacy_xls_files(
         if legacy_xls_conversion_cache_matches(path, target):
             converted[path] = target
             if progress_callback:
-                progress_callback("normalized", path, f"Using cached {target.name}; Excel conversion skipped")
+                progress_callback(
+                    "normalized",
+                    path,
+                    f"Using cached {target.name}; Excel conversion skipped",
+                )
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        staging = target.with_name(f".{target.stem}.batch.xlsx")
-        pending.append((path, target, staging))
-
-    if not pending:
-        return converted
-    if len(pending) == 1:
-        path, _target, _staging = pending[0]
-        converted[path] = convert_legacy_xls_to_xlsx(path, progress_callback)
-        return converted
-
-    def ps_literal(value: Path) -> str:
-        return str(value.resolve()).replace("'", "''")
-
-    jobs = ",\n".join(
-        "@{ Source = '" + ps_literal(path) + "'; Target = '" + ps_literal(staging) + "' }"
-        for path, _target, staging in pending
-    )
-    script = f"""
-$ErrorActionPreference = 'Stop'
-$jobs = @(
-{jobs}
-)
-$excel = $null
-try {{
-  $excel = New-Object -ComObject Excel.Application
-  $excel.Visible = $false
-  $excel.DisplayAlerts = $false
-  $excel.ScreenUpdating = $false
-  $excel.EnableEvents = $false
-  $excel.AskToUpdateLinks = $false
-  try {{ $excel.AutomationSecurity = 3 }} catch {{}}
-  try {{ $excel.Calculation = -4135 }} catch {{}}
-  foreach ($job in $jobs) {{
-    $workbook = $null
-    try {{
-      $workbook = $excel.Workbooks.Open($job.Source, 0, $true)
-      try {{ $workbook.CheckCompatibility = $false }} catch {{}}
-      $workbook.SaveAs($job.Target, 51)
-      $workbook.Close($false)
-    }} finally {{
-      if ($workbook -ne $null) {{
-        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
-      }}
-    }}
-  }}
-}} finally {{
-  if ($excel -ne $null) {{
-    $excel.Quit()
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
-  }}
-}}
-"""
-    for path, _target, staging in pending:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
         if progress_callback:
-            progress_callback("normalizing", path, f"Queued local XLS conversion ({len(pending)} files, one Excel session)")
-
-    excel_processes_before = excel_process_ids()
-    try:
-        subprocess.run(
-            hidden_powershell_command(script, bypass_execution_policy=True),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=max(90, 35 * len(pending)),
-            **hidden_windows_subprocess_options(),
-        )
-        for path, target, staging in pending:
-            if not staging.exists():
-                raise RuntimeError(f"Excel did not create {staging.name}")
-            staging.replace(target)
-            remember_legacy_xls_conversion_source(path, target)
-            converted[path] = target
-            if progress_callback:
-                progress_callback("normalized", path, f"Created {target.name} locally")
-        return converted
-    except Exception:
-        stop_excel_processes(excel_process_ids() - excel_processes_before)
-        for _path, _target, staging in pending:
-            try:
-                staging.unlink(missing_ok=True)
-            except OSError:
-                pass
-        # Preserve the established per-file retry and error detail if the fast
-        # shared Excel session cannot normalize the complete batch.
-        for path, _target, _staging in pending:
-            converted[path] = convert_legacy_xls_to_xlsx(path, progress_callback)
-        return converted
-
+            progress_callback(
+                "normalizing",
+                path,
+                "Direct binary XLS reader selected; hidden Excel is fallback only",
+            )
+    return converted
 
 def converted_xlsx_path(path: Path) -> Path:
     digest = hashlib.sha1(str(path.resolve()).encode("utf-8", errors="ignore")).hexdigest()[:10]
@@ -1439,7 +1398,52 @@ def attach_unlabeled_process_pages(
             continue
         candidates.append((page_index, text))
 
-    for item_number, (page_index, text) in zip(sorted(missing_items), candidates):
+    remaining_candidates = list(candidates)
+    assignments: list[tuple[int, tuple[int, str], str]] = []
+    mirror_page_set = bool(candidates) and all(
+        programmer.has_mirror_glass_type(text, config)
+        for _page_index, text in candidates
+    )
+    if process_order.is_mirror(config) or mirror_page_set:
+        # Mirror process lists are intentionally scoped to the Waterjet rows,
+        # while the sketch still contains every mirror.  Page 1 is the order
+        # overview and subsequent unlabeled pages are items 1, 2, 3, etc.  A
+        # simple zip therefore maps a lone fabricated P4 row onto mirror page 1.
+        # Prefer a unique dimension match, then the established page ordinal.
+        for item_number in sorted(missing_items):
+            process_item = process_order.items.get(item_number)
+            expected_width = programmer.parse_measurement(process_item.width_text) if process_item else None
+            expected_height = programmer.parse_measurement(process_item.height_text) if process_item else None
+            dimension_matches: list[tuple[int, str]] = []
+            if expected_width is not None and expected_height is not None:
+                for candidate in remaining_candidates:
+                    page_width, page_height = programmer.extract_dimensions(candidate[1])
+                    if page_width is None or page_height is None:
+                        continue
+                    direct = abs(page_width - expected_width) <= 0.35 and abs(page_height - expected_height) <= 0.35
+                    swapped = abs(page_width - expected_height) <= 0.35 and abs(page_height - expected_width) <= 0.35
+                    if direct or swapped:
+                        dimension_matches.append(candidate)
+            selected: tuple[int, str] | None = dimension_matches[0] if len(dimension_matches) == 1 else None
+            reason = "mirror page matched by process-list dimensions"
+            if selected is None:
+                selected = next(
+                    (candidate for candidate in remaining_candidates if candidate[0] == item_number),
+                    None,
+                )
+                reason = "mirror page matched by overview/item sequence"
+            if selected is not None:
+                assignments.append((item_number, selected, reason))
+                remaining_candidates.remove(selected)
+
+    assigned_items = {item_number for item_number, _candidate, _reason in assignments}
+    fallback_items = [item_number for item_number in sorted(missing_items) if item_number not in assigned_items]
+    assignments.extend(
+        (item_number, candidate, "unlabeled piece page mapped from process list")
+        for item_number, candidate in zip(fallback_items, remaining_candidates)
+    )
+
+    for item_number, (page_index, text), mapping_reason in assignments:
         width, height = programmer.extract_dimensions(text)
         panel = programmer.classify_panel(
             programmer.Panel(
@@ -1453,7 +1457,7 @@ def attach_unlabeled_process_pages(
             config,
             process_order.aw_order,
         )
-        panel.reasons.append(f"unlabeled piece page mapped to P{item_number} from process list")
+        panel.reasons.append(f"{mapping_reason}: P{item_number}")
         panels.append(panel)
 
     panels.sort(key=lambda panel: panel.item)
@@ -1685,10 +1689,11 @@ def apply_process_hints(
             programmer.has_mirror_glass_type(panel.text, config)
             or programmer.has_mirror_glass_type(process_glass_text, config)
         )
+        panel.mirror_glass = is_mirror_glass
         if is_mirror_glass:
             set_panel_machine(panel, "WJ", "mirror glass type always uses WJ")
             panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
-            panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
+            panel.rotation_degrees = orientation_rules.default_machine_rotation("WJ", panel.width, panel.height)
 
         desired_machine = process_item.desired_machine()
         processing_machine = process_item.inferred_denver_machine(config)
@@ -1730,9 +1735,9 @@ def apply_process_hints(
 
         if panel.machine == "WJ":
             panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
-            panel.rotation_degrees = -90 if panel.height and panel.width and panel.height > panel.width else 0
+            panel.rotation_degrees = orientation_rules.default_machine_rotation("WJ", panel.width, panel.height)
         elif panel.machine.startswith("DENVER"):
-            panel.rotation_degrees = 90 if panel.height and panel.width and panel.height > panel.width else 0
+            panel.rotation_degrees = orientation_rules.default_machine_rotation(panel.machine, panel.width, panel.height)
             panel.indicator_corner = programmer.denver_grabber_corner_for_panel(panel, panel.rotation_degrees)
 
         if process_item.has_diamon_fusion:
@@ -1794,15 +1799,7 @@ def apply_process_list_scope(panels: list[programmer.Panel], process_order: Proc
 
 
 def denver_minimum_forces_wj(panel: programmer.Panel, config: dict[str, object]) -> bool:
-    rules = config.get("rules", {})
-    if not isinstance(rules, dict):
-        return False
-    denver_min = float(rules.get("denver_min_inches", 6.125))
-    return (
-        panel.width is not None
-        and panel.height is not None
-        and min(panel.width, panel.height) < denver_min
-    )
+    return machine_rules.minimum_dimension_forces_waterjet(panel.width, panel.height, config)
 
 
 def process_list_fabrication_keywords(config: dict[str, object]) -> set[str]:
@@ -1876,17 +1873,7 @@ def dimensions_match(
     actual: tuple[float, float],
     tolerance: float = PDF_DIMENSION_MATCH_TOLERANCE,
 ) -> bool:
-    expected_width, expected_height = expected
-    actual_width, actual_height = actual
-    direct = (
-        abs(expected_width - actual_width) <= tolerance
-        and abs(expected_height - actual_height) <= tolerance
-    )
-    swapped = (
-        abs(expected_width - actual_height) <= tolerance
-        and abs(expected_height - actual_width) <= tolerance
-    )
-    return direct or swapped
+    return dimension_rules.dimensions_match(expected, actual, tolerance)
 
 
 def manual_dimension_match_override_enabled(
@@ -2620,86 +2607,8 @@ def open_process_order_pdf(
     return pdf_path, reader
 
 
-LOCATION_FIELD_RE = re.compile(
-    r"location\s*:\s*(.*?)"
-    r"(?="
-    r"\s*(?:marks?|project(?:\s*#)?|shape|quantity|glass|page|notes?|customer\s+notes?|printed\s+on|delivery\s+date|address|supplier)\s*:"
-    r"|\s+measurements\s+are\s+in\s+inches"
-    r"|\s+page\s+\d+\s+of\s+\d+"
-    r"|$"
-    r")",
-    re.IGNORECASE,
-)
 
-
-def pdf_location_values(reader: PdfReader) -> list[str]:
-    """Return A+W Location values despite both common PDF extraction orders.
-
-    A+W sketches are not text-extracted consistently.  Some files expose the
-    field in normal label/value order (``Location: REMAKE``), while others put
-    the visual value immediately *before* the label (``REMAKELocation:`` or
-    ``MASTER LEFTLocation:``).  Preserve the existing forward-field parser and
-    additionally capture only values that are directly joined to the Location
-    label on the same extracted line.  Requiring direct adjacency avoids
-    treating an unrelated project name or REMAKE note as the Location value.
-    """
-    values: list[str] = []
-    for page in reader.pages:
-        raw_text = page.extract_text() or ""
-
-        # Reverse extraction seen in production A+W PDFs:
-        # ``MASTER LEFTLocation:`` / ``REMAKELocation:``.  Only accept a prefix
-        # when the value is physically joined to the label (no whitespace
-        # immediately before ``Location``); normal ``Project ... Location:``
-        # text therefore cannot become a false Location value.
-        for label_match in re.finditer(r"location\s*:", raw_text, flags=re.IGNORECASE):
-            start = label_match.start()
-            if start <= 0 or raw_text[start - 1].isspace():
-                continue
-            line_start = max(raw_text.rfind("\n", 0, start), raw_text.rfind("\r", 0, start)) + 1
-            prefix = raw_text[line_start:start].strip(" :-\t")
-            if not prefix or ":" in prefix or len(prefix) > 80:
-                continue
-            value = re.sub(r"\s+", " ", prefix).strip(" :-")
-            if value and value not in values:
-                values.append(value)
-
-        # Forward extraction covers conventional ``Location: value`` layouts
-        # and multiline values while respecting the existing field boundaries.
-        text = re.sub(r"\s+", " ", raw_text).strip()
-        for match in LOCATION_FIELD_RE.finditer(text):
-            # A joined prefix such as ``MASTER LEFTLocation:`` is reverse
-            # extraction and was already handled above.  Do not reinterpret
-            # the text *after* that colon as a conventional Location value.
-            if match.start() > 0 and not text[match.start() - 1].isspace():
-                continue
-            value = re.sub(r"\s+", " ", match.group(1)).strip(" :-")
-            if value and value not in values:
-                values.append(value)
-    return values
-
-
-def location_value_indicates_remake(value: str) -> bool:
-    """Return True for supported REMAKE forms inside an A+W Location value.
-
-    A+W Location text is occasionally truncated or inflected by upstream data
-    entry/extraction (for example ``REMAK``, ``REMAKE``, ``REMAKES``,
-    ``REMAKED``, ``REMAKING``, or another token beginning with the ``REMAK``
-    stem).  Match that stem only after the caller
-    has isolated the Location field so unrelated REMAKE notes elsewhere in the
-    sketch cannot change production routing.
-    """
-    normalized = re.sub(r"[^A-Z]+", " ", str(value).upper()).strip()
-    if not normalized:
-        return False
-    return any(token.startswith("REMAK") for token in normalized.split())
-
-
-def pdf_location_indicates_remake(reader: PdfReader) -> bool:
-    """Detect supported REMAKE forms whenever the A+W Location field says so."""
-    return any(location_value_indicates_remake(value) for value in pdf_location_values(reader))
-
-
+# REMAKE Location parsing/routing lives in shower_rules.remake.
 def prepare_job(
     folder: Path,
     sketch_output_dir: Path,

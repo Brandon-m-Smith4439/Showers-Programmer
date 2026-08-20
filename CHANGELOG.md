@@ -2,6 +2,219 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.34] - 2026-08-20
+
+### Fixed
+- DXF Preview now draws ordinary hinge and cutout geometry before OOS edges, keeping shallow `1/16 in` and `1/8 in` return legs visible instead of allowing later fabrication segments to paint over them.
+- OOS label placement treats nearby hinge radii and short fabrication segments as occupied space. Connected-return labels begin farther inside the piece and search farther along the edge before falling back, preventing the OOS text from merging into a hinge cutout.
+- Older external configurations that predate per-hinge orientation storage now receive only their missing effective defaults. Existing operator-selected `up` or `down` directions remain unchanged, and case differences no longer create false missing-orientation warnings.
+
+### Performance
+- Independent scan file copies and exact production-sketch probes now use a bounded pool of up to eight workers. Workbook parsing, PDF correlation, and rule evaluation remain unchanged and deterministic.
+
+### Interface
+- The Configuration tab uses a compact header and validation area, with a wider editor column and more vertical room for the actual setting content.
+
+### Regression Coverage
+- Added checks for connected-return label spacing, bounded scan concurrency, additive hinge-orientation migration, case-insensitive orientation validation, and Version 1.34 release metadata.
+
+## [Version 1.33] - 2026-08-20
+
+### Fixed
+- **Send Checked Orders** once again resolves the selected sketch and DXF paths through the established ordered path-deduplication helper. Version 1.32 called that helper through a missing `ShowerProgrammerApp.unique_paths` attribute, causing `Start Send failed` before production files were copied.
+- DXF Preview now includes a short angled return leg when both endpoints connect two different, already-proven OOS edges. This displays all three `1/8 in` OOS edges on the FP-S hinge-side kick-out geometry represented by order `237716.2` while retaining the normal short-cutout filter.
+
+### Regression Coverage
+- Added a selected-path deduplication regression matching the Version 1.32 Send callback failure.
+- Added source and rotated-output preview tests proving the connected 7-inch return leg is labeled `1/8\" OOS`, while an isolated short angled cutout remains excluded.
+
+## [Version 1.32] - 2026-08-20
+
+### Fixed
+- **Send Checked Orders** now schedules the real Send worker on the next Tk event-loop turn after production-file preflight completes. This removes the remaining nested-callback handoff that could stop before the Send worker or transaction journal began.
+- Managed-task completion callbacks are guarded so an exception is shown to the operator and recorded instead of silently escaping Tk's queue drain.
+- FP-S doors with a proven shallow hinge-side kick-out now orient hinges up even when the configured hinge code normally defaults to hinges down. The detector requires connected short and long edge runs bending in opposite directions by at least `1/16 in`, so a simple full-height raked edge keeps its existing behavior.
+
+### Diagnostics
+- Added `Diagnostics/send_pipeline.jsonl`, which records the Review / Send button click, selected orders and files, preflight decisions, task acceptance or rejection, core handoff, cancellation, completion, and full exception tracebacks.
+- Send task errors now retain the background worker traceback and identify the exact failed stage.
+
+### Regression Coverage
+- Added a deferred preflight-to-core Send handoff test.
+- Added a hinge-code precedence test matching the `1/8 in` FP-S kick-out geometry from order `237716.2` while preserving the established full-height rake behavior.
+
+## [Version 1.31] - 2026-08-19
+
+### Fixed
+- **Send Checked Orders** now releases the completed preparation task before its completion callback starts the real Send task. This removes the task-manager race that caused the button to stop after `Preparing Review / Send` without creating a Send journal.
+- Terminal task callbacks now consistently observe an idle task manager, so all chained background workflows can start their next stage immediately.
+
+### Performance
+- Local input recovery now persists one complete transaction plan before moving files and one final manifest afterward instead of durably rewriting the growing manifest after every file.
+- Cleanup verifies selected orders and completed batches with one local PDF/DXF scan per group instead of rescanning the folder once per order.
+- Exact shared-path checks and deletions use higher bounded concurrency while retaining their hard timeout and keep-on-uncertainty safeguards.
+
+### Regression Coverage
+- Added a deterministic two-stage managed-task regression matching the production Send handoff.
+- Added a 30-file recovery transaction test that verifies two manifest commits and a complete restore.
+
+## [Version 1.30] - 2026-08-19
+
+### Fixed
+- **Review / Send** now prepares its file plan in a managed background task instead of searching generated files on Tk's event thread. The window remains responsive, progress identifies the current lookup stage, and the preparation can be cancelled.
+- **Send Checked Orders** now filters the exact files already displayed in the review table and starts the transactional send task before folder validation or machine-route checks. The main and review windows show the same send status while the worker reports its active stage.
+- Review / Send preparation now always resolves to the review dialog, a clear no-output notice, or a structured task error instead of remaining indefinitely at `Preparing Review / Send`.
+- Deleting selected input-only orders now checks the exact local filenames against the shared input folder instead of reopening and correlating every shared PDF, removing the 15-second order-file correlation failure from the normal cleanup path.
+
+### Safety
+- Shared-folder cleanup still deletes only exact root-level filename matches already validated locally. Missing, inaccessible, or unresolved shared files are retained and reported.
+
+### Regression Coverage
+- Added direct button-route coverage proving Review / Send starts a cancellable managed task, worker output-plan coverage, exact filename cleanup coverage, and compatibility checks for the established bounded network-cleanup safeguards.
+
+## [Version 1.29] - 2026-08-19
+
+### Fixed
+- Reprocessing a landscape mirror Waterjet piece now follows a manually positioned indicator: bottom-left keeps the source at `0 deg`, while top-right rotates the DXF by `180 deg` without standing the piece vertically.
+- A saved manual WJ indicator corner now takes priority over a stale saved rotation when **Process DXF** is used again.
+
+### Performance
+- Send cleanup now hands the network archive stage the exact order, DXF, and completed process-list filenames already validated by local archiving instead of rescanning the entire shared import folder.
+- Exact network-file checks run concurrently with bounded timeouts, and Send completion now reports copy, local archive, network cleanup, verification, and total timings for easier diagnosis.
+- Cleanup remains conservative: uncertain or timed-out files are retained and reported rather than guessed or removed.
+
+### Regression Coverage
+- Added landscape mirror `0/180 deg` reprocessing controls, stale-rotation override coverage, and an exact-file Send cleanup test that rejects broad shared-folder enumeration and preserves unrelated files.
+
+## [Version 1.28] - 2026-08-19
+
+### Fixed
+- Mirror pieces continue to use the standard Waterjet corner and DXF-orientation rules, while their automatic marker now anchors to the detected glass outline instead of floating 25 points above a bottom corner.
+- Review / Send now reports when another background operation prevents Send from starting instead of leaving disabled controls with no clear result.
+- Packaged updater validation now verifies deep runtime files through the same extended-length Windows path API used during extraction.
+
+### Send Safety
+- The Review / Send close control becomes **Cancel Send** while production files are being copied.
+- Cancelling removes files newly created by that Send and restores production files that the same Send replaced. A file changed externally after copying is preserved and reported instead of being deleted.
+- Cancellation locks once production copies finish and protected input archiving begins, preventing partially archived orders.
+
+### Regression Coverage
+- Added mirror-outline anchoring controls plus transactional cancellation tests for new, replaced, and externally changed production files.
+
+## [Version 1.27] - 2026-08-19
+
+### Fixed
+- Landscape Waterjet pieces whose matched source DXF is already horizontal now place the automatic WJ indicator at the bottom-left corner, matching the unchanged `0 deg` program orientation.
+- Automatic WJ corner selection now starts from the program's source-aligned corner instead of retaining a stale top-right default. Manual indicator overrides remain untouched and still control DXF orientation.
+- Portrait Waterjet pieces retain the established top-left/bottom-right marker choices and quarter-turn behavior.
+
+### Regression Coverage
+- Added live-dimension controls for the four affected Batch 6381/6382 mirror pieces, an alternate-square-corner fallback, a no-outline fallback, and an unchanged portrait-WJ rotation control.
+
+## [Version 1.26] - 2026-08-18
+
+### Fixed
+- Mirror batches that retain only fabricated Waterjet rows now match each process-list item to the correct unlabeled mirror page instead of pairing the first retained row with the first mirror page.
+- Mirror page matching uses a unique width/height match first, then the established sequence where page 1 is the overview and page 2 is item 1, page 3 is item 2, and so on.
+- The matched sketch item now drives both marking placement and source-DXF selection, keeping the Waterjet indicator, order label, cutout mirror, and generated program together.
+
+### Regression Coverage
+- Added a six-mirror overview fixture based on the live item-4-only fabrication workflow and controls for dimension-first matching, ordinal fallback, and unchanged ordinary unlabeled-page behavior.
+
+## [Version 1.25] - 2026-08-18
+
+### Fixed
+- Orders whose process-list items contain only material, edge polish, tempering, and packing/shipping operations no longer warn that a generated DXF is missing.
+- A no-fabrication order is now considered successfully sent when its required sketch is copied, allowing validated input archiving and cleanup to complete instead of leaving the order behind.
+- Orders with explicit Denver/Waterjet routes, hinge/hole/notch/radius fabrication, or unknown process-list data still require a program DXF.
+
+### Settings
+- Moved **Hinge Detection** from the top-level Settings navigation into **Settings > Configuration > Hinge Detection** while preserving code add/edit/remove and orientation controls.
+
+### Regression Coverage
+- Added no-fabrication send-plan and completion tests based on the flat-polish/tempering/packing-only workflow, plus controls proving CNC fabrication still requires a DXF and Hinge Detection uses the nested Configuration tab.
+
+## [Version 1.24] - 2026-08-18
+
+### Fixed
+- **Change Machine** now opens centered on the active Review Order window, including when Review Order is on a different monitor from the main application.
+- The chooser's delayed focus step preserves Review Order as its transient owner instead of silently reassigning ownership to the main window.
+
+### Regression Coverage
+- Added coordinate-separated main/review window tests for owner-relative centering, delayed transient ownership, and the Review Order chooser wiring.
+
+## [Version 1.23] - 2026-08-18
+
+### Fixed
+- DXF `ELLIPSE` major-axis data is now transformed as a vector: it rotates and scales with the piece without receiving the piece's positional translation. This prevents internal notch radii from becoming detached, oversized semicircles after Water Jet rotation and millimeter conversion.
+- A+W sketch radius notation written before the value, such as `r 1/2`, is now recognized as strong Water Jet fabrication evidence. Conflicting Denver process-list hints no longer override that explicit radius evidence.
+- U-notch routing without explicit strong radius evidence retains its established Denver behavior, keeping the correction narrowly scoped to the affected geometry.
+
+### Regression Coverage
+- Added sanitized Version 1.23 coverage based on the 237548.2 geometry: conflicting Denver hints route the prefix-radius piece to WJ, an ordinary U-notch remains Denver, and the half-inch ellipse vector exports at approximately `12.7 mm` instead of receiving page translation.
+
+## [Version 1.22] - 2026-08-18
+
+> **R2 rebuild correction:** Release self-test flags now live in `Backend\release_required_flags.txt` and are read from disk during source and packaged validation. This preserves every historical release assertion without expanding an overlong command through `cmd.exe` after the unit suite.
+
+### Centralized Configuration Workspace
+- Added **Settings > Configuration** as the primary visual editor for the complete `shower_programmer_config.json` operational configuration. Every non-note value is discovered dynamically, so future/unknown configuration keys remain editable instead of requiring a GUI rewrite.
+- Configuration values are organized into nested operator-friendly sections: **Labels & PDF**, **Indicators**, **DXF Output**, **Machine Routing**, **Detection Rules**, **Orientation & Geometry**, **REMAKE & Overrides**, and **Advanced**.
+- Added searchable configuration cards with the setting label, exact JSON path, description, current value, and type-appropriate controls for booleans, numeric/text values, lists, and dynamic JSON maps.
+- Added **Validate Configuration** plus automatic validation on Save. Validation reports field-level errors/warnings for unsafe ranges, malformed RGB values, invalid DXF unit fields, inconsistent angle limits, keyword lists, hinge orientations, Water Jet rotations, and structural configuration problems.
+- Validation is intentionally advisory. If validation fails, the operator is warned and shown the exact issues, but may choose **Save Anyway**; the editor never silently corrects or discards an intentional value.
+- Each save creates a rotating pre-save JSON backup under `Output\Configuration Backups` and then writes the active configuration atomically.
+- Existing **Hinge Detection**, **Rule Test**, **Folder Setup**, and **Backup & Restore** tools remain available for quick/specialized workflows; Configuration is the comprehensive editor.
+
+### Regression Coverage
+- Added Version 1.22 coverage for complete non-note field discovery, unknown/future key preservation, section grouping, typed editor coercion, advisory parse failures, non-mutating validation, save-anyway persistence, pre-save backups, GUI wiring, and rebuild-script packaging of the new configuration service.
+
+## [Version 1.21] - 2026-08-17
+
+> **R2 build-test correction:** SQLite migration safety regression fixtures now explicitly close source and backup database connections so Windows can release temporary database files after each test.
+
+> **R3 smoke-test correction:** the pre-release reliability smoke test now explicitly closes and commits its temporary SQLite fixture connection before `TemporaryDirectory` cleanup, preventing Windows `WinError 32` after the full unit suite passes.
+
+### Production reliability
+- Added an atomic **Send transaction journal** under `Output\Transactions\Send`. Send stages are durably recorded from preparation through output copy, input archive, Network Input cleanup, post-send verification, sent-receipt writing, and completion. Interrupted transactions remain visible to startup recovery instead of disappearing with the process.
+- Added a non-destructive **Startup Recovery Check** for incomplete Send transactions, previous Test Mode workspaces, interrupted update staging folders, and SQLite rollback journals. Actionable findings are surfaced before normal production work and can be reviewed from Settings > Recovery.
+- Added explicit **post-send integrity verification** that confirms copied production targets still exist and verifies exact known local/Network Input cleanup targets without broad rescans. A Send with unresolved cleanup remains journaled as needing attention.
+- Settings > Recovery now includes interrupted-Send reconciliation and a durable runtime rollback status panel.
+
+### Database / update safety
+- SQLite is backed up with the SQLite backup API before a detected schema transition. Backups and schema-verification audit records are stored under `Output\Database Backups`. Existing StateStore migrations remain transactional.
+- Successful rebuild deployments and automatic one-folder updates now retain one validated **PreviousRuntime** snapshot instead of deleting the old runtime. Settings > Recovery can stage a rollback that swaps only application runtime files; Input, Output, archives, configuration, and SQLite data are preserved.
+
+### Operator diagnostics / rule tooling
+- Structured failures now display stable operator codes such as `NET-001`, `FILE-001`, `DIM-001`, and `SYS-001`, plus a **Copy Diagnostics** action containing version, time, internal code, A&W/batch context, and structured details.
+- Added Settings > **Rule Test**, a no-output production-policy console that runs the current panel classification/process-hint rules and reports REMAKE, machine, rotation, indicator, label-only/skip-DXF state, reasons, and warnings.
+
+### Architecture
+- Began extracting deterministic business rules from the large workflow modules into `Backend\shower_rules`: REMAKE Location parsing, Denver minimum-size routing, dimension comparison, default machine rotation, indicator evidence formatting, and archive revision path ordering are independently testable modules. Production paths now consume these modules rather than duplicating those rules.
+- Added `Backend\shower_reliability.py` for lifecycle/send journaling, recovery discovery, post-send verification, database migration backups, operator error-code formatting, and runtime rollback staging.
+
+### Regression coverage
+- Added Version 1.21 tests for durable Send journaling, post-send verification, pre-schema database backup, startup recovery discovery, stable error codes, runtime rollback staging, modular production-rule behavior, GUI/service wiring, and rebuild-script rollback retention. The pre-release smoke test now also exercises Send journaling, database migration backup, and operator diagnostics.
+
+## [Version 1.20] - 2026-08-17
+
+### Performance
+- Normal Excel 97-2003 BIFF8 `.xls` process lists are now read directly through a dependency-free OLE/BIFF parser. Hidden Excel remains a compatibility fallback only for encrypted or unusual workbooks that the direct reader cannot safely parse.
+- Scan Orders now records and displays a compact per-stage timing summary for configuration, network indexing, process-list synchronization/parsing, order-input synchronization, PDF/DXF preview, and total elapsed time.
+
+### Archive / Test Mode
+- Added a collapsible **Revision Details** inspector to Settings > Archives. A consolidated batch can now show each archived revision, process-list filename, order count, added/changed/removed A&W orders, and the resolved PDF/DXF source revision for each logical order.
+- Every Archive Test Mode workspace now writes `TestModeProvenance.json`, identifying the process list used/generated and the exact archived PDF/DXF source selected for each A&W order.
+
+### Diagnostics / Reliability
+- **R2 correction:** System Health now explicitly closes its SQLite `quick_check` connection after the probe. Python's `sqlite3.Connection` context manager does not close the underlying handle by itself, which caused Windows rebuild tests to fail when their temporary database folder was removed.
+- Added a lazy **System Health** Settings tab with one-click PASS/WARN/FAIL checks for Local Input, Process Lists, Output, Network Input, Production Sketches, archive/cache write access, SQLite quick-check, the direct legacy-XLS reader, and the optional Excel fallback.
+- Added a permanent sanitized known-order regression corpus under `tests/known_orders`; the initial real-production-derived case captures the KINSDALE out-of-square geometry without shipping customer documents.
+- Added a non-destructive pre-release smoke test to the rebuild script. It validates direct XLS ingestion, known-order geometry, archive revision consolidation, Test Mode provenance, diagnostic ZIP creation, and verifies a production sentinel remains untouched before PyInstaller is allowed to build.
+
+### Regression Coverage
+- Added Version 1.20 coverage for all seven professional-hardening features, including a static BIFF8 `.xls` fixture that is parsed without launching Excel.
+
 ## [Version 1.19] - 2026-08-17
 
 ### Changed

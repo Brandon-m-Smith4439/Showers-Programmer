@@ -22,6 +22,17 @@ set "SOURCE_ENTRY=Backend\shower_programmer_v4.py"
 set "SOURCE_FEATURES=Backend\shower_v4_features.py"
 set "SOURCE_GUI=Backend\shower_programmer_gui.py"
 set "SOURCE_BATCH=Backend\shower_batch.py"
+set "SOURCE_LEGACY_XLS=Backend\shower_legacy_xls.py"
+set "SOURCE_REGRESSIONS=Backend\shower_regressions.py"
+set "SOURCE_RELIABILITY=Backend\shower_reliability.py"
+set "SOURCE_CONFIGURATION=Backend\shower_configuration.py"
+set "SOURCE_RULES_INIT=Backend\shower_rules\__init__.py"
+set "SOURCE_RULES_REMAKE=Backend\shower_rules\remake.py"
+set "SOURCE_RULES_MACHINE=Backend\shower_rules\machine.py"
+set "SOURCE_RULES_DIMENSIONS=Backend\shower_rules\dimensions.py"
+set "SOURCE_RULES_ORIENTATION=Backend\shower_rules\orientation.py"
+set "SOURCE_RULES_INDICATORS=Backend\shower_rules\indicators.py"
+set "SOURCE_RULES_ARCHIVE=Backend\shower_rules\archive.py"
 set "SOURCE_PROGRAMMER=Backend\shower_programmer.py"
 set "SOURCE_CACHE=Backend\shower_cache.py"
 set "SOURCE_STATE=Backend\shower_state.py"
@@ -29,7 +40,10 @@ set "SOURCE_TASKS=Backend\shower_tasks.py"
 set "SOURCE_ERRORS=Backend\shower_errors.py"
 set "SOURCE_CONFIG=Backend\shower_programmer_config.json"
 set "SOURCE_VERSION=Backend\version.json"
+set "SOURCE_REQUIRED_FLAGS=Backend\release_required_flags.txt"
 set "SOURCE_CHANGELOG=CHANGELOG.md"
+set "RELEASE_SMOKE_TEST=tests\release_smoke_test.py"
+set "RELEASE_SMOKE_REPORT=build\release_smoke_test.json"
 set "SOURCE_PACKAGE_BUILDER=Backend\build_update_package.py"
 set "ICON_FILE=Assets\ShowersProgrammer.ico"
 set "PNG_FILE=Assets\ShowersProgrammer.png"
@@ -41,27 +55,6 @@ set "UPDATE_ZIP=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.zip"
 set "UPDATE_METADATA=%UPDATE_RELEASE_DIR%\Shower-Programmer-Windows.json"
 set "SOURCE_SELF_TEST=build\source_release_self_test.json"
 set "PACKAGED_SELF_TEST=build\release\packaged_release_self_test.json"
-set "REQUIRED_FLAGS=v4_conflict_safe_send,v4_existing_file_keep_or_replace,v4_per_file_send_failure_continuation,v4_radius_preview_callouts,v4_long_glass_se_validation,v4_waterjet_oversize_flag,v4_waterjet_thickness_radius_validation,v4_split_batch_order_merge,version_0_5_radius_label_spacing,version_0_5_oos_callout_avoidance,version_0_5_radius_header_removed,version_0_6_fps_rake_orientation,version_0_6_dynamic_release_self_test,version_0_61_fps_short_cut_hinges_up,version_0_62_mirror_glass_waterjet,version_0_63_machine_decision_inspector,version_0_63_process_list_normalization,version_0_63_known_order_regressions,version_0_63_incremental_scan_cache,version_0_64_dxf_first_review_layout,version_0_65_smart_network_import,version_0_66_mirror_waterjet_batch_scope,version_0_67_duplicate_job_order_identity,version_0_68_hidden_xls_conversion,version_0_69_fast_accurate_scanning,version_0_71_waterjet_review_polish,version_0_72_bounded_network_cleanup,version_0_73_validated_archive_handoff,version_0_74_completed_batch_cleanup,version_0_75_resilient_scan_cleanup,version_0_76_manual_wj_metric_save,editable_sketch_refresh,guarded_hinge_code_editor,review_machine_selector,compact_orders_summary,centered_orders_summary,shortcut_button_removed,sortable_order_columns,order_search_highlight,seven_day_action_history,searchable_action_history,validate_selected_action,simplified_send_card,responsive_sidebar_controls,responsive_orders_toolbar,settings_workspace,pdf_location_remake_detection,compact_message_dialogs,version_0_77_review_workflow_controls,version_0_78_centered_order_summary,version_0_79_streamlined_tools,version_0_80_order_search_action_history,version_0_81_dashboard_layout_polish,version_0_82_settings_remake_detection"
-
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,settings_window_centered,editable_hinge_orientations,input_only_order_visibility,compact_centered_popups,version_0_84_workflow_settings,stable_hinge_orientation,version_0_85_stable_hinge_orientation,unprocessed_review_warning,version_0_86_review_readiness_warning,network_input_batch_delete,version_0_87_input_batch_network_delete,seven_day_local_recovery,programming_evidence_window,order_diagnostic_package,network_health_indicator,configuration_backup_import,version_0_88_recovery_diagnostics,diagnostics_folder_access,version_0_89_diagnostics_folder_access,order_overview_page,external_pdf_annotation_refresh,corner_text_indicator_avoidance,version_0_90_order_overview_pdf_refresh,review_window_stability,editable_text_position_fix,indicator_text_cutout_avoidance,diamon_fusion_glass_measurement_corridor,version_0_91_review_stability_placement,review_workspace_native_maximize,overview_text_editing,resume_sketch_editing_after_refresh,denver_indicator_glass_containment,waterjet_indicator_position_stability,fixed_large_diamon_fusion,version_0_92_review_workspace_editing,out_of_square_dimension_reconciliation,manual_dimension_match_override,version_0_93_oos_dimension_reconciliation,dxf_geometry_dimension_reconciliation,archive_test_restore_workflow,overview_text_size_editing,readable_operator_popups,remake_location_field_reliability,remake_diamon_banner_placement,version_0_94_archive_remake_usability,background_order_input_cleanup,settings_archive_background_load,deferred_settings_history_loads,current_progress_status_language,version_0_95_background_responsiveness,archive_seven_day_incremental_loading,archive_date_range_filters,archive_batch_grouping,archive_column_sorting,archive_runs_view,archive_fast_filename_index,version_0_96_fast_filtered_archive_browser,reimported_process_list_reactivation,deleted_receipt_reactivation_audit,version_0_97_reimported_batch_reactivation"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,sqlite_lifecycle_state_model,stable_batch_identity,centralized_background_task_manager,cancellable_long_operations,sqlite_archive_index,performance_instrumentation,structured_operator_errors,one_click_failure_diagnostics,isolated_archive_test_mode,reduced_release_monkey_patching,workflow_idempotency_regressions,version_0_98_professional_workflow_core"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,visual_polish_refresh,network_input_quick_access,archive_batch_actions,archive_batch_test_mode,archive_batch_background_tasks,version_0_99_visual_polish_batch_archive_actions"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,column_header_borders,isolated_batch_test_mode_scan,comprehensive_order_action_history,action_history_filters,preferences_network_input_access,full_batch_archive_action_scope,version_1_00_operator_audit_test_mode_polish,settings_close_releases_ui,lazy_archive_settings_activation,settings_archive_independent_task_runner,version_1_01_settings_window_lifecycle,verified_settings_toplevel_destroy,settings_blank_shell_rejection,settings_close_retry_safety,version_1_02_settings_native_shell_teardown,persistent_settings_window_close,lazy_settings_tab_construction,settings_destroy_recursion_avoided,version_1_03_settings_persistent_close,archive_tab_progress_feedback,persistent_archive_tab_reactivation,action_history_tab_reactivation,archive_error_retry_state,version_1_04_settings_data_lifecycle"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,action_history_seven_day_window,action_history_date_range_loading,action_history_background_loader,archive_tab_simplified_actions,settings_default_maximized,version_1_05_history_range_archive_polish"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,action_history_tab_build_repair,action_history_diagnostic_progress,action_history_loader_file_diagnostics,settings_tab_build_error_surface,background_task_tracebacks,version_1_06_action_history_diagnostics"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,action_history_collapsible_diagnostics,archive_batch_revision_consolidation,archive_batch_authoritative_process_list,version_1_07_archive_revision_history_polish"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,archive_batch_sent_input_summary,dimension_mismatch_numeric_diagnostics,version_1_08_archive_batch_status_delete_refresh,post_delete_local_only_refresh,manual_scan_deleted_order_reimport,local_delete_scope_audit,version_1_09_local_delete_refresh_reimport"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,context_menu_action_dispatch_resilience,diagnostic_package_open_folder,delete_cleanup_progress_dispatch,version_1_10_delete_action_diagnostic_access"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,dxf_sketch_envelope_dimension_reconciliation,process_dxf_variance_guard,version_1_11_irregular_dimension_reconciliation"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,context_delete_selection_snapshot,context_action_error_surface,input_only_order_network_delete,version_1_12_delete_context_selection_reliability"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,delete_scope_list_mapping_safe,delete_multi_batch_scope_resolution,version_1_13_delete_scope_type_safety"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,dxf_reference_two_decimal_display,test_mode_prominent_banner,test_mode_exit_before_shutdown,version_1_14_test_mode_visibility_dxf_display"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,legacy_xls_fast_conversion_cache,legacy_xls_excel_low_overhead_open,archive_multi_revision_synthetic_xlsx,dxf_reference_four_decimal_display,version_1_15_archive_multi_revision_xls_polish"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,archive_revision_order_file_fallback,archive_test_mode_requires_source_files,archive_revision_file_search_filename_first,version_1_16_archive_revision_file_handoff"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,dxf_reference_adaptive_six_decimal_display,version_1_17_adaptive_dxf_rotation_display"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,sent_cleanup_second_sweep,completed_process_list_local_orphan_guard,reverse_location_remake_detection,process_all_location_remake_auto,version_1_18_sent_cleanup_remake_auto"
-set "REQUIRED_FLAGS=%REQUIRED_FLAGS%,remake_location_variant_detection,remake_location_stem_scope_guard,version_1_19_remake_location_variants"
-
 echo.
 echo ========================================
 echo   Rebuild Shower Programmer EXE
@@ -113,6 +106,7 @@ for %%F in (
     "%SOURCE_FEATURES%"
     "%SOURCE_GUI%"
     "%SOURCE_BATCH%"
+    "%SOURCE_CONFIGURATION%"
     "%SOURCE_PROGRAMMER%"
     "%SOURCE_CACHE%"
     "%SOURCE_STATE%"
@@ -120,6 +114,7 @@ for %%F in (
     "%SOURCE_ERRORS%"
     "%SOURCE_CONFIG%"
     "%SOURCE_VERSION%"
+    "%SOURCE_REQUIRED_FLAGS%"
     "%SOURCE_CHANGELOG%"
     "%SOURCE_PACKAGE_BUILDER%"
     "%ICON_FILE%"
@@ -163,12 +158,21 @@ if errorlevel 1 (
 echo   Release %APP_VERSION%: %APP_RELEASE_NAME%
 
 echo Checking Python syntax...
-"%PYTHON_EXE%" %PYTHON_ARGS% -m py_compile "%SOURCE_ENTRY%" "%SOURCE_FEATURES%" "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_PROGRAMMER%" "%SOURCE_CACHE%" "%SOURCE_STATE%" "%SOURCE_TASKS%" "%SOURCE_ERRORS%" "%SOURCE_PACKAGE_BUILDER%"
+"%PYTHON_EXE%" %PYTHON_ARGS% -m py_compile "%SOURCE_ENTRY%" "%SOURCE_FEATURES%" "%SOURCE_GUI%" "%SOURCE_BATCH%" "%SOURCE_LEGACY_XLS%" "%SOURCE_REGRESSIONS%" "%SOURCE_RELIABILITY%" "%SOURCE_CONFIGURATION%" "%SOURCE_RULES_INIT%" "%SOURCE_RULES_REMAKE%" "%SOURCE_RULES_MACHINE%" "%SOURCE_RULES_DIMENSIONS%" "%SOURCE_RULES_ORIENTATION%" "%SOURCE_RULES_INDICATORS%" "%SOURCE_RULES_ARCHIVE%" "%SOURCE_PROGRAMMER%" "%SOURCE_CACHE%" "%SOURCE_STATE%" "%SOURCE_TASKS%" "%SOURCE_ERRORS%" "%SOURCE_PACKAGE_BUILDER%" "%RELEASE_SMOKE_TEST%"
 if errorlevel 1 goto failed
 
 echo Running focused release unit tests...
 "%PYTHON_EXE%" %PYTHON_ARGS% -m unittest discover -s tests -v
 if errorlevel 1 goto failed
+
+echo Running non-destructive pre-release smoke test...
+if exist "%RELEASE_SMOKE_REPORT%" del /F /Q "%RELEASE_SMOKE_REPORT%" >NUL 2>NUL
+"%PYTHON_EXE%" %PYTHON_ARGS% "%RELEASE_SMOKE_TEST%" --project-root "%CD%" --report "%RELEASE_SMOKE_REPORT%"
+if errorlevel 1 (
+    echo ERROR: Pre-release smoke test failed.
+    if exist "%RELEASE_SMOKE_REPORT%" type "%RELEASE_SMOKE_REPORT%"
+    goto failed
+)
 
 echo Running integrated source self-test...
 if exist "%SOURCE_SELF_TEST%" del /F /Q "%SOURCE_SELF_TEST%" >NUL 2>NUL
@@ -178,7 +182,7 @@ if errorlevel 1 (
     if exist "%SOURCE_SELF_TEST%" type "%SOURCE_SELF_TEST%"
     goto failed
 )
-"%PYTHON_EXE%" %PYTHON_ARGS% -c "import json,pathlib; d=json.loads(pathlib.Path(r'%SOURCE_SELF_TEST%').read_text(encoding='utf-8')); flags=r'%REQUIRED_FLAGS%'.split(','); assert d.get('ok') is True,d; assert d.get('display_version')==r'%APP_VERSION%',d; assert d.get('version')==r'%APP_MARKER%',d; missing=[k for k in flags if d.get(k) is not True]; assert not missing,missing; print('  Integrated source self-test passed.')"
+"%PYTHON_EXE%" %PYTHON_ARGS% -c "import json,pathlib; d=json.loads(pathlib.Path(r'%SOURCE_SELF_TEST%').read_text(encoding='utf-8')); flags=[f.strip() for line in pathlib.Path(r'%SOURCE_REQUIRED_FLAGS%').read_text(encoding='utf-8').splitlines() if line.strip() and not line.lstrip().startswith('#') for f in line.split(',') if f.strip()]; assert d.get('ok') is True,d; assert d.get('display_version')==r'%APP_VERSION%',d; assert d.get('version')==r'%APP_MARKER%',d; missing=[k for k in flags if d.get(k) is not True]; assert not missing,missing; print('  Integrated source self-test passed.')"
 if errorlevel 1 goto failed
 
 set "BUILD_SHA="
@@ -258,7 +262,7 @@ if not exist "%PACKAGED_SELF_TEST%" (
     echo ERROR: The packaged EXE did not create its self-test report.
     goto failed
 )
-"%PYTHON_EXE%" %PYTHON_ARGS% -c "import json,pathlib; d=json.loads(pathlib.Path(r'%PACKAGED_SELF_TEST%').read_text(encoding='utf-8')); flags=r'%REQUIRED_FLAGS%'.split(','); assert d.get('ok') is True,d; assert d.get('display_version')==r'%APP_VERSION%',d; assert d.get('version')==r'%APP_MARKER%',d; missing=[k for k in flags if d.get(k) is not True]; assert not missing,missing; print('  Packaged EXE self-test passed for '+r'%APP_VERSION%'+'.')"
+"%PYTHON_EXE%" %PYTHON_ARGS% -c "import json,pathlib; d=json.loads(pathlib.Path(r'%PACKAGED_SELF_TEST%').read_text(encoding='utf-8')); flags=[f.strip() for line in pathlib.Path(r'%SOURCE_REQUIRED_FLAGS%').read_text(encoding='utf-8').splitlines() if line.strip() and not line.lstrip().startswith('#') for f in line.split(',') if f.strip()]; assert d.get('ok') is True,d; assert d.get('display_version')==r'%APP_VERSION%',d; assert d.get('version')==r'%APP_MARKER%',d; missing=[k for k in flags if d.get(k) is not True]; assert not missing,missing; print('  Packaged EXE self-test passed for '+r'%APP_VERSION%'+'.')"
 if errorlevel 1 goto failed
 
 echo Building clean automatic-update package...
@@ -293,7 +297,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   " foreach($name in $names){$old=Join-Path $backup $name; if(Test-Path -LiteralPath $old){Move-Item -LiteralPath $old -Destination (Join-Path $final $name) -Force}};" ^
   " throw" ^
   "};" ^
-  "try { Remove-Item -LiteralPath $backup -Recurse -Force } catch { Write-Warning ('New runtime is installed, but the old backup could not be removed: '+$_.Exception.Message) }"
+  "$rollbackRoot=Join-Path $final 'Rollback';" ^
+  "$previous=Join-Path $rollbackRoot 'PreviousRuntime';" ^
+  "try {" ^
+  " New-Item -ItemType Directory -Force -Path $rollbackRoot | Out-Null;" ^
+  " if(Test-Path -LiteralPath $previous){Remove-Item -LiteralPath $previous -Recurse -Force};" ^
+  " if(Test-Path -LiteralPath $backup){Move-Item -LiteralPath $backup -Destination $previous -Force};" ^
+  "} catch { Write-Warning ('New runtime is installed, but the previous runtime snapshot could not be retained: '+$_.Exception.Message) }"
 if errorlevel 1 (
     echo ERROR: Runtime deployment failed. The previous runtime was restored.
     goto failed

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 1.18 production-safety integration for Shower Programmer.
+"""Version 1.22 configuration-workspace integration for Shower Programmer.
 
 Mature workflow behavior now lives in the core GUI/batch modules. This layer is
 kept for the remaining release integrations that still benefit from isolation,
@@ -69,13 +69,30 @@ from __future__ import annotations
 # VERSION_1_17_ADAPTIVE_DXF_ROTATION_DISPLAY
 # VERSION_1_18_SENT_CLEANUP_REMAKE_AUTO
 # VERSION_1_19_REMAKE_LOCATION_VARIANTS
+# VERSION_1_20_PROFESSIONAL_HARDENING
+# VERSION_1_21_RELIABILITY_ARCHITECTURE
+# VERSION_1_22_CONFIGURATION_WORKSPACE
+# VERSION_1_23_WATERJET_ELLIPSE_GEOMETRY
+# VERSION_1_24_REVIEW_MACHINE_DIALOG_OWNER
+# VERSION_1_25_NO_FABRICATION_SEND
+# VERSION_1_26_MIRROR_PAGE_DXF_MATCH
+# VERSION_1_27_MIRROR_WJ_INDICATOR_ALIGNMENT
+# VERSION_1_28_MIRROR_WJ_SEND_ROLLBACK
+# VERSION_1_33_SEND_PATH_OOS_PREVIEW
+# VERSION_1_34_PREVIEW_SCAN_CONFIGURATION
+# VERSION_1_29_MIRROR_WJ_FAST_SEND
+# VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
+# VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED
+# VERSION_1_32_SEND_DIAGNOSTICS_FPS_HINGE_OOS
 
 import copy
 import hashlib
 import math
+import queue
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -504,7 +521,15 @@ def files_are_identical(source: Path, target: Path) -> bool:
         return False
 
 
-def find_send_conflicts(sketch_paths: list[Path], dxf_paths: list[Path], sketch_dir: Path, programs_dir: Path) -> list[SendConflict]:
+def find_send_conflicts(
+    sketch_paths: list[Path],
+    dxf_paths: list[Path],
+    sketch_dir: Path,
+    programs_dir: Path,
+    *,
+    timeout_seconds: float = 8.0,
+) -> list[SendConflict]:
+    """Inspect production conflicts without waiting indefinitely on SMB I/O."""
     candidates: list[tuple[int, str, Path, Path]] = []
     for kind, paths, target_dir in (
         ("Sketch", sketch_paths, sketch_dir),
@@ -520,12 +545,60 @@ def find_send_conflicts(sketch_paths: list[Path], dxf_paths: list[Path], sketch_
             return index, None
         return index, SendConflict(source, target, kind, files_are_identical(source, target))
 
-    if len(candidates) <= 1:
-        inspected = [inspect(candidate) for candidate in candidates]
-    else:
-        worker_count = min(4, len(candidates))
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-send-check") as executor:
-            inspected = [future.result() for future in as_completed(executor.submit(inspect, item) for item in candidates)]
+    if not candidates:
+        return []
+    jobs: queue.Queue[tuple[int, str, Path, Path]] = queue.Queue()
+    results: queue.Queue[tuple[int, SendConflict | None, Exception | None]] = queue.Queue()
+    for candidate in candidates:
+        jobs.put(candidate)
+
+    def inspect_worker() -> None:
+        while True:
+            try:
+                candidate = jobs.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                index, conflict = inspect(candidate)
+                results.put((index, conflict, None))
+            except Exception as exc:
+                results.put((candidate[0], None, exc))
+            finally:
+                jobs.task_done()
+
+    for index in range(min(4, len(candidates))):
+        threading.Thread(
+            target=inspect_worker,
+            name=f"shower-send-check-{index + 1}",
+            daemon=True,
+        ).start()
+
+    inspected: list[tuple[int, SendConflict | None]] = []
+    completed: set[int] = set()
+    errors: list[str] = []
+    deadline = time.monotonic() + max(0.05, float(timeout_seconds))
+    while len(completed) < len(candidates):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            index, conflict, error = results.get(timeout=remaining)
+        except queue.Empty:
+            break
+        completed.add(index)
+        inspected.append((index, conflict))
+        if error is not None:
+            errors.append(str(error))
+    unresolved = [candidate[3].name for candidate in candidates if candidate[0] not in completed]
+    if unresolved:
+        names = ", ".join(unresolved[:6])
+        extra = f" and {len(unresolved) - 6} more" if len(unresolved) > 6 else ""
+        raise TimeoutError(
+            f"Production-file conflict check timed out after {float(timeout_seconds):g} seconds for {names}{extra}. "
+            "No files were sent; check the shop network folders and try again."
+        )
+    if errors:
+        raise RuntimeError("Could not inspect production-file conflicts: " + "; ".join(errors[:4]))
     return [conflict for _index, conflict in sorted(inspected) if conflict is not None]
 
 
@@ -712,6 +785,8 @@ def _copy_outputs_with_policy(
     paths: list[Path],
     target_dir: Path,
     progress_callback: Callable[[Path, Path, str], None] | None = None,
+    rollback_tracker: Any | None = None,
+    task_context: Any | None = None,
 ) -> list[Path]:
     global _LAST_SEND_SUMMARY
 
@@ -723,8 +798,10 @@ def _copy_outputs_with_policy(
         summary = {"kept": [], "replaced": [], "failed": []}
         app._v4_send_summary = summary
 
-    copy_jobs: list[tuple[int, Path, Path, str]] = []
+    copy_jobs: list[tuple[int, Path, Path, str, Any | None]] = []
     for index, source in enumerate(paths):
+        if task_context is not None:
+            task_context.check_cancelled()
         if not source.exists() or not source.is_file():
             continue
         target = target_dir / source.name
@@ -738,18 +815,21 @@ def _copy_outputs_with_policy(
                 progress_callback(source, target, "complete")
             _LAST_SEND_SUMMARY = dict(summary)
             continue
-        copy_jobs.append((index, source, target, action))
+        rollback_entry = rollback_tracker.prepare_target(target) if rollback_tracker is not None else None
+        copy_jobs.append((index, source, target, action, rollback_entry))
 
     worker_count = max(1, min(4, len(copy_jobs)))
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-send") as executor:
         futures = {
-            executor.submit(app.copy_file_atomically, source, target): (index, source, target, action)
-            for index, source, target, action in copy_jobs
+            executor.submit(app.copy_file_atomically, source, target): (index, source, target, action, rollback_entry)
+            for index, source, target, action, rollback_entry in copy_jobs
         }
         for future in as_completed(futures):
-            index, source, target, action = futures[future]
+            index, source, target, action, rollback_entry = futures[future]
             try:
                 future.result()
+                if rollback_tracker is not None and rollback_entry is not None:
+                    rollback_tracker.record_copy(rollback_entry)
                 copied_by_index[index] = target
                 if action == "replace":
                     summary.setdefault("replaced", []).append(target)
@@ -759,9 +839,8 @@ def _copy_outputs_with_policy(
             except Exception as exc:
                 summary.setdefault("failed", []).append(f"{source.name}: {exc}")
                 _LAST_SEND_SUMMARY = dict(summary)
-                # Per-file failures do not abort the rest of the send. The order
-                # remains unarchived because its copied filename is still missing.
-                continue
+            if task_context is not None:
+                task_context.check_cancelled()
     return [copied_by_index[index] for index in sorted(copied_by_index)]
 
 
@@ -777,43 +856,172 @@ def _start_send_outputs_worker(
     *,
     include_sketches: bool,
     include_programs: bool,
+    program_required_by_aw: dict[str, bool] | None = None,
+    on_cancelled: Callable[[], None] | None = None,
     gui: Any,
-    original_start: Callable[..., None],
-) -> None:
+    original_start: Callable[..., bool],
+) -> bool:
     global _LAST_SEND_SUMMARY
 
     _LAST_SEND_SUMMARY = {}
-    conflicts = find_send_conflicts(sketch_paths, dxf_paths, app.SHOP_SKETCHES_DIR, app.SHOP_PROGRAMS_DIR)
-    decision = show_send_conflict_dialog(app, conflicts, gui) if conflicts else "replace"
-    if decision == "cancel":
-        try:
-            app.progress.stop()
-            app.progress.configure(mode="determinate", maximum=100, value=0)
-        except Exception:
-            pass
-        app.status_var.set("Send cancelled. No production files were changed.")
-        if getattr(app, "send_review_status_var", None) is not None:
-            app.send_review_status_var.set("Send cancelled. Review the files and try again.")
-        _reenable_review_send_buttons(app)
-        return
 
-    actions: dict[str, str] = {}
-    for conflict in conflicts:
-        action = "keep" if conflict.identical else decision
-        actions[str(conflict.target.resolve()).casefold()] = action
-    app._v4_send_conflict_actions = actions
-    app._v4_send_summary = {"kept": [], "replaced": [], "failed": []}
-    original_start(
-        sketch_paths,
-        dxf_paths,
-        missing,
-        archive_inputs,
-        orders,
-        order_folder,
-        process_list_path,
-        include_sketches=include_sketches,
-        include_programs=include_programs,
-    )
+    def log_event(
+        stage: str,
+        message: str,
+        *,
+        status: str = "INFO",
+        details: object = "",
+        error: BaseException | None = None,
+    ) -> None:
+        recorder = getattr(app, "record_send_pipeline_event", None)
+        if callable(recorder):
+            recorder(
+                stage,
+                message,
+                status=status,
+                orders=orders,
+                details=details,
+                error=error,
+            )
+
+    def prepare(task: Any) -> list[SendConflict]:
+        log_event(
+            "PREFLIGHT_WORKER_STARTED",
+            "Production-file conflict preflight started.",
+            details=f"sketches={len(sketch_paths)}; programs={len(dxf_paths)}",
+        )
+        task.progress(1, 2, "Checking production folders for existing files...")
+        conflicts = find_send_conflicts(
+            sketch_paths,
+            dxf_paths,
+            app.SHOP_SKETCHES_DIR,
+            app.SHOP_PROGRAMS_DIR,
+            timeout_seconds=8.0,
+        )
+        task.check_cancelled()
+        task.progress(2, 2, "Production-file check complete.")
+        log_event(
+            "PREFLIGHT_WORKER_COMPLETED",
+            f"Production-file conflict preflight found {len(conflicts)} existing target(s).",
+        )
+        return conflicts
+
+    def cancelled_before_send() -> None:
+        log_event("PREFLIGHT_CANCELLED", "Send was cancelled before production files changed.", status="WARNING")
+        app._last_send_cancel_result = {"rolled_back": [], "warnings": []}
+        if on_cancelled is not None:
+            on_cancelled()
+        else:
+            _reenable_review_send_buttons(app)
+
+    def preparation_failed(error: Exception) -> None:
+        log_event(
+            "PREFLIGHT_FAILED",
+            "Production-file conflict preflight failed.",
+            status="ERROR",
+            error=error,
+        )
+        app.status_var.set("Send could not start because the production-file check failed.")
+        if getattr(app, "send_review_status_var", None) is not None:
+            app.send_review_status_var.set("Send did not start. Review the error details and try again.")
+        _reenable_review_send_buttons(app)
+        app.show_structured_error(error, title="Prepare Send Output failed")
+
+    def continue_send(conflicts: object) -> None:
+        try:
+            conflict_list = [value for value in conflicts if isinstance(value, SendConflict)] if isinstance(conflicts, list) else []
+            log_event(
+                "PREFLIGHT_CALLBACK_ENTERED",
+                f"Reviewing {len(conflict_list)} production-file conflict(s).",
+            )
+            decision = show_send_conflict_dialog(app, conflict_list, gui) if conflict_list else "replace"
+            log_event("CONFLICT_DECISION", f"Production-file conflict decision: {decision}.")
+            if decision == "cancel":
+                app.status_var.set("Send cancelled. No production files were changed.")
+                if getattr(app, "send_review_status_var", None) is not None:
+                    app.send_review_status_var.set("Send cancelled. No production files were changed.")
+                cancelled_before_send()
+                return
+            actions: dict[str, str] = {}
+            for conflict in conflict_list:
+                action = "keep" if conflict.identical else decision
+                actions[str(conflict.target.resolve()).casefold()] = action
+            app._v4_send_conflict_actions = actions
+            app._v4_send_summary = {"kept": [], "replaced": [], "failed": []}
+
+            def launch_core_send() -> None:
+                try:
+                    log_event(
+                        "CORE_SEND_HANDOFF_STARTED",
+                        "Starting the core Send worker after preflight returned control to Tk.",
+                    )
+                    started = original_start(
+                        sketch_paths,
+                        dxf_paths,
+                        missing,
+                        archive_inputs,
+                        orders,
+                        order_folder,
+                        process_list_path,
+                        include_sketches=include_sketches,
+                        include_programs=include_programs,
+                        program_required_by_aw=program_required_by_aw,
+                        on_cancelled=on_cancelled,
+                    )
+                    if started:
+                        log_event("CORE_SEND_STARTED", "The core Send worker accepted the request.")
+                    else:
+                        log_event(
+                            "CORE_SEND_REJECTED",
+                            "The core Send worker rejected the request.",
+                            status="ERROR",
+                        )
+                        _reenable_review_send_buttons(app)
+                except Exception as exc:
+                    log_event(
+                        "CORE_SEND_HANDOFF_FAILED",
+                        "The core Send handoff failed.",
+                        status="ERROR",
+                        error=exc,
+                    )
+                    _reenable_review_send_buttons(app)
+                    app.show_structured_error(exc, title="Start Send failed")
+
+            root = getattr(app, "root", None)
+            if root is not None and hasattr(root, "after_idle"):
+                log_event("CORE_SEND_SCHEDULED", "The core Send handoff was scheduled on the next Tk event-loop turn.")
+                root.after_idle(launch_core_send)
+            else:
+                launch_core_send()
+        except Exception as exc:
+            log_event(
+                "PREFLIGHT_CALLBACK_FAILED",
+                "The production-file preflight callback failed.",
+                status="ERROR",
+                error=exc,
+            )
+            _reenable_review_send_buttons(app)
+            app.show_structured_error(exc, title="Prepare Send Output failed")
+
+    started = bool(app.run_managed_task(
+        "Prepare Send Output",
+        prepare,
+        message="Checking production folders before sending...",
+        total=2,
+        cancellable=True,
+        on_done=continue_send,
+        on_error=preparation_failed,
+        on_cancelled=cancelled_before_send,
+    ))
+    if started:
+        log_event("PREFLIGHT_TASK_STARTED", "The production-file preflight task accepted the request.")
+    else:
+        log_event(
+            "PREFLIGHT_TASK_REJECTED",
+            "The production-file preflight task rejected the request.",
+            status="ERROR",
+        )
+    return started
 
 
 def _send_complete_details(original: Callable[..., str], *args: Any, **kwargs: Any) -> str:
@@ -1260,8 +1468,17 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
             paths: list[Path],
             target_dir: Path,
             progress_callback: Callable[[Path, Path, str], None] | None = None,
+            rollback_tracker: Any | None = None,
+            task_context: Any | None = None,
         ) -> list[Path]:
-            return _copy_outputs_with_policy(self, paths, target_dir, progress_callback)
+            return _copy_outputs_with_policy(
+                self,
+                paths,
+                target_dir,
+                progress_callback,
+                rollback_tracker,
+                task_context,
+            )
 
         def start_send_v4(
             self: Any,
@@ -1275,7 +1492,9 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
             *,
             include_sketches: bool,
             include_programs: bool,
-        ) -> None:
+            program_required_by_aw: dict[str, bool] | None = None,
+            on_cancelled: Callable[[], None] | None = None,
+        ) -> bool:
             return _start_send_outputs_worker(
                 self,
                 sketch_paths,
@@ -1287,6 +1506,8 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                 process_list_path,
                 include_sketches=include_sketches,
                 include_programs=include_programs,
+                program_required_by_aw=program_required_by_aw,
+                on_cancelled=on_cancelled,
                 gui=gui,
                 original_start=original_start_send.__get__(self, type(self)),
             )
@@ -1441,6 +1662,17 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                 mirror_orders = shower_batch.load_process_orders_from_rows(mirror_rows)
                 if [order.aw_order for order in mirror_orders] != ["900001"]:
                     raise RuntimeError("Mirror batches are not scoped to Waterjet-routed orders.")
+                required_v120_helpers = (
+                    "archive_revision_inspector_text",
+                    "run_system_health_checks",
+                    "format_scan_stage_timings",
+                    "write_test_mode_provenance_manifest",
+                )
+                if not all(hasattr(gui.ShowerProgrammerApp, name) for name in required_v120_helpers):
+                    raise RuntimeError("Version 1.20 professional-hardening helpers are unavailable.")
+                if not hasattr(shower_batch, "shower_legacy_xls") or not hasattr(shower_batch.shower_legacy_xls, "load_rows"):
+                    raise RuntimeError("Version 1.20 direct legacy-XLS reader is unavailable.")
+
                 result.update(
                     {
                         "v4_conflict_safe_send": True,
@@ -1606,6 +1838,77 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "remake_location_variant_detection": True,
                         "remake_location_stem_scope_guard": True,
                         "version_1_19_remake_location_variants": True,
+                        "direct_legacy_xls_reader": True,
+                        "excel_optional_xls_fallback": True,
+                        "archive_revision_inspector": True,
+                        "system_health_check": True,
+                        "known_order_regression_library": True,
+                        "scan_stage_performance_summary": True,
+                        "test_mode_provenance_manifest": True,
+                        "pre_release_smoke_test": True,
+                        "version_1_20_professional_hardening": True,
+                        "transactional_send_journal": True,
+                        "startup_recovery_check": True,
+                        "post_send_integrity_verification": True,
+                        "production_rule_test_console": True,
+                        "sqlite_pre_migration_backup": True,
+                        "operator_error_codes_copy_diagnostics": True,
+                        "persistent_runtime_rollback": True,
+                        "modular_business_rule_package": True,
+                        "version_1_21_reliability_architecture": True,
+                        "centralized_configuration_workspace": True,
+                        "configuration_section_tabs": True,
+                        "advisory_configuration_validation": True,
+                        "configuration_presave_backup": True,
+                        "configuration_unknown_key_editor": True,
+                        "version_1_22_configuration_workspace": True,
+                        "waterjet_ellipse_vector_transform": True,
+                        "prefix_radius_waterjet_detection": True,
+                        "version_1_23_waterjet_ellipse_geometry": True,
+                        "review_machine_dialog_owner": True,
+                        "owner_relative_child_centering": True,
+                        "version_1_24_review_machine_dialog_owner": True,
+                        "no_fabrication_send_completion": True,
+                        "no_fabrication_program_warning_suppression": True,
+                        "nested_hinge_configuration_tab": True,
+                        "version_1_25_no_fabrication_send": True,
+                        "mirror_dimension_page_matching": True,
+                        "mirror_overview_item_sequence": True,
+                        "mirror_dxf_page_alignment": True,
+                        "version_1_26_mirror_page_dxf_match": True,
+                        "landscape_wj_zero_degree_bottom_left": True,
+                        "waterjet_source_aligned_indicator": True,
+                        "version_1_27_mirror_wj_indicator_alignment": True,
+                        "mirror_wj_outline_anchor": True,
+                        "cancellable_send_output_rollback": True,
+                        "version_1_28_mirror_wj_send_rollback": True,
+                        "mirror_wj_indicator_reprocess": True,
+                        "exact_network_send_cleanup": True,
+                        "send_stage_timings": True,
+                        "version_1_29_mirror_wj_fast_send": True,
+                        "exact_selected_order_network_cleanup": True,
+                        "responsive_review_send_preflight": True,
+                        "version_1_30_exact_cleanup_send_preflight": True,
+                        "terminal_task_slot_release": True,
+                        "reliable_chained_send_start": True,
+                        "transactional_recovery_manifest": True,
+                        "bounded_parallel_exact_cleanup": True,
+                        "single_pass_cleanup_verification": True,
+                        "version_1_31_send_pipeline_cleanup_speed": True,
+                        "durable_send_pipeline_log": True,
+                        "deferred_core_send_handoff": True,
+                        "send_callback_error_surface": True,
+                        "fps_hinge_kick_out_detection": True,
+                        "fps_geometry_orientation_precedence": True,
+                        "version_1_32_send_diagnostics_fps_hinge_oos": True,
+                        "send_selected_path_deduplication": True,
+                        "connected_oos_return_preview": True,
+                        "version_1_33_send_path_oos_preview": True,
+                        "oos_preview_geometry_layering": True,
+                        "bounded_eight_worker_scan_io": True,
+                        "hinge_orientation_default_migration": True,
+                        "expanded_configuration_editor": True,
+                        "version_1_34_preview_scan_configuration": True,
                     }
                 )
             except Exception as exc:
@@ -1689,6 +1992,14 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
         gui.ShowerProgrammerApp.VERSION_1_17_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_1_18_FEATURES_ACTIVE = True
         gui.ShowerProgrammerApp.VERSION_1_19_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_20_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_21_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_22_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_23_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_24_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_25_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_26_FEATURES_ACTIVE = True
+        gui.ShowerProgrammerApp.VERSION_1_27_FEATURES_ACTIVE = True
         _INSTALLED = True
 
 

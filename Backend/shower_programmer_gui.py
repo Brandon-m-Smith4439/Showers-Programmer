@@ -38,6 +38,16 @@
 # ACTION_HISTORY_DIAGNOSTICS_V106: repaired Action History tab construction and added visible file/stage diagnostics.
 # ARCHIVE_REVISION_HISTORY_POLISH_V107: collapsible Action History diagnostics and logical batch-revision consolidation.
 # ARCHIVE_BATCH_STATUS_DELETE_REFRESH_V108: batch sent/input summaries, deletion-scope-safe rescans, and richer dimension diagnostics.
+# PROFESSIONAL_HARDENING_V120: direct XLS, revision inspector, health checks, scan timing, provenance, and release smoke validation.
+# RELIABILITY_ARCHITECTURE_V121: transactional Send recovery, startup recovery, post-send integrity, DB safety, error codes, rollback, and rule modules.
+# CONFIGURATION_WORKSPACE_V122: centralized sectioned configuration editing with advisory validation and save-anyway support.
+# REVIEW_MACHINE_DIALOG_OWNER_V124: keep Change Machine centered on and owned by Review Order.
+# NO_FABRICATION_SEND_V125: no CNC route means no generated program is required for send completion.
+# EXACT_CLEANUP_SEND_PREFLIGHT_V130: exact selected input cleanup plus cancellable Review / Send preparation.
+# SEND_PIPELINE_CLEANUP_SPEED_V131: reliable chained Send startup plus transactional, bounded input cleanup.
+# SEND_DIAGNOSTICS_FPS_HINGE_OOS_V132: durable Send-stage logging and deferred preflight handoff.
+# SEND_PATH_OOS_PREVIEW_V133: reliable selected-path deduplication and connected OOS return-leg display.
+# PREVIEW_SCAN_CONFIGURATION_V134: layered OOS rendering, bounded scan I/O, and additive hinge orientation migration.
 
 from __future__ import annotations
 
@@ -50,11 +60,13 @@ import math
 import queue
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import traceback
 import ctypes
 import urllib.parse
 import urllib.request
@@ -62,7 +74,7 @@ import uuid
 import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -78,6 +90,10 @@ import shower_errors
 import shower_programmer as programmer
 import shower_state
 import shower_tasks
+import shower_reliability
+import shower_configuration
+from shower_rules import archive as archive_rules
+from shower_rules import indicators as indicator_rules
 
 _SCRIPT_PROJECT_ROOT = programmer.project_root()
 
@@ -693,6 +709,7 @@ class ShowerProgrammerApp:
     CONFIG_BACKUP_FOLDER_NAME = "Configuration Backups"
     NETWORK_HEALTH_REFRESH_MS = 5 * 60 * 1000
     NETWORK_HEALTH_TIMEOUT_SECONDS = 3.0
+    SCAN_IO_MAX_WORKERS = 8
     ORDER_TREE_COLUMNS = (
         "status", "processed", "delivery", "order", "review",
         "sent", "job", "customer", "items", "issues",
@@ -754,7 +771,22 @@ class ShowerProgrammerApp:
         self.network_health_running = False
         self.network_health_after_id: str | None = None
         self.diagnostic_worker_active = False
+        self.startup_recovery_results: list[dict[str, str]] = []
+        self.database_safety = shower_reliability.DatabaseSafetyManager(self.internal_output_dir())
+        database_backup: Path | None = None
+        try:
+            database_backup = self.database_safety.prepare_for_schema(int(getattr(shower_state, "SCHEMA_VERSION", 1)))
+        except Exception:
+            database_backup = None
         self.state_store = shower_state.StateStore.for_output(self.internal_output_dir())
+        try:
+            self.database_safety.record_schema_result(
+                int(getattr(shower_state, "SCHEMA_VERSION", 1)),
+                backup=database_backup,
+            )
+        except Exception:
+            pass
+        self.send_journal = shower_reliability.SendJournal(self.internal_output_dir())
         try:
             self.state_store.migrate_processing_history(self.internal_output_dir() / "processing_history.json")
         except Exception:
@@ -784,6 +816,7 @@ class ShowerProgrammerApp:
         self.activity_started_at = 0.0
         self.activity_last_progress_at = 0.0
         self.activity_stage_message = ""
+        self.last_scan_performance_summary = ""
         self.send_review_window: tk.Toplevel | None = None
         self.send_review_progress: ttk.Progressbar | None = None
         self.send_review_status_var: tk.StringVar | None = None
@@ -818,8 +851,41 @@ class ShowerProgrammerApp:
         self.root.after(1000, self.refresh_activity_heartbeat)
         self.root.after(250, self.archive_old_action_history)
         self.root.after(350, self.cleanup_expired_quarantine)
+        self.root.after(650, self.run_startup_recovery_check)
         self.root.after(1400, self.check_network_health_async)
-        self.root.after_idle(lambda: self.root.after(850, self.scan_orders))
+        self.root.after_idle(lambda: self.root.after(1050, self.scan_orders))
+
+    def run_startup_recovery_check(self) -> None:
+        """Surface interrupted durable work before the operator starts a new run."""
+        try:
+            results = shower_reliability.startup_recovery_issues(
+                Path(getattr(self, "runtime_root", self.preferred_runtime_root())),
+                Path(self.output_dir_var.get()).resolve(),
+            )
+        except Exception:
+            results = []
+        self.startup_recovery_results = results
+        actionable = [item for item in results if str(item.get("severity", "")).upper() == "WARN"]
+        if not actionable:
+            return
+        preview = "\n".join(
+            f"• {item.get('title', 'Recovery item')}: {item.get('detail', '')}"
+            for item in actionable[:5]
+        )
+        if len(actionable) > 5:
+            preview += f"\n• ...and {len(actionable) - 5} more"
+        choice = messagebox._show(
+            "showwarning",
+            "Startup recovery check",
+            "Shower Programmer found interrupted or incomplete work from a previous session. "
+            "No production files were changed by this check.\n\n" + preview,
+            parent=self.root,
+            kind="warning",
+            buttons=[("Later", "later"), ("Open Recovery", "recovery")],
+            default="later",
+        )
+        if choice == "recovery":
+            self.open_settings("Recovery")
 
     def force_main_window_maximized(self) -> None:
         """Keep the main application maximized after theme/startup rebuilds."""
@@ -915,6 +981,48 @@ class ShowerProgrammerApp:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def record_send_pipeline_event(
+        self,
+        stage: str,
+        message: str,
+        *,
+        status: str = "INFO",
+        orders: Iterable[shower_batch.ProcessOrder | str] | None = None,
+        details: object = "",
+        error: BaseException | None = None,
+    ) -> dict[str, object] | None:
+        """Durably record every Send handoff, including failures before a worker starts."""
+        try:
+            aw_orders, _job_numbers, _job_names, _customers = self.action_identity_for_orders(orders)
+            active = getattr(getattr(self, "task_manager", None), "active", None)
+            entry: dict[str, object] = {
+                "timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                "version": self.APP_VERSION,
+                "stage": str(stage).strip() or "UNKNOWN",
+                "status": str(status).strip().upper() or "INFO",
+                "message": str(message).strip(),
+                "orders": aw_orders,
+                "is_busy": bool(getattr(self, "is_busy", False)),
+                "active_task": str(getattr(active, "name", "") or ""),
+                "details": str(details).strip(),
+            }
+            if error is not None:
+                entry["exception"] = f"{error.__class__.__name__}: {error}"
+                entry["traceback"] = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+            lock = getattr(self, "send_pipeline_log_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                self.send_pipeline_log_lock = lock
+            with lock:
+                path = self.diagnostics_directory() / "send_pipeline.jsonl"
+                with path.open("a", encoding="utf-8", newline="\n") as handle:
+                    handle.write(json.dumps(entry, ensure_ascii=True, sort_keys=True) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            return entry
+        except Exception:
+            return None
+
     @classmethod
     def quarantine_paths(
         cls,
@@ -974,6 +1082,7 @@ class ShowerProgrammerApp:
         warnings: list[str] = []
         seen: set[str] = set()
         source_paths = [Path(source_value) for source_value in paths]
+        planned_moves: list[tuple[Path, Path, dict[str, object]]] = []
         progress_total = len(source_paths)
         progress_done = 0
 
@@ -1004,21 +1113,41 @@ class ShowerProgrammerApp:
             target = cls.unique_target_path(target)
             try:
                 size = resolved.stat().st_size
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(resolved), str(target))
-                entries.append(
-                    {
-                        "original_path": str(resolved),
-                        "quarantined_path": str(target.relative_to(bundle_dir)),
-                        "size": size,
-                        "restored": False,
-                    }
-                )
-                moved.append(resolved)
-                cls.atomic_write_json(manifest_path, manifest)
             except OSError as exc:
                 warnings.append(f"Could not move {source.name} to recovery: {exc}")
-            report_progress(source)
+                report_progress(source)
+                continue
+            entry: dict[str, object] = {
+                "original_path": str(resolved),
+                "quarantined_path": str(target.relative_to(bundle_dir)),
+                "size": size,
+                "restored": False,
+                "pending": True,
+            }
+            entries.append(entry)
+            planned_moves.append((resolved, target, entry))
+
+        if planned_moves:
+            # Persist the complete move plan before touching source files. A
+            # mid-operation interruption therefore still leaves every moved
+            # file discoverable by the recovery UI without rewriting and
+            # fsyncing the growing manifest after each individual move.
+            cls.atomic_write_json(manifest_path, manifest)
+
+        failed_entry_ids: set[int] = set()
+        for resolved, target, entry in planned_moves:
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(resolved), str(target))
+                entry["pending"] = False
+                moved.append(resolved)
+            except OSError as exc:
+                failed_entry_ids.add(id(entry))
+                warnings.append(f"Could not move {resolved.name} to recovery: {exc}")
+            report_progress(resolved)
+
+        if failed_entry_ids:
+            entries[:] = [entry for entry in entries if id(entry) not in failed_entry_ids]
         if not entries:
             shutil.rmtree(bundle_dir, ignore_errors=True)
             return moved, warnings, None
@@ -1310,27 +1439,41 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
-    def position_child_window(self, window: tk.Toplevel, width: int, height: int) -> None:
+    def position_child_window(
+        self,
+        window: tk.Toplevel,
+        width: int,
+        height: int,
+        owner: Any | None = None,
+    ) -> None:
+        anchor = owner or self.root
         try:
-            self.root.update_idletasks()
-            root_x = self.root.winfo_rootx()
-            root_y = self.root.winfo_rooty()
-            root_w = max(self.root.winfo_width(), 1)
-            root_h = max(self.root.winfo_height(), 1)
+            anchor.update_idletasks()
+            root_x = anchor.winfo_rootx()
+            root_y = anchor.winfo_rooty()
+            root_w = max(anchor.winfo_width(), 1)
+            root_h = max(anchor.winfo_height(), 1)
             x = root_x + max(24, min(80, root_w // 12))
             y = root_y + max(24, min(80, root_h // 12))
             window.geometry(f"{width}x{height}+{x}+{y}")
         except tk.TclError:
             window.geometry(f"{width}x{height}")
 
-    def center_child_window(self, window: tk.Toplevel, width: int, height: int) -> None:
-        """Center a child on the same display area as the main application."""
+    def center_child_window(
+        self,
+        window: tk.Toplevel,
+        width: int,
+        height: int,
+        owner: Any | None = None,
+    ) -> None:
+        """Center a child on its owner, defaulting to the main application."""
+        anchor = owner or self.root
         try:
-            self.root.update_idletasks()
-            root_x = self.root.winfo_rootx()
-            root_y = self.root.winfo_rooty()
-            root_w = max(self.root.winfo_width(), 1)
-            root_h = max(self.root.winfo_height(), 1)
+            anchor.update_idletasks()
+            root_x = anchor.winfo_rootx()
+            root_y = anchor.winfo_rooty()
+            root_w = max(anchor.winfo_width(), 1)
+            root_h = max(anchor.winfo_height(), 1)
             width = min(width, max(900, root_w - 64))
             height = min(height, max(640, root_h - 64))
             x = root_x + max(0, (root_w - width) // 2)
@@ -1339,7 +1482,14 @@ class ShowerProgrammerApp:
         except tk.TclError:
             window.geometry(f"{width}x{height}")
 
-    def bring_window_to_front(self, window: tk.Toplevel, make_transient: bool = True) -> None:
+    def bring_window_to_front(
+        self,
+        window: tk.Toplevel,
+        make_transient: bool = True,
+        owner: Any | None = None,
+    ) -> None:
+        transient_owner = owner or self.root
+
         def apply_focus() -> None:
             try:
                 window.deiconify()
@@ -1347,7 +1497,7 @@ class ShowerProgrammerApp:
                 pass
             if make_transient:
                 try:
-                    window.transient(self.root)
+                    window.transient(transient_owner)
                 except tk.TclError:
                     pass
             try:
@@ -2874,7 +3024,7 @@ class ShowerProgrammerApp:
 
     def update_activity_detail(self) -> None:
         if not self.is_busy:
-            self.activity_detail_var.set("")
+            self.activity_detail_var.set(str(getattr(self, "last_scan_performance_summary", "")))
             return
         now = time.monotonic()
         elapsed = max(0, int(now - self.activity_started_at)) if self.activity_started_at else 0
@@ -4715,8 +4865,20 @@ class ShowerProgrammerApp:
         specialized screens use the same task manager without touching Tk from a
         background thread.
         """
+        is_send_task = "send" in str(name).casefold()
+        if is_send_task:
+            self.record_send_pipeline_event(
+                "MANAGED_TASK_REQUESTED",
+                f"Requested managed task {name}.",
+            )
         if self.is_busy or getattr(self.task_manager, "active", None) is not None:
             self.status_var.set("Busy. Please wait for the current task to finish.")
+            if is_send_task:
+                self.record_send_pipeline_event(
+                    "MANAGED_TASK_REJECTED",
+                    f"Managed task {name} was rejected because another operation is active.",
+                    status="ERROR",
+                )
             return False
         self.start_background_activity(message, maximum=total or None)
         try:
@@ -4736,9 +4898,22 @@ class ShowerProgrammerApp:
                 handlers["cancelled"] = on_cancelled
             if handlers:
                 self._managed_task_handlers[snapshot.task_id] = handlers
+            if is_send_task:
+                self.record_send_pipeline_event(
+                    "MANAGED_TASK_STARTED",
+                    f"Managed task {name} started.",
+                    details=f"task_id={snapshot.task_id}",
+                )
             return True
         except Exception as exc:
             self.finish_background_activity()
+            if is_send_task:
+                self.record_send_pipeline_event(
+                    "MANAGED_TASK_START_FAILED",
+                    f"Managed task {name} could not start.",
+                    status="ERROR",
+                    error=exc,
+                )
             self.show_structured_error(exc, title=f"{name} failed")
             return False
 
@@ -4801,9 +4976,7 @@ class ShowerProgrammerApp:
             title=title,
         )
         # When an operator has exactly one order selected, attach that order to
-        # otherwise-generic failures so the structured error dialog can offer a
-        # one-click diagnostic package without requiring each caller to repeat
-        # selection-resolution logic. This runs on Tk's event thread only.
+        # otherwise-generic failures so diagnostics remain scoped and actionable.
         if process_order is None:
             try:
                 selected = self.selected_orders()
@@ -4813,31 +4986,62 @@ class ShowerProgrammerApp:
                 process_order = selected[0]
 
         aw_order = str(process_order.aw_order) if isinstance(process_order, shower_batch.ProcessOrder) else structured.aw_order
+        operator_code = shower_reliability.operator_error_code(structured.code)
+        diagnostic = shower_reliability.diagnostic_text(
+            app_version=self.APP_VERSION,
+            title=title,
+            internal_code=structured.code,
+            message=structured.message,
+            aw_order=aw_order,
+            batch_key=structured.batch_key,
+            details=structured.details,
+        )
         try:
             self.state_store_for_output().record_error(
-                structured.code,
+                operator_code,
                 title,
                 structured.message,
                 aw_order=aw_order,
                 batch_key=structured.batch_key,
-                metadata=structured.details,
+                metadata={
+                    **structured.details,
+                    "internal_code": structured.code,
+                    "operator_code": operator_code,
+                },
             )
         except Exception:
             pass
-        if process_order is None or ctk is None:
-            messagebox.showerror(title, f"[{structured.code}]\n\n{structured.message}", parent=self.root)
+
+        display_message = (
+            f"Error Code: {operator_code}\n"
+            f"Internal: {structured.code}\n\n"
+            f"{structured.message}"
+        )
+        if ctk is None:
+            messagebox.showerror(f"{title} [{operator_code}]", display_message, parent=self.root)
             return
-        owner = self.root
+
+        buttons: list[tuple[str, str]] = [("Close", "close"), ("Copy Diagnostics", "copy")]
+        if process_order is not None:
+            buttons.append(("Create Diagnostic Package", "diagnostic"))
         choice = messagebox._show(
             "showerror",
-            title,
-            f"[{structured.code}]\n\n{structured.message}",
-            parent=owner,
+            f"{title} [{operator_code}]",
+            display_message,
+            parent=self.root,
             kind="error",
-            buttons=[("Close", "close"), ("Create Diagnostic Package", "diagnostic")],
+            buttons=buttons,
             default="close",
         )
-        if choice == "diagnostic":
+        if choice == "copy":
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(diagnostic)
+                self.root.update_idletasks()
+                self.status_var.set(f"Copied diagnostics for {operator_code}.")
+            except tk.TclError:
+                pass
+        elif choice == "diagnostic" and process_order is not None:
             self.create_diagnostic_package_for_order(process_order, error_context=structured)
 
     def sync_order_lifecycle_state(
@@ -4950,6 +5154,76 @@ class ShowerProgrammerApp:
             except (AttributeError, tk.TclError, TypeError):
                 pass
 
+    @classmethod
+    def write_test_mode_provenance_manifest(
+        cls,
+        workspace: Path,
+        entries: list[dict[str, object]],
+        restored_files: Iterable[Path],
+        process_files: Iterable[Path],
+        *,
+        batch_name: str = "",
+        archive_name: str = "",
+    ) -> Path:
+        """Write an audit trail describing exactly where Test Mode inputs came from."""
+        workspace = Path(workspace)
+        restored_names = {Path(path).name.casefold(): str(Path(path)) for path in restored_files}
+        orders: list[dict[str, object]] = []
+        for entry in entries:
+            order = entry.get("order") if isinstance(entry, dict) else None
+            if not isinstance(order, shower_batch.ProcessOrder):
+                continue
+            chosen_files = [Path(path) for path in entry.get("order_files", []) if isinstance(path, Path)] if isinstance(entry.get("order_files", []), list) else []
+            source_records = entry.get("_archive_order_revision_sources", [])
+            revisions = [source for source in source_records if isinstance(source, dict)] if isinstance(source_records, list) else []
+            if not revisions:
+                revisions = [{
+                    "archive_name": str(entry.get("archive_name", archive_name)),
+                    "batch_name": str(entry.get("batch_name", batch_name)),
+                    "order_archive_dir": entry.get("order_archive_dir"),
+                    "order_files": chosen_files,
+                }]
+            file_rows: list[dict[str, str]] = []
+            for chosen in chosen_files:
+                source_archive = ""
+                source_batch = ""
+                for revision in revisions:
+                    raw_files = revision.get("order_files", [])
+                    revision_files = [Path(path) for path in raw_files if isinstance(path, Path)] if isinstance(raw_files, list) else []
+                    if any(path == chosen for path in revision_files):
+                        source_archive = str(revision.get("archive_name", ""))
+                        source_batch = str(revision.get("batch_name", ""))
+                        break
+                file_rows.append({
+                    "type": chosen.suffix.lower().lstrip("."),
+                    "source": str(chosen),
+                    "source_archive": source_archive,
+                    "source_batch": source_batch,
+                    "restored": restored_names.get(chosen.name.casefold(), ""),
+                })
+            orders.append({
+                "aw_order": str(order.aw_order),
+                "job_name": str(order.job_name),
+                "customer": str(order.customer),
+                "files": file_rows,
+                "revision_count": int(entry.get("_archive_batch_revision_count", 1) or 1),
+            })
+        payload = {
+            "schema": 1,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "application_version": cls.APP_VERSION,
+            "batch_name": str(batch_name),
+            "archive_name": str(archive_name),
+            "process_lists": [str(Path(path)) for path in process_files],
+            "orders": orders,
+        }
+        target = workspace / "TestModeProvenance.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, target)
+        return target
+
     def enter_test_mode(self, entry: dict[str, object]) -> tuple[Path, list[str]]:
         """Create an isolated archive workspace and switch the application into it."""
         order = entry.get("order")
@@ -4966,6 +5240,14 @@ class ShowerProgrammerApp:
         restored, process_file, warnings = self.copy_archived_order_for_testing(entry, order_dir, process_dir)
         if not restored and process_file is None:
             raise RuntimeError("The selected archived order could not be copied into the isolated Test Mode workspace.")
+        provenance_manifest = self.write_test_mode_provenance_manifest(
+            workspace,
+            [entry],
+            restored,
+            [process_file] if process_file is not None else [],
+            batch_name=str(entry.get("batch_name", "Archived Order")),
+            archive_name=str(entry.get("archive_name", "")),
+        )
         self._production_paths_before_test = (self.folder_var.get(), self.process_list_var.get(), self.output_dir_var.get())
         self.test_mode_workspace = workspace
         self.test_mode_orders = [order]
@@ -4991,7 +5273,7 @@ class ShowerProgrammerApp:
             f"Opened isolated Test Mode for archived A&W {order.aw_order}.",
             status="SUCCESS",
             orders=[order],
-            details=f"Workspace={workspace}",
+            details=f"Workspace={workspace}; Provenance={provenance_manifest}",
         )
         return workspace, warnings
 
@@ -5038,6 +5320,14 @@ class ShowerProgrammerApp:
                 "The archive was left unchanged. Refresh Archives and retry; if the files are "
                 "stored under an older batch revision, the revision fallback should locate them."
             )
+        provenance_manifest = cls.write_test_mode_provenance_manifest(
+            workspace,
+            valid_entries,
+            restored,
+            process_files,
+            batch_name=str(batch_name),
+            archive_name=str(archive_name),
+        )
         return {
             "workspace": workspace,
             "order_dir": order_dir,
@@ -5049,6 +5339,7 @@ class ShowerProgrammerApp:
             "warnings": warnings,
             "batch_name": str(batch_name),
             "archive_name": str(archive_name),
+            "provenance_manifest": provenance_manifest,
         }
 
     def activate_prepared_batch_test_mode(self, prepared: dict[str, object]) -> tuple[Path, list[str]]:
@@ -5063,6 +5354,7 @@ class ShowerProgrammerApp:
         batch_name = str(prepared.get("batch_name", "Archived Batch"))
         archive_name = str(prepared.get("archive_name", ""))
         warnings = [str(item) for item in prepared.get("warnings", [])] if isinstance(prepared.get("warnings", []), list) else []
+        provenance_manifest = prepared.get("provenance_manifest")
 
         self._production_paths_before_test = (self.folder_var.get(), self.process_list_var.get(), self.output_dir_var.get())
         self.test_mode_workspace = workspace
@@ -5104,7 +5396,7 @@ class ShowerProgrammerApp:
             f"Opened isolated Test Mode for archive batch {batch_name} with {len(entries)} order(s).",
             status="SUCCESS",
             orders=self.test_mode_orders,
-            details=f"Archive={archive_name}; Workspace={workspace}",
+            details=f"Archive={archive_name}; Workspace={workspace}; Provenance={provenance_manifest or ''}",
         )
         return workspace, warnings
 
@@ -5547,6 +5839,13 @@ class ShowerProgrammerApp:
 
         try:
             started_total = time.perf_counter()
+            stage_timings: dict[str, float] = {}
+
+            def remember_stage(label: str, started: float) -> float:
+                elapsed = max(0.0, time.perf_counter() - started)
+                stage_timings[str(label)] = elapsed
+                return elapsed
+
             check_cancelled()
             self.ensure_workflow_folders(folder, process_list, output_dir)
             shower_cache.configure(output_dir / ".scan_cache")
@@ -5557,7 +5856,8 @@ class ShowerProgrammerApp:
             check_cancelled()
             stage_started = time.perf_counter()
             config = self.config_with_manual_overrides(folder, output_dir)
-            self.record_performance("Scan Orders", "Load configuration", (time.perf_counter() - stage_started) * 1000.0, output_dir=output_dir)
+            config_elapsed = remember_stage("Configuration", stage_started)
+            self.record_performance("Scan Orders", "Load configuration", config_elapsed * 1000.0, output_dir=output_dir)
             progress_value += 1
             if isolated_test_mode or local_refresh_only:
                 self.queue_scan_progress(
@@ -5587,10 +5887,11 @@ class ShowerProgrammerApp:
                     self.prepare_import_source_snapshot()
                 )
                 check_cancelled()
+                network_elapsed = remember_stage("Network index", stage_started)
                 self.record_performance(
                     "Scan Orders",
                     "Index shared input",
-                    (time.perf_counter() - stage_started) * 1000.0,
+                    network_elapsed * 1000.0,
                     {"entries": int(import_snapshot.get("entry_count", 0) or 0)},
                     output_dir=output_dir,
                 )
@@ -5607,11 +5908,13 @@ class ShowerProgrammerApp:
                     )
 
                 check_cancelled()
+                stage_started = time.perf_counter()
                 process_list_import_summary = self.copy_process_lists_from_import_folder(
                     process_list,
                     progress_callback=process_list_progress,
                     import_snapshot=import_snapshot,
                 )
+                remember_stage("Process-list sync", stage_started)
                 progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             process_list_files = shower_batch.process_list_files(process_list)
             progress_value += 1
@@ -5639,7 +5942,8 @@ class ShowerProgrammerApp:
             check_cancelled()
             stage_started = time.perf_counter()
             all_batches = self.load_process_list_batches(process_list, config, normalization_progress)
-            self.record_performance("Scan Orders", "Load process lists", (time.perf_counter() - stage_started) * 1000.0, {"batches": len(all_batches)}, output_dir=output_dir)
+            process_parse_elapsed = remember_stage("Process-list parse", stage_started)
+            self.record_performance("Scan Orders", "Load process lists", process_parse_elapsed * 1000.0, {"batches": len(all_batches)}, output_dir=output_dir)
             copied_process_lists = [
                 path
                 for path in process_list_import_summary.get("copied", [])
@@ -5765,6 +6069,7 @@ class ShowerProgrammerApp:
                 if str(order.aw_order) in missing_requirements
             ]
 
+            order_sync_started = time.perf_counter()
             if isolated_test_mode or local_refresh_only:
                 missing_count = len(gateway_orders)
                 self.queue_scan_progress(
@@ -5857,6 +6162,7 @@ class ShowerProgrammerApp:
                         protected_orders=import_candidates,
                     )
                     production_reconciliation_warnings.extend(shared_cleanup_warnings)
+            remember_stage("Order input sync", order_sync_started)
             scan_stage = "building the local order preview"
             active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
             local_order_files = [
@@ -5873,7 +6179,8 @@ class ShowerProgrammerApp:
             check_cancelled()
             stage_started = time.perf_counter()
             previews = shower_batch.preview_orders(orders, folder, config=config)
-            self.record_performance("Scan Orders", "Preview active orders", (time.perf_counter() - stage_started) * 1000.0, {"orders": len(orders)}, output_dir=output_dir)
+            preview_elapsed = remember_stage("PDF/DXF preview", stage_started)
+            self.record_performance("Scan Orders", "Preview active orders", preview_elapsed * 1000.0, {"orders": len(orders)}, output_dir=output_dir)
             for result in previews:
                 if str(result.aw_order) not in duplicate_groups_by_aw:
                     continue
@@ -5896,7 +6203,9 @@ class ShowerProgrammerApp:
                 orders.extend(input_only_orders)
                 previews.extend(input_only_previews)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} active order(s).")
-            self.record_performance("Scan Orders", "Total", (time.perf_counter() - started_total) * 1000.0, {"orders": len(orders)}, output_dir=output_dir)
+            total_elapsed = max(0.0, time.perf_counter() - started_total)
+            stage_timings["Total"] = total_elapsed
+            self.record_performance("Scan Orders", "Total", total_elapsed * 1000.0, {"orders": len(orders)}, output_dir=output_dir)
             self.worker_queue.put(
                 (
                     "scan_done",
@@ -5923,6 +6232,7 @@ class ShowerProgrammerApp:
                         "reactivated_aw_orders": reactivated_aw_orders,
                         "isolated_test_mode": isolated_test_mode,
                         "local_refresh_only": local_refresh_only,
+                        "scan_stage_timings": dict(stage_timings),
                     },
                 )
             )
@@ -6038,6 +6348,26 @@ class ShowerProgrammerApp:
             raise
         except Exception as exc:
             self.worker_queue.put(("scan_error", exc))
+
+    @staticmethod
+    def format_scan_stage_timings(timings: object) -> str:
+        if not isinstance(timings, dict):
+            return ""
+        preferred = (
+            "Network index",
+            "Process-list sync",
+            "Process-list parse",
+            "Order input sync",
+            "PDF/DXF preview",
+            "Total",
+        )
+        parts: list[str] = []
+        for label in preferred:
+            raw = timings.get(label)
+            if not isinstance(raw, (int, float)):
+                continue
+            parts.append(f"{label} {float(raw):.2f}s")
+        return " · ".join(parts)
 
     def queue_scan_progress(self, value: int, maximum: int, message: str) -> None:
         self.worker_queue.put(
@@ -6655,12 +6985,21 @@ class ShowerProgrammerApp:
             warnings.append(f"Production Sketches check unavailable: {exc}")
             return matches, warnings, files_checked, stale_matches
 
-        for aw_order in sorted(candidate_aw_orders):
-            files_checked += 1
+        def probe(aw_order: str) -> tuple[str, Path, float | None]:
             production_path = production_dir / f"{aw_order}.pdf"
             try:
                 modified = production_path.stat().st_mtime
             except OSError:
+                modified = None
+            return aw_order, production_path, modified
+
+        ordered_orders = sorted(candidate_aw_orders)
+        worker_count = cls.scan_io_worker_count(len(ordered_orders))
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-scan") as executor:
+            probe_results = list(executor.map(probe, ordered_orders))
+        for aw_order, production_path, modified in probe_results:
+            files_checked += 1
+            if modified is None:
                 continue
             process_time = process_times.get(aw_order, 0.0)
             if process_time and modified + 2.0 < process_time:
@@ -8718,8 +9057,57 @@ class ShowerProgrammerApp:
         cls,
         source_dir: Path,
         orders: list[shower_batch.ProcessOrder],
+        *,
+        known_local_files: Iterable[Path] | None = None,
     ) -> list[Path]:
         """Return validated root-level network files for input-only orders."""
+        exact_names = {
+            path.name
+            for path in (known_local_files or [])
+            if isinstance(path, Path)
+            and path.name
+            and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+            and not cls.is_hardware_list_pdf(path)
+        }
+        for order in orders:
+            source_pdf = getattr(order, "source_pdf", None)
+            if (
+                isinstance(source_pdf, Path)
+                and source_pdf.name
+                and source_pdf.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                and not cls.is_hardware_list_pdf(source_pdf)
+            ):
+                exact_names.add(source_pdf.name)
+
+        if exact_names:
+            exact_paths = [
+                source_dir / name
+                for name in sorted(exact_names, key=str.casefold)
+            ]
+            existing, unresolved = cls.existing_paths_bounded(
+                exact_paths,
+                timeout_seconds=8.0,
+            )
+            if unresolved:
+                preview = ", ".join(path.name for path in unresolved[:4])
+                if len(unresolved) > 4:
+                    preview += f", +{len(unresolved) - 4} more"
+                raise RuntimeError(
+                    "Exact shared-file check timed out; no files were deleted"
+                    + (f": {preview}" if preview else "")
+                )
+            source_root = source_dir.resolve()
+            return sorted(
+                (
+                    path
+                    for path in existing
+                    if path.resolve().parent == source_root
+                ),
+                key=lambda path: path.name.casefold(),
+            )
+
+        # Compatibility fallback for synthetic or legacy callers that do not
+        # carry a source PDF or an already-validated local filename handoff.
         snapshot = cls.index_import_source_folder_bounded(source_dir)
         if bool(snapshot.get("source_missing", False)):
             detail = str(snapshot.get("source_error", "")).strip()
@@ -8881,7 +9269,11 @@ class ShowerProgrammerApp:
             network_files: list[Path] = []
             if network_source is not None:
                 self.queue_scan_progress(18, 100, "Checking the shared input folder for matching files...")
-                network_files = self.network_input_files_for_orders(network_source, orders)
+                network_files = self.network_input_files_for_orders(
+                    network_source,
+                    orders,
+                    known_local_files=files,
+                )
             if task_context is not None:
                 task_context.check_cancelled()
             self.queue_scan_progress(30, 100, "Cleanup targets identified; waiting for confirmation...")
@@ -9027,6 +9419,12 @@ class ShowerProgrammerApp:
             warnings.extend(recovery_warnings)
 
             successfully_deleted_orders: list[shower_batch.ProcessOrder] = []
+            remaining_selected_files = self.matching_order_files(
+                local_order_folder,
+                orders,
+                root_only=True,
+                inspect_pdf_text=True,
+            )
             verify_total = max(len(orders), 1)
             for index, order in enumerate(orders, start=1):
                 self.queue_scan_progress(
@@ -9039,6 +9437,7 @@ class ShowerProgrammerApp:
                     [order],
                     root_only=True,
                     inspect_pdf_text=True,
+                    candidate_files=remaining_selected_files,
                 )
                 if remaining:
                     names = ", ".join(path.name for path in remaining[:4])
@@ -9078,6 +9477,21 @@ class ShowerProgrammerApp:
                 pass
 
             total_plans = max(len(completed_batches), 1)
+            completed_batch_orders: list[shower_batch.ProcessOrder] = []
+            for plan in completed_batches:
+                plan_orders = plan.get("orders", [])
+                if isinstance(plan_orders, list):
+                    completed_batch_orders.extend(
+                        order
+                        for order in plan_orders
+                        if isinstance(order, shower_batch.ProcessOrder)
+                    )
+            remaining_completed_batch_files = self.matching_order_files(
+                local_order_folder,
+                completed_batch_orders,
+                root_only=True,
+                inspect_pdf_text=True,
+            ) if completed_batch_orders else []
             for plan_index, plan in enumerate(completed_batches, start=1):
                 self.queue_scan_progress(
                     82 + int((plan_index / total_plans) * 13),
@@ -9091,6 +9505,7 @@ class ShowerProgrammerApp:
                         [order for order in batch_orders if isinstance(order, shower_batch.ProcessOrder)],
                         root_only=True,
                         inspect_pdf_text=True,
+                        candidate_files=remaining_completed_batch_files,
                     )
                     if remaining_batch_files:
                         warnings.append(
@@ -10265,10 +10680,27 @@ class ShowerProgrammerApp:
                     task_id = str(data.get("task_id", ""))
                     handlers = self._managed_task_handlers.pop(task_id, {}) if task_id else {}
                     self.record_performance(name, "Managed task total", float(data.get("elapsed_ms", 0.0) or 0.0))
+                    if "send" in name.casefold():
+                        self.record_send_pipeline_event(
+                            "MANAGED_TASK_COMPLETED",
+                            f"Managed task {name} completed.",
+                            details=f"task_id={task_id}; elapsed_ms={float(data.get('elapsed_ms', 0.0) or 0.0):.3f}",
+                        )
                     done_handler = handlers.get("done")
                     if done_handler is not None:
                         self.finish_background_activity()
-                        done_handler(result)
+                        try:
+                            done_handler(result)
+                        except Exception as exc:
+                            if "send" in name.casefold():
+                                self.record_send_pipeline_event(
+                                    "TERMINAL_CALLBACK_FAILED",
+                                    f"Completion callback for {name} failed.",
+                                    status="ERROR",
+                                    error=exc,
+                                )
+                            self.status_var.set(f"{name} completion failed.")
+                            self.show_structured_error(exc, title=f"{name} completion failed")
                         continue
                     if name == "Prepare Order Cleanup" and isinstance(result, dict):
                         self.finish_background_activity()
@@ -10318,6 +10750,14 @@ class ShowerProgrammerApp:
                     task_id = str(data.get("task_id", ""))
                     handlers = self._managed_task_handlers.pop(task_id, {}) if task_id else {}
                     self.record_performance(str(data.get("name", "Background task")), "Cancelled", float(data.get("elapsed_ms", 0.0) or 0.0))
+                    cancelled_name = str(data.get("name", "Background task"))
+                    if "send" in cancelled_name.casefold():
+                        self.record_send_pipeline_event(
+                            "MANAGED_TASK_CANCELLED",
+                            f"Managed task {cancelled_name} was cancelled.",
+                            status="WARNING",
+                            details=f"task_id={task_id}",
+                        )
                     cancelled_handler = handlers.get("cancelled")
                     if cancelled_handler is not None:
                         cancelled_handler()
@@ -10333,6 +10773,14 @@ class ShowerProgrammerApp:
                     task_id = str(data.get("task_id", ""))
                     handlers = self._managed_task_handlers.pop(task_id, {}) if task_id else {}
                     self.record_performance(name, "Failed", float(data.get("elapsed_ms", 0.0) or 0.0))
+                    if "send" in name.casefold():
+                        self.record_send_pipeline_event(
+                            "MANAGED_TASK_FAILED",
+                            f"Managed task {name} failed.",
+                            status="ERROR",
+                            details=str(data.get("traceback", "")),
+                            error=error if isinstance(error, BaseException) else RuntimeError(str(error)),
+                        )
                     error_handler = handlers.get("error")
                     if error_handler is not None:
                         error_handler(error if isinstance(error, BaseException) else RuntimeError(str(error)))
@@ -10492,6 +10940,9 @@ class ShowerProgrammerApp:
                         self.insert_or_update_result(result)
                     self.apply_order_tree_sort()
                     self.finish_background_activity()
+                    scan_timing_summary = self.format_scan_stage_timings(data.get("scan_stage_timings", {}))
+                    self.last_scan_performance_summary = f"Last scan: {scan_timing_summary}" if scan_timing_summary else ""
+                    self.activity_detail_var.set(self.last_scan_performance_summary)
                     scan_message = self.scan_status_message(
                         len(self.orders),
                         process_list_count,
@@ -10555,6 +11006,7 @@ class ShowerProgrammerApp:
                         scan_message,
                         status=scan_status,
                         orders=[order for order in orders if isinstance(order, shower_batch.ProcessOrder)],
+                        details=(f"Performance: {scan_timing_summary}" if scan_timing_summary else ""),
                     )
                     self.start_review_cache_warmup(self.orders)
                 elif kind == "import_done":
@@ -10671,6 +11123,9 @@ class ShowerProgrammerApp:
                     import_deleted = data.get("import_deleted", [])
                     input_cleanup_warnings = data.get("input_cleanup_warnings", [])
                     sent_orders = data.get("sent_orders", [])
+                    send_transaction_id = str(data.get("send_transaction_id", "") or "")
+                    integrity_ok = bool(data.get("integrity_ok", True))
+                    stage_timings = data.get("stage_timings", {})
                     assert isinstance(copied, list)
                     assert isinstance(missing, list)
                     assert isinstance(archived, list)
@@ -10678,15 +11133,77 @@ class ShowerProgrammerApp:
                     assert isinstance(import_deleted, list)
                     assert isinstance(input_cleanup_warnings, list)
                     assert isinstance(sent_orders, list)
+                    if not isinstance(stage_timings, dict):
+                        stage_timings = {}
                     self.finish_background_activity()
                     if not copied:
+                        if send_transaction_id:
+                            try:
+                                self.send_journal.update(
+                                    send_transaction_id,
+                                    shower_reliability.SendStage.CANCELLED_RESOLVED,
+                                    "No matching generated files were found; no production Send occurred.",
+                                )
+                            except Exception:
+                                pass
                         messagebox.showinfo("Nothing sent", "No matching generated files were found.")
                         self.status_var.set("No matching generated files were found.")
                         continue
+                    receipt_written = False
                     try:
                         self.mark_orders_sent(sent_orders, copied, archived)
+                        receipt_written = True
+                        if send_transaction_id:
+                            self.send_journal.update(
+                                send_transaction_id,
+                                shower_reliability.SendStage.RECEIPT_WRITTEN,
+                                "Sent-order receipts were written.",
+                            )
                     except Exception as exc:
                         input_cleanup_warnings.append(f"Could not save sent-order receipt: {exc}")
+                        if send_transaction_id:
+                            try:
+                                self.send_journal.update(
+                                    send_transaction_id,
+                                    shower_reliability.SendStage.NEEDS_ATTENTION,
+                                    "Production files were copied, but the sent receipt could not be written.",
+                                    receipt_error=f"{exc.__class__.__name__}: {exc}",
+                                )
+                            except Exception:
+                                pass
+
+                    receipts_verified = False
+                    if receipt_written:
+                        try:
+                            history = self.load_processing_history()
+                            receipts_verified = all(
+                                bool(self.history_entry_from_data(history, str(order.aw_order)).get("sent_at"))
+                                and str(self.history_entry_from_data(history, str(order.aw_order)).get("sent_process_signature", ""))
+                                == self.sent_process_signature(order)
+                                for order in sent_orders
+                                if isinstance(order, shower_batch.ProcessOrder)
+                            )
+                        except Exception:
+                            receipts_verified = False
+                    if receipt_written and sent_orders and not receipts_verified:
+                        integrity_ok = False
+                        input_cleanup_warnings.append("Sent receipt verification did not confirm every order after writing history.")
+                    if send_transaction_id:
+                        try:
+                            if integrity_ok and receipt_written and receipts_verified:
+                                self.send_journal.complete(
+                                    send_transaction_id,
+                                    "Production Send completed and passed post-send integrity verification.",
+                                )
+                            elif receipt_written:
+                                self.send_journal.update(
+                                    send_transaction_id,
+                                    shower_reliability.SendStage.NEEDS_ATTENTION,
+                                    "Send finished with an unresolved post-send integrity warning.",
+                                    receipts_verified=receipts_verified,
+                                )
+                        except Exception:
+                            pass
                     details = self.send_complete_details(
                         copied,
                         missing,
@@ -10694,6 +11211,7 @@ class ShowerProgrammerApp:
                         archive_warnings,
                         import_deleted,
                         input_cleanup_warnings,
+                        stage_timings,
                     )
                     self.status_var.set(details)
                     self.record_action(
@@ -12529,7 +13047,7 @@ a {{ color: #1f4e79; }}
             chooser.configure(fg_color=self.APP_BG)
             chooser.resizable(False, False)
             self.set_window_icon(chooser)
-            self.position_child_window(chooser, 500, 300)
+            self.center_child_window(chooser, 500, 300, owner=dialog)
             try:
                 chooser.transient(dialog)
                 chooser.grab_set()
@@ -12606,7 +13124,7 @@ a {{ color: #1f4e79; }}
             ).pack(side=tk.RIGHT, padx=(0, 8))
             chooser.protocol("WM_DELETE_WINDOW", close_chooser)
             chooser.bind("<Escape>", lambda _event: close_chooser())
-            self.bring_window_to_front(chooser, make_transient=True)
+            self.bring_window_to_front(chooser, make_transient=True, owner=dialog)
 
         def resize_selected_mark(direction: int) -> None:
             key = state.get("selected_key")
@@ -13398,94 +13916,128 @@ a {{ color: #1f4e79; }}
                     center_y + ring_radius + 8.0,
                 )
             )
-        for start, end in segments:
-            x1, y1 = map_point(start)
-            x2, y2 = map_point(end)
-            highlight = (start, end) in highlight_segments
+        mapped_segments = [
+            (start, end, *map_point(start), *map_point(end))
+            for start, end in segments
+        ]
+        for start, end, x1, y1, x2, y2 in mapped_segments:
+            if (start, end) in highlight_segments:
+                continue
+            if math.hypot(end[0] - start[0], end[1] - start[1]) > long_side * 0.30:
+                continue
+            occupied_inside_labels.append(
+                (
+                    min(x1, x2) - 9.0,
+                    min(y1, y2) - 9.0,
+                    max(x1, x2) + 9.0,
+                    max(y1, y2) + 9.0,
+                )
+            )
+
+        # Draw ordinary geometry first, then OOS geometry on top. Small hinge
+        # and cutout entities otherwise repaint a nearly coincident 1/16 or
+        # 1/8-inch return and make the proven OOS edge appear to be missing.
+        for start, end, x1, y1, x2, y2 in mapped_segments:
+            if (start, end) in highlight_segments:
+                continue
             canvas.create_line(
                 x1,
                 y1,
                 x2,
                 y2,
-                fill=self.WARNING if highlight else self.ACCENT_DARK,
-                width=4 if highlight else 2,
+                fill=self.ACCENT_DARK,
+                width=2,
             )
-            if highlight:
-                mx = (x1 + x2) / 2
-                my = (y1 + y2) / 2
-                toward_x = mapped_center[0] - mx
-                toward_y = mapped_center[1] - my
-                toward_length = max(1.0, math.hypot(toward_x, toward_y))
-                inward_x = toward_x / toward_length
-                inward_y = toward_y / toward_length
-                segment_length = max(1.0, math.hypot(x2 - x1, y2 - y1))
-                segment_x = (x2 - x1) / segment_length
-                segment_y = (y2 - y1) / segment_length
-                label_text = self.out_of_square_segment_label(start, end, inches_per_unit)
-                label_angle = 90 if abs(y2 - y1) > abs(x2 - x1) else 0
-                label_x = mx + inward_x * 22.0
-                label_y = my + inward_y * 22.0
-                label_bounds: tuple[int, int, int, int] | None = None
-                for inward_distance in (22.0, 34.0, 46.0, 58.0):
-                    for segment_shift in (0.0, 0.18, -0.18, 0.32, -0.32):
-                        candidate_x = mx + inward_x * inward_distance + segment_x * segment_length * segment_shift
-                        candidate_y = my + inward_y * inward_distance + segment_y * segment_length * segment_shift
-                        probe = canvas.create_text(
-                            candidate_x,
-                            candidate_y,
-                            anchor=tk.CENTER,
-                            text=label_text,
-                            fill=self.WARNING,
-                            font=("Segoe UI", 9, "bold"),
-                            angle=label_angle,
-                        )
-                        bounds = canvas.bbox(probe)
-                        canvas.delete(probe)
-                        if not bounds:
-                            continue
-                        padded = (bounds[0] - 5, bounds[1] - 3, bounds[2] + 5, bounds[3] + 3)
-                        inside_outline = (
-                            padded[0] >= mapped_left + 3
-                            and padded[1] >= mapped_top + 3
-                            and padded[2] <= mapped_right - 3
-                            and padded[3] <= mapped_bottom - 3
-                        )
-                        if not inside_outline or any(
-                            self.preview_rects_overlap(padded, occupied)
-                            for occupied in occupied_inside_labels
-                        ):
-                            continue
-                        label_x = candidate_x
-                        label_y = candidate_y
-                        label_bounds = bounds
-                        break
-                    if label_bounds is not None:
-                        break
-                text_id = canvas.create_text(
-                    label_x,
-                    label_y,
-                    anchor=tk.CENTER,
-                    text=label_text,
-                    fill=self.WARNING,
-                    font=("Segoe UI", 9, "bold"),
-                    angle=label_angle,
-                    tags=("dxf_oos_label",),
+        for start, end, x1, y1, x2, y2 in mapped_segments:
+            if (start, end) not in highlight_segments:
+                continue
+            canvas.create_line(x1, y1, x2, y2, fill=self.WARNING, width=4)
+
+        for start, end, x1, y1, x2, y2 in mapped_segments:
+            segment = (start, end)
+            if segment not in highlight_segments:
+                continue
+            mx = (x1 + x2) / 2
+            my = (y1 + y2) / 2
+            toward_x = mapped_center[0] - mx
+            toward_y = mapped_center[1] - my
+            toward_length = max(1.0, math.hypot(toward_x, toward_y))
+            inward_x = toward_x / toward_length
+            inward_y = toward_y / toward_length
+            segment_length = max(1.0, math.hypot(x2 - x1, y2 - y1))
+            segment_x = (x2 - x1) / segment_length
+            segment_y = (y2 - y1) / segment_length
+            label_text = self.out_of_square_segment_label(start, end, inches_per_unit)
+            label_angle = 90 if abs(y2 - y1) > abs(x2 - x1) else 0
+            _connected_return, inward_distances, segment_shifts = self.dxf_oos_label_search_parameters(
+                start,
+                end,
+                long_side,
+                inches_per_unit,
+            )
+            label_x = mx + inward_x * inward_distances[0]
+            label_y = my + inward_y * inward_distances[0]
+            label_bounds: tuple[int, int, int, int] | None = None
+            for inward_distance in inward_distances:
+                for segment_shift in segment_shifts:
+                    candidate_x = mx + inward_x * inward_distance + segment_x * segment_length * segment_shift
+                    candidate_y = my + inward_y * inward_distance + segment_y * segment_length * segment_shift
+                    probe = canvas.create_text(
+                        candidate_x,
+                        candidate_y,
+                        anchor=tk.CENTER,
+                        text=label_text,
+                        fill=self.WARNING,
+                        font=("Segoe UI", 9, "bold"),
+                        angle=label_angle,
+                    )
+                    bounds = canvas.bbox(probe)
+                    canvas.delete(probe)
+                    if not bounds:
+                        continue
+                    padded = (bounds[0] - 5, bounds[1] - 3, bounds[2] + 5, bounds[3] + 3)
+                    inside_outline = (
+                        padded[0] >= mapped_left + 3
+                        and padded[1] >= mapped_top + 3
+                        and padded[2] <= mapped_right - 3
+                        and padded[3] <= mapped_bottom - 3
+                    )
+                    if not inside_outline or any(
+                        self.preview_rects_overlap(padded, occupied)
+                        for occupied in occupied_inside_labels
+                    ):
+                        continue
+                    label_x = candidate_x
+                    label_y = candidate_y
+                    label_bounds = bounds
+                    break
+                if label_bounds is not None:
+                    break
+            text_id = canvas.create_text(
+                label_x,
+                label_y,
+                anchor=tk.CENTER,
+                text=label_text,
+                fill=self.WARNING,
+                font=("Segoe UI", 9, "bold"),
+                angle=label_angle,
+                tags=("dxf_oos_label",),
+            )
+            bounds = canvas.bbox(text_id)
+            if bounds:
+                background = canvas.create_rectangle(
+                    bounds[0] - 4,
+                    bounds[1] - 2,
+                    bounds[2] + 4,
+                    bounds[3] + 2,
+                    fill=self.PREVIEW_CARD_BG,
+                    outline="",
+                    tags=("dxf_oos_label_bg",),
                 )
-                bounds = canvas.bbox(text_id)
-                if bounds:
-                    background = canvas.create_rectangle(
-                        bounds[0] - 4,
-                        bounds[1] - 2,
-                        bounds[2] + 4,
-                        bounds[3] + 2,
-                        fill=self.PREVIEW_CARD_BG,
-                        outline="",
-                        tags=("dxf_oos_label_bg",),
-                    )
-                    canvas.tag_lower(background, text_id)
-                    occupied_inside_labels.append(
-                        (bounds[0] - 7, bounds[1] - 5, bounds[2] + 7, bounds[3] + 5)
-                    )
+                canvas.tag_lower(background, text_id)
+                occupied_inside_labels.append(
+                    (bounds[0] - 7, bounds[1] - 5, bounds[2] + 7, bounds[3] + 5)
+                )
         side_measurements = self.dxf_cardinal_side_measurements(segments, inches_per_unit)
         side_positions = {
             "top": ((mapped_left + mapped_right) / 2, mapped_top - 25, 0),
@@ -13653,7 +14205,60 @@ a {{ color: #1f4e79; }}
             vertical_deviation = abs(programmer.normalize_axis_deviation(angle - 90))
             if horizontal_deviation <= vertical_deviation:
                 horizontal.append((start, end))
-        return set(angled)
+
+        highlighted = set(angled)
+        if not highlighted:
+            return highlighted
+
+        # A shallow FP-S kick-out can contain a short angled return between two
+        # longer OOS edges. The ordinary minimum-length filter deliberately
+        # excludes short cutout geometry, so add back only a segment whose two
+        # endpoints bridge two different, already-proven OOS segments.
+        safe_inches_per_unit = inches_per_unit if inches_per_unit > 0 else 1.0
+        minimum_length = max(1.0 / safe_inches_per_unit, long_side * 0.02)
+        maximum_length = long_side * 0.30
+        point_tolerance = max(long_side * 1e-6, 1e-6)
+
+        def touching_highlights(
+            point: tuple[float, float],
+        ) -> set[tuple[tuple[float, float], tuple[float, float]]]:
+            return {
+                candidate
+                for candidate in highlighted
+                if any(math.hypot(point[0] - endpoint[0], point[1] - endpoint[1]) <= point_tolerance for endpoint in candidate)
+            }
+
+        connected_returns: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for start, end in segments:
+            candidate = (start, end)
+            if candidate in highlighted:
+                continue
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            length = math.hypot(dx, dy)
+            if length < minimum_length or length > maximum_length:
+                continue
+            amount = cls.out_of_square_segment_amount(start, end) * safe_inches_per_unit
+            if amount < 0.03125:
+                continue
+            angle = math.degrees(math.atan2(dy, dx))
+            deviation = min(
+                abs(programmer.normalize_axis_deviation(angle)),
+                abs(programmer.normalize_axis_deviation(angle - 90)),
+            )
+            if deviation < 0.015:
+                continue
+            start_neighbors = touching_highlights(start)
+            end_neighbors = touching_highlights(end)
+            if start_neighbors and end_neighbors and any(
+                first != second
+                for first in start_neighbors
+                for second in end_neighbors
+            ):
+                connected_returns.append(candidate)
+
+        highlighted.update(connected_returns)
+        return highlighted
 
     @classmethod
     def out_of_square_segment_label(
@@ -13664,6 +14269,25 @@ a {{ color: #1f4e79; }}
     ) -> str:
         amount = cls.out_of_square_segment_amount(start, end) * inches_per_unit
         return f"{cls.format_inches(amount)} OOS"
+
+    @classmethod
+    def dxf_oos_label_search_parameters(
+        cls,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        long_side: float,
+        inches_per_unit: float = 1.0,
+    ) -> tuple[bool, tuple[float, ...], tuple[float, ...]]:
+        """Keep short connected-return labels farther from hinge fabrication."""
+        connected_return = not cls.is_out_of_square_preview_segment(
+            start,
+            end,
+            long_side,
+            inches_per_unit,
+        )
+        if connected_return:
+            return True, (38.0, 50.0, 62.0, 74.0), (0.0, 0.40, -0.40, 0.22, -0.22)
+        return False, (24.0, 36.0, 48.0, 60.0), (0.0, 0.18, -0.18, 0.32, -0.32)
 
     @staticmethod
     def out_of_square_segment_amount(start: tuple[float, float], end: tuple[float, float]) -> float:
@@ -15690,9 +16314,11 @@ timeout /t 10 /nobreak >nul
 tasklist /FI "IMAGENAME eq %EXE_NAME%" /NH 2>nul | find /I "%EXE_NAME%" >nul
 if errorlevel 1 goto rollback_after_launch
 
-call :status "Update completed successfully. Cleaning temporary files..."
+call :status "Update completed successfully. Preserving the previous known-good runtime..."
 if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
-if exist "%OLD_DIR%" rmdir /S /Q "%OLD_DIR%"
+if not exist "%APP_DIR%\\Rollback" mkdir "%APP_DIR%\\Rollback" >nul 2>nul
+if exist "%APP_DIR%\\Rollback\\PreviousRuntime" rmdir /S /Q "%APP_DIR%\\Rollback\\PreviousRuntime"
+if exist "%OLD_DIR%" move /Y "%OLD_DIR%" "%APP_DIR%\\Rollback\\PreviousRuntime" >>"%LOG_FILE%" 2>&1
 echo. & echo Update complete. Shower Programmer has reopened.
 echo This window will close in 5 seconds.
 timeout /t 5 /nobreak >nul
@@ -16056,6 +16682,48 @@ try {{
             self.progress.stop()
             self.progress.configure(mode="determinate", maximum=100, value=0)
             return
+        if review_before_send:
+            try:
+                output_dir = Path(self.output_dir_var.get()).resolve()
+                self.apply_import_source_dir()
+                aw_orders = self.selected_or_visible_aw_orders()
+                if not aw_orders:
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate", maximum=100, value=0)
+                    messagebox.showinfo("No orders", "Scan orders first. No scanned orders are available to send.")
+                    self.status_var.set("No scanned orders are available to send.")
+                    return
+                orders = [self.order_by_aw[aw_order] for aw_order in aw_orders if aw_order in self.order_by_aw]
+                order_folder = Path(self.folder_var.get()).resolve()
+                process_list_path = Path(self.process_list_var.get()).resolve()
+            except Exception as exc:
+                self.progress.stop()
+                self.progress.configure(mode="determinate", maximum=100, value=0)
+                self.show_structured_error(exc, title="Prepare Review / Send failed")
+                return
+
+            started = self.run_managed_task(
+                "Prepare Review / Send",
+                lambda task: self.worker_prepare_review_send(
+                    output_dir,
+                    include_sketches,
+                    include_programs,
+                    archive_inputs,
+                    aw_orders,
+                    orders,
+                    order_folder,
+                    process_list_path,
+                    task_context=task,
+                ),
+                message=f"Preparing Review / Send for {len(orders)} selected order(s)...",
+                total=4,
+                cancellable=True,
+                on_done=self.apply_review_send_preparation,
+            )
+            if not started:
+                self.progress.stop()
+                self.progress.configure(mode="determinate", maximum=100, value=0)
+            return
         try:
             output_dir = Path(self.output_dir_var.get()).resolve()
             self.apply_import_source_dir()
@@ -16129,6 +16797,92 @@ try {{
             process_list_path,
             include_sketches=include_sketches,
             include_programs=include_programs,
+        )
+
+    def worker_prepare_review_send(
+        self,
+        output_dir: Path,
+        include_sketches: bool,
+        include_programs: bool,
+        archive_inputs: bool,
+        aw_orders: list[str],
+        orders: list[shower_batch.ProcessOrder],
+        order_folder: Path,
+        process_list_path: Path,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> dict[str, object]:
+        """Resolve a selected Send plan without blocking Tk's event loop."""
+
+        def progress(current: int, message: str) -> None:
+            if task_context is not None:
+                task_context.progress(current, 4, message)
+
+        progress(1, "Finding generated sketches for the selected orders...")
+        sketch_paths = (
+            self.generated_sketch_paths_for_orders(aw_orders, output_dir)
+            if include_sketches
+            else []
+        )
+        progress(2, "Finding generated DXF programs for the selected orders...")
+        dxf_paths = (
+            self.generated_dxf_paths_for_orders(aw_orders, output_dir)
+            if include_programs
+            else []
+        )
+        missing: list[str] = []
+        if include_sketches and not sketch_paths:
+            missing.append("sketches")
+        if include_programs and not dxf_paths:
+            missing.append("programs")
+        progress(3, "Checking selected order and archive references...")
+        if task_context is not None:
+            task_context.check_cancelled()
+        progress(4, "Review / Send plan ready.")
+        return {
+            "output_dir": output_dir,
+            "include_sketches": include_sketches,
+            "include_programs": include_programs,
+            "archive_inputs": archive_inputs,
+            "orders": orders,
+            "sketch_paths": sketch_paths,
+            "dxf_paths": dxf_paths,
+            "missing": missing,
+            "order_folder": order_folder,
+            "process_list_path": process_list_path,
+        }
+
+    def apply_review_send_preparation(self, data: object) -> None:
+        """Open the Send plan after background preflight returns to Tk."""
+        if not isinstance(data, dict):
+            raise RuntimeError("Review / Send preparation returned an invalid result.")
+        sketch_paths = [path for path in data.get("sketch_paths", []) if isinstance(path, Path)]
+        dxf_paths = [path for path in data.get("dxf_paths", []) if isinstance(path, Path)]
+        if not sketch_paths and not dxf_paths:
+            self.status_var.set("No generated files were found for the selected orders.")
+            messagebox.showinfo(
+                "Nothing ready to send",
+                "No generated sketches or DXF programs were found for the selected orders. Process the orders, then open Review / Send again.",
+                parent=self.root,
+            )
+            return
+        orders = [
+            order
+            for order in data.get("orders", [])
+            if isinstance(order, shower_batch.ProcessOrder)
+        ]
+        self.status_var.set(f"Review / Send is ready for {len(orders)} selected order(s).")
+        self.open_send_review_dialog(
+            Path(str(data["output_dir"])),
+            bool(data.get("include_sketches", False)),
+            bool(data.get("include_programs", False)),
+            bool(data.get("archive_inputs", False)),
+            orders,
+            sketch_paths,
+            dxf_paths,
+            [str(value) for value in data.get("missing", [])],
+            Path(str(data["order_folder"])),
+            Path(str(data["process_list_path"])),
         )
 
     def orders_cover_all_scanned_orders(self, orders: list[shower_batch.ProcessOrder]) -> bool:
@@ -16441,18 +17195,13 @@ try {{
         *,
         include_sketches: bool,
         include_programs: bool,
-    ) -> None:
+        program_required_by_aw: dict[str, bool] | None = None,
+        on_cancelled: Callable[[], None] | None = None,
+    ) -> bool:
         output_dir = Path(self.output_dir_var.get()).resolve()
-        self.ensure_workflow_folders(order_folder, process_list_path, output_dir)
+        config_path = self.editable_config_path() if program_required_by_aw is None else None
         send_steps = max(1, len(sketch_paths) + len(dxf_paths) + (1 if archive_inputs else 0))
-        self.record_action(
-            "Send Output",
-            f"Started sending output for {len(orders)} order(s).",
-            status="INFO",
-            orders=orders,
-            details=f"Sketches={len(sketch_paths)}; programs={len(dxf_paths)}; archive inputs={archive_inputs}",
-        )
-        self.run_managed_task(
+        started = self.run_managed_task(
             "Send Output",
             lambda task: self.worker_send_outputs(
                 sketch_paths,
@@ -16465,12 +17214,25 @@ try {{
                 order_folder,
                 process_list_path,
                 task_context=task,
+                program_required_by_aw=program_required_by_aw,
+                output_dir=output_dir,
+                config_path=config_path,
             ),
             message="Sending generated files to shop folders...",
             total=send_steps,
             cancellable=True,
             on_error=lambda error: self.worker_queue.put(("send_error", error)),
+            on_cancelled=on_cancelled,
         )
+        if started:
+            self.record_action(
+                "Send Output",
+                f"Started sending output for {len(orders)} order(s).",
+                status="INFO",
+                orders=orders,
+                details=f"Sketches={len(sketch_paths)}; programs={len(dxf_paths)}; archive inputs={archive_inputs}",
+            )
+        return started
 
     @staticmethod
     def review_send_row_starts_open(_status_tag: str) -> bool:
@@ -16678,6 +17440,14 @@ try {{
         # process-list batch. An order is displayed once even if duplicate process
         # lists happen to contain the same A&W order.
         selected_by_aw = {str(order.aw_order): order for order in orders}
+        try:
+            send_config = programmer.load_config(self.editable_config_path())
+        except Exception:
+            send_config = {}
+        program_required_by_aw = {
+            str(order.aw_order): self.process_order_requires_program_dxf(order, send_config)
+            for order in orders
+        }
         order_parent_rows: dict[str, str] = {}
         batch_parent_rows: dict[str, str] = {}
         batch_status_counts: dict[str, dict[str, int]] = {}
@@ -16743,6 +17513,7 @@ try {{
                 include_programs=include_programs,
                 sketch_paths=order_sketches,
                 dxf_paths=order_dxfs,
+                program_required=program_required_by_aw.get(str(order.aw_order), True),
             )
             if archive_inputs and not order_archive_files:
                 warnings.append("No matching input file found for archive.")
@@ -16789,6 +17560,14 @@ try {{
                 if order_dxfs:
                     for path in order_dxfs:
                         tree.insert(parent, tk.END, text="Program DXF", values=("Ready", path.name, str(self.SHOP_PROGRAMS_DIR), ""), tags=("ready",))
+                elif not program_required_by_aw.get(str(order.aw_order), True):
+                    tree.insert(
+                        parent,
+                        tk.END,
+                        text="Program DXF",
+                        values=("Not required", "", "", "No CNC fabrication route is present in the process list."),
+                        tags=("skipped",),
+                    )
                 elif self.output_was_skipped_for_order(order.aw_order, "dxf"):
                     tree.insert(parent, tk.END, text="Program DXF", values=("Skipped", "", "", "Skipped by the processing run option."), tags=("skipped",))
                 else:
@@ -16911,7 +17690,9 @@ try {{
         send_missing: list[str] = []
         if include_sketches and not send_sketch_paths:
             send_missing.append("sketches")
-        if include_programs and not send_dxf_paths:
+        if include_programs and not send_dxf_paths and any(
+            program_required_by_aw.get(str(order.aw_order), True) for order in checked_orders
+        ):
             send_missing.append("programs")
 
         if review_tree_order_rows:
@@ -16925,7 +17706,12 @@ try {{
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
 
+        send_in_progress = False
+
         def close_dialog() -> None:
+            if send_in_progress:
+                request_cancel_send()
+                return
             if self.send_review_window is dialog:
                 self.send_review_window = None
                 self.send_review_progress = None
@@ -16934,9 +17720,63 @@ try {{
 
         send_action_buttons: list[Any] = []
 
-        def begin_send(send_sketches: bool, send_programs: bool, do_archive: bool) -> None:
+        def restore_send_controls() -> None:
+            for button in send_action_buttons:
+                button.configure(state=tk.NORMAL)
+            if not checked_orders:
+                for button in send_action_buttons:
+                    button.configure(state=tk.DISABLED)
+            if not send_sketch_paths:
+                send_sketches_button.configure(state=tk.DISABLED)
+            if not send_dxf_paths:
+                send_programs_button.configure(state=tk.DISABLED)
+            if not send_sketch_paths and not send_dxf_paths:
+                send_all_button.configure(state=tk.DISABLED)
+            close_button.configure(text="Close", command=close_dialog, state=tk.NORMAL)
+
+        def request_cancel_send() -> None:
+            active = getattr(self.task_manager, "active", None)
+            if active is None or active.name not in {"Prepare Send Output", "Send Output"}:
+                if send_in_progress:
+                    self.send_review_status_var.set("Send is finishing its protected archive step and can no longer be cancelled.")
+                else:
+                    close_dialog()
+                return
+            if not self.task_manager.cancel():
+                self.send_review_status_var.set("Send is finishing its protected archive step and can no longer be cancelled.")
+                close_button.configure(text="Finishing...", state=tk.DISABLED)
+                return
+            self.send_review_status_var.set("Cancellation requested. Undoing files copied by this Send...")
+            close_button.configure(text="Cancelling...", state=tk.DISABLED)
+
+        def send_cancelled() -> None:
+            nonlocal send_in_progress
+            send_in_progress = False
+            result = getattr(self, "_last_send_cancel_result", {})
+            warnings = result.get("warnings", []) if isinstance(result, dict) else []
+            rolled_back = result.get("rolled_back", []) if isinstance(result, dict) else []
+            if warnings:
+                message = f"Send cancelled. Restored or removed {len(rolled_back)} copied file(s), with {len(warnings)} rollback note(s)."
+                self.record_action("Send Output", message, status="WARNING", details="; ".join(str(value) for value in warnings))
+            else:
+                message = f"Send cancelled. {len(rolled_back)} file(s) copied by this Send were undone."
+                self.record_action("Send Output", message, status="SUCCESS")
+            self.status_var.set(message)
+            if self.send_review_status_var is not None:
+                self.send_review_status_var.set(message)
+            if self.send_review_progress is not None:
+                self.send_review_progress.configure(mode="determinate", maximum=100, value=0)
+            restore_send_controls()
+
+        def begin_send_impl(send_sketches: bool, send_programs: bool, do_archive: bool) -> None:
+            nonlocal send_in_progress
             selected_checked_orders = selected_review_orders()
             if not selected_checked_orders:
+                self.record_send_pipeline_event(
+                    "CLICK_REJECTED_NO_SELECTION",
+                    "Send was requested but no checked orders were selected.",
+                    status="WARNING",
+                )
                 messagebox.showinfo(
                     "Nothing ready",
                     "Select a checked order or a batch containing checked orders.",
@@ -16944,11 +17784,38 @@ try {{
                 )
                 return
             selected_aw = [str(order.aw_order) for order in selected_checked_orders]
-            chosen_sketches = self.generated_sketch_paths_for_orders(selected_aw, output_dir) if send_sketches else []
-            chosen_dxfs = self.generated_dxf_paths_for_orders(selected_aw, output_dir) if send_programs else []
+            self.record_send_pipeline_event(
+                "SELECTION_RESOLVED",
+                f"Resolved {len(selected_checked_orders)} checked order(s) for Send.",
+                orders=selected_checked_orders,
+                details=f"sketches={send_sketches}; programs={send_programs}; archive={do_archive}",
+            )
+            # The Review / Send table already holds the exact files found by
+            # background preflight. Filter that snapshot instead of rescanning
+            # every output run on Tk's event thread when Send is clicked.
+            chosen_sketches = self.unique_paths(
+                path
+                for aw_order in selected_aw
+                for path in self.paths_for_order(sketch_paths, aw_order)
+            ) if send_sketches else []
+            chosen_dxfs = self.unique_paths(
+                path
+                for aw_order in selected_aw
+                for path in self.paths_for_order(dxf_paths, aw_order)
+            ) if send_programs else []
+            selected_program_required = any(
+                program_required_by_aw.get(aw_order, True) for aw_order in selected_aw
+            )
             effective_sketches = bool(send_sketches and chosen_sketches)
             effective_programs = bool(send_programs and chosen_dxfs)
             if not effective_sketches and not effective_programs:
+                self.record_send_pipeline_event(
+                    "CLICK_REJECTED_NO_OUTPUTS",
+                    "No generated files matched the selected checked orders.",
+                    status="ERROR",
+                    orders=selected_checked_orders,
+                    details=f"available_sketches={len(sketch_paths)}; available_programs={len(dxf_paths)}",
+                )
                 messagebox.showinfo("Nothing ready", "No generated files were found for the selected checked orders.", parent=dialog)
                 return
             selected_warning_count = sum(1 for aw_order in selected_aw if aw_order in checked_warning_aw)
@@ -16961,13 +17828,22 @@ try {{
             chosen_missing: list[str] = []
             if send_sketches and not chosen_sketches:
                 chosen_missing.append("sketches (skipped or missing)")
-            if send_programs and not chosen_dxfs:
+            if send_programs and not chosen_dxfs and selected_program_required:
                 chosen_missing.append("programs (skipped or missing)")
             for button in send_action_buttons:
                 button.configure(state=tk.DISABLED)
-            close_button.configure(text="Close")
-            self.send_review_status_var.set(f"Sending {len(selected_checked_orders)} selected checked order(s)...")
-            self.start_send_outputs_worker(
+            send_in_progress = True
+            close_button.configure(text="Cancel Send", command=request_cancel_send, state=tk.NORMAL)
+            sending_message = f"Sending {len(selected_checked_orders)} selected checked order(s)..."
+            self.send_review_status_var.set(sending_message)
+            self.status_var.set(sending_message)
+            self.record_send_pipeline_event(
+                "PREFLIGHT_START_REQUESTED",
+                sending_message,
+                orders=selected_checked_orders,
+                details=f"sketches={len(chosen_sketches)}; programs={len(chosen_dxfs)}; missing={chosen_missing}",
+            )
+            started = self.start_send_outputs_worker(
                 chosen_sketches,
                 chosen_dxfs,
                 chosen_missing,
@@ -16977,7 +17853,43 @@ try {{
                 process_list_path,
                 include_sketches=bool(send_sketches),
                 include_programs=bool(send_programs),
+                program_required_by_aw={
+                    aw_order: program_required_by_aw.get(aw_order, True)
+                    for aw_order in selected_aw
+                },
+                on_cancelled=send_cancelled,
             )
+            if not started:
+                self.record_send_pipeline_event(
+                    "PREFLIGHT_START_REJECTED",
+                    "The Send preflight did not start.",
+                    status="ERROR",
+                    orders=selected_checked_orders,
+                )
+                send_in_progress = False
+                self.send_review_status_var.set("Send did not start because another operation is still running.")
+                restore_send_controls()
+
+        def begin_send(send_sketches: bool, send_programs: bool, do_archive: bool) -> None:
+            self.record_send_pipeline_event(
+                "BUTTON_CLICKED",
+                "The operator clicked a Review / Send action.",
+                details=f"sketches={send_sketches}; programs={send_programs}; archive={do_archive}",
+            )
+            try:
+                begin_send_impl(send_sketches, send_programs, do_archive)
+            except Exception as exc:
+                self.record_send_pipeline_event(
+                    "BUTTON_CALLBACK_FAILED",
+                    "The Review / Send button callback failed before Send could start.",
+                    status="ERROR",
+                    error=exc,
+                )
+                self.status_var.set("Send could not start. Error details were saved to Diagnostics.")
+                if self.send_review_status_var is not None:
+                    self.send_review_status_var.set("Send could not start. Review the error details and try again.")
+                restore_send_controls()
+                self.show_structured_error(exc, title="Start Send failed")
 
         ctk.CTkButton(
             action_panel,
@@ -17016,6 +17928,11 @@ try {{
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         self.bring_window_to_front(dialog, make_transient=False)
+
+    @staticmethod
+    def unique_paths(paths: Iterable[Path]) -> list[Path]:
+        """Return paths once, preserving their established Send order."""
+        return archive_rules.ordered_unique_paths(paths)
 
     @staticmethod
     def paths_for_order(paths: list[Path], aw_order: str) -> list[Path]:
@@ -17148,6 +18065,29 @@ try {{
         key = "sketch_output_skipped" if output_kind == "sketch" else "dxf_output_skipped"
         return bool(history.get(key, False))
 
+    @staticmethod
+    def process_order_requires_program_dxf(
+        order: shower_batch.ProcessOrder,
+        config: dict[str, object],
+    ) -> bool:
+        """Return True only when the process list contains a CNC fabrication route.
+
+        Unknown/empty orders remain conservative and require a program. Explicit
+        Denver/Waterjet routes and fabrication text inferred by the same process
+        item rules used during programming require a DXF. Tempering, packing,
+        material, and edge-polish-only rows do not.
+        """
+        if not order.items:
+            return True
+        for item in order.items.values():
+            if item.desired_machine():
+                return True
+            if item.inferred_denver_machine(config):
+                return True
+            if item.has_strong_waterjet_fabrication(config):
+                return True
+        return False
+
     def send_plan_warnings_for_order(
         self,
         order: shower_batch.ProcessOrder,
@@ -17156,11 +18096,17 @@ try {{
         include_programs: bool,
         sketch_paths: list[Path],
         dxf_paths: list[Path],
+        program_required: bool = True,
     ) -> list[str]:
         warnings: list[str] = []
         if include_sketches and not sketch_paths and not self.output_was_skipped_for_order(order.aw_order, "sketch"):
             warnings.append("Missing generated sketch PDF.")
-        if include_programs and not dxf_paths and not self.output_was_skipped_for_order(order.aw_order, "dxf"):
+        if (
+            include_programs
+            and program_required
+            and not dxf_paths
+            and not self.output_was_skipped_for_order(order.aw_order, "dxf")
+        ):
             warnings.append("Missing generated program DXF.")
         issue_text = self.tree_issue_text_for_order(order.aw_order)
         if issue_text:
@@ -17183,10 +18129,50 @@ try {{
         process_list_path: Path,
         *,
         task_context: shower_tasks.TaskContext | None = None,
+        program_required_by_aw: dict[str, bool] | None = None,
+        output_dir: Path | None = None,
+        config_path: Path | None = None,
     ) -> None:
+        transaction_id = ""
+        rollback_tracker: shower_reliability.SendRollbackTracker | None = None
+        archive_started = False
+        workflow_started = time.perf_counter()
+        stage_timings: dict[str, float] = {}
+        self._last_send_cancel_result = {}
         try:
             if task_context is not None:
                 task_context.check_cancelled()
+                task_context.stage("Validating local workflow folders and selected order routes...")
+            resolved_output_dir = (
+                Path(output_dir).resolve()
+                if output_dir is not None
+                else Path(self.output_dir_var.get()).resolve()
+            )
+            self.ensure_workflow_folders(order_folder, process_list_path, resolved_output_dir)
+            if program_required_by_aw is None:
+                try:
+                    send_config = programmer.load_config(config_path or self.editable_config_path())
+                except Exception:
+                    send_config = {}
+                program_required_by_aw = {
+                    str(order.aw_order): self.process_order_requires_program_dxf(order, send_config)
+                    for order in orders
+                }
+            transaction_id = self.send_journal.begin(
+                aw_orders=[str(order.aw_order) for order in orders],
+                output_sources=[*sketch_paths, *dxf_paths],
+                archive_inputs=archive_inputs,
+                metadata={
+                    "include_sketches": bool(include_sketches),
+                    "include_programs": bool(include_programs),
+                    "order_folder": str(order_folder),
+                    "process_list_path": str(process_list_path),
+                },
+            )
+            rollback_tracker = shower_reliability.SendRollbackTracker(
+                resolved_output_dir,
+                transaction_id,
+            )
             copied: list[Path] = []
             archived: list[Path] = []
             archive_warnings: list[str] = []
@@ -17217,12 +18203,15 @@ try {{
                 else:
                     advance(f"Sent program: {source.name}", 1)
 
+            output_copy_started = time.perf_counter()
             if sketch_paths:
                 copied.extend(
                     self.copy_outputs_to_folder(
                         sketch_paths,
                         self.SHOP_SKETCHES_DIR,
                         progress_callback=sketch_copy_progress,
+                        rollback_tracker=rollback_tracker,
+                        task_context=task_context,
                     )
                 )
             if dxf_paths:
@@ -17231,8 +18220,21 @@ try {{
                         dxf_paths,
                         self.SHOP_PROGRAMS_DIR,
                         progress_callback=program_copy_progress,
+                        rollback_tracker=rollback_tracker,
+                        task_context=task_context,
                     )
                 )
+            stage_timings["output_copy_seconds"] = time.perf_counter() - output_copy_started
+            if task_context is not None:
+                task_context.check_cancelled()
+            self.send_journal.update(
+                transaction_id,
+                shower_reliability.SendStage.OUTPUTS_COPIED,
+                "Production output copy stage finished.",
+                copied_targets=[str(path) for path in copied],
+                rollback_manifest=rollback_tracker.manifest(),
+                missing=list(missing),
+            )
             sent_orders = self.successfully_sent_orders(
                 orders,
                 sketch_paths,
@@ -17240,17 +18242,26 @@ try {{
                 copied,
                 include_sketches=include_sketches,
                 include_programs=include_programs,
+                program_required_by_aw=program_required_by_aw,
             )
+            batch_plan_started = time.perf_counter()
             completed_process_batches = (
                 self.completed_process_list_batches_for_orders(sent_orders)
                 if sent_orders and archive_inputs
                 else []
             )
+            stage_timings["batch_plan_seconds"] = time.perf_counter() - batch_plan_started
             if sent_orders and archive_inputs:
+                if task_context is not None:
+                    task_context.check_cancelled()
+                    task_context.snapshot.cancellable = False
+                    task_context.stage("Production files sent. Finalizing protected input archives...")
+                archive_started = True
                 advance("Archiving sent input files...", 2)
                 def archive_progress(done: int, total: int, source: Path) -> None:
                     advance(f"Archived input {done}/{total}: {source.name}", total - done + 1)
 
+                local_archive_started = time.perf_counter()
                 archived, archive_warnings = self.archive_sent_input_files_for_orders(
                     sent_orders,
                     order_folder,
@@ -17259,6 +18270,15 @@ try {{
                     completed_process_batches=completed_process_batches,
                     progress_callback=archive_progress,
                 )
+                stage_timings["local_archive_seconds"] = time.perf_counter() - local_archive_started
+                self.send_journal.update(
+                    transaction_id,
+                    shower_reliability.SendStage.INPUTS_ARCHIVED,
+                    "Sent local inputs were archived.",
+                    archived_inputs=[str(path) for path in archived],
+                    archive_warnings=list(archive_warnings),
+                    stage_timings=dict(stage_timings),
+                )
 
                 def cleanup_progress(done: int, total: int, source: Path) -> None:
                     advance(f"Cleared input staging {done}/{total}: {source.name}", total - done)
@@ -17266,20 +18286,70 @@ try {{
                 advance("Clearing Showers Programmer Input...", 1)
                 if task_context is not None:
                     task_context.check_cancelled()
+                validated_sources = getattr(self, "_last_archived_order_sources_by_aw", {})
+                exact_network_sources = self.exact_network_cleanup_sources(
+                    validated_sources if isinstance(validated_sources, dict) else {},
+                    completed_process_batches,
+                )
+                network_cleanup_started = time.perf_counter()
                 import_deleted, input_cleanup_warnings = self.clear_import_staging_folder(
                     sent_orders,
                     include_process_lists=False,
                     completed_process_batches=completed_process_batches,
                     progress_callback=cleanup_progress,
-                    validated_order_sources_by_aw=getattr(
-                        self,
-                        "_last_archived_order_sources_by_aw",
-                        {},
+                    source_files=exact_network_sources,
+                    validated_order_sources_by_aw=(
+                        validated_sources if isinstance(validated_sources, dict) else {}
                     ),
+                )
+                stage_timings["network_cleanup_seconds"] = time.perf_counter() - network_cleanup_started
+                self.send_journal.update(
+                    transaction_id,
+                    shower_reliability.SendStage.NETWORK_CLEARED,
+                    "Validated Network Input cleanup finished.",
+                    network_deleted=[str(path) for path in import_deleted],
+                    cleanup_warnings=list(input_cleanup_warnings),
+                    exact_network_source_count=len(exact_network_sources),
+                    stage_timings=dict(stage_timings),
                 )
             if task_context is not None:
                 task_context.check_cancelled()
-            self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete.")
+
+            expected_network_sources = list(
+                getattr(self, "_last_network_cleanup_remaining", [])
+                if archive_inputs
+                else []
+            )
+            integrity_started = time.perf_counter()
+            integrity = shower_reliability.verify_post_send(
+                copied_targets=copied,
+                remaining_local_inputs=(
+                    getattr(self, "_last_send_remaining_local_inputs", [])
+                    if archive_inputs
+                    else []
+                ),
+                expected_network_sources=expected_network_sources if archive_inputs else [],
+                cleanup_warnings=[*archive_warnings, *input_cleanup_warnings],
+            )
+            stage_timings["integrity_seconds"] = time.perf_counter() - integrity_started
+            stage_timings["total_seconds"] = time.perf_counter() - workflow_started
+            integrity_details = integrity.summary()
+            self.send_journal.update(
+                transaction_id,
+                shower_reliability.SendStage.POST_SEND_VERIFIED if integrity.ok else shower_reliability.SendStage.NEEDS_ATTENTION,
+                integrity_details,
+                integrity_ok=integrity.ok,
+                integrity_errors=list(integrity.errors),
+                integrity_warnings=list(integrity.warnings),
+                stage_timings=dict(stage_timings),
+            )
+            if not integrity.ok:
+                input_cleanup_warnings.extend(
+                    warning for warning in integrity.errors
+                    if warning not in input_cleanup_warnings
+                )
+            self.queue_scan_progress(progress_value + 1, progress_value + 1, "Send complete." if integrity.ok else "Send copied; integrity check needs attention.")
+            rollback_tracker.commit()
             self.worker_queue.put(
                 (
                     "send_done",
@@ -17291,12 +18361,55 @@ try {{
                         "import_deleted": import_deleted,
                         "input_cleanup_warnings": input_cleanup_warnings,
                         "sent_orders": sent_orders,
+                        "send_transaction_id": transaction_id,
+                        "integrity_ok": integrity.ok,
+                        "integrity_errors": list(integrity.errors),
+                        "stage_timings": dict(stage_timings),
                     },
                 )
             )
-        except shower_tasks.TaskCancelled:
+        except shower_tasks.TaskCancelled as exc:
+            rolled_back: list[Path] = []
+            rollback_warnings: list[str] = []
+            if rollback_tracker is not None:
+                rolled_back, rollback_warnings = rollback_tracker.rollback()
+            self._last_send_cancel_result = {
+                "rolled_back": rolled_back,
+                "warnings": rollback_warnings,
+            }
+            if transaction_id:
+                try:
+                    stage = (
+                        shower_reliability.SendStage.NEEDS_ATTENTION
+                        if rollback_warnings
+                        else shower_reliability.SendStage.CANCELLED_RESOLVED
+                    )
+                    self.send_journal.update(
+                        transaction_id,
+                        stage,
+                        "Send cancelled; production copies from this transaction were rolled back."
+                        if not rollback_warnings
+                        else "Send cancelled, but one or more production copies could not be rolled back automatically.",
+                        cancelled=True,
+                        rolled_back_targets=[str(path) for path in rolled_back],
+                        rollback_warnings=rollback_warnings,
+                    )
+                except Exception:
+                    pass
             raise
         except Exception as exc:
+            rollback_details: dict[str, object] = {}
+            if rollback_tracker is not None and not archive_started:
+                rolled_back, rollback_warnings = rollback_tracker.rollback()
+                rollback_details = {
+                    "rolled_back_targets": [str(path) for path in rolled_back],
+                    "rollback_warnings": rollback_warnings,
+                }
+            if transaction_id:
+                try:
+                    self.send_journal.fail(transaction_id, exc, **rollback_details)
+                except Exception:
+                    pass
             if task_context is not None:
                 raise
             self.worker_queue.put(("send_error", exc))
@@ -17310,6 +18423,7 @@ try {{
         *,
         include_sketches: bool,
         include_programs: bool,
+        program_required_by_aw: dict[str, bool] | None = None,
     ) -> list[shower_batch.ProcessOrder]:
         """Count an intentionally skipped output as satisfied for input cleanup."""
         copied_names = {path.name.lower() for path in copied}
@@ -17321,6 +18435,11 @@ try {{
         for order in orders:
             order_sketches = self.paths_for_order(sketch_paths, order.aw_order)
             order_dxfs = self.paths_for_order(dxf_paths, order.aw_order)
+            program_required = (
+                True
+                if program_required_by_aw is None
+                else program_required_by_aw.get(str(order.aw_order), True)
+            )
             sketch_satisfied = (
                 not include_sketches
                 or paths_were_copied(order_sketches)
@@ -17328,6 +18447,7 @@ try {{
             )
             program_satisfied = (
                 not include_programs
+                or not program_required
                 or paths_were_copied(order_dxfs)
                 or (not order_dxfs and self.output_was_skipped_for_order(order.aw_order, "dxf"))
             )
@@ -17343,6 +18463,7 @@ try {{
         archive_warnings: list[str],
         import_deleted: list[Path] | None = None,
         input_cleanup_warnings: list[str] | None = None,
+        stage_timings: dict[str, object] | None = None,
     ) -> str:
         import_deleted = import_deleted or []
         input_cleanup_warnings = input_cleanup_warnings or []
@@ -17381,6 +18502,20 @@ try {{
             details += "\n  - " + "\n  - ".join(str(note) for note in input_cleanup_warnings[:8])
             if len(input_cleanup_warnings) > 8:
                 details += f"\n  - ...and {len(input_cleanup_warnings) - 8} more"
+        stage_timings = stage_timings or {}
+        timing_parts: list[str] = []
+        for key, label in (
+            ("output_copy_seconds", "copy"),
+            ("local_archive_seconds", "local archive"),
+            ("network_cleanup_seconds", "network cleanup"),
+            ("integrity_seconds", "verification"),
+            ("total_seconds", "total"),
+        ):
+            value = stage_timings.get(key)
+            if isinstance(value, (int, float)):
+                timing_parts.append(f"{label} {float(value):.1f}s")
+        if timing_parts:
+            details += "\nTiming: " + " | ".join(timing_parts)
         return details
 
     def copy_outputs_to_folder(
@@ -17388,19 +18523,28 @@ try {{
         paths: list[Path],
         target_dir: Path,
         progress_callback: Callable[[Path, Path, str], None] | None = None,
+        rollback_tracker: shower_reliability.SendRollbackTracker | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> list[Path]:
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         for source in paths:
+            if task_context is not None:
+                task_context.check_cancelled()
             if not source.exists() or not source.is_file():
                 continue
             target = target_dir / source.name
             if progress_callback is not None:
                 progress_callback(source, target, "starting")
+            rollback_entry = rollback_tracker.prepare_target(target) if rollback_tracker is not None else None
             self.copy_file_atomically(source, target)
+            if rollback_tracker is not None and rollback_entry is not None:
+                rollback_tracker.record_copy(rollback_entry)
             copied.append(target)
             if progress_callback is not None:
                 progress_callback(source, target, "complete")
+            if task_context is not None:
+                task_context.check_cancelled()
         return copied
 
     def archive_sent_input_files(self, aw_orders: list[str]) -> tuple[list[Path], list[str]]:
@@ -17427,6 +18571,7 @@ try {{
         progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
         self._last_archived_order_sources_by_aw = {}
+        self._last_send_remaining_local_inputs: list[Path] = []
         if not orders:
             return [], ["No matching scanned order records were available to archive."]
 
@@ -17652,6 +18797,7 @@ try {{
                     progress_callback(done, max(total_sources, done, 1), source)
 
         remaining_terminal_inputs, _final_snapshot = changed_or_known_terminal_candidates(sweep_baseline)
+        self._last_send_remaining_local_inputs = list(remaining_terminal_inputs)
         if remaining_terminal_inputs:
             order_archive_failed = True
             names = ", ".join(path.name for path in remaining_terminal_inputs[:6])
@@ -17843,6 +18989,90 @@ try {{
             return [], f"Order-file correlation timed out after {timeout_seconds:g} seconds"
 
     @classmethod
+    def exact_network_cleanup_sources(
+        cls,
+        validated_order_sources_by_aw: dict[str, Iterable[str]] | None,
+        completed_process_batches: list[dict[str, object]] | None,
+    ) -> list[Path]:
+        """Build the exact shared-input handoff without enumerating the share."""
+        names: set[str] = set()
+        for source_names in (validated_order_sources_by_aw or {}).values():
+            names.update(str(name).strip() for name in source_names if str(name).strip())
+        for plan in completed_process_batches or []:
+            files = plan.get("files", [])
+            if not isinstance(files, list):
+                continue
+            names.update(path.name for path in files if isinstance(path, Path) and path.name)
+        return [cls.EDI_IMPORT_ORDERS_DIR / name for name in sorted(names, key=str.casefold)]
+
+    @classmethod
+    def existing_paths_bounded(
+        cls,
+        paths: Iterable[Path],
+        *,
+        timeout_seconds: float = 8.0,
+    ) -> tuple[list[Path], list[Path]]:
+        """Check exact network paths concurrently without allowing one SMB call to hang Send."""
+        unique: dict[str, Path] = {}
+        for path in paths:
+            key = os.path.normcase(os.path.abspath(str(path)))
+            unique.setdefault(key, path)
+        ordered = sorted(unique.values(), key=lambda candidate: candidate.name.casefold())
+        if not ordered:
+            return [], []
+
+        jobs: queue.Queue[Path] = queue.Queue()
+        results: queue.Queue[tuple[Path, bool]] = queue.Queue()
+        for path in ordered:
+            jobs.put(path)
+
+        def exists_worker() -> None:
+            while True:
+                try:
+                    path = jobs.get_nowait()
+                except queue.Empty:
+                    return
+                exists = False
+                try:
+                    exists = path.exists()
+                except OSError:
+                    exists = False
+                finally:
+                    results.put((path, exists))
+                    jobs.task_done()
+
+        for index in range(min(12, len(ordered))):
+            threading.Thread(
+                target=exists_worker,
+                name=f"shower-input-verify-{index + 1}",
+                daemon=True,
+            ).start()
+
+        existing: list[Path] = []
+        completed_keys: set[str] = set()
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        while len(completed_keys) < len(ordered):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                path, exists = results.get(timeout=remaining)
+            except queue.Empty:
+                break
+            completed_keys.add(os.path.normcase(os.path.abspath(str(path))))
+            if exists:
+                existing.append(path)
+
+        timed_out = [
+            path
+            for key, path in unique.items()
+            if key not in completed_keys
+        ]
+        existing.sort(key=lambda candidate: candidate.name.casefold())
+        timed_out.sort(key=lambda candidate: candidate.name.casefold())
+        return existing, timed_out
+
+    @classmethod
     def delete_import_paths_bounded(
         cls,
         paths: Iterable[Path],
@@ -17861,7 +19091,7 @@ try {{
         if not ordered:
             return [], [], []
 
-        worker_count = min(4, len(ordered))
+        worker_count = min(8, len(ordered))
         jobs: queue.Queue[Path] = queue.Queue()
         results: queue.Queue[tuple[Path, OSError | None]] = queue.Queue()
         for path in ordered:
@@ -17945,6 +19175,8 @@ try {{
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         deleted: list[Path] = []
         warnings: list[str] = []
+        cls._last_network_cleanup_remaining = []
+        exact_source_handoff = source_files is not None
         if source_dir.name.lower() != cls.IMPORT_STAGING_FOLDER_NAME.lower():
             return deleted, [f"Skipped input cleanup because the configured folder is not named {cls.IMPORT_STAGING_FOLDER_NAME}."]
 
@@ -18103,16 +19335,35 @@ try {{
             if plans and not verification_orders:
                 verification_indeterminate = True
                 warnings.append("Could not identify the orders owned by the completed process-list batch; its process list was kept.")
-            post_snapshot = cls.index_import_source_folder_bounded(source_dir)
-            if bool(post_snapshot.get("source_missing", False)):
-                verification_indeterminate = True
-                detail = str(post_snapshot.get("source_error", "")).strip()
-                suffix = f": {detail}" if detail else "."
-                warnings.append(f"Could not verify the shared input folder after cleanup{suffix}")
-                current_files: list[Path] = []
+            if exact_source_handoff:
+                current_files, verification_timeouts = cls.existing_paths_bounded(
+                    initial_files,
+                    timeout_seconds=min(8.0, max(2.0, 1.0 + len(initial_files) * 0.08)),
+                )
+                if verification_timeouts:
+                    verification_indeterminate = True
+                    names = ", ".join(path.name for path in verification_timeouts[:6])
+                    extra = (
+                        f" and {len(verification_timeouts) - 6} more"
+                        if len(verification_timeouts) > 6
+                        else ""
+                    )
+                    warnings.append(
+                        "Could not verify these exact shared input paths before the network timeout: "
+                        f"{names}{extra}. Their process lists were kept for a later retry."
+                    )
             else:
-                current_values = post_snapshot.get("files", [])
-                current_files = [path for path in current_values if isinstance(path, Path)] if isinstance(current_values, list) else []
+                post_snapshot = cls.index_import_source_folder_bounded(source_dir)
+                if bool(post_snapshot.get("source_missing", False)):
+                    verification_indeterminate = True
+                    detail = str(post_snapshot.get("source_error", "")).strip()
+                    suffix = f": {detail}" if detail else "."
+                    warnings.append(f"Could not verify the shared input folder after cleanup{suffix}")
+                    current_files = []
+                else:
+                    current_values = post_snapshot.get("files", [])
+                    current_files = [path for path in current_values if isinstance(path, Path)] if isinstance(current_values, list) else []
+            if current_files:
                 current_keys = {
                     os.path.normcase(os.path.abspath(str(path))): path
                     for path in current_files
@@ -18126,9 +19377,8 @@ try {{
                     for key in known_target_keys
                     if key in current_keys
                 )
-                new_candidates = [
-                    path for key, path in current_keys.items()
-                    if key not in initial_keys
+                new_candidates = [] if exact_source_handoff else [
+                    path for key, path in current_keys.items() if key not in initial_keys
                 ]
                 if new_candidates and verification_orders:
                     new_matches, new_match_error = cls.matching_order_files_bounded(
@@ -18185,14 +19435,20 @@ try {{
         deleted.extend(removed_process)
         warnings.extend(process_warnings)
 
-        if process_list_files is not None:
-            remaining_process_lists = [
-                path for path in cls.process_list_files_for_sources(source_dir, process_list_files, initial_files)
-                if path not in removed_process
-            ]
-            remaining_process_lists.extend(timed_out_process)
+        remaining_process_lists = [path for path in process_targets if path not in removed_process]
+        remaining_process_lists.extend(
+            path for path in timed_out_process if path not in remaining_process_lists
+        )
+        if remaining_process_lists:
             for remaining in remaining_process_lists:
                 warnings.append(f"Still present after process-list cleanup: {remaining.name}")
+        cls._last_network_cleanup_remaining = sorted(
+            {
+                os.path.normcase(os.path.abspath(str(path))): path
+                for path in [*remaining_order_files, *timed_out_orders, *remaining_process_lists]
+            }.values(),
+            key=lambda candidate: candidate.name.casefold(),
+        )
         return deleted, warnings
 
     @classmethod
@@ -18230,11 +19486,10 @@ try {{
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
-        for index, source in enumerate(sources, start=1):
-            target = target_dir / source.name
-            did_copy = cls.copy_file_if_needed(source, target)
+        pairs = [(source, target_dir / source.name) for source in sources]
+        for index, (source, _target, did_copy) in enumerate(cls.copy_file_pairs_concurrently(pairs), start=1):
             if did_copy:
-                copied.append(target)
+                copied.append(target_dir / source.name)
             else:
                 skipped += 1
             if progress_callback is not None:
@@ -19024,7 +20279,7 @@ try {{
         cls,
         pairs: list[tuple[Path, Path]],
         *,
-        max_workers: int = 4,
+        max_workers: int | None = None,
     ) -> Any:
         """Copy independent shared-drive files concurrently with atomic targets."""
         if len(pairs) <= 1:
@@ -19035,7 +20290,8 @@ try {{
                     did_copy = False
                 yield source, target, did_copy
             return
-        worker_count = max(1, min(max_workers, len(pairs)))
+        requested_workers = cls.SCAN_IO_MAX_WORKERS if max_workers is None else max_workers
+        worker_count = max(1, min(requested_workers, len(pairs)))
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-import") as executor:
             futures = {
                 executor.submit(cls.copy_file_if_needed, source, target): (source, target)
@@ -19048,6 +20304,11 @@ try {{
                 except FileNotFoundError:
                     did_copy = False
                 yield source, target, did_copy
+
+    @classmethod
+    def scan_io_worker_count(cls, item_count: int) -> int:
+        """Return the bounded worker count used for independent scan I/O."""
+        return max(1, min(cls.SCAN_IO_MAX_WORKERS, max(1, int(item_count))))
 
     def autocad_save_as_programs(self) -> None:
         output_dir = Path(self.output_dir_var.get()).resolve()
@@ -21107,6 +22368,33 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             temporary.unlink(missing_ok=True)
         return codes
 
+    @classmethod
+    def configuration_with_hinge_orientation_defaults(
+        cls,
+        config: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Add missing hinge directions while preserving every configured choice."""
+        upgraded = copy.deepcopy(config)
+        rules = upgraded.get("rules")
+        if not isinstance(rules, dict):
+            return upgraded, False
+        codes = cls.normalize_hinge_detection_codes(rules.get("hinge_label_keywords", []))
+        raw_orientations = rules.get("hinge_label_orientations")
+        if raw_orientations is not None and not isinstance(raw_orientations, dict):
+            return upgraded, False
+        orientations = dict(raw_orientations or {})
+        configured_keys = {str(key).strip().upper() for key in orientations}
+        changed = raw_orientations is None
+        for code in codes:
+            if code in configured_keys:
+                continue
+            orientations[code] = programmer.DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code, "down")
+            configured_keys.add(code)
+            changed = True
+        if changed:
+            rules["hinge_label_orientations"] = orientations
+        return upgraded, changed
+
     def open_hinge_detection_settings(self) -> None:
         if ctk is None:
             self.open_config()
@@ -21608,7 +22896,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         ).pack(anchor=tk.W)
         ctk.CTkLabel(
             title_stack,
-            text="Application preferences, workflow folders, hinge detection, and operator history.",
+            text="Application preferences, centralized configuration, workflow tools, recovery, archives, and operator history.",
             font=("Segoe UI", 11),
             text_color=self.MUTED,
             anchor="w",
@@ -21627,7 +22915,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         tabview.grid(row=1, column=0, sticky="nsew", padx=16, pady=(10, 16))
         try:
             tabview._segmented_button.configure(
-                width=980,
+                width=1240,
                 height=42,
                 dynamic_resizing=False,
                 font=("Segoe UI", 12, "bold"),
@@ -21638,7 +22926,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         tab_builders = {
             "Preferences": lambda: self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog),
             "Folder Setup": lambda: self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog),
-            "Hinge Detection": lambda: self.build_hinge_settings_tab(tabview.tab("Hinge Detection"), dialog),
+            "Configuration": lambda: self.build_configuration_settings_tab(tabview.tab("Configuration"), dialog),
+            "System Health": lambda: self.build_system_health_settings_tab(tabview.tab("System Health"), dialog),
+            "Rule Test": lambda: self.build_rule_test_settings_tab(tabview.tab("Rule Test"), dialog),
             "Archives": lambda: self.build_archive_settings_tab(tabview.tab("Archives"), dialog),
             "Recovery": lambda: self.build_recovery_settings_tab(tabview.tab("Recovery"), dialog),
             "Backup & Restore": lambda: self.build_configuration_backup_tab(tabview.tab("Backup & Restore"), dialog),
@@ -21815,6 +23105,761 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         dialog.after_idle(activate_selected_tab)
         dialog.after_idle(lambda: self.maximize_window(dialog))
         self.bring_window_to_front(dialog, make_transient=False)
+
+    def build_configuration_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        """Build the centralized sectioned editor for all config-backed rules."""
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+
+        try:
+            config_path = self.editable_config_path()
+            loaded_config = programmer.load_config(config_path)
+            if not isinstance(loaded_config, dict):
+                raise ValueError("The active Shower Programmer configuration is not a JSON object.")
+            loaded_config, orientation_defaults_added = self.configuration_with_hinge_orientation_defaults(loaded_config)
+            if orientation_defaults_added:
+                try:
+                    shower_configuration.atomic_write_configuration(config_path, loaded_config)
+                except OSError:
+                    # Keep Settings usable with the effective defaults even when
+                    # an administrator has made the external config read-only.
+                    pass
+        except Exception as exc:
+            failure = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=14, border_width=2, border_color=self.DANGER)
+            failure.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
+            ctk.CTkLabel(
+                failure,
+                text="Configuration could not be loaded",
+                text_color=self.DANGER,
+                font=("Segoe UI", 18, "bold"),
+                anchor="w",
+            ).pack(fill=tk.X, padx=18, pady=(18, 5))
+            ctk.CTkLabel(
+                failure,
+                text=str(exc),
+                text_color=self.TEXT,
+                font=("Segoe UI", 11),
+                justify="left",
+                wraplength=1000,
+                anchor="w",
+            ).pack(fill=tk.X, padx=18, pady=(0, 18))
+            return
+
+        state: dict[str, Any] = {
+            "config": copy.deepcopy(loaded_config),
+            "dirty": False,
+            "reloading": False,
+        }
+        fields = shower_configuration.configuration_fields(loaded_config)
+        editors: dict[str, dict[str, Any]] = {}
+        field_cards: dict[str, Any] = {}
+
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 4))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Configuration",
+            font=("Segoe UI", 18, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            header,
+            text=(
+                "Edit processing rules and application behavior. Validation remains advisory."
+            ),
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=760,
+        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        path_card = ctk.CTkFrame(header, fg_color="transparent")
+        path_card.grid(row=0, column=1, rowspan=2, sticky="e", padx=(14, 0))
+        ctk.CTkLabel(
+            path_card,
+            text="ACTIVE CONFIG",
+            font=("Segoe UI", 9, "bold"),
+            text_color=self.MUTED,
+        ).pack(anchor=tk.E, padx=4, pady=(2, 0))
+        ctk.CTkLabel(
+            path_card,
+            text=str(config_path),
+            font=("Segoe UI", 9),
+            text_color=self.TEXT,
+            anchor="e",
+            justify="right",
+            wraplength=500,
+        ).pack(anchor=tk.E, padx=4, pady=(0, 2))
+
+        toolbar = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        toolbar.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 5))
+        toolbar.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            toolbar,
+            text=f"{len(fields)} editable settings",
+            text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, padx=(12, 10), pady=10, sticky="w")
+        search_var = tk.StringVar(value="")
+        search_entry = ctk.CTkEntry(
+            toolbar,
+            textvariable=search_var,
+            height=34,
+            placeholder_text="Search labels, paths, or descriptions...",
+            fg_color=self.ENTRY_BG,
+            border_color=self.BORDER,
+            text_color=self.TEXT,
+        )
+        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=8)
+        dirty_var = tk.StringVar(value="Saved configuration loaded")
+        dirty_label = ctk.CTkLabel(
+            toolbar,
+            textvariable=dirty_var,
+            text_color=self.SUCCESS,
+            font=("Segoe UI", 10, "bold"),
+            width=190,
+            anchor="e",
+        )
+        dirty_label.grid(row=0, column=2, sticky="e", padx=(0, 12))
+
+        content = ctk.CTkFrame(parent, fg_color="transparent")
+        content.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 5))
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+
+        inner = ctk.CTkTabview(
+            content,
+            fg_color=self.APP_BG,
+            segmented_button_selected_color=self.ACCENT,
+            segmented_button_selected_hover_color=self.ACCENT_DARK,
+            segmented_button_unselected_color=self.PANEL_BG,
+            segmented_button_unselected_hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            corner_radius=10,
+        )
+        inner.grid(row=0, column=0, sticky="nsew")
+        try:
+            inner._segmented_button.configure(height=36, font=("Segoe UI", 10, "bold"))
+        except (AttributeError, tk.TclError):
+            pass
+
+        fields_by_section: dict[str, list[shower_configuration.ConfigurationField]] = {}
+        for field in fields:
+            fields_by_section.setdefault(field.section, []).append(field)
+        visible_sections = [section for section in shower_configuration.SECTION_ORDER if fields_by_section.get(section)]
+        for section in visible_sections:
+            inner.add(section)
+        hinge_tab_name = "Hinge Detection"
+        inner.add(hinge_tab_name)
+        self.build_hinge_settings_tab(inner.tab(hinge_tab_name), dialog)
+
+        def select_configuration_tab(tab_name: str) -> None:
+            available = [*visible_sections, hinge_tab_name]
+            if tab_name in available:
+                inner.set(tab_name)
+
+        setattr(dialog, "_configuration_select_tab", select_configuration_tab)
+
+        def mark_dirty(*_args: Any) -> None:
+            if bool(state.get("reloading")):
+                return
+            state["dirty"] = True
+            dirty_var.set("Unsaved changes")
+            dirty_label.configure(text_color=self.WARNING)
+
+        def editor_text(editor: dict[str, Any]) -> str:
+            kind = str(editor.get("kind", "entry"))
+            if kind == "bool":
+                return "true" if bool(editor["var"].get()) else "false"
+            if kind in {"list", "dict"}:
+                return str(editor["widget"].get("1.0", "end-1c"))
+            return str(editor["var"].get())
+
+        for section in visible_sections:
+            tab = inner.tab(section)
+            tab.grid_columnconfigure(0, weight=1)
+            tab.grid_rowconfigure(0, weight=1)
+            scroll = ctk.CTkScrollableFrame(
+                tab,
+                fg_color="transparent",
+                corner_radius=0,
+            )
+            scroll.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+            scroll.grid_columnconfigure(0, weight=1)
+
+            for row_index, field in enumerate(fields_by_section[section]):
+                card = ctk.CTkFrame(
+                    scroll,
+                    fg_color=self.CARD_BG,
+                    corner_radius=12,
+                    border_width=1,
+                    border_color=self.BORDER,
+                )
+                card.grid(row=row_index, column=0, sticky="ew", padx=4, pady=(4, 6))
+                card.grid_columnconfigure(0, weight=0, minsize=350)
+                card.grid_columnconfigure(1, weight=1, minsize=540)
+                field_cards[field.path] = card
+
+                info = ctk.CTkFrame(card, fg_color="transparent")
+                info.grid(row=0, column=0, sticky="nsew", padx=(14, 16), pady=12)
+                info.grid_columnconfigure(0, weight=1)
+                ctk.CTkLabel(
+                    info,
+                    text=field.label,
+                    text_color=self.TEXT,
+                    font=("Segoe UI", 11, "bold"),
+                    anchor="w",
+                ).grid(row=0, column=0, sticky="ew")
+                ctk.CTkLabel(
+                    info,
+                    text=field.path,
+                    text_color=self.ACCENT,
+                    font=("Consolas", 9),
+                    anchor="w",
+                ).grid(row=1, column=0, sticky="ew", pady=(2, 2))
+                ctk.CTkLabel(
+                    info,
+                    text=field.description,
+                    text_color=self.MUTED,
+                    font=("Segoe UI", 9),
+                    anchor="w",
+                    justify="left",
+                    wraplength=330,
+                ).grid(row=2, column=0, sticky="ew")
+
+                editor_shell = ctk.CTkFrame(card, fg_color="transparent")
+                editor_shell.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=12)
+                editor_shell.grid_columnconfigure(0, weight=1)
+                template = copy.deepcopy(field.value)
+
+                if field.value_type == "bool":
+                    variable = tk.BooleanVar(value=bool(field.value))
+                    widget = ctk.CTkSwitch(
+                        editor_shell,
+                        text="Enabled" if bool(field.value) else "Disabled",
+                        variable=variable,
+                        onvalue=True,
+                        offvalue=False,
+                        command=lambda var=variable: (
+                            mark_dirty(),
+                            None,
+                        ),
+                        text_color=self.TEXT,
+                        progress_color=self.ACCENT,
+                    )
+                    widget.grid(row=0, column=0, sticky="e")
+
+                    def update_switch_text(*_args: Any, switch=widget, var=variable) -> None:
+                        try:
+                            switch.configure(text="Enabled" if bool(var.get()) else "Disabled")
+                        except (AttributeError, tk.TclError):
+                            pass
+
+                    variable.trace_add("write", update_switch_text)
+                    editors[field.path] = {"kind": "bool", "widget": widget, "var": variable, "template": template}
+                elif field.value_type in {"list", "dict"}:
+                    height = 126 if field.value_type == "dict" else 88
+                    widget = ctk.CTkTextbox(
+                        editor_shell,
+                        height=height,
+                        fg_color=self.ENTRY_BG,
+                        border_width=1,
+                        border_color=self.BORDER,
+                        text_color=self.TEXT,
+                        font=("Consolas", 10),
+                        wrap="word",
+                    )
+                    widget.grid(row=0, column=0, sticky="ew")
+                    widget.insert("1.0", shower_configuration.format_editor_value(field.value))
+                    widget.bind("<KeyRelease>", lambda _event: mark_dirty(), add="+")
+                    editors[field.path] = {"kind": field.value_type, "widget": widget, "template": template}
+                else:
+                    variable = tk.StringVar(value=shower_configuration.format_editor_value(field.value))
+                    widget = ctk.CTkEntry(
+                        editor_shell,
+                        textvariable=variable,
+                        height=34,
+                        fg_color=self.ENTRY_BG,
+                        border_color=self.BORDER,
+                        text_color=self.TEXT,
+                    )
+                    widget.grid(row=0, column=0, sticky="ew")
+                    widget.bind("<KeyRelease>", lambda _event: mark_dirty(), add="+")
+                    editors[field.path] = {"kind": "entry", "widget": widget, "var": variable, "template": template}
+
+        validation = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        validation.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+        validation.grid_columnconfigure(0, weight=1)
+        validation_header = ctk.CTkFrame(validation, fg_color="transparent")
+        validation_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(9, 4))
+        validation_header.grid_columnconfigure(0, weight=1)
+        validation_title_var = tk.StringVar(value="Validation has not been run yet")
+        validation_title = ctk.CTkLabel(
+            validation_header,
+            textvariable=validation_title_var,
+            text_color=self.MUTED,
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+        )
+        validation_title.grid(row=0, column=0, sticky="ew")
+        validation_box = ctk.CTkTextbox(
+            validation,
+            height=58,
+            fg_color=self.ENTRY_BG,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.TEXT,
+            font=("Consolas", 9),
+        )
+        validation_box.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+        validation_box.insert("1.0", "Use Validate Configuration at any time. Save also validates automatically.")
+        validation_box.configure(state="disabled")
+
+        def field_card_for_issue(path_text: str) -> Any | None:
+            if path_text in field_cards:
+                return field_cards[path_text]
+            candidates = [path for path in field_cards if path_text.startswith(f"{path}.")]
+            if not candidates:
+                return None
+            return field_cards[max(candidates, key=len)]
+
+        def render_validation(issues: list[shower_configuration.ConfigurationIssue]) -> None:
+            for card in field_cards.values():
+                try:
+                    card.configure(border_color=self.BORDER, border_width=1)
+                except (AttributeError, tk.TclError):
+                    pass
+            errors, warnings = shower_configuration.issues_summary(issues)
+            if not issues:
+                validation_title_var.set("Validation passed — no warnings or errors")
+                validation_title.configure(text_color=self.SUCCESS)
+                lines = ["PASS | Configuration structure and configured safety ranges are valid."]
+            else:
+                validation_title_var.set(f"Validation found {errors} error(s) and {warnings} warning(s)")
+                validation_title.configure(text_color=self.DANGER if errors else self.WARNING)
+                lines = []
+                for issue in issues:
+                    severity = str(issue.severity).upper()
+                    lines.append(f"{severity:<7} | {issue.path or 'configuration'} | {issue.message}")
+                    card = field_card_for_issue(issue.path)
+                    if card is not None:
+                        try:
+                            card.configure(
+                                border_color=self.DANGER if severity == "ERROR" else self.WARNING,
+                                border_width=2,
+                            )
+                        except (AttributeError, tk.TclError):
+                            pass
+            validation_box.configure(state="normal")
+            validation_box.delete("1.0", tk.END)
+            validation_box.insert("1.0", "\n".join(lines))
+            validation_box.configure(state="disabled")
+
+        def collect_configuration() -> tuple[dict[str, Any], list[shower_configuration.ConfigurationIssue]]:
+            candidate = copy.deepcopy(state["config"])
+            parse_issues: list[shower_configuration.ConfigurationIssue] = []
+            for path_text, editor in editors.items():
+                raw_text = editor_text(editor)
+                value, parse_issue = shower_configuration.parse_editor_value(raw_text, editor.get("template"))
+                shower_configuration.set_path(candidate, path_text, value)
+                if parse_issue is not None:
+                    parse_issues.append(
+                        shower_configuration.ConfigurationIssue(
+                            parse_issue.severity,
+                            path_text,
+                            parse_issue.message,
+                        )
+                    )
+            return candidate, parse_issues + shower_configuration.validate_configuration(candidate)
+
+        def validate_current() -> tuple[dict[str, Any], list[shower_configuration.ConfigurationIssue]]:
+            candidate, issues = collect_configuration()
+            render_validation(issues)
+            return candidate, issues
+
+        def reload_from_disk() -> None:
+            try:
+                fresh = programmer.load_config(config_path)
+                if not isinstance(fresh, dict):
+                    raise ValueError("The configuration is not a JSON object.")
+            except Exception as exc:
+                messagebox.showerror("Reload Configuration", str(exc), parent=dialog)
+                return
+            state["reloading"] = True
+            try:
+                state["config"] = copy.deepcopy(fresh)
+                for path_text, editor in editors.items():
+                    value = shower_configuration.get_path(fresh, path_text, editor.get("template"))
+                    editor["template"] = copy.deepcopy(value)
+                    kind = str(editor.get("kind", "entry"))
+                    if kind == "bool":
+                        editor["var"].set(bool(value))
+                    elif kind in {"list", "dict"}:
+                        widget = editor["widget"]
+                        widget.delete("1.0", tk.END)
+                        widget.insert("1.0", shower_configuration.format_editor_value(value))
+                    else:
+                        editor["var"].set(shower_configuration.format_editor_value(value))
+                state["dirty"] = False
+                dirty_var.set("Reloaded from disk")
+                dirty_label.configure(text_color=self.SUCCESS)
+                render_validation(shower_configuration.validate_configuration(fresh))
+            finally:
+                state["reloading"] = False
+
+        def save_configuration() -> None:
+            candidate, issues = validate_current()
+            errors, warnings = shower_configuration.issues_summary(issues)
+            if issues:
+                details = "\n".join(
+                    f"• {issue.path or 'configuration'}: {issue.message}"
+                    for issue in issues[:8]
+                )
+                if len(issues) > 8:
+                    details += f"\n• ...and {len(issues) - 8} more issue(s) shown in the validation panel."
+                proceed = messagebox.askyesno(
+                    "Configuration validation warning",
+                    (
+                        f"Validation found {errors} error(s) and {warnings} warning(s).\n\n"
+                        f"{details}\n\n"
+                        "The program will not block you from saving. Save these values anyway?"
+                    ),
+                    parent=dialog,
+                    icon="warning",
+                )
+                if not proceed:
+                    dirty_var.set("Save cancelled — review validation")
+                    dirty_label.configure(text_color=self.WARNING)
+                    return
+            backup = None
+            backup_warning = ""
+            try:
+                backup_dir = Path(self.output_dir_var.get()).resolve() / "Configuration Backups"
+                backup = shower_configuration.backup_configuration(config_path, backup_dir=backup_dir)
+            except Exception as exc:
+                # A backup problem should be visible, but it should not defeat the
+                # operator's explicit Save/Save Anyway choice when the active config
+                # itself can still be written safely.
+                backup_warning = f"Pre-save backup could not be created: {exc}"
+            try:
+                shower_configuration.atomic_write_configuration(config_path, candidate)
+            except Exception as exc:
+                messagebox.showerror("Save Configuration", f"Could not save the configuration:\n\n{exc}", parent=dialog)
+                return
+            state["config"] = copy.deepcopy(candidate)
+            state["dirty"] = False
+            if issues:
+                dirty_var.set(f"Saved with {len(issues)} validation issue(s)")
+                dirty_label.configure(text_color=self.WARNING)
+            elif backup_warning:
+                dirty_var.set("Saved; backup warning")
+                dirty_label.configure(text_color=self.WARNING)
+            else:
+                dirty_var.set("Saved and validated")
+                dirty_label.configure(text_color=self.SUCCESS)
+            try:
+                self.record_action(
+                    "Configuration Saved",
+                    f"Saved {len(editors)} configuration value(s).",
+                    status="WARNING" if issues else "SUCCESS",
+                    details=(
+                        f"Path: {config_path}\n"
+                        f"Backup: {backup or 'none'}\n"
+                        f"Backup warning: {backup_warning or 'none'}\n"
+                        f"Validation errors: {errors}\n"
+                        f"Validation warnings: {warnings}"
+                    ),
+                )
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Configuration Saved",
+                (
+                    "The configuration was saved successfully.\n\n"
+                    f"Validation errors: {errors}\nValidation warnings: {warnings}\n"
+                    f"{backup_warning + chr(10) if backup_warning else ''}\n"
+                    "New processing actions will use the saved configuration."
+                ),
+                parent=dialog,
+            )
+
+        def apply_filter(*_args: Any) -> None:
+            query = search_var.get().strip().casefold()
+            matches = 0
+            for field in fields:
+                card = field_cards.get(field.path)
+                if card is None:
+                    continue
+                haystack = f"{field.label} {field.path} {field.description}".casefold()
+                visible = not query or query in haystack
+                if visible:
+                    card.grid()
+                    matches += 1
+                else:
+                    card.grid_remove()
+            if query:
+                dirty_var.set(f"{matches} matching setting(s)")
+                dirty_label.configure(text_color=self.ACCENT)
+            elif state.get("dirty"):
+                dirty_var.set("Unsaved changes")
+                dirty_label.configure(text_color=self.WARNING)
+            else:
+                dirty_var.set("Saved configuration loaded")
+                dirty_label.configure(text_color=self.SUCCESS)
+
+        search_var.trace_add("write", apply_filter)
+
+        footer = ctk.CTkFrame(parent, fg_color="transparent")
+        footer.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 7))
+        footer.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            footer,
+            text=(
+                "Invalid settings are never silently corrected. Save Anyway keeps exactly what you entered; "
+                "a pre-save backup is created automatically under Output\\Configuration Backups."
+            ),
+            text_color=self.MUTED,
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            footer,
+            text="Open Raw JSON",
+            width=118,
+            height=34,
+            fg_color=self.PANEL_BG,
+            hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            command=self.open_config,
+        ).grid(row=0, column=1, padx=(8, 0))
+        ctk.CTkButton(
+            footer,
+            text="Reload",
+            width=92,
+            height=34,
+            fg_color=self.PANEL_BG,
+            hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            command=reload_from_disk,
+        ).grid(row=0, column=2, padx=(8, 0))
+        ctk.CTkButton(
+            footer,
+            text="Validate Configuration",
+            width=156,
+            height=34,
+            fg_color=self.PANEL_BG,
+            hover_color=self.BUTTON_HOVER,
+            text_color=self.TEXT,
+            command=validate_current,
+        ).grid(row=0, column=3, padx=(8, 0))
+        ctk.CTkButton(
+            footer,
+            text="Save Configuration",
+            width=150,
+            height=34,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="white",
+            font=("Segoe UI", 10, "bold"),
+            command=save_configuration,
+        ).grid(row=0, column=4, padx=(8, 0))
+
+        requested_inner_tab = str(getattr(self, "_settings_configuration_requested_tab", "") or "")
+        if requested_inner_tab == hinge_tab_name:
+            select_configuration_tab(hinge_tab_name)
+        elif visible_sections:
+            try:
+                inner.set(visible_sections[0])
+            except ValueError:
+                pass
+        self._settings_configuration_requested_tab = ""
+        render_validation(shower_configuration.validate_configuration(loaded_config))
+
+    @staticmethod
+    def _health_write_probe(path: Path) -> tuple[bool, str]:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / f".shower_health_{os.getpid()}_{threading.get_ident()}.tmp"
+            probe.write_text("health", encoding="ascii")
+            probe.unlink()
+            return True, "Readable and writable"
+        except Exception as exc:
+            return False, str(exc)
+
+    @classmethod
+    def excel_fallback_probe(cls) -> tuple[str, str]:
+        """Return optional Excel fallback availability without launching Excel."""
+        if os.name != "nt":
+            return "INFO", "Direct XLS reader is active; Excel fallback is Windows-only."
+        candidates: list[Path] = []
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(env_name)
+            if not root:
+                continue
+            base = Path(root) / "Microsoft Office"
+            candidates.extend(
+                [
+                    base / "root" / "Office16" / "EXCEL.EXE",
+                    base / "Office16" / "EXCEL.EXE",
+                    base / "Office15" / "EXCEL.EXE",
+                ]
+            )
+        found = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if found is not None:
+            return "PASS", f"Optional Excel fallback available: {found}"
+        return "WARN", "Direct XLS reader is active; Excel fallback was not found in common Office locations."
+
+    @classmethod
+    def run_system_health_checks(
+        cls,
+        *,
+        local_orders: Path,
+        local_process_lists: Path,
+        network_input: Path,
+        production_sketches: Path,
+        output_dir: Path,
+    ) -> list[dict[str, str]]:
+        results: list[dict[str, str]] = []
+
+        def add(name: str, status: str, detail: str, path: Path | None = None) -> None:
+            results.append({
+                "name": name,
+                "status": status,
+                "detail": detail,
+                "path": str(path) if path is not None else "",
+            })
+
+        for name, path in (("Local Input", local_orders), ("Local Process List", local_process_lists), ("Output", output_dir)):
+            ok, detail = cls._health_write_probe(Path(path))
+            add(name, "PASS" if ok else "FAIL", detail, Path(path))
+
+        for name, path in (("Network Input", network_input), ("Production Sketches", production_sketches)):
+            result = cls.probe_network_path(Path(path))
+            reachable = bool(result.get("reachable"))
+            elapsed = int(result.get("elapsed_ms", 0) or 0)
+            detail = f"Reachable in {elapsed} ms" if reachable else str(result.get("error", "Unavailable"))
+            add(name, "PASS" if reachable else "FAIL", detail, Path(path))
+
+        cache_dir = Path(output_dir) / ".scan_cache"
+        ok, detail = cls._health_write_probe(cache_dir)
+        add("Scan Cache", "PASS" if ok else "FAIL", detail, cache_dir)
+
+        archive_root = Path(local_orders) / "Archive"
+        try:
+            archive_root.mkdir(parents=True, exist_ok=True)
+            add("Archive Access", "PASS", "Archive root is accessible", archive_root)
+        except Exception as exc:
+            add("Archive Access", "FAIL", str(exc), archive_root)
+
+        database = Path(output_dir) / "shower_programmer.sqlite3"
+        try:
+            database.parent.mkdir(parents=True, exist_ok=True)
+            # sqlite3.Connection's own context manager commits/rolls back but does
+            # not close the file handle.  Use closing() so Windows can immediately
+            # delete/move temporary or health-check databases after this probe.
+            with closing(sqlite3.connect(database, timeout=3.0)) as connection:
+                row = connection.execute("PRAGMA quick_check").fetchone()
+            quick_check = str(row[0] if row else "unknown")
+            add("SQLite", "PASS" if quick_check.casefold() == "ok" else "WARN", f"quick_check: {quick_check}", database)
+        except Exception as exc:
+            add("SQLite", "FAIL", str(exc), database)
+
+        excel_status, excel_detail = cls.excel_fallback_probe()
+        add("Legacy XLS", excel_status, f"Direct BIFF reader enabled. {excel_detail}")
+        return results
+
+    def build_system_health_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text="System Health", font=("Segoe UI", 18, "bold"), text_color=self.TEXT, anchor="w").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            header,
+            text="One-click checks for production paths, network access, SQLite, cache/write permissions, and the optional Excel fallback.",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        status_var = tk.StringVar(value="Health check has not been run yet.")
+        run_button = self.make_tool_button(header, "Run Health Check", "refresh", lambda: run_checks(), width=148)
+        run_button.grid(row=0, column=1, rowspan=2, padx=(10, 0))
+
+        summary = ctk.CTkLabel(parent, textvariable=status_var, font=("Segoe UI", 10, "bold"), text_color=self.MUTED, anchor="w")
+        summary.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
+        body = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        body.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+        columns = ("status", "check", "path", "detail")
+        tree = ttk.Treeview(body, columns=columns, show="headings", style="Orders.Treeview")
+        for column, label in zip(columns, ("Status", "Check", "Path", "Details")):
+            tree.heading(column, text=label)
+        tree.column("status", width=90, stretch=False, anchor=tk.CENTER)
+        tree.column("check", width=170, stretch=False)
+        tree.column("path", width=390, stretch=True)
+        tree.column("detail", width=430, stretch=True)
+        scroll = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
+        scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
+        tree.tag_configure("PASS", foreground=self.SUCCESS)
+        tree.tag_configure("WARN", foreground=self.WARNING)
+        tree.tag_configure("FAIL", foreground=self.DANGER)
+
+        running = {"value": False}
+
+        def apply_results(results: list[dict[str, str]]) -> None:
+            running["value"] = False
+            run_button.configure(state="normal")
+            tree.delete(*tree.get_children())
+            for result in results:
+                status = str(result.get("status", "INFO"))
+                tree.insert("", tk.END, values=(status, result.get("name", ""), result.get("path", ""), result.get("detail", "")), tags=(status,))
+            failed = sum(1 for result in results if result.get("status") == "FAIL")
+            warnings = sum(1 for result in results if result.get("status") == "WARN")
+            passed = sum(1 for result in results if result.get("status") == "PASS")
+            status_var.set(f"Health check complete: {passed} passed, {warnings} warning(s), {failed} failed.")
+
+        def run_checks() -> None:
+            if running["value"]:
+                return
+            running["value"] = True
+            run_button.configure(state="disabled")
+            status_var.set("Running system health checks...")
+            try:
+                local_orders = Path(self.folder_var.get()).resolve()
+                local_process_lists = Path(self.process_list_var.get()).resolve()
+                network_input = Path(self.import_source_var.get()).resolve()
+                production_sketches = Path(self.SHOP_SKETCHES_DIR).resolve()
+                output_dir = Path(self.output_dir_var.get()).resolve()
+            except Exception as exc:
+                running["value"] = False
+                run_button.configure(state="normal")
+                status_var.set(f"Health check could not start: {exc}")
+                return
+
+            def worker() -> None:
+                results = self.run_system_health_checks(
+                    local_orders=local_orders,
+                    local_process_lists=local_process_lists,
+                    network_input=network_input,
+                    production_sketches=production_sketches,
+                    output_dir=output_dir,
+                )
+                try:
+                    dialog.after(0, lambda: apply_results(results))
+                except (tk.TclError, RuntimeError):
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        dialog.after_idle(run_checks)
 
     @staticmethod
     def archive_date_from_name(value: str) -> datetime | None:
@@ -22197,6 +24242,26 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     continue
         return archive_time, newest_mtime, str(entry.get("batch_name", "")).casefold()
 
+    @staticmethod
+    def archive_process_order_signature(order: shower_batch.ProcessOrder) -> str:
+        payload = {
+            "aw_order": str(order.aw_order),
+            "job_name": str(order.job_name),
+            "customer": str(order.customer),
+            "items": [
+                {
+                    "item": int(item.item),
+                    "width": str(item.width_text),
+                    "height": str(item.height_text),
+                    "delivery": str(item.delivery_date),
+                    "processing": list(item.processing),
+                    "machines": list(item.machine_hints),
+                }
+                for item in sorted(order.items.values(), key=lambda value: int(value.item))
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
     @classmethod
     def consolidate_archive_batch_entries(
         cls,
@@ -22235,6 +24300,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     "revision_keys": [],
                     "revision_order_dirs": [],
                     "revision_sources_by_aw": {},
+                    "revisions_by_key": {},
                     "latest_revision_aw_orders": set(),
                     "orders_by_aw": {},
                 }
@@ -22255,6 +24321,33 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             if isinstance(order_archive_dir, Path) and order_archive_dir not in revision_order_dirs:
                 revision_order_dirs.append(order_archive_dir)
 
+            revisions_by_key = group["revisions_by_key"]
+            assert isinstance(revisions_by_key, dict)
+            revision_record = revisions_by_key.setdefault(
+                revision_key,
+                {
+                    "archive_name": str(entry.get("archive_name", "")),
+                    "archive_date": entry.get("archive_date"),
+                    "batch_name": str(entry.get("batch_name", "")),
+                    "batch_key": str(entry.get("batch_key", "")),
+                    "process_list_files": [],
+                    "order_archive_dirs": [],
+                    "aw_orders": set(),
+                    "order_signatures": {},
+                },
+            )
+            raw_revision_process = entry.get("process_list_files", [])
+            if isinstance(raw_revision_process, list):
+                process_files = revision_record["process_list_files"]
+                assert isinstance(process_files, list)
+                for source in raw_revision_process:
+                    if isinstance(source, Path) and source not in process_files:
+                        process_files.append(source)
+            revision_dirs = revision_record["order_archive_dirs"]
+            assert isinstance(revision_dirs, list)
+            if isinstance(order_archive_dir, Path) and order_archive_dir not in revision_dirs:
+                revision_dirs.append(order_archive_dir)
+
             if len(revision_keys) == 1:
                 latest_orders = group["latest_revision_aw_orders"]
                 assert isinstance(latest_orders, set)
@@ -22266,6 +24359,12 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             if not isinstance(order, shower_batch.ProcessOrder):
                 continue
             aw_order = str(order.aw_order)
+            revision_aw_orders = revision_record["aw_orders"]
+            revision_signatures = revision_record["order_signatures"]
+            assert isinstance(revision_aw_orders, set)
+            assert isinstance(revision_signatures, dict)
+            revision_aw_orders.add(aw_order)
+            revision_signatures[aw_order] = cls.archive_process_order_signature(order)
             revision_sources_by_aw = group["revision_sources_by_aw"]
             assert isinstance(revision_sources_by_aw, dict)
             order_revision_sources = revision_sources_by_aw.setdefault(aw_order, [])
@@ -22292,12 +24391,43 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             revision_keys = group.pop("revision_keys")
             revision_order_dirs = group.pop("revision_order_dirs")
             revision_sources_by_aw = group.pop("revision_sources_by_aw")
+            revisions_by_key = group.pop("revisions_by_key")
             latest_aw_orders = group.pop("latest_revision_aw_orders")
             assert isinstance(orders_by_aw, dict)
             assert isinstance(revision_keys, list)
             assert isinstance(revision_order_dirs, list)
             assert isinstance(revision_sources_by_aw, dict)
+            assert isinstance(revisions_by_key, dict)
             assert isinstance(latest_aw_orders, set)
+            revision_records: list[dict[str, object]] = []
+            for revision_key in revision_keys:
+                raw_record = revisions_by_key.get(revision_key)
+                if not isinstance(raw_record, dict):
+                    continue
+                record = dict(raw_record)
+                aw_values = record.get("aw_orders", set())
+                record["aw_orders"] = sorted(str(value) for value in aw_values) if isinstance(aw_values, set) else []
+                revision_records.append(record)
+            for index, record in enumerate(revision_records):
+                current_orders = set(str(value) for value in record.get("aw_orders", []))
+                older = revision_records[index + 1] if index + 1 < len(revision_records) else None
+                if older is None:
+                    record["added_orders"] = sorted(current_orders)
+                    record["changed_orders"] = []
+                    record["removed_orders"] = []
+                    continue
+                older_orders = set(str(value) for value in older.get("aw_orders", []))
+                current_signatures = record.get("order_signatures", {})
+                older_signatures = older.get("order_signatures", {})
+                record["added_orders"] = sorted(current_orders - older_orders)
+                record["removed_orders"] = sorted(older_orders - current_orders)
+                record["changed_orders"] = sorted(
+                    aw_order
+                    for aw_order in current_orders & older_orders
+                    if isinstance(current_signatures, dict)
+                    and isinstance(older_signatures, dict)
+                    and current_signatures.get(aw_order) != older_signatures.get(aw_order)
+                )
             children: list[dict[str, object]] = []
             authoritative_process = list(group.get("authoritative_process_list_files", []))
             union_aw_orders = set(orders_by_aw)
@@ -22319,6 +24449,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     if isinstance(source, dict)
                 ]
                 clone["_archive_batch_revision_order_dirs"] = list(revision_order_dirs)
+                clone["_archive_batch_revisions"] = [dict(record) for record in revision_records]
                 children.append(clone)
             children.sort(
                 key=lambda child: cls.natural_sort_key(str(getattr(child.get("order"), "aw_order", "")))
@@ -22329,6 +24460,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     "revision_count": len(revision_keys),
                     "revision_keys": list(revision_keys),
                     "revision_order_dirs": list(revision_order_dirs),
+                    "revision_records": revision_records,
                     "children": children,
                     "action_children": children,
                     "needs_synthetic_process_list": needs_synthetic,
@@ -22343,6 +24475,65 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             reverse=True,
         )
         return consolidated
+
+    @classmethod
+    def archive_revision_inspector_text(cls, batch: dict[str, object]) -> str:
+        revisions = batch.get("revision_records", [])
+        children = batch.get("action_children", batch.get("children", []))
+        lines = [
+            f"{batch.get('display_name', batch.get('batch_name', 'Archived Batch'))} — {int(batch.get('revision_count', 1) or 1)} revision(s)",
+            "",
+        ]
+        if isinstance(revisions, list):
+            for index, revision in enumerate(revisions, start=1):
+                if not isinstance(revision, dict):
+                    continue
+                process_files = revision.get("process_list_files", [])
+                process_names = ", ".join(Path(path).name for path in process_files if isinstance(path, Path)) if isinstance(process_files, list) else ""
+                aw_orders = revision.get("aw_orders", [])
+                added = revision.get("added_orders", [])
+                changed = revision.get("changed_orders", [])
+                removed = revision.get("removed_orders", [])
+                lines.append(
+                    f"Revision {index}: {revision.get('archive_name', '')}  |  {process_names or revision.get('batch_name', '')}  |  {len(aw_orders) if isinstance(aw_orders, list) else 0} order(s)"
+                )
+                deltas: list[str] = []
+                if isinstance(added, list) and added:
+                    deltas.append("added " + ", ".join(str(value) for value in added))
+                if isinstance(changed, list) and changed:
+                    deltas.append("changed " + ", ".join(str(value) for value in changed))
+                if isinstance(removed, list) and removed:
+                    deltas.append("removed " + ", ".join(str(value) for value in removed))
+                if deltas:
+                    lines.append("  " + " | ".join(deltas))
+        lines.extend(["", "Resolved archived file sources:"])
+        if isinstance(children, list):
+            for entry in children:
+                if not isinstance(entry, dict):
+                    continue
+                order = entry.get("order")
+                if not isinstance(order, shower_batch.ProcessOrder):
+                    continue
+                sources = entry.get("_archive_order_revision_sources", [])
+                resolved: dict[str, str] = {}
+                if isinstance(sources, list):
+                    for source in sources:
+                        if not isinstance(source, dict):
+                            continue
+                        archive_name = str(source.get("archive_name", ""))
+                        files = source.get("order_files", [])
+                        if not isinstance(files, list):
+                            continue
+                        for path in files:
+                            if not isinstance(path, Path):
+                                continue
+                            suffix = path.suffix.lower()
+                            key = "PDF" if suffix == ".pdf" else "DXF" if suffix == ".dxf" else suffix.lstrip(".").upper()
+                            if key and key not in resolved:
+                                resolved[key] = f"{archive_name} / {path.name}"
+                source_text = "; ".join(f"{key}: {value}" for key, value in resolved.items()) or "no archived PDF/DXF indexed"
+                lines.append(f"  A&W {order.aw_order}: {source_text}")
+        return "\n".join(lines).rstrip()
 
     @staticmethod
     def archive_batch_sent_summary(entries: Iterable[dict[str, object]]) -> str:
@@ -22609,16 +24800,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 }
             ]
 
-        search_dirs: list[Path] = []
-        for source in source_records:
-            archive_dir = source.get("order_archive_dir")
-            if isinstance(archive_dir, Path) and archive_dir not in search_dirs:
-                search_dirs.append(archive_dir)
         raw_batch_dirs = entry.get("_archive_batch_revision_order_dirs", [])
-        if isinstance(raw_batch_dirs, list):
-            for archive_dir in raw_batch_dirs:
-                if isinstance(archive_dir, Path) and archive_dir not in search_dirs:
-                    search_dirs.append(archive_dir)
+        search_dirs = archive_rules.ordered_unique_paths(
+            [
+                *(source.get("order_archive_dir") for source in source_records),
+                *(raw_batch_dirs if isinstance(raw_batch_dirs, list) else []),
+            ]
+        )
 
         stored_by_dir: dict[str, list[Path]] = {}
         for source in source_records:
@@ -23303,6 +25491,40 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         tree.configure(yscrollcommand=scroll.set)
         tree.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
         scroll.grid(row=0, column=1, sticky="ns", padx=(0, 10), pady=10)
+
+        revision_inspector_frame = ctk.CTkFrame(
+            parent,
+            fg_color=self.SOFT_CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        revision_inspector_frame.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
+        revision_inspector_frame.grid_columnconfigure(0, weight=1)
+        revision_inspector_frame.grid_rowconfigure(1, weight=1)
+        revision_inspector_title_var = tk.StringVar(value="Archive Revision Details")
+        ctk.CTkLabel(
+            revision_inspector_frame,
+            textvariable=revision_inspector_title_var,
+            font=("Segoe UI", 11, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(9, 4))
+        revision_inspector_text = ctk.CTkTextbox(
+            revision_inspector_frame,
+            height=155,
+            fg_color=self.CARD_BG,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.TEXT,
+            font=("Consolas", 10),
+            wrap="word",
+        )
+        revision_inspector_text.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 11))
+        revision_inspector_text.insert("1.0", "Select an archived batch to inspect its revision history and resolved PDF/DXF sources.")
+        revision_inspector_text.configure(state="disabled")
+        revision_inspector_frame.grid_remove()
+        revision_inspector_expanded = {"value": False}
 
         rows: dict[str, dict[str, object]] = {}
         inventories: dict[str, list[dict[str, object]]] = {
@@ -24309,8 +26531,12 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         def update_archive_action_buttons(_event: tk.Event | None = None) -> None:
             if current_mode() != "Orders / Sketch Archives":
                 archive_selection_var.set("Processing Runs is read-only. Switch to Orders / Sketch Archives for restore actions.")
-                for button in (return_archive_button, test_mode_button, restore_input_button):
+                for button in (return_archive_button, test_mode_button, restore_input_button, revision_details_button):
                     button.configure(state="disabled")
+                if revision_inspector_expanded["value"]:
+                    revision_inspector_frame.grid_remove()
+                    revision_inspector_expanded["value"] = False
+                    revision_details_button.configure(text="Revision Details")
                 return
             target = selected_target()
             entries = self.archive_action_entries(target)
@@ -24319,6 +26545,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 return_archive_button.configure(text="Return to Archive", state="disabled")
                 test_mode_button.configure(text="Open Test Mode", state="disabled")
                 restore_input_button.configure(text="Restore to Input", state="disabled")
+                revision_details_button.configure(state="disabled")
+                if revision_inspector_expanded["value"]:
+                    revision_inspector_frame.grid_remove()
+                    revision_inspector_expanded["value"] = False
+                    revision_details_button.configure(text="Revision Details")
                 return
             if target and target.get("kind") == "batch":
                 archive_selection_var.set(
@@ -24327,12 +26558,25 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 return_archive_button.configure(text="Return Batch", state="normal")
                 test_mode_button.configure(text="Batch Test Mode", state="normal")
                 restore_input_button.configure(text="Restore Batch", state="normal")
+                revision_details_button.configure(state="normal")
+                revision_inspector_title_var.set(
+                    f"Revision Details — {target.get('display_name', target.get('batch_name', 'Archived Batch'))}"
+                )
+                revision_inspector_text.configure(state="normal")
+                revision_inspector_text.delete("1.0", tk.END)
+                revision_inspector_text.insert("1.0", self.archive_revision_inspector_text(target))
+                revision_inspector_text.configure(state="disabled")
             else:
                 order = entries[0].get("order")
                 archive_selection_var.set(f"Order selected: A&W {getattr(order, 'aw_order', '')}. Actions apply to this order only.")
                 return_archive_button.configure(text="Return Order", state="normal")
                 test_mode_button.configure(text="Order Test Mode", state="normal")
                 restore_input_button.configure(text="Restore Order", state="normal")
+                revision_details_button.configure(state="disabled")
+                if revision_inspector_expanded["value"]:
+                    revision_inspector_frame.grid_remove()
+                    revision_inspector_expanded["value"] = False
+                    revision_details_button.configure(text="Revision Details")
 
         def mode_changed(_value: str | None = None) -> None:
             update_mode_controls()
@@ -24380,7 +26624,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             border_width=1,
             border_color=self.BORDER,
         )
-        footer.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+        footer.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             footer,
@@ -24399,6 +26643,32 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.make_tool_button(footer, "Archive Sent Inputs", "archive", archive_sent_inputs, width=158).grid(
             row=2, column=0, sticky="w", padx=(12, 0), pady=(0, 10)
         )
+
+        def toggle_revision_inspector() -> None:
+            target = selected_target()
+            if not target or target.get("kind") != "batch":
+                return
+            if revision_inspector_expanded["value"]:
+                revision_inspector_frame.grid_remove()
+                revision_inspector_expanded["value"] = False
+                revision_details_button.configure(text="Revision Details")
+                return
+            revision_inspector_title_var.set(
+                f"Revision Details — {target.get('display_name', target.get('batch_name', 'Archived Batch'))}"
+            )
+            revision_inspector_text.configure(state="normal")
+            revision_inspector_text.delete("1.0", tk.END)
+            revision_inspector_text.insert("1.0", self.archive_revision_inspector_text(target))
+            revision_inspector_text.configure(state="disabled")
+            revision_inspector_frame.grid()
+            revision_inspector_expanded["value"] = True
+            revision_details_button.configure(text="Hide Revisions")
+
+        revision_details_button = self.make_tool_button(
+            footer, "Revision Details", "history", toggle_revision_inspector, width=132
+        )
+        revision_details_button.grid(row=2, column=1, padx=(8, 0), pady=(0, 10))
+        revision_details_button.configure(state="disabled")
         return_archive_button = self.make_tool_button(footer, "Return to Archive", "archive", return_selected, width=132)
         return_archive_button.grid(row=2, column=2, padx=(8, 0), pady=(0, 10))
         restore_input_button = self.make_tool_button(footer, "Restore to Input", "restore", restore_selected, width=136)
@@ -24572,7 +26842,107 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("undo", 14, "#ffffff", "left"),
         ).grid(row=0, column=2, padx=(8, 0))
+        reliability_card = self.make_section(parent, "Operation Recovery & Version Rollback", "warning")
+        reliability_card.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        reliability_card.grid_columnconfigure(0, weight=1)
+        reliability_status = tk.StringVar(value="Checking durable recovery state...")
+        ctk.CTkLabel(
+            reliability_card, textvariable=reliability_status, font=("Segoe UI", 10),
+            text_color=self.TEXT, anchor="w", justify="left", wraplength=1050,
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", padx=18, pady=(0, 10))
+
+        def refresh_reliability() -> None:
+            interrupted = self.send_journal.incomplete()
+            rollback_info = shower_reliability.RuntimeRollbackManager.snapshot_info(self.update_install_root())
+            self.startup_recovery_results = shower_reliability.startup_recovery_issues(
+                Path(getattr(self, "runtime_root", self.preferred_runtime_root())),
+                Path(self.output_dir_var.get()).resolve(),
+            )
+            warning_count = sum(1 for item in self.startup_recovery_results if str(item.get("severity", "")).upper() == "WARN")
+            rollback_text = (
+                f"Previous runtime available: {rollback_info.get('version', 'Unknown')}"
+                if rollback_info.get("available") == "yes"
+                else "No previous runtime snapshot is currently available."
+            )
+            reliability_status.set(
+                f"Interrupted Send journals: {len(interrupted)}   ·   Recovery warnings: {warning_count}\n{rollback_text}"
+            )
+
+        def open_send_journals() -> None:
+            folder = Path(self.output_dir_var.get()).resolve() / "Transactions" / "Send"
+            folder.mkdir(parents=True, exist_ok=True)
+            self.open_folder_in_file_manager(folder)
+
+        def reconcile_send_journals() -> None:
+            reconciled = 0
+            pending = self.send_journal.incomplete()
+            for item in pending:
+                transaction_id = str(item.get("transaction_id", ""))
+                stage = str(item.get("stage", ""))
+                integrity_ok = bool(item.get("integrity_ok", False))
+                if transaction_id and integrity_ok and stage in {
+                    shower_reliability.SendStage.POST_SEND_VERIFIED,
+                    shower_reliability.SendStage.RECEIPT_WRITTEN,
+                }:
+                    self.send_journal.complete(
+                        transaction_id,
+                        "Startup recovery reconciled an already verified Send. The next Scan Orders run will refresh lifecycle receipts from production evidence.",
+                        recovered_on_startup=True,
+                    )
+                    reconciled += 1
+            self.scan_orders()
+            refresh_reliability()
+            if reconciled:
+                messagebox.showinfo(
+                    "Send recovery reconciled",
+                    f"Reconciled {reconciled} previously verified Send transaction(s). Scan Orders is refreshing production state now.",
+                    parent=dialog,
+                )
+            elif pending:
+                messagebox.showwarning(
+                    "Manual review still required",
+                    "The interrupted Send transaction(s) stopped before post-send integrity was proven. They were left unresolved so production files are not guessed or rolled back automatically.",
+                    parent=dialog,
+                )
+            else:
+                messagebox.showinfo("No interrupted Sends", "There are no incomplete Send journals.", parent=dialog)
+
+        def rollback_previous_runtime() -> None:
+            info = shower_reliability.RuntimeRollbackManager.snapshot_info(self.update_install_root())
+            if info.get("available") != "yes":
+                messagebox.showinfo("No rollback available", "No validated previous runtime snapshot is available yet.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Roll back Shower Programmer?",
+                f"Roll back to {info.get('version', 'the previous version')}?\n\n"
+                "Input, Output, archives, configuration, and SQLite data are not replaced. Only the application runtime is swapped. The current runtime is retained as ReplacedRuntime.",
+                parent=dialog,
+            ):
+                return
+            try:
+                updates_dir = Path(self.output_dir_var.get()).resolve() / "Updates" / f"rollback-{datetime.now():%Y%m%d-%H%M%S}"
+                script = shower_reliability.RuntimeRollbackManager.stage_rollback_script(
+                    self.update_install_root(), updates_dir, os.getpid()
+                )
+                subprocess.Popen(["cmd", "/c", str(script)], cwd=str(script.parent))
+                self.save_ui_settings()
+                self.root.destroy()
+            except Exception as exc:
+                self.show_structured_error(exc, title="Runtime rollback")
+
+        action_row = ctk.CTkFrame(reliability_card, fg_color="transparent")
+        action_row.grid(row=2, column=0, columnspan=3, sticky="w", padx=18, pady=(0, 16))
+        self.make_tool_button(action_row, "Recheck", "refresh", refresh_reliability, width=104).pack(side=tk.LEFT)
+        self.make_tool_button(action_row, "Open Send Journals", "folder", open_send_journals, width=154).pack(side=tk.LEFT, padx=(8, 0))
+        self.make_tool_button(action_row, "Reconcile Interrupted Sends", "check_circle", reconcile_send_journals, width=194).pack(side=tk.LEFT, padx=(8, 0))
+        ctk.CTkButton(
+            action_row, text="Roll Back Previous Version", command=rollback_previous_runtime, width=190, height=34,
+            corner_radius=9, fg_color=self.WARNING, hover_color=self.ACCENT_DARK, text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"), **self.ctk_button_icon("undo", 14, "#ffffff", "left"),
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         dialog.after(250, refresh)
+        dialog.after(350, refresh_reliability)
 
     def build_configuration_backup_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -24656,6 +27026,104 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             text_color=self.TEXT,
             anchor="w",
         ).grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
+
+    def build_rule_test_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
+        """Evaluate production routing rules without writing CNC/PDF output."""
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        header = ctk.CTkFrame(parent, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text="Production Rule Test", font=("Segoe UI", 18, "bold"), text_color=self.TEXT, anchor="w").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            header,
+            text="Run the same machine/remake/orientation policy used by production processing without creating or sending files.",
+            font=("Segoe UI", 10), text_color=self.MUTED, anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        shell = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        shell.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        shell.grid_columnconfigure(1, weight=1)
+        shell.grid_rowconfigure(7, weight=1)
+
+        fields: dict[str, tk.StringVar] = {
+            "location": tk.StringVar(value=""),
+            "width": tk.StringVar(value='30"'),
+            "height": tk.StringVar(value='80"'),
+            "machine": tk.StringVar(value=""),
+            "processing": tk.StringVar(value=""),
+            "pdf_text": tk.StringVar(value='3/8" CLEAR TEMPERED'),
+        }
+        labels = [
+            ("Location", "location", "Examples: MASTER LEFT, REMAK, REMAKES"),
+            ("Width", "width", "Fractional or decimal inches"),
+            ("Height", "height", "Fractional or decimal inches"),
+            ("Process machine hint", "machine", "Examples: Denver 1 (CNC), Denver 2 (CNC), WJ"),
+            ("Process fabrication", "processing", "Examples: PPH, SCU4, DOUBLE NOTCH, 1/2 RADIUS"),
+            ("Sketch/PDF text", "pdf_text", "Glass/fabrication text used by panel classification"),
+        ]
+        for row, (label, key, help_text) in enumerate(labels):
+            ctk.CTkLabel(shell, text=label, font=("Segoe UI", 11, "bold"), text_color=self.TEXT, anchor="w").grid(row=row, column=0, sticky="w", padx=(16, 10), pady=(10 if row == 0 else 5, 5))
+            entry = ctk.CTkEntry(shell, textvariable=fields[key], height=32, fg_color=self.ENTRY_BG, border_color=self.BORDER, text_color=self.TEXT)
+            entry.grid(row=row, column=1, sticky="ew", padx=(0, 10), pady=(10 if row == 0 else 5, 5))
+            ctk.CTkLabel(shell, text=help_text, font=("Segoe UI", 9), text_color=self.MUTED, anchor="w").grid(row=row, column=2, sticky="w", padx=(0, 16), pady=(10 if row == 0 else 5, 5))
+
+        result_box = ctk.CTkTextbox(
+            shell, height=220, fg_color=self.ENTRY_BG, border_width=1, border_color=self.BORDER,
+            text_color=self.TEXT, font=("Consolas", 11), wrap="word",
+        )
+        result_box.grid(row=7, column=0, columnspan=3, sticky="nsew", padx=16, pady=(12, 10))
+        result_box.insert("1.0", "Enter representative values and choose Evaluate Rules. No production files will be written.")
+        result_box.configure(state="disabled")
+
+        def evaluate() -> None:
+            try:
+                config = programmer.load_config(self.editable_config_path())
+                width = programmer.parse_measurement(fields["width"].get())
+                height = programmer.parse_measurement(fields["height"].get())
+                if width is None or height is None:
+                    raise ValueError("Width and height must be valid measurements.")
+                panel = programmer.Panel(1, 1, fields["pdf_text"].get(), float(width), float(height), "")
+                programmer.classify_panel(panel, config, "RULETEST")
+                item = shower_batch.ProcessItem(
+                    1,
+                    width_text=fields["width"].get(),
+                    height_text=fields["height"].get(),
+                    processing=[fields["processing"].get()] if fields["processing"].get().strip() else [],
+                    machine_hints=[fields["machine"].get()] if fields["machine"].get().strip() else [],
+                )
+                order = shower_batch.ProcessOrder("RULETEST", "RULE TEST", items={1: item})
+                shower_batch.apply_process_hints([panel], order, config)
+                is_remake = shower_batch.location_value_indicates_remake(fields["location"].get())
+                lines = [
+                    "Production rule result",
+                    "----------------------",
+                    f"REMAKE from Location: {'YES' if is_remake else 'No'}",
+                    f"Machine: {panel.machine or 'None / label only'}",
+                    f"Rotation: {getattr(panel, 'rotation_degrees', None)} deg",
+                    f"Indicator: {indicator_rules.indicator_summary(panel.machine, getattr(panel, 'indicator_corner', None))}",
+                    f"Label only: {'Yes' if getattr(panel, 'label_only', False) else 'No'}",
+                    f"Skip DXF: {'Yes' if getattr(panel, 'skip_dxf', False) else 'No'}",
+                    "",
+                    "Decision evidence:",
+                ]
+                reasons = [str(value) for value in getattr(panel, "reasons", []) if str(value).strip()]
+                warnings = [str(value) for value in getattr(panel, "warnings", []) if str(value).strip()]
+                lines.extend(f"  - {value}" for value in reasons)
+                if warnings:
+                    lines.extend(["", "Warnings:"])
+                    lines.extend(f"  - {value}" for value in warnings)
+                result = "\n".join(lines)
+            except Exception as exc:
+                result = f"Rule test could not run.\n\n{exc.__class__.__name__}: {exc}"
+            result_box.configure(state="normal")
+            result_box.delete("1.0", tk.END)
+            result_box.insert("1.0", result)
+            result_box.configure(state="disabled")
+
+        actions = ctk.CTkFrame(shell, fg_color="transparent")
+        actions.grid(row=8, column=0, columnspan=3, sticky="e", padx=16, pady=(0, 14))
+        self.make_tool_button(actions, "Evaluate Rules", "check_circle", evaluate, width=142).pack(side=tk.RIGHT)
 
     def build_preferences_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -25569,7 +28037,12 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.open_settings("Action History")
 
     def open_hinge_detection_settings(self) -> None:
-        self.open_settings("Hinge Detection")
+        self._settings_configuration_requested_tab = "Hinge Detection"
+        self.open_settings("Configuration")
+        dialog = self.managed_page_window("settings")
+        select_tab = getattr(dialog, "_configuration_select_tab", None) if dialog is not None else None
+        if callable(select_tab):
+            select_tab("Hinge Detection")
 
     def open_config(self) -> None:
         path = self.editable_config_path()
@@ -26000,7 +28473,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             )
             if not (extract_path / "Shower Programmer.exe").is_file():
                 raise RuntimeError("Selective update extraction self-test failed.")
-            if not (extract_path / "_internal" / "lxml" / "isoschematron" / "resources" / "xsl" / "iso-schematron-xslt1" / "iso_schematron_skeleton_for_xslt1.xslpart").is_file():
+            deep_extract_target = extract_path / "_internal" / "lxml" / "isoschematron" / "resources" / "xsl" / "iso-schematron-xslt1" / "iso_schematron_skeleton_for_xslt1.xslpart"
+            if not os.path.isfile(ShowerProgrammerApp.windows_extended_path(deep_extract_target)):
                 raise RuntimeError("Deep lxml update extraction self-test failed.")
             if (extract_path / "Backend" / "should_not_extract.py").exists():
                 raise RuntimeError("Repository clutter was included in selective update extraction.")
