@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,6 +16,7 @@ if str(BACKEND) not in sys.path:
 import shower_batch
 import shower_programmer as programmer
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 def make_order(aw: str, width: str = "24", height: str = "72") -> shower_batch.ProcessOrder:
@@ -77,7 +77,7 @@ class Version115ArchiveXlsDxfPolishTests(unittest.TestCase):
         self.assertNotIn("DXF rotation: 90.0000 deg", text)
 
     def test_legacy_xls_cache_reuses_content_after_timestamp_only_change(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             temp = Path(raw)
             source = temp / "Batch 6337.xls"
             target = temp / "Batch 6337.xlsx"
@@ -111,7 +111,7 @@ class Version115ArchiveXlsDxfPolishTests(unittest.TestCase):
         self.assertIn("CheckCompatibility = $false", script)
 
     def test_five_archive_revisions_force_one_synthetic_process_list(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             temp = Path(raw)
             base = datetime(2026, 8, 17)
             entries: list[dict[str, object]] = []

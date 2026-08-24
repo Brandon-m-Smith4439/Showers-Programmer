@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,6 +11,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import shower_configuration
+from shower_temp import workspace_temporary_directory
 
 
 class Version122ConfigurationWorkspaceTests(unittest.TestCase):
@@ -117,14 +117,14 @@ class Version122ConfigurationWorkspaceTests(unittest.TestCase):
         config = self.sample_config()
         config["rules"]["denver_min_inches"] = "intentional override"
         self.assertTrue(shower_configuration.validate_configuration(config))
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             target = Path(raw) / "shower_programmer_config.json"
             shower_configuration.atomic_write_configuration(target, config)
             saved = json.loads(target.read_text(encoding="utf-8"))
             self.assertEqual(saved["rules"]["denver_min_inches"], "intentional override")
 
     def test_presave_backup_is_created_and_original_bytes_are_preserved(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             target = Path(raw) / "shower_programmer_config.json"
             original = b'{"rules":{"denver_min_inches":6.125}}\n'
             target.write_bytes(original)

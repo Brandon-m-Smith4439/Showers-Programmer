@@ -517,7 +517,7 @@ def backup_configuration(path: Path, *, backup_dir: Path | None = None, keep: in
 def atomic_write_configuration(path: Path, config: dict[str, Any]) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    temporary = target.with_name(f"config-{uuid.uuid4().hex[:10]}.tmp")
     try:
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(temporary, target)

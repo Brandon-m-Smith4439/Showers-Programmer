@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class _Var:
@@ -60,7 +60,7 @@ class Version112DeleteContextSelectionTests(unittest.TestCase):
         setattr(order, "process_list_missing", True)
         app = self.make_app(order)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             root = Path(temp_dir)
             order_dir = root / "Input" / "Orders"
             process_dir = root / "Input" / "Process List"

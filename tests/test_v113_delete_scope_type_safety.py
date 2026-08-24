@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -14,6 +13,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class _Var:
@@ -56,7 +56,7 @@ class Version113DeleteScopeTypeSafetyTests(unittest.TestCase):
         setattr(order, "process_list_missing", True)
         app = self.make_app(order)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             self.configure_paths(app, Path(temp_dir))
             app.delete_order_inputs((order,), frozenset(), include_network=False)
 
@@ -83,7 +83,7 @@ class Version113DeleteScopeTypeSafetyTests(unittest.TestCase):
 
         app.run_managed_task = mock.Mock(side_effect=run_task)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             self.configure_paths(app, Path(temp_dir))
             app.delete_order_inputs((order,), frozenset({"batch-6151"}), include_network=False)
 
@@ -108,7 +108,7 @@ class Version113DeleteScopeTypeSafetyTests(unittest.TestCase):
 
         app.run_managed_task = mock.Mock(side_effect=run_task)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             self.configure_paths(app, Path(temp_dir))
             app.delete_order_inputs((order,), frozenset(), include_network=False)
 

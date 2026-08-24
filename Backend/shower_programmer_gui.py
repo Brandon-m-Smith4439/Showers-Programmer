@@ -48,6 +48,13 @@
 # SEND_DIAGNOSTICS_FPS_HINGE_OOS_V132: durable Send-stage logging and deferred preflight handoff.
 # SEND_PATH_OOS_PREVIEW_V133: reliable selected-path deduplication and connected OOS return-leg display.
 # PREVIEW_SCAN_CONFIGURATION_V134: layered OOS rendering, bounded scan I/O, and additive hinge orientation migration.
+# OOS_REFERENCE_CLEANUP_V135: dashed square references, complex-OOS review flags, and late local send reconciliation.
+# EXAGGERATED_OOS_GUIDES_V136: clear visual direction guides without changing measured OOS geometry.
+# ORANGE_REVERSED_OOS_GUIDES_V137: blue glass outline with one reversed orange dashed direction cue.
+# ORANGE_DASHED_OOS_GUIDES_V138: restored guide direction and original long-dash styling.
+# LONG_DASH_OOS_GUIDES_V139: visibly separated orange dashes at production preview scale.
+# CENTERED_ANGLED_OOS_LABELS_V140: midpoint label anchors with collision-aware angled placement.
+# DENSE_OOS_LABEL_LAYOUT_V142: scored outline-safe OOS lanes with readable font fallback and association leaders.
 
 from __future__ import annotations
 
@@ -73,6 +80,7 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
@@ -92,6 +100,9 @@ import shower_state
 import shower_tasks
 import shower_reliability
 import shower_configuration
+import shower_maintenance
+import shower_review_service
+import shower_scan_index
 from shower_rules import archive as archive_rules
 from shower_rules import indicators as indicator_rules
 
@@ -710,6 +721,7 @@ class ShowerProgrammerApp:
     NETWORK_HEALTH_REFRESH_MS = 5 * 60 * 1000
     NETWORK_HEALTH_TIMEOUT_SECONDS = 3.0
     SCAN_IO_MAX_WORKERS = 8
+    MANUAL_DXF_REVIEW_RESOLUTION_KEY = "manual_dxf_review_resolution"
     ORDER_TREE_COLUMNS = (
         "status", "processed", "delivery", "order", "review",
         "sent", "job", "customer", "items", "issues",
@@ -799,6 +811,7 @@ class ShowerProgrammerApp:
 
         self.orders: list[shower_batch.ProcessOrder] = []
         self.order_by_aw: dict[str, shower_batch.ProcessOrder] = {}
+        self.order_result_sources: dict[str, shower_batch.BatchJobResult] = {}
         self.tree_rows: dict[str, str] = {}
         self.tree_row_orders: dict[str, shower_batch.ProcessOrder] = {}
         self.tree_row_batches: dict[str, str] = {}
@@ -823,10 +836,14 @@ class ShowerProgrammerApp:
         self.ui_icon_cache: dict[tuple[str, int, str], tk.PhotoImage] = {}
         self.ui_icon_pil_cache: dict[tuple[str, int, str], Any] = {}
         self.ctk_icon_cache: dict[tuple[str, int, str], Any] = {}
-        self.review_context_cache: dict[str, dict[str, Any]] = {}
+        self.review_context_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.review_context_cache_lock = threading.Lock()
         self.review_cache_generation = 0
-        self.review_cache_worker_active = False
+        self.complex_oos_review_cache: OrderedDict[tuple[object, ...], dict[str, Any]] = OrderedDict()
+        self.review_context_prefetcher = shower_review_service.ReviewContextPrefetcher(max_workers=2)
+        self.review_context_cache_limit = 8
+        self.pending_review_open_aw = ""
+        self.cache_maintenance = shower_maintenance.CacheMaintenanceService()
         self.active_themed_context_popup: tk.Toplevel | None = None
         self.active_themed_context_binding: tuple[tk.Widget, str, str] | None = None
         self.pending_update_script: Path | None = None
@@ -851,6 +868,7 @@ class ShowerProgrammerApp:
         self.root.after(1000, self.refresh_activity_heartbeat)
         self.root.after(250, self.archive_old_action_history)
         self.root.after(350, self.cleanup_expired_quarantine)
+        self.root.after(500, lambda: self.cache_maintenance.start(Path(self.output_dir_var.get()).resolve()))
         self.root.after(650, self.run_startup_recovery_check)
         self.root.after(1400, self.check_network_health_async)
         self.root.after_idle(lambda: self.root.after(1050, self.scan_orders))
@@ -949,7 +967,7 @@ class ShowerProgrammerApp:
     @staticmethod
     def atomic_write_json(path: Path, data: object) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary = path.with_name(f"json-{uuid.uuid4().hex[:10]}.tmp")
         try:
             with temporary.open("w", encoding="utf-8") as handle:
                 json.dump(data, handle, indent=2, sort_keys=True)
@@ -1022,6 +1040,28 @@ class ShowerProgrammerApp:
             return entry
         except Exception:
             return None
+
+    def record_send_journal_fallback(
+        self,
+        stage: str,
+        error: BaseException,
+        transaction_id: str = "",
+        **details: object,
+    ) -> str:
+        try:
+            path = shower_maintenance.append_fallback_event(
+                self.diagnostics_directory() / "send_journal_fallback.jsonl",
+                stage=stage,
+                error=error,
+                transaction_id=transaction_id,
+                details=dict(details),
+            )
+            return f"Send recovery journal warning saved to {path.name}: {error}"
+        except Exception as fallback_error:
+            return (
+                "Send recovery journal could not be updated and its fallback log also failed: "
+                f"{error}; fallback={fallback_error}"
+            )
 
     @classmethod
     def quarantine_paths(
@@ -1323,7 +1363,7 @@ class ShowerProgrammerApp:
             ui_settings = loaded
         target = target.with_suffix(".zip")
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary = target.with_name(f"restore-{uuid.uuid4().hex[:10]}.tmp")
         manifest = {
             "schema": 1,
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -2982,6 +3022,12 @@ class ShowerProgrammerApp:
                 if not should_close:
                     return
         self.save_ui_settings()
+        prefetcher = getattr(self, "review_context_prefetcher", None)
+        if prefetcher is not None:
+            prefetcher.shutdown()
+        maintenance = getattr(self, "cache_maintenance", None)
+        if maintenance is not None:
+            maintenance.shutdown()
         # Settings is intentionally persistent/withdrawn during normal use. Quit
         # the Tk main loop first so application shutdown cannot be stranded by a
         # descendant widget raising during recursive destruction.
@@ -5219,7 +5265,7 @@ class ShowerProgrammerApp:
         }
         target = workspace / "TestModeProvenance.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary = target.with_name(f"provenance-{uuid.uuid4().hex[:10]}.tmp")
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, target)
         return target
@@ -5491,6 +5537,7 @@ class ShowerProgrammerApp:
             status="INFO",
             orders=list(getattr(self, "test_mode_orders", [])) if isolated_test_mode else None,
         )
+        self.clear_review_context_cache()
         self.run_managed_task(
             "Scan Orders",
             lambda task: self.worker_scan_orders(
@@ -5677,13 +5724,21 @@ class ShowerProgrammerApp:
         cls,
         pdfs: list[Path],
         process_orders: list[shower_batch.ProcessOrder],
+        *,
+        input_index: shower_scan_index.OrderInputIndex | None = None,
     ) -> tuple[list[shower_batch.ProcessOrder], list[shower_batch.BatchJobResult]]:
         """Create visible, non-processable rows for PDFs absent from active process lists."""
         orders: list[shower_batch.ProcessOrder] = []
         results: list[shower_batch.BatchJobResult] = []
         used_ids = {str(order.aw_order) for order in process_orders}
+        index = input_index or shower_scan_index.OrderInputIndex(pdfs)
         for pdf in sorted(pdfs, key=lambda path: path.name.casefold()):
-            if cls.file_matches_process_orders(pdf, process_orders, inspect_pdf_text=True):
+            if cls.file_matches_process_orders(
+                pdf,
+                process_orders,
+                inspect_pdf_text=True,
+                input_index=index,
+            ):
                 continue
             try:
                 aw_guess = programmer.extract_aw_order_from_pdf(pdf) or ""
@@ -5758,45 +5813,31 @@ class ShowerProgrammerApp:
         cls,
         batches: list[dict[str, object]],
         order_folder: Path,
+        *,
+        local_files: list[Path] | None = None,
+        input_index: shower_scan_index.OrderInputIndex | None = None,
     ) -> tuple[list[dict[str, object]], list[shower_batch.ProcessOrder], int]:
         """Hide missing orders while retaining the full batch for completion checks."""
-        try:
-            local_files = [
-                path
-                for path in order_folder.iterdir()
-                if path.is_file()
-                and not path.is_symlink()
-                and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
-                and not cls.is_hardware_list_pdf(path)
-            ]
-        except OSError:
-            local_files = []
-
-        pdf_text_cache: dict[Path, str] = {}
+        if local_files is None:
+            try:
+                local_files = [
+                    path
+                    for path in order_folder.iterdir()
+                    if path.is_file()
+                    and not path.is_symlink()
+                    and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                    and not cls.is_hardware_list_pdf(path)
+                ]
+            except OSError:
+                local_files = []
+        index = input_index or shower_scan_index.OrderInputIndex(local_files)
+        local_pdfs = [path for path in local_files if path.suffix.lower() == ".pdf"]
 
         def pdf_matches_order_content(order: shower_batch.ProcessOrder) -> bool:
-            job_number = programmer.extract_job_number(order.job_name)
-            normalized_job = programmer.normalize_lookup(order.job_name)
-            for candidate in local_files:
-                if candidate.suffix.lower() != ".pdf":
-                    continue
-                if candidate not in pdf_text_cache:
-                    try:
-                        pdf_text_cache[candidate] = programmer.extract_first_page_text(candidate)
-                    except Exception:
-                        pdf_text_cache[candidate] = ""
-                text = pdf_text_cache[candidate]
-                if programmer.text_contains_aw_order(text, order.aw_order):
-                    return True
-                if job_number and programmer.text_contains_job_number(text, job_number):
-                    return True
-                try:
-                    extracted_job = programmer.normalize_lookup(programmer.extract_job_from_pdf(candidate))
-                except Exception:
-                    extracted_job = ""
-                if normalized_job and extracted_job and normalized_job in extracted_job:
-                    return True
-            return False
+            return any(
+                index.file_matches_order(candidate, order, inspect_pdf_text=True)
+                for candidate in local_pdfs
+            )
 
         active_batches: list[dict[str, object]] = []
         hidden_count = 0
@@ -6164,13 +6205,19 @@ class ShowerProgrammerApp:
                     production_reconciliation_warnings.extend(shared_cleanup_warnings)
             remember_stage("Order input sync", order_sync_started)
             scan_stage = "building the local order preview"
-            active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(all_batches, folder)
             local_order_files = [
                 path for path in folder.iterdir()
                 if path.is_file()
                 and path.suffix.lower() in self.ORDER_FILE_EXTENSIONS
                 and not self.is_hardware_list_pdf(path)
             ]
+            input_index = shower_scan_index.OrderInputIndex(local_order_files)
+            active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(
+                all_batches,
+                folder,
+                local_files=local_order_files,
+                input_index=input_index,
+            )
             local_duplicate_groups = self.import_duplicate_groups(local_order_files)
             duplicate_groups_by_aw = self.duplicate_groups_by_order(local_duplicate_groups, orders)
             progress_value += int(import_summary.get("considered", 0) or 0)
@@ -6189,7 +6236,11 @@ class ShowerProgrammerApp:
                     "Exact duplicate input files need review; double-click this order to choose which file to keep."
                 )
             local_pdfs = [path for path in local_order_files if path.suffix.lower() == ".pdf"]
-            input_only_orders, input_only_previews = self.input_only_orders_from_pdfs(local_pdfs, orders)
+            input_only_orders, input_only_previews = self.input_only_orders_from_pdfs(
+                local_pdfs,
+                orders,
+                input_index=input_index,
+            )
             if input_only_orders:
                 input_only_batch_id = "input-without-process-list"
                 active_batches.append(
@@ -6440,10 +6491,289 @@ class ShowerProgrammerApp:
     def save_manual_overrides_for_output(output_dir: Path, data: dict[str, object]) -> None:
         path = output_dir / "manual_overrides.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary = path.with_name(f"overrides-{uuid.uuid4().hex[:10]}.tmp")
         with temporary.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, sort_keys=True)
         os.replace(temporary, path)
+
+    @staticmethod
+    def manual_dxf_review_item_from_issue(issue: str) -> int | None:
+        """Return the affected piece when an issue requests manual DXF review."""
+        text = re.sub(r"\s+", " ", str(issue)).strip()
+        if "manual dxf review required" not in text.casefold() and "review dxf" not in text.casefold():
+            return None
+        match = re.match(r"^P(\d+):", text, flags=re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    @classmethod
+    def manual_dxf_review_items_from_issues(cls, issues: Iterable[str]) -> list[int]:
+        return sorted(
+            {
+                item
+                for issue in issues
+                if (item := cls.manual_dxf_review_item_from_issue(str(issue))) is not None
+            }
+        )
+
+    @staticmethod
+    def complex_oos_review_item_from_issue(issue: str) -> int | None:
+        """Return the piece only for the four-run complex-OOS safety warning."""
+        text = re.sub(r"\s+", " ", str(issue)).strip()
+        folded = text.casefold()
+        if "complex oos geometry detected" not in folded or "manual dxf review required" not in folded:
+            return None
+        match = re.match(r"^P(\d+):", text, flags=re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def dxf_review_file_signature(path: Path | None) -> dict[str, object] | None:
+        if path is None:
+            return None
+        try:
+            resolved = path.resolve()
+            stat = resolved.stat()
+        except OSError:
+            return None
+        return {
+            "path": str(resolved).casefold(),
+            "size": int(stat.st_size),
+            "modified_ns": int(stat.st_mtime_ns),
+        }
+
+    def current_dxf_review_path(
+        self,
+        aw_order: str,
+        item: int,
+        output_dir: Path | None = None,
+        panel: programmer.Panel | None = None,
+    ) -> Path | None:
+        """Locate the latest generated DXF, with the source DXF as a final fallback."""
+        candidates: list[Path] = []
+        if panel is not None and panel.output_dxf is not None:
+            candidates.append(panel.output_dxf)
+        try:
+            active_output = (output_dir or Path(self.output_dir_var.get())).resolve()
+            _run, _sketches, programs, _reports = self.output_dirs_for_order(str(aw_order), active_output)
+            candidates.append(programs / f"{aw_order}{int(item):02d}.dxf")
+        except Exception:
+            pass
+        if panel is not None and panel.source_dxf is not None:
+            candidates.append(panel.source_dxf)
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                if resolved.is_file():
+                    return resolved
+            except OSError:
+                continue
+        return None
+
+    def current_dxf_review_signature(
+        self,
+        aw_order: str,
+        item: int,
+        output_dir: Path | None = None,
+        panel: programmer.Panel | None = None,
+    ) -> dict[str, object] | None:
+        """Identify the exact generated DXF that an operator reviewed."""
+        return self.dxf_review_file_signature(
+            self.current_dxf_review_path(aw_order, item, output_dir, panel)
+        )
+
+    def current_complex_oos_review(
+        self,
+        aw_order: str,
+        item: int,
+        output_dir: Path | None = None,
+        panel: programmer.Panel | None = None,
+    ) -> dict[str, Any]:
+        """Re-evaluate the current DXF so stale four-OOS warnings clear themselves."""
+        path = self.current_dxf_review_path(aw_order, item, output_dir, panel)
+        signature = self.dxf_review_file_signature(path)
+        if path is None or signature is None:
+            return {
+                "requires_manual_review": False,
+                "highlighted_segments": set(),
+                "side_counts": {},
+                "entity_count": 0,
+                "summary": "",
+                "path": path,
+                "signature": signature,
+            }
+        key = (
+            str(signature.get("path", "")),
+            int(signature.get("size", 0)),
+            int(signature.get("modified_ns", 0)),
+        )
+        cache = getattr(self, "complex_oos_review_cache", None)
+        if isinstance(cache, OrderedDict) and key in cache:
+            cached = copy.deepcopy(cache[key])
+            cache.move_to_end(key)
+            return cached
+        try:
+            details = dict(programmer.dxf_complex_oos_review_details(path))
+        except Exception:
+            details = {
+                "requires_manual_review": False,
+                "highlighted_segments": set(),
+                "side_counts": {},
+                "entity_count": 0,
+                "summary": "",
+            }
+        details["path"] = path
+        details["signature"] = signature
+        if isinstance(cache, OrderedDict):
+            cache[key] = copy.deepcopy(details)
+            while len(cache) > 80:
+                cache.popitem(last=False)
+        return details
+
+    def current_complex_oos_candidate_items(
+        self,
+        aw_order: str,
+        issues: Iterable[str],
+        output_dir: Path | None,
+        panels: Iterable[programmer.Panel] | None,
+    ) -> tuple[set[int], dict[int, programmer.Panel]]:
+        panel_by_item = {panel.item: panel for panel in panels or []}
+        candidates = set(panel_by_item)
+        candidates.update(
+            item
+            for issue in issues
+            if (item := self.complex_oos_review_item_from_issue(str(issue))) is not None
+        )
+        try:
+            active_output = (output_dir or Path(self.output_dir_var.get())).resolve()
+            _run, _sketches, programs, _reports = self.output_dirs_for_order(str(aw_order), active_output)
+            prefix = str(aw_order)
+            for path in programs.glob(f"{prefix}??.dxf"):
+                suffix = path.stem[len(prefix) :]
+                if len(suffix) == 2 and suffix.isdigit():
+                    candidates.add(int(suffix))
+        except Exception:
+            pass
+        return candidates, panel_by_item
+
+    @classmethod
+    def manual_dxf_review_is_resolved_in_overrides(
+        cls,
+        data: dict[str, object],
+        aw_order: str,
+        item: int,
+        signature: dict[str, object] | None,
+    ) -> bool:
+        if signature is None:
+            return False
+        item_overrides = data.get("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            return False
+        order_overrides = item_overrides.get(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            return False
+        piece_overrides = order_overrides.get(str(int(item)), {})
+        if not isinstance(piece_overrides, dict):
+            return False
+        resolved = piece_overrides.get(cls.MANUAL_DXF_REVIEW_RESOLUTION_KEY)
+        return isinstance(resolved, dict) and resolved.get("signature") == signature
+
+    def unresolved_manual_dxf_review_items(
+        self,
+        aw_order: str,
+        issues: Iterable[str],
+        *,
+        output_dir: Path | None = None,
+        panels: Iterable[programmer.Panel] | None = None,
+    ) -> list[int]:
+        try:
+            data = self.manual_overrides_for_output(
+                (output_dir or Path(self.output_dir_var.get())).resolve()
+            )
+        except Exception:
+            data = {}
+        candidates, panel_by_item = self.current_complex_oos_candidate_items(
+            aw_order,
+            issues,
+            output_dir,
+            panels,
+        )
+        unresolved: list[int] = []
+        for item in sorted(candidates):
+            details = self.current_complex_oos_review(
+                aw_order,
+                item,
+                output_dir,
+                panel_by_item.get(item),
+            )
+            if not bool(details.get("requires_manual_review", False)):
+                continue
+            signature = details.get("signature")
+            if not self.manual_dxf_review_is_resolved_in_overrides(
+                data,
+                aw_order,
+                item,
+                signature,
+            ):
+                unresolved.append(item)
+        return unresolved
+
+    def visible_order_issues(
+        self,
+        aw_order: str,
+        issues: Iterable[str],
+        *,
+        output_dir: Path | None = None,
+        panels: Iterable[programmer.Panel] | None = None,
+    ) -> list[str]:
+        raw = [str(issue) for issue in issues]
+        unresolved = set(
+            self.unresolved_manual_dxf_review_items(
+                aw_order,
+                raw,
+                output_dir=output_dir,
+                panels=panels,
+            )
+        )
+        visible: list[str] = []
+        for issue in raw:
+            item = self.complex_oos_review_item_from_issue(issue)
+            if item is not None and item not in unresolved:
+                continue
+            visible.append(issue)
+        return visible
+
+    def set_manual_dxf_review_resolved(
+        self,
+        aw_order: str,
+        item: int,
+        panel: programmer.Panel,
+        output_dir: Path,
+    ) -> dict[str, object]:
+        details = self.current_complex_oos_review(aw_order, item, output_dir, panel)
+        if not bool(details.get("requires_manual_review", False)):
+            raise RuntimeError("The current DXF no longer has four OOS runs on one side.")
+        signature = details.get("signature")
+        if signature is None:
+            raise FileNotFoundError("The current DXF could not be found, so its manual review cannot be resolved.")
+        data = self.manual_overrides_for_output(output_dir)
+        item_overrides = data.setdefault("item_overrides", {})
+        if not isinstance(item_overrides, dict):
+            item_overrides = {}
+            data["item_overrides"] = item_overrides
+        order_overrides = item_overrides.setdefault(str(aw_order), {})
+        if not isinstance(order_overrides, dict):
+            order_overrides = {}
+            item_overrides[str(aw_order)] = order_overrides
+        piece_overrides = order_overrides.setdefault(str(int(item)), {})
+        if not isinstance(piece_overrides, dict):
+            piece_overrides = {}
+            order_overrides[str(int(item))] = piece_overrides
+        piece_overrides[self.MANUAL_DXF_REVIEW_RESOLUTION_KEY] = {
+            "signature": signature,
+            "resolved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        self._manual_overrides_session_data = copy.deepcopy(data)
+        self.save_manual_overrides_for_output(output_dir, data)
+        return signature
 
     def begin_manual_overrides_session(self, output_dir: Path) -> None:
         output_dir = output_dir.resolve()
@@ -6557,7 +6887,7 @@ class ShowerProgrammerApp:
     @staticmethod
     def write_action_history_file(path: Path, events: list[dict[str, object]], invalid_lines: list[str] | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temp_path = path.with_name(f"history-{uuid.uuid4().hex[:10]}.tmp")
         try:
             with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
                 for event in events:
@@ -7784,8 +8114,15 @@ class ShowerProgrammerApp:
             pass
 
     def insert_or_update_result(self, result: shower_batch.BatchJobResult) -> None:
+        source_result = copy.copy(result)
+        source_result.issues = list(result.issues)
+        self.order_result_sources[str(result.aw_order)] = source_result
+        visible_issues = self.visible_order_issues(result.aw_order, result.issues)
+        effective_status = result.status
+        if str(effective_status).strip().upper() == "ISSUES" and not visible_issues:
+            effective_status = "OK"
         processed = self.processed_summary_for_order(result.aw_order)
-        display_status = self.persisted_display_status(result.aw_order, result.status)
+        display_status = self.persisted_display_status(result.aw_order, effective_status)
         values = (
             display_status,
             processed,
@@ -7796,7 +8133,7 @@ class ShowerProgrammerApp:
             result.job_name,
             result.customer,
             result.items,
-            self.issue_summary(result.issues),
+            self.issue_summary(visible_issues),
         )
         row_id = self.tree_rows.get(result.aw_order)
         tags = self.order_tree_tags_for_values(values)
@@ -7883,7 +8220,8 @@ class ShowerProgrammerApp:
             (r"^P(\d+): missing source DXF$", r"P\1: missing DXF"),
             (r"^P(\d+): Label placed in best available open area inside glass\.$", r"P\1: label placed inside"),
             (r"^P(\d+): label placed inside best open area$", r"P\1: label placed inside"),
-            (r"^P(\d+): FP-S cut-in/cut-out detected; manual DXF review required\.$", r"P\1: FP-S cut; review DXF"),
+            (r"^P(\d+): FP-S cut-in/cut-out detected; manual DXF review required\.$", r"P\1: MANUAL DXF REVIEW - FP-S cut"),
+            (r"^P(\d+): (.+); manual DXF review required\.$", r"P\1: MANUAL DXF REVIEW - \2"),
         ]
         for pattern, replacement in replacements:
             text = re.sub(pattern, replacement, text)
@@ -8020,7 +8358,7 @@ class ShowerProgrammerApp:
             return False
         page = None
         bitmap = None
-        temp_path = output_path.with_name(f"{output_path.stem}.{threading.get_ident()}.tmp{output_path.suffix}")
+        temp_path = output_path.with_name(f"render-{threading.get_ident()}.tmp{output_path.suffix}")
         try:
             page = document[page_index]
             bitmap = page.render(scale=max(0.1, dpi / 72.0), draw_annots=True)
@@ -8197,12 +8535,73 @@ class ShowerProgrammerApp:
         )
 
     def clear_review_context_cache(self, aw_order: str | None = None) -> None:
-        with self.review_context_cache_lock:
+        lock = getattr(self, "review_context_cache_lock", None)
+        cache = getattr(self, "review_context_cache", None)
+        if lock is None or cache is None:
+            return
+        with lock:
             if aw_order is None:
-                self.review_context_cache.clear()
+                cache.clear()
             else:
-                self.review_context_cache.pop(str(aw_order), None)
+                cache.pop(str(aw_order), None)
             self.review_cache_generation += 1
+        if aw_order is None:
+            prefetcher = getattr(self, "review_context_prefetcher", None)
+            if prefetcher is not None:
+                prefetcher.cancel_pending()
+
+    def review_context_paths(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+    ) -> tuple[Path, Path, Path, Path, Path, Path, bool, bool]:
+        run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(
+            process_order.aw_order,
+            output_dir,
+        )
+        generated_sketch_path = sketch_dir / f"{process_order.aw_order}.pdf"
+        sketch_output_skipped = self.output_was_skipped_for_order(process_order.aw_order, "sketch")
+        dxf_output_skipped = self.output_was_skipped_for_order(process_order.aw_order, "dxf")
+        if generated_sketch_path.exists() and not sketch_output_skipped:
+            sketch_path = generated_sketch_path
+        else:
+            sketch_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
+        return (
+            run_folder,
+            sketch_dir,
+            programs_dir,
+            report_dir,
+            generated_sketch_path,
+            sketch_path,
+            sketch_output_skipped,
+            dxf_output_skipped,
+        )
+
+    def cached_order_review_context(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+    ) -> dict[str, Any] | None:
+        try:
+            *_, sketch_path, _sketch_skipped, _dxf_skipped = self.review_context_paths(
+                process_order,
+                folder,
+                output_dir,
+            )
+        except Exception:
+            return None
+        cache_key = self.review_context_cache_key(process_order, folder, output_dir, sketch_path)
+        aw_order = str(process_order.aw_order)
+        with self.review_context_cache_lock:
+            cached = self.review_context_cache.get(aw_order)
+            if cached and cached.get("cache_key") == cache_key:
+                source_path = cached.get("source_pdf_path")
+                if not isinstance(source_path, Path) or self.file_signature(source_path) == cached.get("source_pdf_signature"):
+                    self.review_context_cache.move_to_end(aw_order)
+                    return cached
+        return None
 
     def prepare_order_review_context(
         self,
@@ -8212,26 +8611,21 @@ class ShowerProgrammerApp:
         *,
         use_cache: bool = True,
     ) -> dict[str, Any]:
-        run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(process_order.aw_order, output_dir)
-        generated_sketch_path = sketch_dir / f"{process_order.aw_order}.pdf"
-        sketch_output_skipped = self.output_was_skipped_for_order(process_order.aw_order, "sketch")
-        dxf_output_skipped = self.output_was_skipped_for_order(process_order.aw_order, "dxf")
-        if generated_sketch_path.exists() and not sketch_output_skipped:
-            sketch_path = generated_sketch_path
-        else:
-            # Skip Sketch output is a valid processing mode. Always review the
-            # untouched source PDF for the latest run when sketch output was
-            # skipped, even if an older marked PDF still exists on disk.
-            sketch_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
-
+        (
+            run_folder,
+            sketch_dir,
+            programs_dir,
+            report_dir,
+            generated_sketch_path,
+            sketch_path,
+            sketch_output_skipped,
+            dxf_output_skipped,
+        ) = self.review_context_paths(process_order, folder, output_dir)
         cache_key = self.review_context_cache_key(process_order, folder, output_dir, sketch_path)
         if use_cache:
-            with self.review_context_cache_lock:
-                cached = self.review_context_cache.get(process_order.aw_order)
-            if cached and cached.get("cache_key") == cache_key:
-                source_path = cached.get("source_pdf_path")
-                if not isinstance(source_path, Path) or self.file_signature(source_path) == cached.get("source_pdf_signature"):
-                    return cached
+            cached = self.cached_order_review_context(process_order, folder, output_dir)
+            if cached is not None:
+                return cached
 
         config = self.config_with_manual_overrides(folder, output_dir)
         job, source_reader, issues = shower_batch.prepare_job(
@@ -8266,15 +8660,29 @@ class ShowerProgrammerApp:
             "source_pdf_signature": self.file_signature(job.pdf_path),
         }
         with self.review_context_cache_lock:
-            if len(self.review_context_cache) > 30:
-                self.review_context_cache.clear()
-            self.review_context_cache[process_order.aw_order] = context
+            aw_order = str(process_order.aw_order)
+            self.review_context_cache[aw_order] = context
+            self.review_context_cache.move_to_end(aw_order)
+            while len(self.review_context_cache) > self.review_context_cache_limit:
+                self.review_context_cache.popitem(last=False)
         return context
 
+    def load_order_review_context(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        with shower_cache.using_root(output_dir / ".scan_cache"):
+            return self.prepare_order_review_context(
+                process_order,
+                folder,
+                output_dir,
+                use_cache=True,
+            )
+
     def start_review_cache_warmup(self, orders: list[shower_batch.ProcessOrder] | None = None) -> None:
-        if self.review_cache_worker_active:
-            return
-        orders_to_warm = list(orders if orders is not None else self.orders)
+        orders_to_warm = list(orders if orders is not None else self.orders)[:3]
         if not orders_to_warm:
             return
         try:
@@ -8283,15 +8691,13 @@ class ShowerProgrammerApp:
         except Exception:
             return
         with self.review_context_cache_lock:
-            self.review_cache_generation += 1
             generation = self.review_cache_generation
-        self.review_cache_worker_active = True
-        worker = threading.Thread(
-            target=self.worker_warm_review_cache,
-            args=(orders_to_warm, folder, output_dir, generation),
-            daemon=True,
-        )
-        worker.start()
+        for order in orders_to_warm:
+            aw_order = str(order.aw_order)
+            self.review_context_prefetcher.request(
+                (generation, aw_order, str(folder), str(output_dir)),
+                lambda current=order: self.load_order_review_context(current, folder, output_dir),
+            )
 
     def worker_warm_review_cache(
         self,
@@ -8300,21 +8706,65 @@ class ShowerProgrammerApp:
         output_dir: Path,
         generation: int,
     ) -> None:
+        for order in list(orders)[:3]:
+            with self.review_context_cache_lock:
+                if generation != self.review_cache_generation:
+                    return
+            try:
+                self.prepare_order_review_context(order, folder, output_dir, use_cache=True)
+            except Exception:
+                continue
+
+    def prefetch_adjacent_review_contexts(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+    ) -> None:
         try:
-            for order in orders:
-                with self.review_context_cache_lock:
-                    if generation != self.review_cache_generation:
-                        return
-                try:
-                    context = self.prepare_order_review_context(order, folder, output_dir, use_cache=True)
-                    job = context.get("job")
-                    source_reader = context.get("source_reader")
-                    if isinstance(job, programmer.Job) and isinstance(source_reader, PdfReader):
-                        self.ensure_review_pdf_raster_cache(job.pdf_path, len(source_reader.pages), output_dir)
-                except Exception:
-                    continue
-        finally:
-            self.review_cache_worker_active = False
+            index = next(
+                position
+                for position, order in enumerate(self.orders)
+                if str(order.aw_order) == str(process_order.aw_order)
+            )
+        except StopIteration:
+            return
+        adjacent = [
+            self.orders[position]
+            for position in (index - 1, index + 1, index + 2)
+            if 0 <= position < len(self.orders)
+        ]
+        self.start_review_cache_warmup(adjacent)
+
+    def request_order_review_context(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        folder: Path,
+        output_dir: Path,
+    ) -> None:
+        aw_order = str(process_order.aw_order)
+        with self.review_context_cache_lock:
+            generation = self.review_cache_generation
+        self.pending_review_open_aw = aw_order
+
+        def completed(context: Any | None, error: BaseException | None) -> None:
+            self.worker_queue.put(
+                (
+                    "review_context_ready",
+                    {
+                        "order": process_order,
+                        "context": context,
+                        "error": error,
+                        "generation": generation,
+                    },
+                )
+            )
+
+        self.review_context_prefetcher.request(
+            (generation, aw_order, str(folder), str(output_dir)),
+            lambda: self.load_order_review_context(process_order, folder, output_dir),
+            completed,
+        )
 
     def review_status_for_order(self, aw_order: str) -> str:
         try:
@@ -8894,7 +9344,7 @@ class ShowerProgrammerApp:
         maximum_bytes: int = 250 * 1024 * 1024,
     ) -> tuple[Path, list[str]]:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary = target.with_name(f"review-{uuid.uuid4().hex[:10]}.tmp")
         warnings: list[str] = []
         included: list[dict[str, object]] = []
         used_names: set[str] = set()
@@ -10547,6 +10997,36 @@ class ShowerProgrammerApp:
                         str(data.get("stage", "Updating...")),
                         str(data.get("detail", "")),
                     )
+                elif kind == "review_context_ready":
+                    data = payload
+                    assert isinstance(data, dict)
+                    process_order = data.get("order")
+                    error = data.get("error")
+                    generation = int(data.get("generation", -1) or -1)
+                    if not isinstance(process_order, shower_batch.ProcessOrder):
+                        continue
+                    aw_order = str(process_order.aw_order)
+                    if generation != self.review_cache_generation or self.pending_review_open_aw != aw_order:
+                        continue
+                    self.pending_review_open_aw = ""
+                    if isinstance(error, programmer.AmbiguousPdfError):
+                        choice = self.show_ambiguous_pdf_dialog(process_order, list(error.candidates))
+                        if choice is not None:
+                            try:
+                                renamed = self.rename_ambiguous_pdf(process_order, choice[0], choice[1])
+                            except Exception as rename_exc:
+                                messagebox.showerror("Could not rename PDF", str(rename_exc), parent=self.root)
+                            else:
+                                self.status_var.set(f"Renamed {renamed.name}; reopening order review...")
+                                self.root.after(75, self.open_order_review)
+                        continue
+                    if isinstance(error, BaseException):
+                        if isinstance(error, FileNotFoundError):
+                            messagebox.showinfo("No sketch yet", str(error), parent=self.root)
+                        else:
+                            self.show_structured_error(error, title="Order review failed")
+                        continue
+                    self.open_order_review(process_order_override=process_order, review_confirmed=True)
                 elif kind == "update_no_updates":
                     data = payload
                     assert isinstance(data, dict)
@@ -10933,6 +11413,7 @@ class ShowerProgrammerApp:
                     self.tree_row_orders.clear()
                     self.tree_row_batches.clear()
                     self.batch_tree_rows.clear()
+                    self.order_result_sources.clear()
                     self.install_process_batches(batches)
                     self.update_summary_strip()
                     for result in previews:
@@ -11144,9 +11625,21 @@ class ShowerProgrammerApp:
                                     shower_reliability.SendStage.CANCELLED_RESOLVED,
                                     "No matching generated files were found; no production Send occurred.",
                                 )
-                            except Exception:
-                                pass
-                        messagebox.showinfo("Nothing sent", "No matching generated files were found.")
+                            except Exception as journal_exc:
+                                warning = self.record_send_journal_fallback(
+                                    "nothing-sent",
+                                    journal_exc,
+                                    send_transaction_id,
+                                )
+                                input_cleanup_warnings.append(warning)
+                        if input_cleanup_warnings:
+                            messagebox.showwarning(
+                                "Nothing sent",
+                                "No matching generated files were found.\n\n" + "\n".join(input_cleanup_warnings[:4]),
+                                parent=self.root,
+                            )
+                        else:
+                            messagebox.showinfo("Nothing sent", "No matching generated files were found.")
                         self.status_var.set("No matching generated files were found.")
                         continue
                     receipt_written = False
@@ -11169,8 +11662,15 @@ class ShowerProgrammerApp:
                                     "Production files were copied, but the sent receipt could not be written.",
                                     receipt_error=f"{exc.__class__.__name__}: {exc}",
                                 )
-                            except Exception:
-                                pass
+                            except Exception as journal_exc:
+                                input_cleanup_warnings.append(
+                                    self.record_send_journal_fallback(
+                                        "receipt-write-failed",
+                                        journal_exc,
+                                        send_transaction_id,
+                                        receipt_error=str(exc),
+                                    )
+                                )
 
                     receipts_verified = False
                     if receipt_written:
@@ -11202,8 +11702,17 @@ class ShowerProgrammerApp:
                                     "Send finished with an unresolved post-send integrity warning.",
                                     receipts_verified=receipts_verified,
                                 )
-                        except Exception:
-                            pass
+                        except Exception as journal_exc:
+                            input_cleanup_warnings.append(
+                                self.record_send_journal_fallback(
+                                    "send-finalization",
+                                    journal_exc,
+                                    send_transaction_id,
+                                    receipt_written=receipt_written,
+                                    receipts_verified=receipts_verified,
+                                    integrity_ok=integrity_ok,
+                                )
+                            )
                     details = self.send_complete_details(
                         copied,
                         missing,
@@ -11595,7 +12104,13 @@ a {{ color: #1f4e79; }}
             parent=self.root,
         )
 
-    def open_order_review(self, event: tk.Event | None = None) -> None:
+    def open_order_review(
+        self,
+        event: tk.Event | None = None,
+        *,
+        process_order_override: shower_batch.ProcessOrder | None = None,
+        review_confirmed: bool = False,
+    ) -> None:
         if event is not None:
             row_id = self.tree.identify_row(event.y)
             if row_id in self.tree_row_batches:
@@ -11608,7 +12123,7 @@ a {{ color: #1f4e79; }}
                 self.tree.selection_set(row_id)
         if self.focus_existing_page_window("review_order", "Review Order"):
             return
-        selected = self.selected_orders()
+        selected = [process_order_override] if process_order_override is not None else self.selected_orders()
         if len(selected) != 1:
             messagebox.showinfo("Select one order", "Select exactly one scanned order to review.")
             return
@@ -11625,7 +12140,7 @@ a {{ color: #1f4e79; }}
             return
         if self.resolve_exact_duplicate_order(process_order):
             return
-        if not self.confirm_unprocessed_order_review(process_order.aw_order):
+        if not review_confirmed and not self.confirm_unprocessed_order_review(process_order.aw_order):
             self.status_var.set(f"Review canceled for unprocessed order {process_order.aw_order}.")
             return
         try:
@@ -11633,7 +12148,10 @@ a {{ color: #1f4e79; }}
             output_dir = Path(self.output_dir_var.get()).resolve()
             self.status_var.set(f"Preparing review for {process_order.aw_order}...")
             self.root.update_idletasks()
-            context = self.prepare_order_review_context(process_order, folder, output_dir, use_cache=True)
+            context = self.cached_order_review_context(process_order, folder, output_dir)
+            if context is None:
+                self.request_order_review_context(process_order, folder, output_dir)
+                return
             run_folder = context["run_folder"]
             sketch_dir = context["sketch_dir"]
             programs_dir = context["programs_dir"]
@@ -11643,10 +12161,17 @@ a {{ color: #1f4e79; }}
             config = context["config"]
             job = context["job"]
             source_reader = context["source_reader"]
-            issues = context["issues"]
+            raw_issues = list(context["issues"])
+            issues = self.visible_order_issues(
+                process_order.aw_order,
+                raw_issues,
+                output_dir=output_dir,
+                panels=job.panels,
+            )
             sketch_reader = context["sketch_reader"]
             sketch_output_skipped = bool(context.get("sketch_output_skipped", False))
             dxf_output_skipped = bool(context.get("dxf_output_skipped", False))
+            self.prefetch_adjacent_review_contexts(process_order, folder, output_dir)
         except programmer.AmbiguousPdfError as exc:
             choice = self.show_ambiguous_pdf_dialog(process_order, list(exc.candidates))
             if choice is not None:
@@ -11856,7 +12381,30 @@ a {{ color: #1f4e79; }}
             columnspan=2,
             sticky="ew",
         )
-        piece_action_widgets.extend([save_edits_button, process_dxf_button])
+        resolve_dxf_review_button = ctk.CTkButton(
+            primary_grid,
+            text="DXF Review Clear",
+            command=lambda: resolve_current_manual_dxf_review(),
+            height=38,
+            corner_radius=9,
+            fg_color=self.PANEL_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.MUTED,
+            font=("Segoe UI", 11, "bold"),
+            state=tk.DISABLED,
+            **self.ctk_button_icon("warning", 15, self.MUTED, "left"),
+        )
+        resolve_dxf_review_button.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        resolve_dxf_review_button.grid_remove()
+        piece_action_widgets.extend([save_edits_button, process_dxf_button, resolve_dxf_review_button])
 
         edit_section = control_section(control_panel, 3, "MARKUP TOOLS")
         sketch_edit_mode_button: Any | None = None
@@ -12183,6 +12731,80 @@ a {{ color: #1f4e79; }}
         def overview_selected() -> bool:
             return bool(overview_available and item_var.get() == overview_label)
 
+        def current_panel_manual_dxf_review_unresolved() -> bool:
+            if overview_selected():
+                return False
+            panel = selected_panel()
+            return bool(
+                self.unresolved_manual_dxf_review_items(
+                    process_order.aw_order,
+                    raw_issues,
+                    output_dir=output_dir,
+                    panels=[panel],
+                )
+            )
+
+        def update_manual_dxf_review_button() -> None:
+            unresolved = current_panel_manual_dxf_review_unresolved()
+            if not unresolved:
+                resolve_dxf_review_button.grid_remove()
+                return
+            resolve_dxf_review_button.grid()
+            resolve_dxf_review_button.configure(
+                text="Resolve Manual DXF Review",
+                state=tk.NORMAL,
+                fg_color=self.DANGER,
+                hover_color="#b42318",
+                border_color=self.DANGER,
+                text_color="#ffffff",
+                image=self.ctk_button_icon(
+                    "warning",
+                    15,
+                    "#ffffff",
+                ).get("image"),
+            )
+
+        def resolve_current_manual_dxf_review() -> None:
+            nonlocal issues
+            panel = selected_panel()
+            if not current_panel_manual_dxf_review_unresolved():
+                status.set(f"P{panel.item} has no unresolved manual DXF review.")
+                return
+            if not messagebox.askyesno(
+                "Resolve manual DXF review",
+                f"Confirm that you manually inspected and corrected {process_order.aw_order}.P{panel.item}.\n\n"
+                "This order will become eligible for Send unless another issue blocks it.",
+                parent=dialog,
+            ):
+                return
+            try:
+                self.set_manual_dxf_review_resolved(
+                    process_order.aw_order,
+                    panel.item,
+                    panel,
+                    output_dir,
+                )
+            except Exception as exc:
+                messagebox.showerror("DXF review not resolved", str(exc), parent=dialog)
+                return
+            issues = self.visible_order_issues(
+                process_order.aw_order,
+                raw_issues,
+                output_dir=output_dir,
+                panels=job.panels,
+            )
+            source_result = self.order_result_sources.get(str(process_order.aw_order))
+            if source_result is not None:
+                self.insert_or_update_result(source_result)
+            self.record_action(
+                "Resolve Manual DXF Review",
+                f"Resolved manual DXF review for {process_order.aw_order}.P{panel.item}.",
+                status="SUCCESS",
+                orders=[process_order],
+            )
+            status.set(f"Resolved manual DXF review for {process_order.aw_order}.P{panel.item}.")
+            redraw()
+
         overview_allowed_widgets = (save_edits_button, text_button)
 
         def update_piece_action_states() -> None:
@@ -12196,6 +12818,7 @@ a {{ color: #1f4e79; }}
                     widget.configure(state=tk.NORMAL if allowed else tk.DISABLED)
                 except (tk.TclError, ValueError):
                     pass
+            update_manual_dxf_review_button()
 
         def update_history_buttons() -> None:
             button_states = (
@@ -12428,6 +13051,7 @@ a {{ color: #1f4e79; }}
             )
 
         def refresh_dxf_preview() -> None:
+            nonlocal issues
             panel = selected_panel()
             path = (
                 panel.source_dxf
@@ -12437,13 +13061,36 @@ a {{ color: #1f4e79; }}
             if path is None or not path.exists():
                 messagebox.showinfo("No DXF", "No matching DXF exists for this piece.", parent=dialog)
                 return
+            was_unresolved = current_panel_manual_dxf_review_unresolved()
             state["dxf_preview_cache"] = {}
+            complex_cache = getattr(self, "complex_oos_review_cache", None)
+            if isinstance(complex_cache, OrderedDict):
+                complex_cache.clear()
             self.clear_review_context_cache(process_order.aw_order)
+            issues = self.visible_order_issues(
+                process_order.aw_order,
+                raw_issues,
+                output_dir=output_dir,
+                panels=job.panels,
+            )
+            source_result = self.order_result_sources.get(str(process_order.aw_order))
+            if source_result is not None:
+                self.insert_or_update_result(source_result)
             redraw()
-            status.set(f"Refreshed DXF preview from {path.name}.")
+            is_unresolved = current_panel_manual_dxf_review_unresolved()
+            if was_unresolved and not is_unresolved:
+                status.set(
+                    f"Refreshed DXF preview from {path.name}. Manual DXF review cleared automatically."
+                )
+            elif is_unresolved:
+                status.set(
+                    f"Refreshed DXF preview from {path.name}. Four OOS runs remain; manual review is still required."
+                )
+            else:
+                status.set(f"Refreshed DXF preview from {path.name}.")
 
         def rotate_dxf_and_process(delta: int) -> None:
-            nonlocal job, source_reader, sketch_reader, issues, config
+            nonlocal job, source_reader, sketch_reader, raw_issues, issues, config
             panel = selected_panel()
             if panel.source_dxf is None or panel.output_dxf is None or panel.skip_dxf:
                 messagebox.showinfo("No programmable DXF", "This piece does not have a programmable DXF.", parent=dialog)
@@ -12501,7 +13148,13 @@ a {{ color: #1f4e79; }}
                 programmer.write_panel_dxf(refreshed_panel, force=True, config=refreshed_config)
                 job = refreshed_job
                 source_reader = refreshed_reader
-                issues = refreshed_issues
+                raw_issues = list(refreshed_issues)
+                issues = self.visible_order_issues(
+                    process_order.aw_order,
+                    raw_issues,
+                    output_dir=output_dir,
+                    panels=job.panels,
+                )
                 config = refreshed_config
                 sketch_reader = PdfReader(
                     str(job.output_pdf if job.output_pdf.exists() else job.pdf_path)
@@ -12626,7 +13279,7 @@ a {{ color: #1f4e79; }}
             state["drag_history_recorded"] = False
 
         def regenerate_review_sketch() -> bool:
-            nonlocal job, source_reader, sketch_reader, issues, config
+            nonlocal job, source_reader, sketch_reader, raw_issues, issues, config
             try:
                 refreshed_config = self.config_with_manual_overrides(folder, output_dir)
                 remake_items = self.editor_remake_items(process_order.aw_order)
@@ -12643,7 +13296,13 @@ a {{ color: #1f4e79; }}
                 job = refreshed_job
                 source_reader = PdfReader(str(job.pdf_path))
                 sketch_reader = PdfReader(str(refreshed_job.output_pdf if refreshed_job.output_pdf.exists() else sketch_path))
-                issues = refreshed_issues
+                raw_issues = list(refreshed_issues)
+                issues = self.visible_order_issues(
+                    process_order.aw_order,
+                    raw_issues,
+                    output_dir=output_dir,
+                    panels=job.panels,
+                )
                 config = refreshed_config
                 state.get("pending_items", set()).clear()
                 state["needs_output_save"] = False
@@ -12760,7 +13419,7 @@ a {{ color: #1f4e79; }}
             return False
 
         def process_review_order() -> None:
-            nonlocal job, source_reader, sketch_reader, issues, config
+            nonlocal job, source_reader, sketch_reader, raw_issues, issues, config
             if has_pending_item_edits() and not save_review_edits(show_no_edits=False):
                 return
             try:
@@ -12793,7 +13452,7 @@ a {{ color: #1f4e79; }}
                     skip_dxf=review_skip_dxf,
                     remake_items=remake_items,
                 )
-                job, source_reader, issues = shower_batch.prepare_job(
+                job, source_reader, raw_issues = shower_batch.prepare_job(
                     folder,
                     sketch_dir,
                     programs_dir,
@@ -12801,6 +13460,12 @@ a {{ color: #1f4e79; }}
                     refreshed_config,
                     process_order,
                     remake_items=remake_items,
+                )
+                issues = self.visible_order_issues(
+                    process_order.aw_order,
+                    raw_issues,
+                    output_dir=output_dir,
+                    panels=job.panels,
                 )
                 config = refreshed_config
                 sketch_reader = PdfReader(str(job.output_pdf if job.output_pdf.exists() else sketch_path))
@@ -12839,9 +13504,9 @@ a {{ color: #1f4e79; }}
                 messagebox.showerror("Process DXF failed", str(exc), parent=dialog)
 
         def refresh_prepared_job() -> None:
-            nonlocal job, source_reader, issues, config
+            nonlocal job, source_reader, raw_issues, issues, config
             config = self.config_with_manual_overrides(folder, output_dir)
-            job, source_reader, issues = shower_batch.prepare_job(
+            job, source_reader, raw_issues = shower_batch.prepare_job(
                 folder,
                 sketch_dir,
                 programs_dir,
@@ -12849,6 +13514,12 @@ a {{ color: #1f4e79; }}
                 config,
                 process_order,
                 remake_items=self.editor_remake_items(process_order.aw_order, output_dir),
+            )
+            issues = self.visible_order_issues(
+                process_order.aw_order,
+                raw_issues,
+                output_dir=output_dir,
+                panels=job.panels,
             )
             self.clear_review_context_cache(process_order.aw_order)
 
@@ -13251,6 +13922,7 @@ a {{ color: #1f4e79; }}
                     pass
             state["redraw_after_id"] = None
             update_piece_action_states()
+            update_manual_dxf_review_button()
             update_history_buttons()
             if overview_selected():
                 page_count_var.set(f"1/{len(review_page_values)}")
@@ -13424,6 +14096,24 @@ a {{ color: #1f4e79; }}
         def complete_order_review() -> None:
             if not confirm_save_before_leaving(None):
                 return
+            unresolved_dxf_items = self.unresolved_manual_dxf_review_items(
+                process_order.aw_order,
+                raw_issues,
+                output_dir=output_dir,
+                panels=job.panels,
+            )
+            if unresolved_dxf_items:
+                first_item = unresolved_dxf_items[0]
+                item_var.set(f"P{first_item}")
+                set_piece(item_var.get())
+                messagebox.showwarning(
+                    "Manual DXF review required",
+                    "Resolve the manual DXF review before marking this order checked.\n\n"
+                    + "Pieces requiring attention: "
+                    + ", ".join(f"P{item}" for item in unresolved_dxf_items),
+                    parent=dialog,
+                )
+                return
             all_items = {panel.item for panel in job.panels}
             viewed_items = set(state.get("viewed_items", set()))
             unviewed_items = sorted(all_items - viewed_items)
@@ -13542,6 +14232,12 @@ a {{ color: #1f4e79; }}
         elif not status:
             status = "PROCESSED"
         checked = self.review_status_for_order(process_order.aw_order) or "Not checked"
+        manual_dxf_review_items = self.unresolved_manual_dxf_review_items(
+            process_order.aw_order,
+            issues,
+            output_dir=output_dir,
+            panels=job.panels,
+        )
         process_lines: list[str] = []
         panel_by_item = {panel.item: panel for panel in job.panels}
         for item_number in process_order.item_numbers:
@@ -13576,6 +14272,7 @@ a {{ color: #1f4e79; }}
             "sent": self.sent_summary_for_order(process_order.aw_order),
             "issue_count": len(issues),
             "issues": list(issues),
+            "manual_dxf_review_items": manual_dxf_review_items,
             "process_lines": process_lines,
         }
 
@@ -13597,7 +14294,13 @@ a {{ color: #1f4e79; }}
             ("Process Items", str(overview["item_count"]), self.ACCENT_DARK),
             ("Programs Ready", f"{overview['programs_ready']}/{overview['programs_expected']}", self.SUCCESS),
             ("Sketch Output", "Ready" if overview["sketch_ready"] else "Missing", self.SUCCESS if overview["sketch_ready"] else self.WARNING),
+            (
+                "DXF Review",
+                ", ".join(f"P{item}" for item in overview["manual_dxf_review_items"]) or "Clear",
+                self.DANGER if overview["manual_dxf_review_items"] else self.SUCCESS,
+            ),
             ("Issues", str(overview["issue_count"]), self.WARNING if overview["issue_count"] else self.SUCCESS),
+            ("Order Review", "Checked" if "checked" in overview["checked"].casefold() else "Pending", self.SUCCESS if "checked" in overview["checked"].casefold() else self.MUTED),
         ]
         gap = 10
         card_width = max(120, (width - 36 - gap) / 2)
@@ -13611,11 +14314,10 @@ a {{ color: #1f4e79; }}
             canvas.create_rectangle(x1, y1, x2, y2, fill=self.CARD_BG, outline=self.BORDER, width=1)
             canvas.create_text(x1 + 12, y1 + 12, anchor=tk.NW, text=label, fill=self.MUTED, font=("Segoe UI", 9, "bold"))
             canvas.create_text(x1 + 12, y1 + 34, anchor=tk.NW, text=value, fill=color, font=("Segoe UI", 16, "bold"))
-        details_y = 78 + 2 * (card_height + gap) + 6
+        details_y = 78 + math.ceil(len(cards) / 2) * (card_height + gap) + 6
         detail_lines = [
             f"Processing status: {overview['status']}",
             f"Last processed: {overview['last_processed']}",
-            f"Review: {overview['checked']}",
             f"Sent: {overview['sent']}",
         ]
         canvas.create_text(
@@ -13623,7 +14325,7 @@ a {{ color: #1f4e79; }}
             width=max(260, width - 36), fill=self.TEXT, font=("Segoe UI", 10),
         )
         if overview["issues"]:
-            issue_y = details_y + 100
+            issue_y = details_y + 80
             canvas.create_text(18, issue_y, anchor=tk.NW, text="Attention", fill=self.WARNING, font=("Segoe UI", 10, "bold"))
             canvas.create_text(
                 18, issue_y + 24, anchor=tk.NW, text="\n".join(f"- {item}" for item in overview["issues"][:4]),
@@ -13820,10 +14522,24 @@ a {{ color: #1f4e79; }}
             fill=self.TEXT,
             font=("Segoe UI", 10),
         )
+        if not segments:
+            canvas.create_text(col_1, 76, anchor=tk.NW, text="No drawable DXF entities found.", fill=self.TEXT, font=("Segoe UI", 10))
+            return
+        points = [point for segment in segments for point in segment]
+        min_x = min(x for x, _ in points)
+        max_x = max(x for x, _ in points)
+        min_y = min(y for _, y in points)
+        max_y = max(y for _, y in points)
+        width = max(max_x - min_x, 0.001)
+        height = max(max_y - min_y, 0.001)
+        long_side = max(width, height)
+        oos_review = programmer.dxf_complex_oos_review_from_segments(segments, inches_per_unit)
+        highlight_segments = set(oos_review.get("highlighted_segments", set()))
+        complex_oos = bool(oos_review.get("requires_manual_review", False))
+
         is_pph = programmer.has_pph_hinge(panel)
         show_internal_radius = panel.machine == "WJ" or is_pph
-        header_height = 132.0 if show_internal_radius else 116.0
-        legend_y = 98 if show_internal_radius else 76
+        header_height = (116.0 if show_internal_radius else 100.0) + (24.0 if complex_oos else 0.0)
         if show_internal_radius:
             radius_label = "PPH Hinge Radii" if is_pph else "Internal Cut Radius"
             canvas.create_text(
@@ -13865,16 +14581,17 @@ a {{ color: #1f4e79; }}
                 fill=radius_color,
                 font=radius_font,
             )
-        if not segments:
-            canvas.create_text(col_1, legend_y, anchor=tk.NW, text="No drawable DXF entities found.", fill=self.TEXT, font=("Segoe UI", 10))
-            return
-        points = [point for segment in segments for point in segment]
-        min_x = min(x for x, _ in points)
-        max_x = max(x for x, _ in points)
-        min_y = min(y for _, y in points)
-        max_y = max(y for _, y in points)
-        width = max(max_x - min_x, 0.001)
-        height = max(max_y - min_y, 0.001)
+        if complex_oos:
+            warning_y = 98 if show_internal_radius else 76
+            warning_text = str(oos_review.get("summary", "Complex OOS geometry detected"))
+            canvas.create_text(
+                col_1,
+                warning_y,
+                anchor=tk.NW,
+                text=f"MANUAL DXF REVIEW REQUIRED - {warning_text}",
+                fill=self.DANGER,
+                font=("Segoe UI", 9, "bold"),
+            )
         # Reserve an exterior annotation lane for all four side measurements.
         # Radius callouts remain inside the geometry and OOS labels are drawn
         # inward, so the three annotation systems stay readable together.
@@ -13899,8 +14616,6 @@ a {{ color: #1f4e79; }}
                 "scale": scale,
             }
 
-        long_side = max(width, height)
-        highlight_segments = self.out_of_square_preview_segments(segments, long_side, inches_per_unit)
         mapped_center = map_point(((min_x + max_x) / 2, (min_y + max_y) / 2))
         mapped_left, mapped_top = map_point((min_x, max_y))
         mapped_right, mapped_bottom = map_point((max_x, min_y))
@@ -13920,6 +14635,25 @@ a {{ color: #1f4e79; }}
             (start, end, *map_point(start), *map_point(end))
             for start, end in segments
         ]
+        mapped_outline_lines = [
+            ((x1, y1), (x2, y2))
+            for _start, _end, x1, y1, x2, y2 in mapped_segments
+        ]
+        mapped_oos_segments: list[
+            tuple[tuple[float, float], tuple[float, float], float, float, float, float]
+        ] = []
+        seen_oos_runs: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+        for entry in mapped_segments:
+            start, end = entry[0], entry[1]
+            if (start, end) not in highlight_segments:
+                continue
+            rounded_start = (round(start[0], 8), round(start[1], 8))
+            rounded_end = (round(end[0], 8), round(end[1], 8))
+            run_key = tuple(sorted((rounded_start, rounded_end)))
+            if run_key in seen_oos_runs:
+                continue
+            seen_oos_runs.add(run_key)
+            mapped_oos_segments.append(entry)
         for start, end, x1, y1, x2, y2 in mapped_segments:
             if (start, end) in highlight_segments:
                 continue
@@ -13934,9 +14668,45 @@ a {{ color: #1f4e79; }}
                 )
             )
 
-        # Draw ordinary geometry first, then OOS geometry on top. Small hinge
-        # and cutout entities otherwise repaint a nearly coincident 1/16 or
-        # 1/8-inch return and make the proven OOS edge appear to be missing.
+        oos_guide_paths = self.dxf_oos_guide_paths(mapped_oos_segments)
+        mapped_guide_lines: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for start, end, x1, y1, x2, y2 in mapped_oos_segments:
+            guide_start, guide_end, actual_outer = oos_guide_paths[(start, end)]
+            mapped_guide_lines.extend(
+                [
+                    (guide_start, guide_end),
+                    (guide_end, actual_outer),
+                ]
+            )
+
+        side_measurements = self.dxf_cardinal_side_measurements(segments, inches_per_unit)
+        side_positions = {
+            "top": ((mapped_left + mapped_right) / 2, mapped_top - 25, 0),
+            "bottom": ((mapped_left + mapped_right) / 2, mapped_bottom + 25, 0),
+            "left": (mapped_left - 28, (mapped_top + mapped_bottom) / 2, 90),
+            "right": (mapped_right + 28, (mapped_top + mapped_bottom) / 2, 90),
+        }
+        # Reserve the exterior side-dimension labels before placing OOS text.
+        # This allows OOS callouts outside the glass without hiding dimensions.
+        for side, length_inches in side_measurements.items():
+            label_x, label_y, angle = side_positions[side]
+            probe = canvas.create_text(
+                label_x,
+                label_y,
+                anchor=tk.CENTER,
+                text=self.format_inches(length_inches),
+                font=("Segoe UI", 9, "bold"),
+                angle=angle,
+            )
+            bounds = canvas.bbox(probe)
+            canvas.delete(probe)
+            if bounds:
+                occupied_inside_labels.append(
+                    (bounds[0] - 8, bounds[1] - 6, bounds[2] + 8, bounds[3] + 6)
+                )
+
+        # Keep the real glass outline consistently blue. OOS direction is shown
+        # only by the exaggerated orange dashed guide drawn afterward.
         for start, end, x1, y1, x2, y2 in mapped_segments:
             if (start, end) in highlight_segments:
                 continue
@@ -13948,78 +14718,169 @@ a {{ color: #1f4e79; }}
                 fill=self.ACCENT_DARK,
                 width=2,
             )
-        for start, end, x1, y1, x2, y2 in mapped_segments:
-            if (start, end) not in highlight_segments:
-                continue
-            canvas.create_line(x1, y1, x2, y2, fill=self.WARNING, width=4)
-
-        for start, end, x1, y1, x2, y2 in mapped_segments:
+        for start, end, x1, y1, x2, y2 in mapped_oos_segments:
+            canvas.create_line(x1, y1, x2, y2, fill=self.ACCENT_DARK, width=2)
+        for start, end, x1, y1, x2, y2 in mapped_oos_segments:
             segment = (start, end)
-            if segment not in highlight_segments:
-                continue
-            mx = (x1 + x2) / 2
-            my = (y1 + y2) / 2
+            guide_start, guide_end, actual_outer = oos_guide_paths[segment]
+            canvas.create_line(
+                *guide_start,
+                *guide_end,
+                fill=self.WARNING,
+                width=2,
+                dash=(14, 7),
+                tags=("dxf_oos_direction_guide",),
+            )
+            canvas.create_line(
+                *guide_end,
+                *actual_outer,
+                fill=self.WARNING,
+                width=1,
+                dash=(10, 6),
+                tags=("dxf_oos_offset_leg",),
+            )
+
+        oos_font_sizes = self.dxf_oos_label_font_sizes(len(mapped_oos_segments))
+        for start, end, x1, y1, x2, y2 in mapped_oos_segments:
+            segment = (start, end)
+            guide_start, guide_end, _actual_outer = oos_guide_paths[segment]
+            guide_x, guide_y = guide_end
+            mx, my = self.dxf_oos_label_anchor(guide_start, guide_end)
             toward_x = mapped_center[0] - mx
             toward_y = mapped_center[1] - my
             toward_length = max(1.0, math.hypot(toward_x, toward_y))
             inward_x = toward_x / toward_length
             inward_y = toward_y / toward_length
-            segment_length = max(1.0, math.hypot(x2 - x1, y2 - y1))
-            segment_x = (x2 - x1) / segment_length
-            segment_y = (y2 - y1) / segment_length
+            segment_length = max(
+                1.0,
+                math.hypot(guide_x - guide_start[0], guide_y - guide_start[1]),
+            )
+            segment_x = (guide_x - guide_start[0]) / segment_length
+            segment_y = (guide_y - guide_start[1]) / segment_length
             label_text = self.out_of_square_segment_label(start, end, inches_per_unit)
-            label_angle = 90 if abs(y2 - y1) > abs(x2 - x1) else 0
+            label_angle = self.dxf_oos_label_angle(guide_start, guide_end)
             _connected_return, inward_distances, segment_shifts = self.dxf_oos_label_search_parameters(
                 start,
                 end,
                 long_side,
                 inches_per_unit,
             )
-            label_x = mx + inward_x * inward_distances[0]
-            label_y = my + inward_y * inward_distances[0]
-            label_bounds: tuple[int, int, int, int] | None = None
-            for inward_distance in inward_distances:
-                for segment_shift in segment_shifts:
-                    candidate_x = mx + inward_x * inward_distance + segment_x * segment_length * segment_shift
-                    candidate_y = my + inward_y * inward_distance + segment_y * segment_length * segment_shift
-                    probe = canvas.create_text(
-                        candidate_x,
-                        candidate_y,
-                        anchor=tk.CENTER,
-                        text=label_text,
-                        fill=self.WARNING,
-                        font=("Segoe UI", 9, "bold"),
-                        angle=label_angle,
-                    )
-                    bounds = canvas.bbox(probe)
-                    canvas.delete(probe)
-                    if not bounds:
-                        continue
-                    padded = (bounds[0] - 5, bounds[1] - 3, bounds[2] + 5, bounds[3] + 3)
-                    inside_outline = (
-                        padded[0] >= mapped_left + 3
-                        and padded[1] >= mapped_top + 3
-                        and padded[2] <= mapped_right - 3
-                        and padded[3] <= mapped_bottom - 3
-                    )
-                    if not inside_outline or any(
-                        self.preview_rects_overlap(padded, occupied)
-                        for occupied in occupied_inside_labels
-                    ):
-                        continue
-                    label_x = candidate_x
-                    label_y = candidate_y
-                    label_bounds = bounds
+            normal_offsets = self.dxf_oos_normal_offsets(inward_distances)
+            tangent_offsets = self.dxf_oos_tangent_offsets(
+                len(mapped_oos_segments),
+                segment_length,
+                segment_shifts,
+            )
+            best_clean: tuple[float, float, float, int, tuple[int, int, int, int]] | None = None
+            best_fallback: tuple[float, float, float, int, tuple[int, int, int, int]] | None = None
+            for font_size in oos_font_sizes:
+                for normal_distance in normal_offsets:
+                    for tangent_offset in tangent_offsets:
+                        candidate_x = mx + inward_x * normal_distance + segment_x * tangent_offset
+                        candidate_y = my + inward_y * normal_distance + segment_y * tangent_offset
+                        probe = canvas.create_text(
+                            candidate_x,
+                            candidate_y,
+                            anchor=tk.CENTER,
+                            text=label_text,
+                            fill=self.WARNING,
+                            font=("Segoe UI", font_size, "bold"),
+                            angle=label_angle,
+                        )
+                        bounds = canvas.bbox(probe)
+                        canvas.delete(probe)
+                        if not bounds:
+                            continue
+                        padded = (bounds[0] - 5, bounds[1] - 3, bounds[2] + 5, bounds[3] + 3)
+                        inside_outline = (
+                            padded[0] >= mapped_left + 3
+                            and padded[1] >= mapped_top + 3
+                            and padded[2] <= mapped_right - 3
+                            and padded[3] <= mapped_bottom - 3
+                        )
+                        inside_canvas = (
+                            padded[0] >= 6
+                            and padded[1] >= header_height + 4
+                            and padded[2] <= canvas_width - 6
+                            and padded[3] <= canvas_height - 8
+                        )
+                        if not inside_canvas:
+                            continue
+                        occupied_overlap = sum(
+                            self.preview_rect_overlap_area(padded, occupied)
+                            for occupied in occupied_inside_labels
+                        )
+                        outline_hits = sum(
+                            self.preview_rect_intersects_segment(padded, line_start, line_end, 2.0)
+                            for line_start, line_end in mapped_outline_lines
+                        )
+                        guide_hits = sum(
+                            self.preview_rect_intersects_segment(padded, line_start, line_end, 1.0)
+                            for line_start, line_end in mapped_guide_lines
+                        )
+                        association_distance = math.hypot(candidate_x - mx, candidate_y - my)
+                        size_penalty = float((9 - font_size) * 22)
+                        shift_penalty = abs(tangent_offset) * 0.08
+                        outside_penalty = 14.0 if not inside_outline else 0.0
+                        placement_score = association_distance + size_penalty + shift_penalty + outside_penalty
+                        candidate = (placement_score, candidate_x, candidate_y, font_size, bounds)
+                        if occupied_overlap <= 0.0 and outline_hits == 0 and guide_hits == 0:
+                            if best_clean is None or candidate[0] < best_clean[0]:
+                                best_clean = candidate
+                            continue
+                        fallback_score = (
+                            placement_score
+                            + occupied_overlap * 8.0
+                            + outline_hits * 10000.0
+                            + guide_hits * 1400.0
+                        )
+                        fallback = (fallback_score, candidate_x, candidate_y, font_size, bounds)
+                        if best_fallback is None or fallback[0] < best_fallback[0]:
+                            best_fallback = fallback
+                if (
+                    best_clean is not None
+                    and best_clean[3] == font_size
+                    and best_clean[0] <= 110.0
+                ):
                     break
-                if label_bounds is not None:
-                    break
+
+            chosen = best_clean or best_fallback
+            if chosen is None:
+                label_x = mx + inward_x * normal_offsets[0]
+                label_y = my + inward_y * normal_offsets[0]
+                label_font_size = oos_font_sizes[-1]
+                label_bounds = None
+            else:
+                _score, label_x, label_y, label_font_size, label_bounds = chosen
+            leader = None
+            if label_bounds is not None:
+                leader = self.dxf_oos_callout_leader(
+                    label_bounds,
+                    (label_x, label_y),
+                    guide_start,
+                    guide_end,
+                )
+            if leader is not None:
+                leader_start_x, leader_start_y, leader_end_x, leader_end_y = leader
+                canvas.create_line(
+                    leader_start_x,
+                    leader_start_y,
+                    leader_end_x,
+                    leader_end_y,
+                    fill=self.WARNING,
+                    width=1,
+                    dash=(5, 4),
+                    arrow=tk.LAST,
+                    arrowshape=(8, 10, 3),
+                    tags=("dxf_oos_label_leader",),
+                )
             text_id = canvas.create_text(
                 label_x,
                 label_y,
                 anchor=tk.CENTER,
                 text=label_text,
                 fill=self.WARNING,
-                font=("Segoe UI", 9, "bold"),
+                font=("Segoe UI", label_font_size, "bold"),
                 angle=label_angle,
                 tags=("dxf_oos_label",),
             )
@@ -14038,13 +14899,6 @@ a {{ color: #1f4e79; }}
                 occupied_inside_labels.append(
                     (bounds[0] - 7, bounds[1] - 5, bounds[2] + 7, bounds[3] + 5)
                 )
-        side_measurements = self.dxf_cardinal_side_measurements(segments, inches_per_unit)
-        side_positions = {
-            "top": ((mapped_left + mapped_right) / 2, mapped_top - 25, 0),
-            "bottom": ((mapped_left + mapped_right) / 2, mapped_bottom + 25, 0),
-            "left": (mapped_left - 28, (mapped_top + mapped_bottom) / 2, 90),
-            "right": (mapped_right + 28, (mapped_top + mapped_bottom) / 2, 90),
-        }
         for side, length_inches in side_measurements.items():
             label_x, label_y, angle = side_positions[side]
             text_id = canvas.create_text(
@@ -14069,15 +14923,6 @@ a {{ color: #1f4e79; }}
                     tags=("dxf_side_dimension_bg",),
                 )
                 canvas.tag_lower(background, text_id)
-        if highlight_segments:
-            canvas.create_text(
-                col_1,
-                legend_y,
-                anchor=tk.NW,
-                text="Orange = angled/out-of-square side",
-                fill=self.WARNING,
-                font=("Segoe UI", 9, "bold"),
-            )
         canvas.create_text(
             col_1,
             canvas_height - 18,
@@ -14192,73 +15037,11 @@ a {{ color: #1f4e79; }}
         long_side: float,
         inches_per_unit: float = 1.0,
     ) -> set[tuple[tuple[float, float], tuple[float, float]]]:
-        angled: list[tuple[tuple[float, float], tuple[float, float]]] = []
-        horizontal: list[tuple[tuple[float, float], tuple[float, float]]] = []
-        for start, end in segments:
-            if not cls.is_out_of_square_preview_segment(start, end, long_side, inches_per_unit):
-                continue
-            angled.append((start, end))
-            dx = end[0] - start[0]
-            dy = end[1] - start[1]
-            angle = math.degrees(math.atan2(dy, dx))
-            horizontal_deviation = abs(programmer.normalize_axis_deviation(angle))
-            vertical_deviation = abs(programmer.normalize_axis_deviation(angle - 90))
-            if horizontal_deviation <= vertical_deviation:
-                horizontal.append((start, end))
-
-        highlighted = set(angled)
-        if not highlighted:
-            return highlighted
-
-        # A shallow FP-S kick-out can contain a short angled return between two
-        # longer OOS edges. The ordinary minimum-length filter deliberately
-        # excludes short cutout geometry, so add back only a segment whose two
-        # endpoints bridge two different, already-proven OOS segments.
-        safe_inches_per_unit = inches_per_unit if inches_per_unit > 0 else 1.0
-        minimum_length = max(1.0 / safe_inches_per_unit, long_side * 0.02)
-        maximum_length = long_side * 0.30
-        point_tolerance = max(long_side * 1e-6, 1e-6)
-
-        def touching_highlights(
-            point: tuple[float, float],
-        ) -> set[tuple[tuple[float, float], tuple[float, float]]]:
-            return {
-                candidate
-                for candidate in highlighted
-                if any(math.hypot(point[0] - endpoint[0], point[1] - endpoint[1]) <= point_tolerance for endpoint in candidate)
-            }
-
-        connected_returns: list[tuple[tuple[float, float], tuple[float, float]]] = []
-        for start, end in segments:
-            candidate = (start, end)
-            if candidate in highlighted:
-                continue
-            dx = end[0] - start[0]
-            dy = end[1] - start[1]
-            length = math.hypot(dx, dy)
-            if length < minimum_length or length > maximum_length:
-                continue
-            amount = cls.out_of_square_segment_amount(start, end) * safe_inches_per_unit
-            if amount < 0.03125:
-                continue
-            angle = math.degrees(math.atan2(dy, dx))
-            deviation = min(
-                abs(programmer.normalize_axis_deviation(angle)),
-                abs(programmer.normalize_axis_deviation(angle - 90)),
-            )
-            if deviation < 0.015:
-                continue
-            start_neighbors = touching_highlights(start)
-            end_neighbors = touching_highlights(end)
-            if start_neighbors and end_neighbors and any(
-                first != second
-                for first in start_neighbors
-                for second in end_neighbors
-            ):
-                connected_returns.append(candidate)
-
-        highlighted.update(connected_returns)
-        return highlighted
+        return programmer.dxf_out_of_square_preview_segments(
+            segments,
+            long_side,
+            inches_per_unit,
+        )
 
     @classmethod
     def out_of_square_segment_label(
@@ -14286,14 +15069,373 @@ a {{ color: #1f4e79; }}
             inches_per_unit,
         )
         if connected_return:
-            return True, (38.0, 50.0, 62.0, 74.0), (0.0, 0.40, -0.40, 0.22, -0.22)
-        return False, (24.0, 36.0, 48.0, 60.0), (0.0, 0.18, -0.18, 0.32, -0.32)
+            return (
+                True,
+                (38.0, 48.0, 58.0, 68.0, 80.0, 92.0, 104.0),
+                (0.0, 0.14, -0.14, 0.22, -0.22, 0.40, -0.40, 0.56, -0.56),
+            )
+        return (
+            False,
+            (18.0, 26.0, 34.0, 42.0, 50.0, 60.0, 72.0, 84.0, 96.0),
+            (0.0, 0.12, -0.12, 0.24, -0.24, 0.38, -0.38, 0.52, -0.52),
+        )
+
+    @staticmethod
+    def dxf_oos_label_font_sizes(run_count: int) -> tuple[int, ...]:
+        """Keep normal labels full size and add readable fallbacks for dense geometry."""
+        if run_count >= 6:
+            return 9, 8, 7
+        if run_count >= 3:
+            return 9, 8
+        return (9,)
+
+    @staticmethod
+    def dxf_oos_normal_offsets(inward_distances: tuple[float, ...]) -> tuple[float, ...]:
+        """Search inside first, then matching exterior lanes for each OOS label."""
+        positive = tuple(float(value) for value in inward_distances if float(value) > 0.0)
+        return positive + tuple(-value for value in positive)
+
+    @staticmethod
+    def dxf_oos_tangent_offsets(
+        run_count: int,
+        segment_length: float,
+        fractional_shifts: tuple[float, ...],
+    ) -> tuple[float, ...]:
+        """Add fixed canvas lanes when short adjacent OOS runs cannot spread by percentage."""
+        offsets = [segment_length * shift for shift in fractional_shifts]
+        if run_count >= 6:
+            offsets.extend(
+                (24.0, -24.0, 48.0, -48.0, 76.0, -76.0, 108.0, -108.0, 144.0, -144.0, 184.0, -184.0, 230.0, -230.0)
+            )
+        elif run_count >= 3:
+            offsets.extend((20.0, -20.0, 40.0, -40.0, 66.0, -66.0, 96.0, -96.0))
+        unique: list[float] = []
+        for value in offsets:
+            if any(abs(value - existing) <= 0.5 for existing in unique):
+                continue
+            unique.append(float(value))
+        return tuple(unique)
+
+    @staticmethod
+    def preview_rect_overlap_area(
+        first: tuple[float, float, float, float],
+        second: tuple[float, float, float, float],
+    ) -> float:
+        width = max(0.0, min(first[2], second[2]) - max(first[0], second[0]))
+        height = max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
+        return width * height
+
+    @staticmethod
+    def preview_rect_intersects_segment(
+        rect: tuple[float, float, float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+        padding: float = 0.0,
+    ) -> bool:
+        """Return whether a line crosses a padded label rectangle."""
+        left = rect[0] - padding
+        top = rect[1] - padding
+        right = rect[2] + padding
+        bottom = rect[3] + padding
+        x1, y1 = start
+        x2, y2 = end
+        if max(x1, x2) < left or min(x1, x2) > right or max(y1, y2) < top or min(y1, y2) > bottom:
+            return False
+        if left <= x1 <= right and top <= y1 <= bottom:
+            return True
+        if left <= x2 <= right and top <= y2 <= bottom:
+            return True
+
+        def orientation(
+            a: tuple[float, float],
+            b: tuple[float, float],
+            c: tuple[float, float],
+        ) -> float:
+            return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+        def crosses(
+            a: tuple[float, float],
+            b: tuple[float, float],
+            c: tuple[float, float],
+            d: tuple[float, float],
+        ) -> bool:
+            first = orientation(a, b, c)
+            second = orientation(a, b, d)
+            third = orientation(c, d, a)
+            fourth = orientation(c, d, b)
+            epsilon = 1e-9
+            return (
+                (first > epsilon and second < -epsilon or first < -epsilon and second > epsilon)
+                and (third > epsilon and fourth < -epsilon or third < -epsilon and fourth > epsilon)
+            ) or (
+                abs(first) <= epsilon
+                and min(a[0], b[0]) - epsilon <= c[0] <= max(a[0], b[0]) + epsilon
+                and min(a[1], b[1]) - epsilon <= c[1] <= max(a[1], b[1]) + epsilon
+            ) or (
+                abs(second) <= epsilon
+                and min(a[0], b[0]) - epsilon <= d[0] <= max(a[0], b[0]) + epsilon
+                and min(a[1], b[1]) - epsilon <= d[1] <= max(a[1], b[1]) + epsilon
+            )
+
+        corners = ((left, top), (right, top), (right, bottom), (left, bottom))
+        return any(
+            crosses((x1, y1), (x2, y2), corners[index], corners[(index + 1) % 4])
+            for index in range(4)
+        )
+
+    @staticmethod
+    def dxf_oos_leader_endpoints(
+        bounds: tuple[float, float, float, float],
+        label_center: tuple[float, float],
+        target: tuple[float, float],
+        gap: float = 4.0,
+    ) -> tuple[float, float, float, float]:
+        """Connect a displaced label to its guide without drawing through the text."""
+        label_x, label_y = label_center
+        target_x, target_y = target
+        dx = target_x - label_x
+        dy = target_y - label_y
+        distance = math.hypot(dx, dy)
+        if distance <= 1e-9:
+            return label_x, label_y, target_x, target_y
+        unit_x = dx / distance
+        unit_y = dy / distance
+        half_width = max((bounds[2] - bounds[0]) / 2.0, 1.0)
+        half_height = max((bounds[3] - bounds[1]) / 2.0, 1.0)
+        x_exit = half_width / abs(unit_x) if abs(unit_x) > 1e-9 else float("inf")
+        y_exit = half_height / abs(unit_y) if abs(unit_y) > 1e-9 else float("inf")
+        text_exit = min(x_exit, y_exit)
+        start_x = label_x + unit_x * (text_exit + gap)
+        start_y = label_y + unit_y * (text_exit + gap)
+        return start_x, start_y, target_x, target_y
+
+    @staticmethod
+    def dxf_oos_nearest_guide_point(
+        point: tuple[float, float],
+        guide_start: tuple[float, float],
+        guide_end: tuple[float, float],
+        endpoint_margin: float = 0.08,
+    ) -> tuple[float, float]:
+        """Project a callout toward the useful middle of its own OOS guide."""
+        px, py = point
+        x1, y1 = guide_start
+        x2, y2 = guide_end
+        dx = x2 - x1
+        dy = y2 - y1
+        length_squared = dx * dx + dy * dy
+        if length_squared <= 1e-9:
+            return guide_start
+        fraction = ((px - x1) * dx + (py - y1) * dy) / length_squared
+        margin = max(0.0, min(0.45, endpoint_margin))
+        fraction = max(margin, min(1.0 - margin, fraction))
+        return x1 + dx * fraction, y1 + dy * fraction
+
+    @classmethod
+    def dxf_oos_callout_leader(
+        cls,
+        bounds: tuple[float, float, float, float],
+        label_center: tuple[float, float],
+        guide_start: tuple[float, float],
+        guide_end: tuple[float, float],
+        near_threshold: float = 16.0,
+        guide_clearance: float = 7.0,
+    ) -> tuple[float, float, float, float] | None:
+        """Add an arrow only when a label is displaced, stopping short of its guide."""
+        target = cls.dxf_oos_nearest_guide_point(label_center, guide_start, guide_end)
+        start_x, start_y, target_x, target_y = cls.dxf_oos_leader_endpoints(
+            bounds,
+            label_center,
+            target,
+        )
+        dx = target_x - start_x
+        dy = target_y - start_y
+        distance = math.hypot(dx, dy)
+        if distance <= near_threshold:
+            return None
+        unit_x = dx / distance
+        unit_y = dy / distance
+        clearance = min(max(guide_clearance, 4.0), max(4.0, distance * 0.35))
+        end_x = target_x - unit_x * clearance
+        end_y = target_y - unit_y * clearance
+        if math.hypot(end_x - start_x, end_y - start_y) < 8.0:
+            return None
+        return start_x, start_y, end_x, end_y
+
+    @staticmethod
+    def dxf_oos_label_anchor(
+        start: tuple[float, float],
+        guide_end: tuple[float, float],
+    ) -> tuple[float, float]:
+        """Center an OOS measurement along its exaggerated dashed guide."""
+        return (start[0] + guide_end[0]) / 2, (start[1] + guide_end[1]) / 2
+
+    @staticmethod
+    def dxf_oos_label_angle(
+        start: tuple[float, float],
+        guide_end: tuple[float, float],
+    ) -> float:
+        """Follow the OOS guide while keeping its measurement upright."""
+        angle = -math.degrees(math.atan2(guide_end[1] - start[1], guide_end[0] - start[0]))
+        while angle > 90.0:
+            angle -= 180.0
+        while angle < -90.0:
+            angle += 180.0
+        return round(angle, 2)
 
     @staticmethod
     def out_of_square_segment_amount(start: tuple[float, float], end: tuple[float, float]) -> float:
-        dx = abs(end[0] - start[0])
-        dy = abs(end[1] - start[1])
-        return min(dx, dy)
+        return programmer.dxf_out_of_square_segment_amount(start, end)
+
+    @staticmethod
+    def dxf_oos_reference_geometry(
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
+        """Return the axis-aligned reference and actual endpoint for one OOS run."""
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        if abs(dx) >= abs(dy):
+            reference_end = (end[0], start[1])
+        else:
+            reference_end = (start[0], end[1])
+        return start, reference_end, end
+
+    @staticmethod
+    def dxf_exaggerated_oos_guide_endpoint(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        minimum_displacement: float = 18.0,
+        multiplier: float = 4.0,
+    ) -> tuple[float, float]:
+        """Return a canvas endpoint that makes the OOS direction easy to see."""
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        if abs(dx) >= abs(dy):
+            if abs(dy) <= 1e-9:
+                return end
+            displacement = max(abs(dy) * multiplier, abs(dy) + 8.0, minimum_displacement)
+            return end[0], start[1] + math.copysign(displacement, dy)
+        if abs(dx) <= 1e-9:
+            return end
+        displacement = max(abs(dx) * multiplier, abs(dx) + 8.0, minimum_displacement)
+        return start[0] + math.copysign(displacement, dx), end[1]
+
+    @classmethod
+    def dxf_oos_guide_paths(
+        cls,
+        mapped_oos_segments: Iterable[
+            tuple[tuple[float, float], tuple[float, float], float, float, float, float]
+        ],
+    ) -> dict[
+        tuple[tuple[float, float], tuple[float, float]],
+        tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+    ]:
+        """Build guide paths, joining a two-run kick-out/kick-in at its shared vertex."""
+        entries = list(mapped_oos_segments)
+        paths: dict[
+            tuple[tuple[float, float], tuple[float, float]],
+            tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+        ] = {}
+        for start, end, x1, y1, x2, y2 in entries:
+            guide_start = (x1, y1)
+            actual_outer = (x2, y2)
+            paths[(start, end)] = (
+                guide_start,
+                cls.dxf_exaggerated_oos_guide_endpoint(guide_start, actual_outer),
+                actual_outer,
+            )
+
+        adjacency: dict[int, set[int]] = {index: set() for index in range(len(entries))}
+        shared_points: dict[tuple[int, int], tuple[float, float]] = {}
+        for first_index, first in enumerate(entries):
+            for second_index in range(first_index + 1, len(entries)):
+                second = entries[second_index]
+                shared = cls.dxf_shared_segment_endpoint(first[:2], second[:2])
+                if shared is None:
+                    continue
+                adjacency[first_index].add(second_index)
+                adjacency[second_index].add(first_index)
+                shared_points[(first_index, second_index)] = shared
+
+        visited: set[int] = set()
+        for seed in range(len(entries)):
+            if seed in visited:
+                continue
+            component: set[int] = set()
+            pending = [seed]
+            while pending:
+                index = pending.pop()
+                if index in component:
+                    continue
+                component.add(index)
+                pending.extend(adjacency[index] - component)
+            visited.update(component)
+            if len(component) != 2:
+                continue
+            first_index, second_index = sorted(component)
+            shared = shared_points.get((first_index, second_index))
+            if shared is None:
+                continue
+            first = entries[first_index]
+            second = entries[second_index]
+            first_outer = first[1] if cls.dxf_points_close(first[0], shared) else first[0]
+            second_outer = second[1] if cls.dxf_points_close(second[0], shared) else second[0]
+            if not cls.dxf_oos_pair_forms_kick(shared, first_outer, second_outer):
+                continue
+
+            def mapped_endpoint(
+                entry: tuple[tuple[float, float], tuple[float, float], float, float, float, float],
+                source_point: tuple[float, float],
+            ) -> tuple[float, float]:
+                return (entry[2], entry[3]) if cls.dxf_points_close(entry[0], source_point) else (entry[4], entry[5])
+
+            for entry, outer in ((first, first_outer), (second, second_outer)):
+                shared_mapped = mapped_endpoint(entry, shared)
+                outer_mapped = mapped_endpoint(entry, outer)
+                paths[(entry[0], entry[1])] = (
+                    shared_mapped,
+                    cls.dxf_exaggerated_oos_guide_endpoint(shared_mapped, outer_mapped),
+                    outer_mapped,
+                )
+        return paths
+
+    @staticmethod
+    def dxf_points_close(
+        first: tuple[float, float],
+        second: tuple[float, float],
+        tolerance: float = 1e-6,
+    ) -> bool:
+        return math.hypot(first[0] - second[0], first[1] - second[1]) <= tolerance
+
+    @classmethod
+    def dxf_shared_segment_endpoint(
+        cls,
+        first: tuple[tuple[float, float], tuple[float, float]],
+        second: tuple[tuple[float, float], tuple[float, float]],
+    ) -> tuple[float, float] | None:
+        for first_point in first:
+            for second_point in second:
+                if cls.dxf_points_close(first_point, second_point):
+                    return first_point
+        return None
+
+    @staticmethod
+    def dxf_oos_pair_forms_kick(
+        shared: tuple[float, float],
+        first_outer: tuple[float, float],
+        second_outer: tuple[float, float],
+    ) -> bool:
+        first_dx = first_outer[0] - shared[0]
+        first_dy = first_outer[1] - shared[1]
+        second_dx = second_outer[0] - shared[0]
+        second_dy = second_outer[1] - shared[1]
+        horizontal = abs(first_dx) >= abs(first_dy) and abs(second_dx) >= abs(second_dy)
+        vertical = abs(first_dy) > abs(first_dx) and abs(second_dy) > abs(second_dx)
+        if horizontal:
+            return first_dx * second_dx < 0 and first_dy * second_dy > 0
+        if vertical:
+            return first_dy * second_dy < 0 and first_dx * second_dx > 0
+        return False
 
     @staticmethod
     def preview_rects_overlap(
@@ -14384,17 +15526,12 @@ a {{ color: #1f4e79; }}
         long_side: float,
         inches_per_unit: float = 1.0,
     ) -> bool:
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = (dx * dx + dy * dy) ** 0.5
-        safe_inches_per_unit = inches_per_unit if inches_per_unit > 0 else 1.0
-        if length < max(4.0 / safe_inches_per_unit, long_side * 0.12):
-            return False
-        angle = math.degrees(math.atan2(dy, dx))
-        deviation = abs(programmer.normalize_axis_deviation(angle))
-        deviation = min(deviation, abs(programmer.normalize_axis_deviation(angle - 90)))
-        amount = ShowerProgrammerApp.out_of_square_segment_amount(start, end) * inches_per_unit
-        return deviation >= 0.015 or amount >= 0.03125
+        return programmer.is_dxf_out_of_square_preview_segment(
+            start,
+            end,
+            long_side,
+            inches_per_unit,
+        )
 
     @staticmethod
     def dxf_inches_per_unit(path: Path) -> float:
@@ -15609,8 +16746,16 @@ a {{ color: #1f4e79; }}
                     sha = str(data.get("sha", "")).strip() if isinstance(data, dict) else ""
                     if sha:
                         return sha
-                except Exception:
-                    pass
+                except Exception as journal_exc:
+                    rollback_warnings.append(
+                        self.record_send_journal_fallback(
+                            "send-cancelled",
+                            journal_exc,
+                            transaction_id,
+                            rolled_back_targets=[str(path) for path in rolled_back],
+                        )
+                    )
+                    self._last_send_cancel_result["warnings"] = rollback_warnings
         return self.git_head_without_git(repo)
 
     @staticmethod
@@ -16103,7 +17248,7 @@ a {{ color: #1f4e79; }}
                     os.makedirs(cls.windows_extended_path(target), exist_ok=True)
                     continue
                 os.makedirs(cls.windows_extended_path(target.parent), exist_ok=True)
-                temporary = target.with_name(target.name + ".part")
+                temporary = target.with_name(f"download-{uuid.uuid4().hex[:10]}.part")
                 temp_value = cls.windows_extended_path(temporary)
                 target_value = cls.windows_extended_path(target)
                 try:
@@ -16442,7 +17587,7 @@ exit /b 0
     ) -> None:
         callback = progress_callback or (lambda _done, _total: None)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(destination.name + ".part")
+        temporary = destination.with_name(f"copy-{uuid.uuid4().hex[:10]}.part")
         try:
             if temporary.exists():
                 temporary.unlink()
@@ -17356,7 +18501,7 @@ try {{
         ctk.CTkLabel(notes_card, text="Send rules", font=("Segoe UI", 11, "bold"), text_color=self.TEXT, anchor="w").pack(fill=tk.X, padx=12, pady=(10, 3))
         ctk.CTkLabel(
             notes_card,
-            text="Unchecked orders stay blocked. Checked orders with warnings can still send after confirmation. Archive runs only with the full checked-order send.",
+            text="Unchecked orders and unresolved manual DXF reviews stay blocked. Other checked orders with warnings can send after confirmation. Archive runs only with the full checked-order send.",
             font=("Segoe UI", 10),
             text_color=self.MUTED,
             justify="left",
@@ -17499,6 +18644,14 @@ try {{
 
         for order in orders:
             checked = self.order_review_is_complete(order)
+            source_result = self.order_result_sources.get(str(order.aw_order))
+            source_issues = list(source_result.issues) if source_result is not None else []
+            unresolved_dxf_items = self.unresolved_manual_dxf_review_items(
+                order.aw_order,
+                source_issues,
+                output_dir=output_dir,
+            )
+            manual_dxf_blocked = bool(unresolved_dxf_items)
             remake_badge = self.remake_badge_for_order(order.aw_order)
             order_sketches = self.paths_for_order(sketch_paths, order.aw_order)
             order_dxfs = self.paths_for_order(dxf_paths, order.aw_order)
@@ -17517,20 +18670,29 @@ try {{
             )
             if archive_inputs and not order_archive_files:
                 warnings.append("No matching input file found for archive.")
+            if manual_dxf_blocked:
+                warnings.insert(
+                    0,
+                    "Manual DXF review unresolved: "
+                    + ", ".join(f"P{item}" for item in unresolved_dxf_items)
+                    + ". Open Review Order and resolve each flagged DXF.",
+                )
             if not checked:
                 blocked_count += 1
                 warnings.insert(0, "Not marked checked; this order will not send.")
+            elif manual_dxf_blocked:
+                blocked_count += 1
             if warnings:
                 warning_count += 1
-                if checked:
+                if checked and not manual_dxf_blocked:
                     checked_warning_count += 1
                     checked_warning_aw.add(str(order.aw_order))
-            if checked:
+            if checked and not manual_dxf_blocked:
                 checked_orders.append(order)
                 checked_aw_orders.append(order.aw_order)
 
-            tag = "blocked" if not checked else "warning" if warnings else "ready"
-            status_text = "Blocked" if not checked else "Warnings" if warnings else "Ready"
+            tag = "blocked" if not checked or manual_dxf_blocked else "warning" if warnings else "ready"
+            status_text = "Blocked" if tag == "blocked" else "Warnings" if warnings else "Ready"
             batch_parent = order_parent_rows.get(str(order.aw_order), "")
             parent = tree.insert(
                 batch_parent,
@@ -17545,8 +18707,13 @@ try {{
                 review_tree_batch_rows[batch_parent].append(parent)
             if batch_parent in batch_status_counts:
                 batch_status_counts[batch_parent][tag] = batch_status_counts[batch_parent].get(tag, 0) + 1
-            if not checked:
-                tree.insert(parent, tk.END, text="Blocked", values=("Blocked", "", "", "Open the order review and mark it checked first."), tags=("blocked",))
+            if not checked or manual_dxf_blocked:
+                blocked_reason = (
+                    "Open Review Order and resolve the flagged manual DXF review first."
+                    if manual_dxf_blocked
+                    else "Open the order review and mark it checked first."
+                )
+                tree.insert(parent, tk.END, text="Blocked", values=("Blocked", "", "", blocked_reason), tags=("blocked",))
                 continue
             if include_sketches:
                 if order_sketches:
@@ -18303,6 +19470,29 @@ try {{
                     ),
                 )
                 stage_timings["network_cleanup_seconds"] = time.perf_counter() - network_cleanup_started
+                late_local_started = time.perf_counter()
+                previous_remaining = [
+                    path
+                    for path in getattr(self, "_last_send_remaining_local_inputs", [])
+                    if isinstance(path, Path) and path.exists()
+                ]
+                cleaned_late_archives, late_local_warnings, late_local_remaining = (
+                    self.reconcile_late_local_sent_inputs(
+                        order_folder,
+                        getattr(self, "_last_archived_order_targets_by_source_name", {}),
+                    )
+                )
+                if cleaned_late_archives:
+                    advance(
+                        f"Cleared {len(cleaned_late_archives)} late local input cop{'y' if len(cleaned_late_archives) == 1 else 'ies'}.",
+                        0,
+                    )
+                archive_warnings.extend(late_local_warnings)
+                previous_remaining = [path for path in previous_remaining if path.exists()]
+                self._last_send_remaining_local_inputs = self.unique_paths(
+                    [*previous_remaining, *late_local_remaining]
+                )
+                stage_timings["late_local_reconcile_seconds"] = time.perf_counter() - late_local_started
                 self.send_journal.update(
                     transaction_id,
                     shower_reliability.SendStage.NETWORK_CLEARED,
@@ -18310,6 +19500,7 @@ try {{
                     network_deleted=[str(path) for path in import_deleted],
                     cleanup_warnings=list(input_cleanup_warnings),
                     exact_network_source_count=len(exact_network_sources),
+                    late_local_copies_cleared=len(cleaned_late_archives),
                     stage_timings=dict(stage_timings),
                 )
             if task_context is not None:
@@ -18394,8 +19585,14 @@ try {{
                         rolled_back_targets=[str(path) for path in rolled_back],
                         rollback_warnings=rollback_warnings,
                     )
-                except Exception:
-                    pass
+                except Exception as journal_exc:
+                    self.record_send_journal_fallback(
+                        "send-failed",
+                        journal_exc,
+                        transaction_id,
+                        original_error=f"{exc.__class__.__name__}: {exc}",
+                        **rollback_details,
+                    )
             raise
         except Exception as exc:
             rollback_details: dict[str, object] = {}
@@ -18508,6 +19705,7 @@ try {{
             ("output_copy_seconds", "copy"),
             ("local_archive_seconds", "local archive"),
             ("network_cleanup_seconds", "network cleanup"),
+            ("late_local_reconcile_seconds", "final local cleanup"),
             ("integrity_seconds", "verification"),
             ("total_seconds", "total"),
         ):
@@ -18571,6 +19769,7 @@ try {{
         progress_callback: Callable[[int, int, Path], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
         self._last_archived_order_sources_by_aw = {}
+        self._last_archived_order_targets_by_source_name: dict[str, Path] = {}
         self._last_send_remaining_local_inputs: list[Path] = []
         if not orders:
             return [], ["No matching scanned order records were available to archive."]
@@ -18716,7 +19915,9 @@ try {{
         order_archive_failed = False
         for source in order_files:
             try:
-                archived.append(self.move_file_to_folder(source, order_archive_dir))
+                target = self.move_file_to_folder(source, order_archive_dir)
+                archived.append(target)
+                self._last_archived_order_targets_by_source_name[source.name] = target
             except (OSError, shutil.Error) as exc:
                 order_archive_failed = True
                 warnings.append(f"Could not archive input {source.name}: {exc}")
@@ -18788,7 +19989,9 @@ try {{
             )
             for source in late_order_files:
                 try:
-                    archived.append(self.move_file_to_folder(source, order_archive_dir))
+                    target = self.move_file_to_folder(source, order_archive_dir)
+                    archived.append(target)
+                    self._last_archived_order_targets_by_source_name[source.name] = target
                 except (OSError, shutil.Error) as exc:
                     order_archive_failed = True
                     warnings.append(f"Could not archive late input {source.name}: {exc}")
@@ -18841,6 +20044,47 @@ try {{
                 progress_callback(done, max(total_sources, 1), source)
 
         return archived, warnings
+
+    @classmethod
+    def reconcile_late_local_sent_inputs(
+        cls,
+        order_folder: Path,
+        archived_targets_by_source_name: dict[str, Path] | None,
+    ) -> tuple[list[Path], list[str], list[Path]]:
+        """Remove only byte-identical local copies that reappear after Send archiving."""
+        cleaned_archives: list[Path] = []
+        warnings: list[str] = []
+        remaining: list[Path] = []
+        targets = archived_targets_by_source_name or {}
+        for source_name, archive_target in sorted(targets.items(), key=lambda item: item[0].casefold()):
+            source = order_folder / Path(source_name).name
+            try:
+                if not source.is_file() or source.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
+                    continue
+                if not archive_target.is_file():
+                    remaining.append(source)
+                    warnings.append(
+                        f"Kept late local input {source.name} because its verified archive copy is unavailable."
+                    )
+                    continue
+                identical = (
+                    source.stat().st_size == archive_target.stat().st_size
+                    and cls.sha256_file(source) == cls.sha256_file(archive_target)
+                )
+                if not identical:
+                    remaining.append(source)
+                    warnings.append(
+                        f"Kept late local input {source.name} because it differs from the sent archive copy."
+                    )
+                    continue
+                source.unlink()
+                cleaned_archives.append(archive_target)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                remaining.append(source)
+                warnings.append(f"Could not clear late local input {source.name}: {exc}")
+        return cleaned_archives, warnings, remaining
 
     @staticmethod
     def archive_process_list_files(process_list_path: Path) -> list[Path]:
@@ -19709,33 +20953,13 @@ try {{
             local_files = []
         local_pdfs = [path for path in local_files if path.suffix.lower() == ".pdf"]
         local_dxfs = [path for path in local_files if path.suffix.lower() == ".dxf"]
+        input_index = shower_scan_index.OrderInputIndex(local_files)
         requirements: dict[str, dict[str, object]] = {}
         for order in orders:
             aw_order = str(order.aw_order)
             job_number = cls.job_number_for_order(order)
             normalized_job = programmer.normalize_lookup(order.job_name)
-            pdf_match_args = (
-                [normalized_job] if normalized_job else [],
-                {aw_order} if aw_order else set(),
-                {job_number} if job_number else set(),
-            )
-            has_pdf = any(
-                cls.pdf_file_matches_jobs(
-                    path,
-                    *pdf_match_args,
-                    inspect_pdf_text=False,
-                )
-                for path in local_pdfs
-            )
-            if not has_pdf:
-                has_pdf = any(
-                    cls.pdf_file_matches_jobs(
-                        path,
-                        *pdf_match_args,
-                        inspect_pdf_text=True,
-                    )
-                    for path in local_pdfs
-                )
+            has_pdf = input_index.order_has_pdf(order, local_pdfs)
             missing_items: list[int] = []
             for item_number in order.item_numbers:
                 matched = any(
@@ -20171,67 +21395,16 @@ try {{
         orders: list[shower_batch.ProcessOrder],
         *,
         inspect_pdf_text: bool,
+        input_index: shower_scan_index.OrderInputIndex | None = None,
     ) -> bool:
-        suffix = path.suffix.lower()
-        norm_stem = programmer.normalize_lookup(path.stem)
-        leading_job = ShowerProgrammerApp.leading_job_number_from_filename(path.stem)
-        if leading_job is not None:
-            return any(leading_job == ShowerProgrammerApp.job_number_for_order(order) for order in orders)
-        for order in orders:
-            aw_order = str(order.aw_order)
-            job_number = ShowerProgrammerApp.job_number_for_order(order)
-            if ShowerProgrammerApp.filename_matches_aw_order(path.stem, aw_order):
-                return True
-            if job_number and ShowerProgrammerApp.filename_matches_job_number(path.stem, job_number):
-                return True
-            if suffix == ".pdf" and inspect_pdf_text:
-                if programmer.pdf_contains_aw_order(path, aw_order):
-                    return True
-                if job_number and programmer.pdf_contains_job_number(path, job_number):
-                    return True
-            norm_job = programmer.normalize_lookup(order.job_name)
-            if not norm_job:
-                continue
-            if suffix == ".dxf":
-                if any(
-                    programmer.dxf_match_score(
-                        path,
-                        norm_job,
-                        item,
-                        aw_order=aw_order,
-                        job_number=job_number,
-                    ) is not None
-                    for item in order.item_numbers
-                ):
-                    return True
-                continue
-            if suffix == ".pdf":
-                if norm_job in norm_stem:
-                    return True
-                guessed_job = programmer.job_from_filename(path.name)
-                if guessed_job:
-                    norm_guess = programmer.normalize_lookup(guessed_job)
-                    if norm_job in norm_guess:
-                        return True
-                    if job_number and programmer.extract_job_number(guessed_job) == job_number:
-                        return True
-                if inspect_pdf_text:
-                    try:
-                        extracted_job = programmer.extract_job_from_pdf(path)
-                    except Exception:
-                        extracted_job = ""
-                    if extracted_job:
-                        if norm_job in programmer.normalize_lookup(extracted_job):
-                            return True
-                        if job_number and programmer.extract_job_number(extracted_job) == job_number:
-                            return True
-        return False
+        index = input_index or shower_scan_index.OrderInputIndex([path])
+        return index.file_matches_orders(path, orders, inspect_pdf_text=inspect_pdf_text)
 
 
     @staticmethod
     def copy_file_atomically(source: Path, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+        partial = target.with_name(f"copy-{uuid.uuid4().hex[:10]}.part")
         try:
             shutil.copy2(source, partial)
             os.replace(partial, target)
@@ -22360,7 +23533,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             normalized_orientations[code] = value
         rules["hinge_label_orientations"] = normalized_orientations
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary = path.with_name(f"settings-{uuid.uuid4().hex[:10]}.tmp")
         try:
             temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary, path)
@@ -24625,7 +25798,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             row[13] = order.job_name
             row[21] = " | ".join(item.machine_hints)
             sheet.append(row)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp.xlsx")
+        temporary = target.with_name(f"order-{uuid.uuid4().hex[:10]}.xlsx")
         try:
             workbook.save(temporary)
             workbook.close()
@@ -24756,7 +25929,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 row[13] = order.job_name
                 row[21] = " | ".join(item.machine_hints)
                 sheet.append(row)
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp.xlsx")
+        temporary = target.with_name(f"batch-{uuid.uuid4().hex[:10]}.xlsx")
         try:
             workbook.save(temporary)
             workbook.close()

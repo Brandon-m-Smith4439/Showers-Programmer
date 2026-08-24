@@ -80,6 +80,17 @@ from __future__ import annotations
 # VERSION_1_28_MIRROR_WJ_SEND_ROLLBACK
 # VERSION_1_33_SEND_PATH_OOS_PREVIEW
 # VERSION_1_34_PREVIEW_SCAN_CONFIGURATION
+# VERSION_1_35_OOS_REFERENCE_CLEANUP
+# VERSION_1_36_EXAGGERATED_OOS_GUIDES
+# VERSION_1_37_ORANGE_REVERSED_OOS_GUIDES
+# VERSION_1_38_ORANGE_DASHED_OOS_GUIDES
+# VERSION_1_39_LONG_DASH_OOS_GUIDES
+# VERSION_1_40_CENTERED_ANGLED_OOS_LABELS
+# VERSION_1_41_PERFORMANCE_RELIABILITY_HARDENING
+# VERSION_1_42_DENSE_OOS_LABEL_LAYOUT
+# VERSION_1_43_MANUAL_DXF_REVIEW_OOS_CALLOUTS
+# VERSION_1_44_FOUR_OOS_GATE_READABLE_CALLOUTS
+# VERSION_1_45_JOINED_KICK_OOS_REFRESH
 # VERSION_1_29_MIRROR_WJ_FAST_SEND
 # VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
 # VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED
@@ -1909,6 +1920,53 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "hinge_orientation_default_migration": True,
                         "expanded_configuration_editor": True,
                         "version_1_34_preview_scan_configuration": True,
+                        "oos_square_reference_callouts": True,
+                        "complex_oos_manual_review": True,
+                        "late_local_send_reconciliation": True,
+                        "version_1_35_oos_reference_cleanup": True,
+                        "exaggerated_oos_direction_guides": True,
+                        "oos_legend_removed": True,
+                        "version_1_36_exaggerated_oos_guides": True,
+                        "blue_actual_oos_outline": True,
+                        "orange_oos_direction_guides": True,
+                        "reversed_oos_guide_direction": True,
+                        "version_1_37_orange_reversed_oos_guides": True,
+                        "restored_oos_guide_direction": True,
+                        "orange_dashed_oos_guides": True,
+                        "version_1_38_orange_dashed_oos_guides": True,
+                        "long_dash_oos_guides": True,
+                        "long_dash_oos_connectors": True,
+                        "version_1_39_long_dash_oos_guides": True,
+                        "centered_oos_measurement_labels": True,
+                        "angled_oos_measurement_labels": True,
+                        "collision_aware_oos_measurement_labels": True,
+                        "version_1_40_centered_angled_oos_labels": True,
+                        "indexed_scan_metadata": True,
+                        "asynchronous_review_contexts": True,
+                        "thread_safe_bounded_cache": True,
+                        "durable_send_journal_fallback": True,
+                        "bounded_cache_retention": True,
+                        "deterministic_workspace_temps": True,
+                        "extracted_review_maintenance_services": True,
+                        "version_1_41_performance_reliability_hardening": True,
+                        "dynamic_oos_font_fallback": True,
+                        "outline_aware_oos_labels": True,
+                        "dense_oos_annotation_lanes": True,
+                        "displaced_oos_label_leaders": True,
+                        "version_1_42_dense_oos_label_layout": True,
+                        "persistent_manual_dxf_review_gate": True,
+                        "manual_dxf_review_send_block": True,
+                        "exterior_oos_label_candidates": True,
+                        "arrowed_oos_callouts": True,
+                        "version_1_43_manual_dxf_review_oos_callouts": True,
+                        "four_oos_manual_review_threshold": True,
+                        "current_dxf_review_auto_resolution": True,
+                        "proximity_aware_oos_arrows": True,
+                        "oos_arrow_guide_clearance": True,
+                        "version_1_44_four_oos_gate_readable_callouts": True,
+                        "joined_kick_oos_guides": True,
+                        "live_dxf_review_refresh": True,
+                        "version_1_45_joined_kick_oos_refresh": True,
                     }
                 )
             except Exception as exc:

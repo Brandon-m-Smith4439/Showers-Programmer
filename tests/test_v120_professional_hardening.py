@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ if str(BACKEND) not in sys.path:
 import shower_batch
 import shower_programmer_gui as gui
 import shower_regressions
+from shower_temp import workspace_temporary_directory
 
 
 class Version120ProfessionalHardeningTests(unittest.TestCase):
@@ -43,7 +43,7 @@ class Version120ProfessionalHardeningTests(unittest.TestCase):
         self.assertTrue(any("Excel conversion skipped" in message for message in messages))
 
     def test_archive_revision_inspector_reports_deltas_and_sources(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             root = Path(raw)
             old_dir = root / "08.10.26" / "Orders"
             new_dir = root / "08.17.26" / "Orders"
@@ -69,7 +69,7 @@ class Version120ProfessionalHardeningTests(unittest.TestCase):
         self.assertIn("Resolved archived file sources", text)
 
     def test_system_health_check_has_expected_core_checks(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             root = Path(raw)
             with mock.patch.object(gui.ShowerProgrammerApp, "probe_network_path", return_value={"reachable": True, "elapsed_ms": 2}), mock.patch.object(gui.ShowerProgrammerApp, "excel_fallback_probe", return_value=("WARN", "fallback optional")):
                 results = gui.ShowerProgrammerApp.run_system_health_checks(
@@ -100,7 +100,7 @@ class Version120ProfessionalHardeningTests(unittest.TestCase):
                 self.closed = True
 
         connection = FakeConnection()
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             root = Path(raw)
             with (
                 mock.patch.object(gui.sqlite3, "connect", return_value=connection),
@@ -135,7 +135,7 @@ class Version120ProfessionalHardeningTests(unittest.TestCase):
         self.assertIn("Total 15.70s", text)
 
     def test_test_mode_provenance_manifest_records_revision_source(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             root = Path(raw)
             source = root / "archive" / "700101.pdf"
             source.parent.mkdir()

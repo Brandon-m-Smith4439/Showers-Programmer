@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ sys.path.insert(0, str(ROOT / "Backend"))
 import shower_batch
 import shower_programmer as programmer
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class FakePage:
@@ -137,7 +137,7 @@ class Version094UsabilityTests(unittest.TestCase):
 
     def test_archive_inventory_restore_and_return_preserve_original_archive(self) -> None:
         order = sample_order()
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             root = Path(temp_name)
             order_root = root / "Input" / "Orders"
             process_root = root / "Input" / "Process List"
@@ -192,7 +192,7 @@ class Version094UsabilityTests(unittest.TestCase):
         # length of the strongly raked left edge.
         expected = (28.40625, 94.1875)
         left_dx = math.sqrt(94.3125**2 - 94.1875**2)
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             path = Path(temp_name) / "raked.dxf"
             segments = (
                 ((0.0, 0.0), (28.0, 0.0)),

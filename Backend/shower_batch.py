@@ -568,7 +568,7 @@ def remember_legacy_xls_conversion_source(path: Path, target: Path) -> None:
         digest = shower_cache.cached_file_sha256("legacy_xls_conversion_source_v1", Path(path))
         sidecar = converted_xlsx_source_hash_path(Path(target))
         sidecar.parent.mkdir(parents=True, exist_ok=True)
-        temporary = sidecar.with_name(f".{sidecar.name}.{os.getpid()}.tmp")
+        temporary = sidecar.with_name(f"hash-{os.getpid()}.tmp")
         temporary.write_text(digest, encoding="ascii")
         os.replace(temporary, sidecar)
     except OSError:
@@ -632,7 +632,7 @@ def convert_legacy_xls_to_xlsx(
     attempts = 2
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
-        staging = target.with_name(f".{target.stem}.attempt{attempt}.xlsx")
+        staging = target.with_name(f"xls-{os.getpid()}-{attempt}.xlsx")
         try:
             staging.unlink(missing_ok=True)
         except OSError:

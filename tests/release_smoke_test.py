@@ -13,7 +13,6 @@ import argparse
 import hashlib
 import json
 import sys
-import tempfile
 from contextlib import closing
 from pathlib import Path
 
@@ -45,6 +44,7 @@ def run(project_root: Path) -> dict[str, object]:
     import shower_programmer_gui as gui
     import shower_regressions
     import shower_reliability
+    from shower_temp import workspace_temporary_directory
 
     fixture = project_root / "tests" / "known_orders" / "legacy_process_list_sample.xls"
     if not fixture.is_file():
@@ -56,7 +56,7 @@ def run(project_root: Path) -> dict[str, object]:
 
     known_results = shower_regressions.run_known_order_library(project_root, shower_batch)
 
-    with tempfile.TemporaryDirectory(prefix="shower-release-smoke-") as raw_temp:
+    with workspace_temporary_directory(prefix="shower-release-smoke", root=project_root / "build" / "_verification") as raw_temp:
         temp = Path(raw_temp)
         production = temp / "PRODUCTION_SENTINEL"
         production.mkdir()

@@ -4,7 +4,6 @@ import json
 import sqlite3
 from contextlib import closing
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +13,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import shower_reliability
+from shower_temp import workspace_temporary_directory
 from shower_rules import archive as archive_rules
 from shower_rules import dimensions as dimension_rules
 from shower_rules import machine as machine_rules
@@ -36,7 +36,7 @@ class FakeReader:
 
 class Version121ReliabilityArchitectureTests(unittest.TestCase):
     def test_send_journal_survives_until_transaction_is_complete(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             output = Path(raw)
             journal = shower_reliability.SendJournal(output)
             transaction_id = journal.begin(
@@ -56,7 +56,7 @@ class Version121ReliabilityArchitectureTests(unittest.TestCase):
             self.assertEqual(journal.incomplete(), [])
 
     def test_resolved_noop_send_does_not_trigger_startup_recovery(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             output = Path(raw)
             journal = shower_reliability.SendJournal(output)
             transaction_id = journal.begin(aw_orders=["800001"], output_sources=[], archive_inputs=False)
@@ -68,7 +68,7 @@ class Version121ReliabilityArchitectureTests(unittest.TestCase):
             self.assertEqual(journal.incomplete(), [])
 
     def test_post_send_integrity_checks_outputs_local_and_network_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             root = Path(raw)
             copied = root / "production.pdf"
             copied.write_text("ok", encoding="utf-8")
@@ -95,7 +95,7 @@ class Version121ReliabilityArchitectureTests(unittest.TestCase):
             )
 
     def test_database_safety_creates_backup_before_schema_change(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             output = Path(raw)
             database = output / "shower_programmer.sqlite3"
             with closing(sqlite3.connect(database)) as connection:
@@ -113,7 +113,7 @@ class Version121ReliabilityArchitectureTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT value FROM sentinel").fetchone()[0], "preserve-me")
 
     def test_database_safety_does_not_log_when_schema_is_already_current(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             output = Path(raw)
             database = output / "shower_programmer.sqlite3"
             with closing(sqlite3.connect(database)) as connection:
@@ -139,7 +139,7 @@ class Version121ReliabilityArchitectureTests(unittest.TestCase):
         self.assertIn("A&W: 800001", text)
 
     def test_startup_recovery_finds_incomplete_send_and_prior_test_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             root = Path(raw)
             output = root / "Output"
             output.mkdir()
@@ -154,7 +154,7 @@ class Version121ReliabilityArchitectureTests(unittest.TestCase):
             self.assertTrue(any(item.get("type") == "test_workspace" for item in issues))
 
     def test_runtime_rollback_snapshot_is_detected_and_script_is_staged(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             app = Path(raw) / "Shower Programmer"
             snapshot = shower_reliability.RuntimeRollbackManager.snapshot_dir(app)
             (snapshot / "_internal").mkdir(parents=True)

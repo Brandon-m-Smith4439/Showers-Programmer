@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ if str(BACKEND) not in sys.path:
 import shower_batch
 import shower_programmer as programmer
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class FakePage:
@@ -92,7 +92,7 @@ class Version118SentCleanupRemakeAutoTests(unittest.TestCase):
         self.assertIn("REMAKE auto-detected from PDF Location", panel.reasons)
 
     def test_send_archive_second_sweep_catches_file_arriving_before_process_list_retirement(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_temp:
+        with workspace_temporary_directory() as raw_temp:
             temp = Path(raw_temp)
             order_dir = temp / "Input" / "Orders"
             process_dir = temp / "Input" / "Process List"
@@ -149,7 +149,7 @@ class Version118SentCleanupRemakeAutoTests(unittest.TestCase):
             self.assertTrue(any("arrived during sent-input cleanup" in warning for warning in warnings))
 
     def test_second_sweep_reuses_initial_match_without_full_post_move_rescan(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_temp:
+        with workspace_temporary_directory() as raw_temp:
             temp = Path(raw_temp)
             order_dir = temp / "Input" / "Orders"
             process_dir = temp / "Input" / "Process List"
@@ -190,7 +190,7 @@ class Version118SentCleanupRemakeAutoTests(unittest.TestCase):
             self.assertTrue(any(path.name == source_pdf.name for path in archived))
 
     def test_completed_process_list_is_kept_if_sent_input_still_cannot_be_archived(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_temp:
+        with workspace_temporary_directory() as raw_temp:
             temp = Path(raw_temp)
             order_dir = temp / "Input" / "Orders"
             process_dir = temp / "Input" / "Process List"

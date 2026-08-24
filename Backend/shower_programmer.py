@@ -2023,6 +2023,11 @@ def adjust_indicator_for_source_dxf(panel: Panel, config: dict[str, Any]) -> Non
 def apply_dxf_manual_review_warning(panel: Panel, config: dict[str, Any]) -> None:
     if needs_manual_review_for_fps_cut(panel, config) or needs_manual_review_for_fps_dxf_cut(panel, config):
         add_panel_warning(panel, "FP-S cut-in/cut-out detected; manual DXF review required.")
+    if panel.source_dxf is not None:
+        details = dxf_complex_oos_review_details(panel.source_dxf)
+        if bool(details.get("requires_manual_review", False)):
+            summary = str(details.get("summary", "Complex OOS geometry detected")).strip()
+            add_panel_warning(panel, f"{summary}; manual DXF review required.")
 
 
 def needs_manual_review_for_fps_dxf_cut(panel: Panel, config: dict[str, Any]) -> bool:
@@ -3227,6 +3232,189 @@ def collect_dxf_preview_segments(path: Path) -> list[tuple[tuple[float, float], 
     if active_polyline is not None:
         append_polyline(active_polyline, active_polyline_closed)
     return segments
+
+
+def dxf_inches_per_unit(path: Path) -> float:
+    """Return the inch scale for native DXF coordinates."""
+    try:
+        pairs = read_dxf_pairs(path)
+    except Exception:
+        return 1.0
+    insunits = "1"
+    for index, pair in enumerate(pairs):
+        if pair[0].strip() != "9" or pair[1].strip().upper() != "$INSUNITS":
+            continue
+        for target in range(index + 1, min(index + 8, len(pairs))):
+            code = pairs[target][0].strip()
+            if code == "9":
+                break
+            if code == "70":
+                insunits = pairs[target][1].strip()
+                break
+        break
+    return {
+        "1": 1.0,
+        "2": 12.0,
+        "4": 1.0 / 25.4,
+        "5": 1.0 / 2.54,
+        "6": 39.37007874015748,
+    }.get(insunits, 1.0)
+
+
+def dxf_out_of_square_segment_amount(
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    return min(abs(end[0] - start[0]), abs(end[1] - start[1]))
+
+
+def is_dxf_out_of_square_preview_segment(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    long_side: float,
+    inches_per_unit: float = 1.0,
+) -> bool:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length = math.hypot(dx, dy)
+    safe_inches_per_unit = inches_per_unit if inches_per_unit > 0 else 1.0
+    if length < max(4.0 / safe_inches_per_unit, long_side * 0.12):
+        return False
+    angle = math.degrees(math.atan2(dy, dx))
+    deviation = min(
+        abs(normalize_axis_deviation(angle)),
+        abs(normalize_axis_deviation(angle - 90)),
+    )
+    amount = dxf_out_of_square_segment_amount(start, end) * safe_inches_per_unit
+    return deviation >= 0.015 or amount >= 0.03125
+
+
+def dxf_out_of_square_preview_segments(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    long_side: float,
+    inches_per_unit: float = 1.0,
+) -> set[tuple[tuple[float, float], tuple[float, float]]]:
+    """Return exterior OOS runs plus a proven connected kick-out return."""
+    angled = {
+        (start, end)
+        for start, end in segments
+        if is_dxf_out_of_square_preview_segment(start, end, long_side, inches_per_unit)
+    }
+    if not angled:
+        return set()
+
+    safe_inches_per_unit = inches_per_unit if inches_per_unit > 0 else 1.0
+    minimum_length = max(1.0 / safe_inches_per_unit, long_side * 0.02)
+    maximum_length = long_side * 0.30
+    point_tolerance = max(long_side * 1e-6, 1e-6)
+
+    def touching_highlights(
+        point: tuple[float, float],
+    ) -> set[tuple[tuple[float, float], tuple[float, float]]]:
+        return {
+            candidate
+            for candidate in angled
+            if any(
+                math.hypot(point[0] - endpoint[0], point[1] - endpoint[1]) <= point_tolerance
+                for endpoint in candidate
+            )
+        }
+
+    connected_returns: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for start, end in segments:
+        candidate = (start, end)
+        if candidate in angled:
+            continue
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length < minimum_length or length > maximum_length:
+            continue
+        amount = dxf_out_of_square_segment_amount(start, end) * safe_inches_per_unit
+        if amount < 0.03125:
+            continue
+        angle = math.degrees(math.atan2(dy, dx))
+        deviation = min(
+            abs(normalize_axis_deviation(angle)),
+            abs(normalize_axis_deviation(angle - 90)),
+        )
+        if deviation < 0.015:
+            continue
+        start_neighbors = touching_highlights(start)
+        end_neighbors = touching_highlights(end)
+        if start_neighbors and end_neighbors and any(
+            first != second
+            for first in start_neighbors
+            for second in end_neighbors
+        ):
+            connected_returns.append(candidate)
+
+    angled.update(connected_returns)
+    return angled
+
+
+def dxf_complex_oos_review_from_segments(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    inches_per_unit: float = 1.0,
+) -> dict[str, Any]:
+    """Describe OOS complexity for preview and manual-review decisions."""
+    if not segments:
+        return {
+            "requires_manual_review": False,
+            "highlighted_segments": set(),
+            "side_counts": {},
+            "entity_count": 0,
+            "summary": "",
+        }
+    points = [point for segment in segments for point in segment]
+    min_x = min(x for x, _y in points)
+    max_x = max(x for x, _y in points)
+    min_y = min(y for _x, y in points)
+    max_y = max(y for _x, y in points)
+    long_side = max(max_x - min_x, max_y - min_y)
+    highlighted = dxf_out_of_square_preview_segments(segments, long_side, inches_per_unit)
+    # Count every matching DXF entity for escalation. Duplicate exterior
+    # entities are precisely the extra-line condition that can make a kick-out
+    # unsafe to accept automatically, even though the preview renders the
+    # physical run only once.
+    highlighted_occurrences = [segment for segment in segments if segment in highlighted]
+    side_counts = {"top": 0, "bottom": 0, "left": 0, "right": 0}
+    for start, end in highlighted_occurrences:
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        midpoint_x = (start[0] + end[0]) / 2.0
+        midpoint_y = (start[1] + end[1]) / 2.0
+        if abs(dx) >= abs(dy):
+            side = "top" if abs(max_y - midpoint_y) <= abs(midpoint_y - min_y) else "bottom"
+        else:
+            side = "right" if abs(max_x - midpoint_x) <= abs(midpoint_x - min_x) else "left"
+        side_counts[side] += 1
+    side_counts = {side: count for side, count in side_counts.items() if count}
+    # Three adjacent OOS runs can still describe an intentional stepped edge.
+    # Four or more runs on one cardinal side is the production-risk pattern that
+    # requires an operator to inspect the generated DXF.
+    crowded_sides = {side: count for side, count in side_counts.items() if count >= 4}
+    requires_manual_review = bool(crowded_sides)
+    if crowded_sides:
+        detail = ", ".join(
+            f"{count} OOS runs on {side} edge"
+            for side, count in sorted(crowded_sides.items())
+        )
+        summary = f"Complex OOS geometry detected ({detail})"
+    else:
+        summary = ""
+    return {
+        "requires_manual_review": requires_manual_review,
+        "highlighted_segments": highlighted,
+        "side_counts": side_counts,
+        "entity_count": len(highlighted_occurrences),
+        "summary": summary,
+    }
+
+
+def dxf_complex_oos_review_details(path: Path) -> dict[str, Any]:
+    segments = collect_dxf_preview_segments(path)
+    return dxf_complex_oos_review_from_segments(segments, dxf_inches_per_unit(path))
 
 
 def collect_dxf_internal_cut_radius_samples(path: Path) -> list[tuple[float, float, float]]:

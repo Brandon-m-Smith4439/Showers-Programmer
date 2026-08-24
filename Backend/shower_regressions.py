@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-import tempfile
 from pathlib import Path
+
+from shower_temp import workspace_temporary_directory
 from typing import Any
 
 
@@ -59,7 +60,7 @@ def validate_known_order_case(case: dict[str, Any], shower_batch: Any) -> dict[s
     points = case.get("dxf_outline_points", [])
     if not isinstance(points, list):
         raise ValueError(f"{case_id}: dxf_outline_points must be a list")
-    with tempfile.TemporaryDirectory(prefix="shower-known-order-") as temp_dir:
+    with workspace_temporary_directory(prefix="shower-known-order") as temp_dir:
         dxf_path = Path(temp_dir) / f"{case_id}.dxf"
         _write_outline_dxf(dxf_path, points)
         profile = shower_batch._dxf_oos_profile(dxf_path, expected, actual)

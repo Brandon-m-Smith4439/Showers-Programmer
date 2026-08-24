@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +10,7 @@ sys.path.insert(0, str(ROOT / "Backend"))
 
 import shower_batch
 import shower_programmer as programmer
+from shower_temp import workspace_temporary_directory
 
 
 JOB = "89589740M 146 WHITBY"
@@ -51,7 +51,7 @@ def mirror_order() -> shower_batch.ProcessOrder:
 
 class OutOfSquareDimensionMatchTests(unittest.TestCase):
     def test_supplied_mirror_order_reconciles_aw_overall_to_sketch_edge_size(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             dxf = folder / f"{JOB}_1.dxf"
             write_oos_mirror_dxf(dxf)
@@ -68,7 +68,7 @@ class OutOfSquareDimensionMatchTests(unittest.TestCase):
             self.assertIn("edge 44.8125 x 88", note)
 
     def test_plain_wrong_size_does_not_get_oos_exception(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             dxf = folder / f"{JOB}_1.dxf"
             # Rectangular 45-5/16 x 88 has no OOS shift, so it must not explain
@@ -91,7 +91,7 @@ class OutOfSquareDimensionMatchTests(unittest.TestCase):
             )
 
     def test_oos_exception_rejects_unrelated_sketch_dimensions(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             write_oos_mirror_dxf(folder / f"{JOB}_1.dxf")
             self.assertFalse(

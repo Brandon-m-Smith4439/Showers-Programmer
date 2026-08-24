@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +10,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import shower_batch
+from shower_temp import workspace_temporary_directory
 
 
 JOB = "89183226 KINSDALE 132"
@@ -51,7 +51,7 @@ def kinsdale_order() -> shower_batch.ProcessOrder:
 
 class Version111IrregularDimensionReconciliationTests(unittest.TestCase):
     def test_supplied_kinsdale_geometry_reconciles_when_sketch_matches_dxf_envelope(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             write_kinsdale_outline(folder / f"{JOB}_1__P1.dxf")
             order = kinsdale_order()
@@ -65,7 +65,7 @@ class Version111IrregularDimensionReconciliationTests(unittest.TestCase):
             self.assertIn("A+W/DXF delta 0.21875 x 0.03125 in", note)
 
     def test_sketch_must_match_source_dxf_envelope_for_process_variance_path(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             write_kinsdale_outline(folder / f"{JOB}_1__P1.dxf")
             self.assertFalse(
@@ -77,7 +77,7 @@ class Version111IrregularDimensionReconciliationTests(unittest.TestCase):
             )
 
     def test_process_dimensions_cannot_drift_beyond_quarter_inch(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             write_kinsdale_outline(folder / f"{JOB}_1__P1.dxf")
             order = kinsdale_order()
@@ -91,7 +91,7 @@ class Version111IrregularDimensionReconciliationTests(unittest.TestCase):
             )
 
     def test_rectangular_dxf_still_cannot_explain_dimension_mismatch(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_name:
+        with workspace_temporary_directory() as temp_name:
             folder = Path(temp_name)
             path = folder / f"{JOB}_1__P1.dxf"
             pairs = [("0", "SECTION"), ("2", "ENTITIES")]

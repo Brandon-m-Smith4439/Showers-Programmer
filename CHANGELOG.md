@@ -2,6 +2,127 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.45] - 2026-08-24
+
+### Improved
+- Joined connected two-run kick-out/kick-in OOS guides at their real shared transition, producing one continuous exaggerated profile instead of two disconnected lines.
+- Restricted the joined-guide behavior to isolated two-run kick geometry. Single OOS runs and chains containing three or more runs keep their established rendering.
+- Made **Refresh DXF** invalidate the complex-OOS status cache, recalculate the current four-run condition, refresh the order row, and immediately hide or retain the manual-review control.
+- Added clear refresh status text indicating whether manual DXF review cleared automatically or remains required.
+
+### Validation
+- Added paired-guide, ordinary-guide, multi-run preservation, live-refresh, and release-metadata regression coverage.
+- Visually compared the updated `237774.1` preview against its sketch profile.
+
+## [Version 1.44] - 2026-08-24
+
+### Improved
+- Limited the manual DXF review control and Send block to pieces with four or more OOS runs on one side. Ordinary FP-S warnings no longer create this control.
+- Re-evaluated the latest generated DXF whenever review status is requested, allowing a corrected DXF to clear the gate automatically while reopening the gate after a new four-run revision.
+- Hid the manual-review control after automatic correction or an explicit acknowledgement tied to the exact current DXF signature.
+- Added proximity-aware OOS callouts: nearby labels no longer receive unnecessary arrows, while displaced labels point toward the closest portion of their own guide and stop short of the dashed line.
+- Tuned the two adjacent OOS measurements on `237774.1` so its `1/2"` and `1/8"` runs remain separately associated and readable without a manual-review escalation.
+
+### Validation
+- Added regression coverage for the four-run threshold, FP-S separation, automatic stale-warning resolution, arrow clearance, and the archived `237774.1` geometry.
+
+## [Version 1.43] - 2026-08-24
+
+### Improved
+- Added a persistent, item-level manual DXF review gate tied to the exact generated DXF. A regenerated or rotated DXF automatically requires a fresh review.
+- Flagged unresolved manual DXF reviews in the main Orders overview and Order Overview page, and blocked those orders in Review / Send until resolved from Review Order.
+- Added an explicit **Resolve Manual DXF Review** action and prevented orders with unresolved DXF attention from being marked checked.
+- Added arrow callouts from every OOS label to its exact dashed guide and allowed collision-aware label placement outside the glass.
+- Reserved exterior side-dimension labels during OOS placement so exterior callouts do not cover glass dimensions.
+
+### Validation
+- Added manual-review persistence, signature invalidation, send-gate, exterior-lane, arrow-rendering, and release-metadata regression coverage.
+- Visually checked dense eight-run and wide four-run OOS examples with one arrow per label.
+
+## [Version 1.42] - 2026-08-24
+
+### Improved
+- Replaced fixed OOS text placement with scored candidates that avoid glass outlines, fabrication geometry, radius rings, neighboring OOS labels, and neighboring OOS guides.
+- Added dedicated along-edge annotation lanes for dense groups of short OOS runs, especially double-notch Water Jet pieces.
+- Added a conservative 9-to-8-to-7 point font fallback. Normal pieces remain at 9 point; text shrinks only when a full-size collision-free position is unavailable.
+- Added short dashed leaders when an OOS label must move far enough from its dashed guide that the association could otherwise be unclear.
+
+### Validation
+- Visually checked archived dense, wide-complex, and radius-heavy Water Jet DXFs with up to eight OOS runs and eight radius callouts.
+- Added geometry, font fallback, annotation-lane, leader, and release-metadata regression tests.
+
+## [Version 1.41] - 2026-08-24
+
+### Performance
+- Indexed local input metadata once per scan so PDF text and Job Nr extraction are not repeated for every order.
+- Moved Review Order context preparation to a bounded background service, limited the context cache, and prefetched only adjacent pieces.
+- Added a bounded in-memory scan cache with per-entry synchronization to eliminate redundant disk reads and transient concurrent misses.
+
+### Reliability
+- Added durable fallback logging when the transactional Send journal cannot record an event.
+- Added bounded startup retention for generated scan and review-preview cache files.
+- Replaced fragile system temporary directories in release and regression workflows with short project-local verification paths.
+- Extracted scan indexing, review preparation, cache maintenance, and temporary-workspace responsibilities into focused service modules.
+
+### Regression Coverage
+- Added concurrency, cache, indexed-scan, asynchronous review, retention, fallback-journal, and release-workspace tests.
+
+## [Version 1.40] - 2026-08-24
+
+### Improved
+- Centered each OOS measurement along the middle of its orange dashed guide and placed it just inside the glass outline.
+- Aligned OOS measurement text with the guide angle while keeping reversed lines upright and readable.
+- Expanded collision-aware fallback positions so OOS labels can avoid cutouts, radius callouts, and other OOS measurements.
+
+### Regression Coverage
+- Added tests for midpoint anchors, readable guide-aligned angles, collision-search spacing, and Version 1.40 release metadata.
+
+## [Version 1.39] - 2026-08-24
+
+### Improved
+- Lengthened the orange OOS guide marks and their endpoint connectors so they render as clearly separated dashes instead of dots at normal preview scale.
+
+### Regression Coverage
+- Added source-level checks for the long-dash guide and connector patterns.
+
+## [Version 1.38] - 2026-08-24
+
+### Improved
+- Restored the exaggerated OOS guide to the same visual direction used before Version 1.37.
+- Restored the earlier long-dash pattern while keeping the guide orange and the actual glass outline blue.
+
+### Regression Coverage
+- Added tests for same-direction horizontal and vertical guides and the restored dashed-line pattern.
+
+## [Version 1.37] - 2026-08-24
+
+### Improved
+- OOS glass edges now use the same blue outline as the rest of the DXF instead of a competing solid orange line.
+- The exaggerated dashed OOS guide is now orange and leans opposite the actual OOS edge, making its intended direction easier to distinguish.
+- Removed the orange endpoint ticks so the dashed guide is the only orange geometry cue.
+
+### Regression Coverage
+- Added tests for reversed horizontal and vertical guide direction and the blue-outline/orange-guide presentation.
+
+## [Version 1.36] - 2026-08-24
+
+### Improved
+- DXF Preview now exaggerates the dashed OOS direction guide on screen so small real-world deviations remain visually obvious. The orange glass edge and fractional OOS measurement still use the exact DXF geometry.
+- Removed the orange OOS legend from the preview header to reduce unnecessary visual clutter.
+
+### Regression Coverage
+- Added tests proving horizontal and vertical dashed guides preserve the real OOS direction while displaying a larger visual displacement.
+
+## [Version 1.35] - 2026-08-20
+
+### Fixed
+- DXF Preview now keeps the orange line as the actual glass edge and adds a dashed square reference, a dashed offset leg, and endpoint ticks for each OOS run. Fractional OOS labels are anchored to the offset end so operators can see where every angled run starts and stops.
+- Pieces with more than two OOS entities assigned to one physical edge are flagged in red for manual DXF review. This catches duplicate-line geometry like the four top-edge entities in `88524349 EMERSON GLEN 77`, while legitimate pieces with one OOS run on several different edges remain automatic.
+- Send now performs one final exact-name local reconciliation after the shared-input cleanup. A late local copy is cleared only when it is byte-identical to the verified archived input; a changed same-name file is kept and reported.
+
+### Regression Coverage
+- Added tests for dashed-reference geometry, same-edge escalation, valid multi-edge geometry, warning propagation, and safe late-copy reconciliation.
+
 ## [Version 1.34] - 2026-08-20
 
 ### Fixed

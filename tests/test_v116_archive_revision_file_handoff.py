@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,6 +13,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 def make_order(aw: str) -> shower_batch.ProcessOrder:
@@ -52,7 +52,7 @@ def make_revision_entry(
 
 class Version116ArchiveRevisionFileHandoffTests(unittest.TestCase):
     def test_consolidated_children_keep_all_revision_order_directories(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             temp = Path(raw)
             base = datetime(2026, 8, 17)
             entries: list[dict[str, object]] = []
@@ -81,7 +81,7 @@ class Version116ArchiveRevisionFileHandoffTests(unittest.TestCase):
             self.assertEqual(len(child["_archive_batch_revision_order_dirs"]), 5)
 
     def test_test_mode_falls_back_to_older_revision_folders_for_pdf_and_dxf(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             temp = Path(raw)
             base = datetime(2026, 8, 17)
             entries: list[dict[str, object]] = []
@@ -148,7 +148,7 @@ class Version116ArchiveRevisionFileHandoffTests(unittest.TestCase):
             self.assertEqual(gui.ShowerProgrammerApp.archived_batch_test_missing_sources(children, order_dir), [])
 
     def test_prepare_test_mode_refuses_process_list_only_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with workspace_temporary_directory() as raw:
             temp = Path(raw)
             archive_dir = temp / "archive"
             archive_dir.mkdir()

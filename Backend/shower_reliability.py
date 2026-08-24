@@ -13,7 +13,6 @@ import hashlib
 import os
 import shutil
 import sqlite3
-import tempfile
 import time
 import uuid
 from contextlib import closing
@@ -177,7 +176,7 @@ class SendJournal:
 
     def _write(self, transaction_id: str, payload: dict[str, Any]) -> None:
         target = self.root / f"{transaction_id}.json"
-        temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp")
+        temporary = target.with_name(f"state-{os.getpid()}-{uuid.uuid4().hex[:6]}.tmp")
         temporary.write_text(json.dumps(_json_safe(payload), indent=2, sort_keys=True), encoding="utf-8")
         os.replace(temporary, target)
 
@@ -214,7 +213,7 @@ class SendRollbackTracker:
     @staticmethod
     def copy_atomically(source: Path, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.rollback")
+        temporary = target.with_name(f"rollback-{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
         try:
             shutil.copy2(source, temporary)
             os.replace(temporary, target)
