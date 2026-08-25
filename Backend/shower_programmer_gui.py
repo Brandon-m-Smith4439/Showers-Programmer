@@ -55,6 +55,7 @@
 # LONG_DASH_OOS_GUIDES_V139: visibly separated orange dashes at production preview scale.
 # CENTERED_ANGLED_OOS_LABELS_V140: midpoint label anchors with collision-aware angled placement.
 # DENSE_OOS_LABEL_LAYOUT_V142: scored outline-safe OOS lanes with readable font fallback and association leaders.
+# MAIN_UPDATE_ACTION_WINDOWLESS_INSTALL_V146: main-screen update access with a quiet validated installer handoff.
 
 from __future__ import annotations
 
@@ -3986,6 +3987,7 @@ class ShowerProgrammerApp:
             self.make_sidebar_button(tools, "Clear Sketch Memory", "trash", self.clear_sketch_memory, compact=True),
             self.make_sidebar_button(tools, "Clear Program Memory", "program", self.clear_program_memory, compact=True),
             self.make_sidebar_button(tools, "Validate Selected", "check_circle", self.validate_selected_orders, compact=True),
+            self.make_sidebar_button(tools, "Check for Updates", "refresh", self.check_for_updates, compact=True),
             self.make_sidebar_button(tools, "Settings", "settings", self.open_settings, compact=True),
         ]
         for index, button in enumerate(tool_buttons):
@@ -11068,22 +11070,31 @@ class ShowerProgrammerApp:
                     self.finish_background_activity()
                     if restart and self.pending_update_script is not None:
                         script_path = self.pending_update_script
-                        self.status_var.set("Update validated. Restarting Shower Programmer to install it...")
-                        try:
-                            subprocess.Popen(["cmd", "/c", str(script_path)], cwd=str(script_path.parent))
-                            self.close_update_progress_window()
-                            self.save_ui_settings()
-                            self.root.destroy()
-                        except Exception as exc:
-                            self.close_update_progress_window()
-                            self.show_themed_notice(
-                                "Update restart failed",
-                                "The update is staged but could not restart",
-                                "Close Shower Programmer and run the generated apply_update.cmd file from the update staging folder.",
-                                icon_name="warning",
-                                accent_color=self.WARNING,
-                                details=[("Staging folder", str(script_path.parent)), ("Technical detail", str(exc))],
-                            )
+                        self.set_update_progress_ui(
+                            100,
+                            "Installing the validated update...",
+                            "Shower Programmer will close briefly and reopen automatically. No command window is required.",
+                        )
+
+                        def launch_validated_update() -> None:
+                            try:
+                                self.launch_update_script_hidden(script_path)
+                                self.save_ui_settings()
+                                self.root.destroy()
+                            except Exception as exc:
+                                self.close_update_progress_window()
+                                self.show_themed_notice(
+                                    "Update restart failed",
+                                    "The update is staged but could not restart",
+                                    "The current installation is unchanged. Try Check for Updates again after closing any other Shower Programmer windows.",
+                                    icon_name="warning",
+                                    accent_color=self.WARNING,
+                                    details=[("Staging folder", str(script_path.parent)), ("Technical detail", str(exc))],
+                                )
+
+                        # Let the custom update window paint the final handoff state
+                        # before the main process exits and the hidden installer runs.
+                        self.root.after(450, launch_validated_update)
                         continue
                     self.write_update_metadata(repo, latest_sha, mode)
                     self.close_update_progress_window()
@@ -16305,6 +16316,19 @@ a {{ color: #1f4e79; }}
         )
         worker.start()
 
+    @staticmethod
+    def launch_update_script_hidden(script_path: Path) -> subprocess.Popen[Any]:
+        """Run the validated updater without exposing a console window."""
+        command_processor = os.environ.get("COMSPEC") or shutil.which("cmd.exe") or "cmd.exe"
+        return subprocess.Popen(
+            [command_processor, "/d", "/c", str(script_path)],
+            cwd=str(script_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **shower_batch.hidden_windows_subprocess_options(),
+        )
+
     def check_for_updates_without_git(self, repo: Path) -> None:
         """Compatibility wrapper used by older callers; the update check still runs in the worker."""
         if self.is_busy:
@@ -17377,8 +17401,6 @@ a {{ color: #1f4e79; }}
 
         script = f"""@echo off
 setlocal EnableExtensions EnableDelayedExpansion
-title Shower Programmer Update
-color 1F
 set "APP_DIR={app_dir}"
 set "STAGED_APP={staged_app_dir}"
 set "NEW_DIR={new_dir}"
@@ -17504,7 +17526,6 @@ if exist "%OLD_DIR%\\%EXE_NAME%" (
 if exist "%APP_DIR%\\%EXE_NAME%" start "" "%APP_DIR%\\%EXE_NAME%"
 echo. & echo The update failed, but the previous version was restored.
 echo Log: %LOG_FILE%
-pause
 exit /b 1
 
 :pre_swap_failed
@@ -17513,7 +17534,6 @@ if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
 if exist "%APP_DIR%\\%EXE_NAME%" start "" "%APP_DIR%\\%EXE_NAME%"
 echo. & echo Your existing Shower Programmer installation was not changed.
 echo Log: %LOG_FILE%
-pause
 exit /b 1
 
 :status
@@ -17569,7 +17589,6 @@ exit /b 0
             "    if exist \"%BACKUP_EXE%\" copy /Y \"%BACKUP_EXE%\" \"%CURRENT_EXE%\" >nul\n"
             "    start \"\" \"%CURRENT_EXE%\"\n"
             "    echo The update could not be installed. The previous EXE was restored.\n"
-            "    pause\n"
             "    exit /b 1\n"
             ")\n"
             f"{metadata_commands}"
@@ -17677,10 +17696,21 @@ try {{
 }}
 """
         result = subprocess.run(
-            [ShowerProgrammerApp.powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            [
+                ShowerProgrammerApp.powershell_exe(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
             text=True,
             capture_output=True,
             timeout=max(timeout, 30),
+            **shower_batch.hidden_windows_subprocess_options(),
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PowerShell download failed.")
@@ -17704,10 +17734,21 @@ try {{
 }}
 """
         result = subprocess.run(
-            [ShowerProgrammerApp.powershell_exe(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            [
+                ShowerProgrammerApp.powershell_exe(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
             text=True,
             capture_output=True,
             timeout=max(timeout, 30),
+            **shower_batch.hidden_windows_subprocess_options(),
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "PowerShell download failed.")
@@ -28333,7 +28374,6 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             ("Open Network Input", "network_folder", self.open_network_input_folder),
             ("Open Latest Batch", "clock", self.open_latest_batch),
             ("Open Diagnostics Folder", "folder", self.open_diagnostics_folder),
-            ("Check for Updates", "refresh", self.check_for_updates),
             ("Open Advanced Config", "settings", self.open_config),
         )
         for index, (label, icon, command) in enumerate(buttons):

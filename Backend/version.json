@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.45",
-  "version_number": 145,
-  "marker": "VERSION_1_45_JOINED_KICK_OOS_REFRESH",
-  "release_name": "Joined Kick OOS Guides and Live Refresh",
-  "release_date": "2026-08-24",
+  "version": "Version 1.47",
+  "version_number": 147,
+  "marker": "VERSION_1_47_WATERJET_NOTCH_RADIUS_CALLOUTS",
+  "release_name": "Water Jet Notch Radius Callouts",
+  "release_date": "2026-08-25",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

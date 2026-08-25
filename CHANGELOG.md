@@ -2,6 +2,30 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.47] - 2026-08-25
+
+### Improved
+- Limited Water Jet internal-radius pointers to radii explicitly identified as notch radii on the piece sketch.
+- Excluded clamp slots, holes, and unrelated fabrication radii from Water Jet radius callouts.
+- Omitted ambiguous Water Jet radius pointers when the sketch does not provide a radius value, instead of guessing from unrelated DXF arcs.
+- Preserved existing PPH hinge radius pointers and Water Jet radius validation behavior.
+
+### Validation
+- Added regression coverage for suffix and prefix radius labels, metric WJ DXF matching, clamp-radius exclusion, ambiguous-sketch suppression, and Version 1.47 release metadata.
+- Verified the selector against representative WJ pieces containing a labeled `1/2"` notch radius alongside repeated `3/8"` fabrication radii.
+
+## [Version 1.46] - 2026-08-24
+
+### Improved
+- Moved **Check for Updates** from Settings > Preferences back to the main overview Tools section.
+- Kept the polished in-app update progress window visible through validation and the final restart handoff.
+- Launched the validated atomic updater without a visible Command Prompt or PowerShell window.
+- Made both PowerShell HTTPS fallback paths non-interactive and windowless while retaining Windows certificate-store compatibility.
+- Removed hidden failure pauses so an unsuccessful updater cannot remain stuck invisibly after restoring the current installation.
+
+### Validation
+- Added regression coverage for main-screen placement, Settings removal, hidden CMD launch options, hidden PowerShell fallback options, and Version 1.46 release metadata.
+
 ## [Version 1.45] - 2026-08-24
 
 ### Improved

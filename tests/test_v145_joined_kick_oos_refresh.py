@@ -76,11 +76,9 @@ class JoinedKickOosAndRefreshTests(unittest.TestCase):
 
     def test_version_145_release_metadata(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(version["version"], "Version 1.45")
-        self.assertEqual(version["version_number"], 145)
-        self.assertEqual(version["marker"], "VERSION_1_45_JOINED_KICK_OOS_REFRESH")
+        self.assertGreaterEqual(version["version_number"], 145)
         feature_source = (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8")
-        self.assertIn(version["marker"], feature_source)
+        self.assertIn("VERSION_1_45_JOINED_KICK_OOS_REFRESH", feature_source)
 
 
 if __name__ == "__main__":

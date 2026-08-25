@@ -91,6 +91,8 @@ from __future__ import annotations
 # VERSION_1_43_MANUAL_DXF_REVIEW_OOS_CALLOUTS
 # VERSION_1_44_FOUR_OOS_GATE_READABLE_CALLOUTS
 # VERSION_1_45_JOINED_KICK_OOS_REFRESH
+# VERSION_1_46_MAIN_UPDATE_WINDOWLESS_INSTALL
+# VERSION_1_47_WATERJET_NOTCH_RADIUS_CALLOUTS
 # VERSION_1_29_MIRROR_WJ_FAST_SEND
 # VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
 # VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED
@@ -1218,6 +1220,71 @@ def _panel_without_radius_header(panel: Any) -> Any:
     return preview_panel
 
 
+_RADIUS_MEASUREMENT_TOKEN = r"(?:\d+(?:[- ]\d+/\d+)|\d+/\d+|(?:\d+(?:\.\d*)?|\.\d+))"
+
+
+def extract_notch_radius_values_inches(panel: Any, programmer: Any | None = None) -> list[float]:
+    """Return measurements explicitly labeled as a radius on the piece sketch."""
+
+    text = f"{getattr(panel, 'text', '')}\n{getattr(panel, 'process_text', '')}".upper()
+    patterns = (
+        rf"(?P<value>{_RADIUS_MEASUREMENT_TOKEN})\s*(?:\"|IN(?:CH(?:ES)?)?)?\s*(?:INTERNAL\s+)?RADIUS\b",
+        rf"\bR(?:ADIUS)?\b\s*[:=#-]?\s*(?P<value>{_RADIUS_MEASUREMENT_TOKEN})\s*(?:\"|IN(?:CH(?:ES)?)?)?",
+    )
+    parse = getattr(programmer, "parse_measurement", None)
+    values: list[float] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            token = match.group("value")
+            try:
+                value = parse(token) if callable(parse) else None
+            except Exception:
+                value = None
+            if value is None:
+                try:
+                    if "/" in token:
+                        whole = 0.0
+                        fraction = token
+                        if "-" in token:
+                            whole_text, fraction = token.split("-", 1)
+                            whole = float(whole_text)
+                        elif " " in token:
+                            whole_text, fraction = token.split(None, 1)
+                            whole = float(whole_text)
+                        numerator, denominator = fraction.split("/", 1)
+                        value = whole + float(numerator) / float(denominator)
+                    else:
+                        value = float(token)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+            value = abs(float(value))
+            if value <= 0.0 or value > 12.0:
+                continue
+            if not any(abs(value - existing) <= 1e-7 for existing in values):
+                values.append(value)
+    return sorted(values)
+
+
+def waterjet_notch_radius_samples(
+    samples: Iterable[tuple[float, float, float]],
+    panel: Any,
+    inches_per_unit: float,
+    programmer: Any | None = None,
+) -> list[tuple[float, float, float]]:
+    """Keep only DXF radii that match a notch-radius measurement on the sketch."""
+
+    targets = extract_notch_radius_values_inches(panel, programmer)
+    if not targets:
+        return []
+    selected: list[tuple[float, float, float]] = []
+    unit_scale = abs(float(inches_per_unit))
+    for sample in samples:
+        radius_inches = abs(float(sample[2])) * unit_scale
+        if any(abs(radius_inches - target) <= max(1.0 / 64.0, target * 0.02) for target in targets):
+            selected.append(sample)
+    return selected
+
+
 def radius_callouts(
     samples: list[tuple[float, float, float]],
     *,
@@ -1323,6 +1390,10 @@ def _draw_radius_callouts(app: Any, canvas: Any, path: Path | None, panel: Any, 
         )
     )
     thickness = extract_glass_thickness_inches(panel)
+    if not pph:
+        samples = waterjet_notch_radius_samples(samples, panel, inches_per_unit, gui.programmer)
+        if not samples:
+            return
     callouts = radius_callouts(
         samples,
         min_x=min_x,
@@ -1967,6 +2038,13 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "joined_kick_oos_guides": True,
                         "live_dxf_review_refresh": True,
                         "version_1_45_joined_kick_oos_refresh": True,
+                        "main_overview_update_action": True,
+                        "windowless_update_installer": True,
+                        "hidden_powershell_update_fallback": True,
+                        "version_1_46_main_update_windowless_install": True,
+                        "waterjet_notch_only_radius_callouts": True,
+                        "explicit_notch_radius_matching": True,
+                        "version_1_47_waterjet_notch_radius_callouts": True,
                     }
                 )
             except Exception as exc:
