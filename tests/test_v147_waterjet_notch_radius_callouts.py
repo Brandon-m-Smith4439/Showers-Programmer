@@ -50,13 +50,11 @@ class WaterJetNotchRadiusCalloutTests(unittest.TestCase):
         panel = self.panel('3/8" CLEAR TEMPERED INTERNAL RADIUS')
         self.assertEqual(v4.extract_notch_radius_values_inches(panel, programmer), [])
 
-    def test_version_147_release_metadata(self) -> None:
+    def test_version_147_release_marker_is_retained(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(version["version"], "Version 1.47")
-        self.assertEqual(version["version_number"], 147)
-        self.assertEqual(version["marker"], "VERSION_1_47_WATERJET_NOTCH_RADIUS_CALLOUTS")
+        self.assertGreaterEqual(version["version_number"], 147)
         source = (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8")
-        self.assertIn(version["marker"], source)
+        self.assertIn("VERSION_1_47_WATERJET_NOTCH_RADIUS_CALLOUTS", source)
 
 
 if __name__ == "__main__":

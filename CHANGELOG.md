@@ -2,6 +2,21 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.48] - 2026-08-31
+
+### Fixed
+- Retried transient Windows sharing violations when finalizing locally staged network files, covering brief antivirus and indexing locks on `.part` files.
+- Kept a persistent single-file import lock from aborting the complete order scan. The affected file is now reported and retried on the next scan while other files continue importing.
+
+### Improved
+- Moved matched `Hardware List*.pdf` files into `I:\BAREFOOT-INSTALL\Glass Production\Hardware Lists` instead of deleting them.
+- Renamed routed files to the A&W order format `<order> Hardware.pdf` so downstream systems can identify the related order directly.
+- Preserved unmatched or duplicate-job-ambiguous hardware lists in shared input with an operator warning rather than risking an incorrect order label.
+- Surfaced process-list, order-file, and hardware-routing warnings in scan status and action history.
+
+### Validation
+- Added regression coverage for transient atomic-rename retries, nonfatal per-file synchronization failures, order-number hardware naming, ambiguous duplicate-job preservation, and Version 1.48 release metadata.
+
 ## [Version 1.47] - 2026-08-25
 
 ### Improved

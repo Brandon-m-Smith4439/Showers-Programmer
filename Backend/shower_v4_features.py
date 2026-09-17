@@ -93,6 +93,7 @@ from __future__ import annotations
 # VERSION_1_45_JOINED_KICK_OOS_REFRESH
 # VERSION_1_46_MAIN_UPDATE_WINDOWLESS_INSTALL
 # VERSION_1_47_WATERJET_NOTCH_RADIUS_CALLOUTS
+# VERSION_1_48_RESILIENT_IMPORT_HARDWARE_ROUTING
 # VERSION_1_29_MIRROR_WJ_FAST_SEND
 # VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
 # VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED
@@ -2045,6 +2046,11 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "waterjet_notch_only_radius_callouts": True,
                         "explicit_notch_radius_matching": True,
                         "version_1_47_waterjet_notch_radius_callouts": True,
+                        "transient_import_lock_retry": True,
+                        "nonfatal_per_file_import_failures": True,
+                        "order_named_hardware_list_routing": True,
+                        "ambiguous_hardware_match_preservation": True,
+                        "version_1_48_resilient_import_hardware_routing": True,
                     }
                 )
             except Exception as exc:

@@ -704,6 +704,7 @@ class ShowerProgrammerApp:
     UPDATE_STALE_HOURS = 24
     SHOP_SKETCHES_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Sketches")
     SHOP_PROGRAMS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Programs")
+    HARDWARE_LISTS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\Hardware Lists")
     EDI_IMPORT_ORDERS_DIR = Path(r"I:\BAREFOOT-INSTALL\Glass Production\EDIImportSG\Showers Programmer Input")
     APP_ICON_PATH = programmer.project_root() / "Assets" / "ShowersProgrammer.ico"
     APP_ICON_PNG_PATH = programmer.project_root() / "Assets" / "ShowersProgrammer.png"
@@ -6138,7 +6139,9 @@ class ShowerProgrammerApp:
                     "considered": 0,
                     "source_missing": False,
                     "direct": True,
-                    "hardware_deleted": [],
+                    "hardware_moved": [],
+                    "hardware_warnings": [],
+                    "copy_warnings": [],
                 }
             else:
                 def order_file_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
@@ -6166,6 +6169,7 @@ class ShowerProgrammerApp:
                     progress_callback=order_file_progress,
                     import_snapshot=import_snapshot,
                     missing_requirements=missing_requirements,
+                    hardware_orders=active_process_orders,
                 )
                 scan_stage = "copying visible shared input files"
                 self.queue_scan_progress(
@@ -6186,6 +6190,14 @@ class ShowerProgrammerApp:
                     int(visible_import_summary.get("considered", 0) or 0),
                 )
                 import_summary["skipped"] = int(visible_import_summary.get("skipped", 0) or 0)
+                import_summary["copy_warnings"] = list(dict.fromkeys(
+                    [
+                        str(value)
+                        for summary in (import_summary, visible_import_summary)
+                        for value in summary.get("copy_warnings", [])
+                        if isinstance(value, str) and value.strip()
+                    ]
+                ))
                 if retired_batch_plans or production_sent_orders:
                     scan_stage = "clearing validated shared inputs"
                     self.queue_scan_progress(
@@ -6381,6 +6393,7 @@ class ShowerProgrammerApp:
                 progress_callback=order_file_progress,
                 import_snapshot=import_snapshot,
                 missing_requirements=missing_requirements,
+                hardware_orders=orders,
             )
             progress_value += int(import_summary.get("considered", 0) or 0)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Input synchronization complete.")
@@ -11384,6 +11397,9 @@ class ShowerProgrammerApp:
                     process_list_count = int(data.get("process_list_count", 0))
                     process_list_import_summary = data.get("process_list_import_summary", {})
                     import_summary = data.get("import_summary", {})
+                    import_copy_warnings = import_summary.get("copy_warnings", []) if isinstance(import_summary, dict) else []
+                    hardware_warnings = import_summary.get("hardware_warnings", []) if isinstance(import_summary, dict) else []
+                    process_list_copy_warnings = process_list_import_summary.get("copy_warnings", []) if isinstance(process_list_import_summary, dict) else []
                     retired_sent_orders = data.get("retired_sent_orders", [])
                     retired_process_lists = data.get("retired_process_lists", [])
                     retired_process_list_warnings = data.get("retired_process_list_warnings", [])
@@ -11459,6 +11475,12 @@ class ShowerProgrammerApp:
                         scan_message += f" Removed {len(duplicate_files_removed)} selected duplicate file(s)."
                     if duplicate_cleanup_warnings:
                         scan_message += f" Duplicate cleanup notes: {len(duplicate_cleanup_warnings)}."
+                    if import_copy_warnings:
+                        scan_message += f" Input synchronization notes: {len(import_copy_warnings)}."
+                    if process_list_copy_warnings:
+                        scan_message += f" Process-list synchronization notes: {len(process_list_copy_warnings)}."
+                    if hardware_warnings:
+                        scan_message += f" Hardware routing notes: {len(hardware_warnings)}."
                     reactivated_aw_orders = data.get("reactivated_aw_orders", [])
                     if isinstance(reactivated_aw_orders, list) and reactivated_aw_orders:
                         scan_message += (
@@ -11480,7 +11502,14 @@ class ShowerProgrammerApp:
                         scan_message += f" Cache reused {reused}; refreshed {refreshed}."
                     self.status_var.set(scan_message)
                     scan_status = "WARNING" if any(
-                        (retired_process_list_warnings, production_reconciliation_warnings, duplicate_cleanup_warnings)
+                        (
+                            retired_process_list_warnings,
+                            production_reconciliation_warnings,
+                            duplicate_cleanup_warnings,
+                            import_copy_warnings,
+                            process_list_copy_warnings,
+                            hardware_warnings,
+                        )
                     ) else "SUCCESS"
                     isolated_scan = bool(data.get("isolated_test_mode", False))
                     local_refresh = bool(data.get("local_refresh_only", False))
@@ -11508,6 +11537,9 @@ class ShowerProgrammerApp:
                     process_list_count = int(data.get("process_list_count", 0))
                     process_list_import_summary = data.get("process_list_import_summary", {})
                     import_summary = data.get("import_summary", {})
+                    import_copy_warnings = import_summary.get("copy_warnings", []) if isinstance(import_summary, dict) else []
+                    hardware_warnings = import_summary.get("hardware_warnings", []) if isinstance(import_summary, dict) else []
+                    process_list_copy_warnings = process_list_import_summary.get("copy_warnings", []) if isinstance(process_list_import_summary, dict) else []
                     duplicate_files_removed = data.get("duplicate_files_removed", [])
                     duplicate_cleanup_warnings = data.get("duplicate_cleanup_warnings", [])
                     if orders:
@@ -11532,7 +11564,7 @@ class ShowerProgrammerApp:
                     self.record_action(
                         "Import EDI Orders",
                         import_message or "Shared input synchronization completed.",
-                        status="WARNING" if duplicate_cleanup_warnings else "SUCCESS",
+                        status="WARNING" if any((duplicate_cleanup_warnings, import_copy_warnings, process_list_copy_warnings, hardware_warnings)) else "SUCCESS",
                         orders=imported_orders,
                     )
                 elif kind == "scan_error":
@@ -11801,11 +11833,14 @@ class ShowerProgrammerApp:
         if direct:
             return "Using process lists directly from the dedicated input folder."
         copied_count = len(copied) if isinstance(copied, list) else 0
+        copy_warnings = import_summary.get("copy_warnings", [])
+        warning_count = len(copy_warnings) if isinstance(copy_warnings, list) else 0
+        warning_note = f" {warning_count} process-list file(s) could not be synchronized and will retry next scan." if warning_count else ""
         if copied_count:
-            return f"Imported/updated {copied_count} process list file(s); {skipped} already current."
+            return f"Imported/updated {copied_count} process list file(s); {skipped} already current." + warning_note
         if skipped:
-            return f"No process list files needed copying; {skipped} already current."
-        return ""
+            return f"No process list files needed copying; {skipped} already current." + warning_note
+        return warning_note.strip()
 
     @staticmethod
     def import_status_message(import_summary: object, process_list_count: int) -> str:
@@ -11813,21 +11848,28 @@ class ShowerProgrammerApp:
             return ""
         copied = import_summary.get("copied", [])
         skipped = int(import_summary.get("skipped", 0) or 0)
-        hardware_deleted = import_summary.get("hardware_deleted", [])
+        hardware_moved = import_summary.get("hardware_moved", [])
+        hardware_warnings = import_summary.get("hardware_warnings", [])
+        copy_warnings = import_summary.get("copy_warnings", [])
         source_missing = bool(import_summary.get("source_missing", False))
         direct = bool(import_summary.get("direct", False))
-        hardware_count = len(hardware_deleted) if isinstance(hardware_deleted, list) else 0
-        hardware_note = f" Removed {hardware_count} hardware list PDF(s)." if hardware_count else ""
+        hardware_count = len(hardware_moved) if isinstance(hardware_moved, list) else 0
+        hardware_warning_count = len(hardware_warnings) if isinstance(hardware_warnings, list) else 0
+        copy_warning_count = len(copy_warnings) if isinstance(copy_warnings, list) else 0
+        hardware_note = f" Routed {hardware_count} hardware list PDF(s)." if hardware_count else ""
+        if hardware_warning_count:
+            hardware_note += f" {hardware_warning_count} hardware list(s) remain in shared input for review."
+        copy_note = f" {copy_warning_count} input file(s) were busy and will retry next scan." if copy_warning_count else ""
         if source_missing:
             return f"EDI import skipped; source folder not found: {import_summary.get('source', '')}"
         if direct:
-            return "Using order PDFs/DXFs directly from the dedicated input folder." + hardware_note
+            return "Using order PDFs/DXFs directly from the dedicated input folder." + hardware_note + copy_note
         copied_count = len(copied) if isinstance(copied, list) else 0
         if copied_count:
-            return f"Imported/updated {copied_count} matching EDI file(s); {skipped} already current." + hardware_note
+            return f"Imported/updated {copied_count} matching EDI file(s); {skipped} already current." + hardware_note + copy_note
         if process_list_count:
-            return f"No EDI files needed copying for {process_list_count} process list(s); {skipped} already current." + hardware_note
-        return f"No EDI files needed copying; {skipped} already current." + hardware_note
+            return f"No EDI files needed copying for {process_list_count} process list(s); {skipped} already current." + hardware_note + copy_note
+        return f"No EDI files needed copying; {skipped} already current." + hardware_note + copy_note
 
     def set_controls_enabled(self, enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -20752,6 +20794,7 @@ try {{
             "direct": False,
             "considered": 0,
             "source_files": [],
+            "copy_warnings": [],
         }
         snapshot = import_snapshot or cls.index_import_source_folder(source_dir)
         if bool(snapshot.get("source_missing", False)):
@@ -20772,15 +20815,20 @@ try {{
         copied: list[Path] = []
         skipped = 0
         pairs = [(source, target_dir / source.name) for source in sources]
-        for index, (source, _target, did_copy) in enumerate(cls.copy_file_pairs_concurrently(pairs), start=1):
+        copy_warnings: list[str] = []
+        for index, (source, _target, did_copy) in enumerate(
+            cls.copy_file_pairs_concurrently(pairs, errors=copy_warnings),
+            start=1,
+        ):
             if did_copy:
                 copied.append(target_dir / source.name)
-            else:
+            elif did_copy is False:
                 skipped += 1
             if progress_callback is not None:
                 progress_callback(index, len(sources), source, did_copy)
         summary["copied"] = copied
         summary["skipped"] = skipped
+        summary["copy_warnings"] = copy_warnings
         return summary
 
     @classmethod
@@ -21101,22 +21149,27 @@ try {{
         """Mirror current shared PDFs/DXFs locally so unmatched inputs stay visible."""
         raw_files = import_snapshot.get("order_files", [])
         sources = [path for path in raw_files if isinstance(path, Path)] if isinstance(raw_files, list) else []
-        summary: dict[str, object] = {"copied": [], "skipped": 0, "considered": len(sources)}
+        summary: dict[str, object] = {"copied": [], "skipped": 0, "considered": len(sources), "copy_warnings": []}
         if not sources or cls.same_path(Path(str(import_snapshot.get("source", ""))), target_dir):
             return summary
         target_dir.mkdir(parents=True, exist_ok=True)
         copied: list[Path] = []
         skipped = 0
         pairs = [(source, target_dir / source.name) for source in sources]
-        for index, (source, target, did_copy) in enumerate(cls.copy_file_pairs_concurrently(pairs), start=1):
+        copy_warnings: list[str] = []
+        for index, (source, target, did_copy) in enumerate(
+            cls.copy_file_pairs_concurrently(pairs, errors=copy_warnings),
+            start=1,
+        ):
             if did_copy:
                 copied.append(target)
-            else:
+            elif did_copy is False:
                 skipped += 1
             if progress_callback is not None:
                 progress_callback(index, len(pairs), source, did_copy)
         summary["copied"] = copied
         summary["skipped"] = skipped
+        summary["copy_warnings"] = copy_warnings
         return summary
 
     @classmethod
@@ -21127,6 +21180,7 @@ try {{
         progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
         import_snapshot: dict[str, object] | None = None,
         missing_requirements: dict[str, dict[str, object]] | None = None,
+        hardware_orders: list[shower_batch.ProcessOrder] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -21136,11 +21190,13 @@ try {{
             "source_missing": False,
             "direct": False,
             "considered": 0,
-            "hardware_deleted": [],
+            "hardware_moved": [],
             "hardware_warnings": [],
+            "copy_warnings": [],
             "missing_requests": len(missing_requirements or {}),
         }
-        if not orders:
+        route_orders = hardware_orders if hardware_orders is not None else orders
+        if not orders and not route_orders:
             return summary
         snapshot = import_snapshot or cls.index_import_source_folder(source_dir)
         if bool(snapshot.get("source_missing", False)):
@@ -21149,9 +21205,15 @@ try {{
             return summary
         hardware_values = snapshot.get("hardware_files", [])
         hardware_files = [path for path in hardware_values if isinstance(path, Path)] if isinstance(hardware_values, list) else []
-        hardware_deleted, hardware_warnings = cls.delete_hardware_list_pdfs(source_dir, hardware_files)
-        summary["hardware_deleted"] = hardware_deleted
+        hardware_moved, hardware_warnings = cls.move_hardware_list_pdfs(
+            source_dir,
+            route_orders,
+            hardware_files,
+        )
+        summary["hardware_moved"] = hardware_moved
         summary["hardware_warnings"] = hardware_warnings
+        if not orders:
+            return summary
         if cls.same_path(source_dir, target_dir):
             summary["direct"] = True
             return summary
@@ -21218,10 +21280,14 @@ try {{
         if unresolved_pdf_orders and network_pdfs:
             cache_dir = cls.local_network_pdf_cache_dir(target_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
+            cls.cleanup_stale_import_partials(cache_dir)
             staged: list[Path] = []
             stage_pairs = [(source, cache_dir / source.name) for source in network_pdfs]
-            for source, local_copy, did_stage in cls.copy_file_pairs_concurrently(stage_pairs):
-                staged.append(local_copy)
+            copy_warnings = summary["copy_warnings"]
+            assert isinstance(copy_warnings, list)
+            for source, local_copy, did_stage in cls.copy_file_pairs_concurrently(stage_pairs, errors=copy_warnings):
+                if did_stage is not None and local_copy.is_file():
+                    staged.append(local_copy)
                 progress_index += 1
                 if progress_callback is not None:
                     progress_callback(progress_index, total_progress, source, did_stage)
@@ -21243,10 +21309,12 @@ try {{
         summary["staged_pdf_count"] = staged_pdf_count
         summary["considered"] = len(sources) + staged_pdf_count
         direct_pairs = [(source, target_dir / source.name) for source in sources]
-        for source, target, did_copy in cls.copy_file_pairs_concurrently(direct_pairs):
+        copy_warnings = summary["copy_warnings"]
+        assert isinstance(copy_warnings, list)
+        for source, target, did_copy in cls.copy_file_pairs_concurrently(direct_pairs, errors=copy_warnings):
             if did_copy:
                 copied.append(target)
-            else:
+            elif did_copy is False:
                 skipped += 1
             progress_index += 1
             if progress_callback is not None:
@@ -21263,28 +21331,90 @@ try {{
         return summary
 
     @classmethod
-    def delete_hardware_list_pdfs(
+    def move_hardware_list_pdfs(
         cls,
         source_dir: Path,
+        orders: list[shower_batch.ProcessOrder],
         candidate_files: list[Path] | None = None,
+        destination_dir: Path | None = None,
     ) -> tuple[list[Path], list[str]]:
-        deleted: list[Path] = []
+        moved: list[Path] = []
         warnings: list[str] = []
         if candidate_files is None:
             if not source_dir.exists() or not source_dir.is_dir():
-                return deleted, warnings
+                return moved, warnings
             candidates = list(source_dir.iterdir())
         else:
             candidates = candidate_files
+        hardware_dir = Path(destination_dir or cls.HARDWARE_LISTS_DIR)
+        try:
+            hardware_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return moved, [f"Could not open the Hardware Lists folder: {exc}"]
+        order_list = [order for order in orders if str(getattr(order, "aw_order", "")).strip()]
+        input_index = shower_scan_index.OrderInputIndex(candidates)
         for path in sorted(candidates, key=lambda candidate: candidate.name.lower()):
             if not cls.is_hardware_list_pdf(path):
                 continue
             try:
-                path.unlink()
-                deleted.append(path)
+                explicit_name_matches = [
+                    order
+                    for order in order_list
+                    if programmer.text_contains_aw_order(path.stem, str(order.aw_order))
+                ]
+                filename_matches = [
+                    order
+                    for order in order_list
+                    if input_index.file_matches_order(path, order, inspect_pdf_text=False)
+                ]
+                matches = explicit_name_matches or filename_matches
+                if len(matches) != 1:
+                    metadata = input_index.metadata(path, inspect_pdf_text=True)
+                    explicit_text_matches = [
+                        order
+                        for order in order_list
+                        if programmer.text_contains_aw_order(metadata.first_page_text, str(order.aw_order))
+                    ]
+                    matches = explicit_text_matches or [
+                        order
+                        for order in order_list
+                        if input_index.file_matches_order(path, order, inspect_pdf_text=True)
+                    ]
+                matches = list({str(order.aw_order): order for order in matches}.values())
+                if not matches:
+                    warnings.append(f"Hardware list {path.name} was kept because no current order could be matched.")
+                    continue
+                if len(matches) > 1:
+                    order_numbers = ", ".join(sorted(str(order.aw_order) for order in matches))
+                    warnings.append(
+                        f"Hardware list {path.name} was kept because it matches multiple orders: {order_numbers}."
+                    )
+                    continue
+                aw_order = re.sub(r"[^0-9A-Za-z._-]+", "_", str(matches[0].aw_order)).strip("._-")
+                if not aw_order:
+                    warnings.append(f"Hardware list {path.name} was kept because its order number is invalid.")
+                    continue
+                target = hardware_dir / f"{aw_order} Hardware.pdf"
+                if target.exists():
+                    same_content = False
+                    try:
+                        same_content = (
+                            path.stat().st_size == target.stat().st_size
+                            and shower_cache.cached_file_sha256("hardware_list_sha256_v1", path)
+                            == shower_cache.cached_file_sha256("hardware_list_sha256_v1", target)
+                        )
+                    except OSError:
+                        same_content = False
+                    if same_content:
+                        cls.unlink_import_path(path)
+                        moved.append(target)
+                        continue
+                    target = cls.unique_target_path(target)
+                cls.replace_file_with_retry(path, target)
+                moved.append(target)
             except OSError as exc:
-                warnings.append(f"Could not delete hardware list {path.name}: {exc}")
-        return deleted, warnings
+                warnings.append(f"Could not move hardware list {path.name}: {exc}")
+        return moved, warnings
 
     @classmethod
     def is_hardware_list_pdf(cls, path: Path) -> bool:
@@ -21448,13 +21578,53 @@ try {{
         partial = target.with_name(f"copy-{uuid.uuid4().hex[:10]}.part")
         try:
             shutil.copy2(source, partial)
-            os.replace(partial, target)
+            ShowerProgrammerApp.replace_file_with_retry(partial, target)
         finally:
             try:
                 if partial.exists():
                     partial.unlink()
             except OSError:
                 pass
+
+    @staticmethod
+    def replace_file_with_retry(source: Path, target: Path, attempts: int = 8) -> None:
+        """Finish an atomic rename despite brief antivirus or indexer sharing locks."""
+
+        last_error: OSError | None = None
+        for attempt in range(max(1, attempts)):
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError as exc:
+                last_error = exc
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in {32, 33}:
+                    raise
+                last_error = exc
+            if attempt + 1 < max(1, attempts):
+                time.sleep(0.08 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+
+    @staticmethod
+    def cleanup_stale_import_partials(folder: Path, older_than_seconds: float = 300.0) -> list[Path]:
+        """Remove abandoned importer `.part` files without touching an active copy."""
+
+        removed: list[Path] = []
+        cutoff = time.time() - max(0.0, float(older_than_seconds))
+        try:
+            candidates = list(folder.glob("copy-*.part"))
+        except OSError:
+            return removed
+        for path in candidates:
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                path.unlink()
+                removed.append(path)
+            except OSError:
+                continue
+        return removed
 
     @classmethod
     def copy_file_if_needed(cls, source: Path, target: Path) -> bool:
@@ -21494,14 +21664,23 @@ try {{
         pairs: list[tuple[Path, Path]],
         *,
         max_workers: int | None = None,
+        errors: list[str] | None = None,
     ) -> Any:
-        """Copy independent shared-drive files concurrently with atomic targets."""
+        """Copy independent files concurrently; report one failure without ending the batch."""
+
+        def record_error(source: Path, error: OSError) -> None:
+            if errors is not None:
+                errors.append(f"{source.name}: {error}")
+
         if len(pairs) <= 1:
             for source, target in pairs:
                 try:
                     did_copy = cls.copy_file_if_needed(source, target)
                 except FileNotFoundError:
                     did_copy = False
+                except OSError as exc:
+                    record_error(source, exc)
+                    did_copy = None
                 yield source, target, did_copy
             return
         requested_workers = cls.SCAN_IO_MAX_WORKERS if max_workers is None else max_workers
@@ -21517,6 +21696,9 @@ try {{
                     did_copy = bool(future.result())
                 except FileNotFoundError:
                     did_copy = False
+                except OSError as exc:
+                    record_error(source, exc)
+                    did_copy = None
                 yield source, target, did_copy
 
     @classmethod
