@@ -48,7 +48,7 @@ DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
 PROCESS_LIST_EXTENSIONS = {".xlsx", ".xml", ".rtf", ".xls"}
 PROCESS_LIST_EXTENSION_PRIORITY = {".xlsx": 0, ".xml": 1, ".rtf": 2, ".xls": 3}
 PROCESS_LIST_CACHE_NAMESPACE = "process_orders_v1"
-PROCESS_LIST_CACHE_SCHEMA = 2
+PROCESS_LIST_CACHE_SCHEMA = 3
 ProcessListProgress = Callable[[str, Path, str], None]
 PDF_DIMENSION_MATCH_TOLERANCE = 0.20
 OOS_DXF_OVERALL_TOLERANCE = 0.08
@@ -163,6 +163,18 @@ class ProcessItem:
         if re.search(r"\b(?:[1-9]\d*\s+)?(?:1/2\s+)?RADIUS\b", text):
             return True
         return False
+
+    def has_denver_allowed_fabrication(self, config: dict[str, object]) -> bool:
+        """Match only explicit Denver-capable fabrication, never generic WJ words."""
+        text = programmer.strip_non_fabrication_edge_text(self.processing_text.upper())
+        if not text:
+            return False
+        keywords = upper_config_list(
+            config,
+            "denver_fabrication_keywords",
+            ["K CUT", "K-CUT", "SCU", "SCU4", "SLOT", "SLOTTED", "MACRO", "HOLE"],
+        )
+        return any(keyword in text for keyword in keywords)
 
     def text_blob(self) -> str:
         return " ".join(
@@ -359,7 +371,7 @@ def load_process_orders_from_file(
             orders = process_orders_from_cache(cached.get("orders", []))
         except Exception:
             orders = []
-        if orders:
+        if isinstance(cached.get("orders"), list):
             if progress_callback:
                 progress_callback("cached", path, f"Reused {len(orders)} cached order(s)")
             return orders
@@ -379,22 +391,40 @@ def load_process_orders_from_file(
 def load_process_orders_from_file_uncached(
     path: Path,
     progress_callback: ProcessListProgress | None = None,
+    *,
+    include_non_waterjet_mirror: bool = False,
 ) -> list[ProcessOrder]:
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
-        return load_process_orders_from_workbook(path)
+        return load_process_orders_from_workbook(
+            path,
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     if suffix == ".xml":
         rows = load_rows_from_spreadsheet_xml(path)
         if not rows:
             rows = load_rows_from_crystal_xml(path)
-        return load_process_orders_from_rows(rows)
+        return load_process_orders_from_rows(
+            rows,
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     if suffix == ".rtf":
-        orders = load_process_orders_from_rows(load_rows_from_rtf(path))
+        orders = load_process_orders_from_rows(
+            load_rows_from_rtf(path),
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
         if orders:
             return orders
-        return load_process_orders_from_rows(load_rows_from_crystal_rtf(path))
+        return load_process_orders_from_rows(
+            load_rows_from_crystal_rtf(path),
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     if suffix == ".xls":
-        return load_process_orders_from_legacy_xls(path, progress_callback)
+        return load_process_orders_from_legacy_xls(
+            path,
+            progress_callback,
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     raise RuntimeError(
         f"Unsupported process-list file type: {path.name}. Use one of: {process_list_extension_text()}."
     )
@@ -471,12 +501,19 @@ def process_orders_from_cache(records: object) -> list[ProcessOrder]:
     return orders
 
 
-def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
+def load_process_orders_from_workbook(
+    path: Path,
+    *,
+    include_non_waterjet_mirror: bool = False,
+) -> list[ProcessOrder]:
     workbook = load_workbook(path, data_only=True, read_only=True)
     worksheet = workbook.active
 
     try:
-        return load_process_orders_from_rows(worksheet.iter_rows(values_only=True))
+        return load_process_orders_from_rows(
+            worksheet.iter_rows(values_only=True),
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     finally:
         workbook.close()
 
@@ -484,6 +521,8 @@ def load_process_orders_from_workbook(path: Path) -> list[ProcessOrder]:
 def load_process_orders_from_legacy_xls(
     path: Path,
     progress_callback: ProcessListProgress | None = None,
+    *,
+    include_non_waterjet_mirror: bool = False,
 ) -> list[ProcessOrder]:
     raw_prefix = read_file_prefix(path, 512)
     if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
@@ -494,7 +533,10 @@ def load_process_orders_from_legacy_xls(
         started = time.monotonic()
         try:
             rows = shower_legacy_xls.load_rows(path)
-            orders = load_process_orders_from_rows(rows)
+            orders = load_process_orders_from_rows(
+                rows,
+                include_non_waterjet_mirror=include_non_waterjet_mirror,
+            )
             if orders:
                 if progress_callback:
                     progress_callback(
@@ -503,6 +545,19 @@ def load_process_orders_from_legacy_xls(
                         f"Read binary XLS directly in {time.monotonic() - started:.2f}s; Excel conversion skipped",
                     )
                 return orders
+            if not include_non_waterjet_mirror:
+                source_orders = load_process_orders_from_rows(
+                    rows,
+                    include_non_waterjet_mirror=True,
+                )
+                if source_orders:
+                    if progress_callback:
+                        progress_callback(
+                            "normalized",
+                            path,
+                            "Read a mirror batch with no Waterjet-routed work; Excel conversion skipped",
+                        )
+                    return []
             raise shower_legacy_xls.LegacyXlsError("No process-list orders were found in the direct BIFF read")
         except Exception as exc:
             if progress_callback:
@@ -512,15 +567,27 @@ def load_process_orders_from_legacy_xls(
                     f"Direct XLS read was unavailable ({exc}); using hidden Excel fallback",
                 )
             converted = convert_legacy_xls_to_xlsx(path, progress_callback)
-            return load_process_orders_from_workbook(converted)
+            return load_process_orders_from_workbook(
+                converted,
+                include_non_waterjet_mirror=include_non_waterjet_mirror,
+            )
 
     text_prefix = decode_text_file(path)[:2048].lstrip().lower()
     if text_prefix.startswith("<?xml") or text_prefix.startswith("<workbook"):
-        return load_process_orders_from_rows(load_rows_from_spreadsheet_xml(path))
+        return load_process_orders_from_rows(
+            load_rows_from_spreadsheet_xml(path),
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     if text_prefix.startswith("{\\rtf"):
-        return load_process_orders_from_rows(load_rows_from_rtf(path))
+        return load_process_orders_from_rows(
+            load_rows_from_rtf(path),
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     if text_prefix.startswith("<html") or "<table" in text_prefix:
-        return load_process_orders_from_rows(load_rows_from_html_table(path))
+        return load_process_orders_from_rows(
+            load_rows_from_html_table(path),
+            include_non_waterjet_mirror=include_non_waterjet_mirror,
+        )
     raise RuntimeError(
         f"{path.name} is not a supported .xls process-list export. "
         "Use Excel XML (.xml), RTF (.rtf), or the current .xlsx format."
@@ -838,12 +905,32 @@ def mirror_waterjet_orders(orders: Iterable[ProcessOrder]) -> list[ProcessOrder]
     return waterjet_orders
 
 
-def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[ProcessOrder]:
+def load_process_orders_from_rows(
+    rows: Iterable[Iterable[object]],
+    *,
+    include_non_waterjet_mirror: bool = False,
+) -> list[ProcessOrder]:
     materialized_rows = [list(row) for row in rows]
     mirror_batch = process_list_is_mirror_batch(materialized_rows)
     orders: dict[tuple[str, str], ProcessOrder] = {}
     last_key: tuple[str, str, int] | None = None
+    section_machine_hint = ""
     for row_number, values in enumerate(materialized_rows, start=1):
+        section_label = cell_at(values, 0).upper()
+        # Mirror reports need section headings carried into detail rows.
+        # Ordinary shower rows already carry their own machine in column 21;
+        # leaking a Waterjet heading into later packing rows misroutes Denver
+        # doors and no-fabrication panels.
+        if mirror_batch:
+            if re.search(r"\bWATER\s*JET\b|\bWATERJET\b", section_label):
+                section_machine_hint = "WJ"
+            elif re.search(r"\bDENVER\s*1\b", section_label):
+                section_machine_hint = "DENVER 1"
+            elif re.search(r"\bDENVER\s*2\b", section_label):
+                section_machine_hint = "DENVER 2"
+            elif re.search(r"\b(?:KODIAK|POLISHER|CUTTING|PACKING)\b", section_label):
+                section_machine_hint = ""
+
         order_item = cell_at(values, 6)
         job_name = programmer.clean_job_name(cell_at(values, 13))
         customer = cell_at(values, 10)
@@ -852,6 +939,10 @@ def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[Proc
         processing = cell_at(values, 7)
         delivery_date = cell_at(values, 8)
         machine_hint = cell_at(values, 21)
+        if mirror_batch and section_machine_hint:
+            machine_hint = " | ".join(
+                value for value in (machine_hint, section_machine_hint) if value
+            )
 
         parsed = parse_order_item(order_item)
         if parsed:
@@ -879,7 +970,9 @@ def load_process_orders_from_rows(rows: Iterable[Iterable[object]]) -> list[Proc
             order.items[item_number].add_row(row_number, width_text, height_text, delivery_date, customer, processing, machine_hint)
 
     loaded_orders = sorted(orders.values(), key=lambda order: int(order.aw_order))
-    return mirror_waterjet_orders(loaded_orders) if mirror_batch else loaded_orders
+    if mirror_batch and not include_non_waterjet_mirror:
+        return mirror_waterjet_orders(loaded_orders)
+    return loaded_orders
 
 
 def load_rows_from_spreadsheet_xml(path: Path) -> list[list[str]]:
@@ -1526,6 +1619,47 @@ def attach_unmarked_process_pages(
     panels.sort(key=lambda panel: panel.item)
 
 
+def attach_mirror_label_only_pages(
+    reader: PdfReader,
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    config: dict[str, object],
+) -> None:
+    """Label non-fabricated mirror pages without creating program output."""
+    if not process_order.is_mirror(config) and not any(panel.mirror_glass for panel in panels):
+        return
+    used_pages = {panel.page_index for panel in panels}
+    used_items = {panel.item for panel in panels}
+    for page_index, page in enumerate(reader.pages):
+        if page_index == 0 or page_index in used_pages:
+            continue
+        text = page.extract_text() or ""
+        if not text.strip() or programmer.looks_like_template_page(text):
+            continue
+        if not programmer.has_mirror_glass_type(text, config):
+            continue
+        item_number = programmer.extract_item_number(text) or page_index
+        while item_number in used_items:
+            item_number += 1
+        width, height = programmer.extract_dimensions(text)
+        panel = programmer.Panel(
+            item=item_number,
+            page_index=page_index,
+            text=text,
+            width=width,
+            height=height,
+            machine="",
+            label_only=True,
+            skip_dxf=True,
+            mirror_glass=True,
+            mirror_label_only=True,
+        )
+        panel.reasons.append("mirror page labeled without fabrication program")
+        panels.append(panel)
+        used_items.add(item_number)
+    panels.sort(key=lambda panel: (panel.page_index, panel.item))
+
+
 def reconcile_process_list_item_gaps(
     panels: list[programmer.Panel],
     process_order: ProcessOrder,
@@ -1591,6 +1725,7 @@ def remap_process_items_to_sketch_pages(
         for panel in panels:
             if panel.item == sketch_item:
                 panel.source_item = process_item
+                panel.aw_item = process_item
                 reason = f"process-list P{process_item} applied to sketch P{sketch_item}"
                 if reason not in panel.reasons:
                     panel.reasons.append(reason)
@@ -1670,6 +1805,8 @@ def apply_process_hints(
     for panel in panels:
         process_item = process_order.items.get(panel.item)
         if process_item is None:
+            if panel.mirror_label_only:
+                continue
             panel.warnings.append("No matching process-list item row found.")
             continue
         panel.process_text = process_item.text_blob()
@@ -1700,6 +1837,10 @@ def apply_process_hints(
         strong_process_wj = process_item.has_strong_waterjet_fabrication(config)
         strong_pdf_wj = programmer.has_pdf_waterjet_evidence(panel.text, config)
         has_door_evidence = programmer.has_door_programming_evidence(panel, config)
+        explicit_denver_fabrication = bool(
+            desired_machine.startswith("DENVER")
+            and process_item.has_denver_allowed_fabrication(config)
+        )
         if not is_mirror_glass and desired_machine:
             original_machine = panel.machine
             if desired_machine == "WJ":
@@ -1712,13 +1853,21 @@ def apply_process_hints(
                     panel.reasons.append(f"process list machine: {desired_machine}")
                 else:
                     set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
-            elif (strong_process_wj or strong_pdf_wj) and not has_door_evidence:
+            elif (
+                (strong_process_wj or strong_pdf_wj)
+                and not has_door_evidence
+                and not explicit_denver_fabrication
+            ):
                 set_panel_machine(
                     panel,
                     "WJ",
                     "WJ-only radius/notch fabrication overrides process-list Denver routing",
                 )
             else:
+                if (strong_process_wj or strong_pdf_wj) and explicit_denver_fabrication:
+                    panel.reasons.append(
+                        f"Denver-specific fabrication keeps radius/notch work on {desired_machine}"
+                    )
                 set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
         elif not is_mirror_glass and processing_machine:
             if panel.machine != processing_machine and (not panel.machine or panel.label_only):
@@ -1776,7 +1925,7 @@ def apply_process_dimensions(panel: programmer.Panel, process_item: ProcessItem)
 def apply_process_list_scope(panels: list[programmer.Panel], process_order: ProcessOrder) -> None:
     expected = set(process_order.item_numbers)
     for panel in panels:
-        if panel.item in expected:
+        if panel.item in expected or panel.mirror_label_only:
             continue
         panel.remake_excluded = True
         panel.machine = ""
@@ -1796,6 +1945,52 @@ def apply_process_list_scope(panels: list[programmer.Panel], process_order: Proc
         ]
         if "not in process list; X out" not in panel.reasons:
             panel.reasons.append("not in process list; X out")
+
+
+def apply_mirror_dxf_sequence_hints(
+    panels: list[programmer.Panel],
+    process_order: ProcessOrder,
+    folder: Path,
+) -> None:
+    """Map mirror Waterjet rows to A+W's fabricated-DXF sequence when needed.
+
+    Mirror process lists retain only Waterjet rows, while A+W can number the
+    exported DXFs from one within that filtered set. Prefer the normal process
+    item identity and use the sequence only when no exact item DXF exists and
+    the candidate dimensions agree with the sketch.
+    """
+    mirror_panels = sorted(
+        (
+            panel for panel in panels
+            if panel.mirror_glass and panel.machine == "WJ" and not panel.skip_dxf
+        ),
+        key=lambda panel: panel.item,
+    )
+    for sequence_item, panel in enumerate(mirror_panels, start=1):
+        if sequence_item == panel.item:
+            continue
+        normal = programmer.find_source_dxf(
+            folder,
+            process_order.job_name,
+            panel,
+            aw_order=process_order.aw_order,
+        )
+        if normal is not None and programmer.dxf_dimensions_match_panel(normal, panel):
+            continue
+        original_source_item = panel.source_item
+        panel.source_item = sequence_item
+        candidate = programmer.find_source_dxf(
+            folder,
+            process_order.job_name,
+            panel,
+            aw_order=process_order.aw_order,
+        )
+        if candidate is None or not programmer.dxf_dimensions_match_panel(candidate, panel):
+            panel.source_item = original_source_item
+            continue
+        panel.reasons.append(
+            f"mirror Waterjet DXF sequence P{sequence_item} applied to process-list P{panel.item}"
+        )
 
 
 def denver_minimum_forces_wj(panel: programmer.Panel, config: dict[str, object]) -> bool:
@@ -2632,6 +2827,7 @@ def prepare_job(
         remake_items = {item_remaps.get(item, item) for item in remake_items}
     attach_unlabeled_process_pages(reader, panels, process_order, config)
     attach_unmarked_process_pages(reader, panels, process_order, config)
+    attach_mirror_label_only_pages(reader, panels, process_order, config)
     reconcile_process_list_item_gaps(panels, process_order)
     reconcile_missing_items_from_extra_sketch_pages(panels, process_order)
     apply_process_hints(panels, process_order, config)
@@ -2660,6 +2856,7 @@ def prepare_job(
         report_path=report_dir / f"{process_order.aw_order}_programming_report.txt",
         remake_items=selected_remake_items,
     )
+    apply_mirror_dxf_sequence_hints(job.panels, process_order, folder)
     programmer.assign_dxf_paths(job, folder, dxf_output_dir, config)
     programmer.apply_corner_text_indicator_avoidance(reader, job.panels, config)
     return job, reader, collect_issues(job, process_order)
@@ -2670,7 +2867,11 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
     expected = set(process_order.item_numbers)
     actual = {panel.item for panel in job.panels}
     missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
+    extra = sorted(
+        panel.item
+        for panel in job.panels
+        if panel.item not in expected and not panel.mirror_label_only
+    )
     if missing:
         issues.append("Missing sketch page: " + ", ".join(f"P{i}" for i in missing))
     if extra:
@@ -2680,7 +2881,8 @@ def collect_issues(job: programmer.Job, process_order: ProcessOrder) -> list[str
         if panel.remake_excluded:
             continue
         has_process_remap_reason = any(
-            reason.startswith("process-list P") and "applied to sketch" in reason
+            (reason.startswith("process-list P") and "applied to sketch" in reason)
+            or reason.startswith("mirror Waterjet DXF sequence")
             for reason in panel.reasons
         )
         if panel.source_item is not None and panel.source_item != panel.item and not has_process_remap_reason:
@@ -2765,6 +2967,47 @@ def process_one_order(
         result.status = "FAILED"
         result.issues.append(str(exc))
         return result
+
+
+def isolated_worker_probe(value: str) -> str:
+    """Picklable packaging probe used to verify spawned worker support."""
+    return f"isolated:{value}"
+
+
+def process_one_order_isolated(payload: tuple[object, ...]) -> BatchJobResult:
+    """Process one order in a spawned worker while retaining installed rules."""
+    (
+        process_order,
+        folder,
+        sketch_output_dir,
+        dxf_output_dir,
+        report_dir,
+        config,
+        apply,
+        force,
+        skip_pdf,
+        skip_dxf,
+        remake_items,
+    ) = payload
+    # Spawned Python workers do not inherit monkey patches from the GUI
+    # process. Install the release feature layer before doing production work.
+    import shower_programmer_gui as gui
+    import shower_v4_features
+
+    shower_v4_features.install(programmer, sys.modules[__name__], gui)
+    return process_one_order(
+        process_order=process_order,  # type: ignore[arg-type]
+        folder=Path(folder),
+        sketch_output_dir=Path(sketch_output_dir),
+        dxf_output_dir=Path(dxf_output_dir),
+        report_dir=Path(report_dir),
+        config=config,  # type: ignore[arg-type]
+        apply=bool(apply),
+        force=bool(force),
+        skip_pdf=bool(skip_pdf),
+        skip_dxf=bool(skip_dxf),
+        remake_items=remake_items,  # type: ignore[arg-type]
+    )
 
 
 def write_dxfs_with_issue_collection(job: programmer.Job, force: bool, config: dict[str, object]) -> list[str]:

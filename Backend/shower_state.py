@@ -404,6 +404,14 @@ class StateStore:
             row = connection.execute("SELECT * FROM orders WHERE aw_order=?", (str(aw_order),)).fetchone()
             return dict(row) if row else {}
 
+    def order_states(self) -> list[dict[str, Any]]:
+        """Return durable order identities for conservative orphan-input cleanup."""
+        with closing(self.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM orders ORDER BY updated_at, aw_order"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def lifecycle_events(self, aw_order: str, limit: int = 50) -> list[dict[str, Any]]:
         with closing(self.connect()) as connection:
             rows = connection.execute(

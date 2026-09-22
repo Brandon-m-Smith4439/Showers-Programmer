@@ -2,6 +2,112 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.55] - 2026-09-22
+
+### Fixed
+- Preserved an explicit Denver process-list route when generic radius/notch text belongs to Denver-supported fabrication such as an SCU4 slot.
+- Corrected order `239169.2`, whose `1/2 Radius` was part of an SCU4 operation assigned to Denver 1 rather than independent Waterjet-only fabrication.
+
+### Safety
+- Kept true radius/notch pieces on Waterjet when no explicit Denver route is present, including SCU4 pieces assigned to Waterjet.
+
+### Validation
+- Added routing regressions for the `239169.2` SCU4/Denver 1 case, an unaffected true-radius Waterjet case, and an SCU4 piece explicitly assigned to Waterjet.
+
+## [Version 1.54] - 2026-09-22
+
+### Fixed
+- Stopped treating a later local process-list copy timestamp as proof that an exact production sketch belongs to an older order revision when no current local order input exists.
+- Added exact Job Nr support for letter suffixes followed by revisions, including identities such as `90027720M.2`, so companion DXFs are archived with their order.
+- Retired valid mirror-only process lists that contain no Waterjet programming work after confirming no matching local inputs remain.
+- Added a conservative scan-time recovery sweep for old DXF-only inputs whose latest durable job state is Sent, Deleted, or Archived; active batches and jobs with a local PDF remain protected.
+
+### Improved
+- Cached valid zero-order process-list results and avoided unnecessary Excel conversion for mirror batches with no Waterjet-routed work.
+- Kept the durable SQLite lifecycle state synchronized when an exact production sketch reconciles an order as sent.
+
+### Safety
+- Old local DXFs are moved into the dated Orders archive rather than deleted, and only when they are at least ten minutes old with no active process order or root-level PDF for the exact Job Nr.
+
+### Validation
+- Added regression coverage for revised letter-suffix Job Nrs, stale-copy-safe production reconciliation, zero-work mirror retirement, active-input protection, and dated orphan-DXF archiving.
+- Verified the full cleanup sequence against an isolated copy of the current runtime: seven production orders reconciled, 34 terminal DXFs archived, and all five files from batches 6415, 6469, 6530, and 6589 retired without warnings.
+
+## [Version 1.53] - 2026-09-22
+
+### Fixed
+- Applied the native Windows maximized state while the main window is still transparent, then revealed it only after the maximized layout settled to prevent windowed startup and visible resizing.
+- Added order-level archiving for locally staged orders with valid current sent receipts, even when another order in the same process-list batch remains unsent.
+
+### Safety
+- Kept incomplete process-list files active when archiving individual sent-order PDF/DXF inputs; the process list is moved only after every order in its batch is sent or explicitly deleted.
+
+### Validation
+- Added regression coverage for native maximize-before-reveal presentation, partial-batch sent-input eligibility, full-batch retirement protection, and Version 1.53 metadata.
+
+## [Version 1.52] - 2026-09-22
+
+### Fixed
+- Replaced the withdrawn main-window startup with transparent-first presentation, preventing CustomTkinter from leaving the executable running invisibly and triggering an already-open warning on the next launch.
+
+### Validation
+- Added a packaged startup check that requires a visible, titled Windows application window before the release is accepted.
+
+## [Version 1.51] - 2026-09-22
+
+### Fixed
+- Displayed mapped A&W piece identities on generated sketch labels, review status, and editor headers, so sketch page P3 can correctly show order `239018.2` while remaining P3 for page navigation.
+- Made the sent-batch archive action available from a remaining child order when every original batch order has a current sent or explicit deletion receipt.
+- Removed repeated startup maximize passes and built major child windows invisibly before presentation to prevent visible layout flashing and jitter.
+
+### Improved
+- Marked the Manual Programming customer field as optional and preserved a blank value when the customer is unknown.
+- Registered a stable Windows AppUserModelID so the executable groups consistently with its icon on the taskbar.
+
+### Validation
+- Added regression coverage for mapped sketch labels, terminal-history archive discovery from child rows, optional manual customers, hidden-first presentation, and Version 1.51 metadata.
+
+## [Version 1.50] - 2026-09-22
+
+### Fixed
+- Prevented mirror-only Waterjet section headings from leaking into ordinary process-list rows, restoring Denver 1 routing for PPH doors and no-machine routing for pieces without fabrication.
+- Preserved separate sketch-page and A+W item identities for intentionally blank panel positions, so sketch P3 can correctly display and output as A+W item `.2`.
+- Preferred the longest supporting DXF edge during Denver panel angle correction, preventing a short cut-in transition from distorting the entire program.
+- Kept manually reprocessed Denver output long-side horizontal while retaining the selected indicator orientation.
+
+### Added
+- Added **No Machine** to the Review Order machine selector; it removes the indicator, skips program generation, and clears a stale generated DXF for that piece.
+- Added a right-click **Send Sent Batch to Archives** action for batches whose current orders all have valid sent receipts.
+- Added order-number labels to non-fabricated mirror pages without creating unnecessary DXFs.
+- Added a visible processing state for **Process DXF Again**.
+
+### Improved
+- Isolated sequential order programming in a spawned worker process so the main window can repaint row-by-row progress instead of freezing during PDF/DXF work.
+- Invalidated stale process-list cache records after the routing correction.
+
+### Validation
+- Added regression coverage for ordinary-batch machine isolation, gapped A+W numbering, cut-in angle selection, No Machine overrides, mirror label-only pages, and Version 1.50 metadata.
+
+## [Version 1.49] - 2026-09-21
+
+### Fixed
+- Preserved Waterjet machine routing from mirror process-list section headings, so fabricated mirror rows are no longer discarded when the item row contains only downstream machine text.
+- Matched mirror DXFs by A+W's filtered fabricated-piece sequence when that numbering differs from the original process-list item number, with a required dimension check before remapping.
+- Recognized letter-suffixed Job Nr values followed by normal punctuation, including `90239127M.`, while retaining exact dotted-revision protection.
+- Reused a matching locally staged network PDF when the authoritative Orders copy is missing, so an interrupted import can repair itself even after the shared source is no longer available.
+- Included matching files in the local network-PDF cache when deleting order inputs, preventing hidden cached copies from surviving an explicit cleanup.
+
+### Added
+- Added a right-click **Program Manually** workflow for input-only sketches. Manual A&W, piece, and machine records are stored locally without altering source process-list files.
+- Added persistent startup recovery-warning history to Settings > Recovery.
+
+### Improved
+- Updated Process All to move focus down the Orders list and fill the activity bar after each completed order.
+- Limited a startup recovery popup to the first occurrence of a warning state; it appears again only when the recovery condition changes or a new condition occurs.
+
+### Validation
+- Added regression coverage for mirror Waterjet section routing, letter-suffix job matching, manual-process persistence, one-time recovery state, cached-input cleanup, and Version 1.49 metadata.
+
 ## [Version 1.48] - 2026-08-31
 
 ### Fixed

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import multiprocessing
 
 import shower_batch
 import shower_programmer
@@ -25,4 +26,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

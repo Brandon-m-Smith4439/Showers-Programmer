@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.48",
-  "version_number": 148,
-  "marker": "VERSION_1_48_RESILIENT_IMPORT_HARDWARE_ROUTING",
-  "release_name": "Resilient Import and Hardware Routing",
-  "release_date": "2026-08-31",
+  "version": "Version 1.55",
+  "version_number": 155,
+  "marker": "VERSION_1_55_DENVER_RADIUS_PRECEDENCE",
+  "release_name": "Denver Radius Precedence",
+  "release_date": "2026-09-22",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

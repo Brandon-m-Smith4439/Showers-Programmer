@@ -65,6 +65,7 @@ import hashlib
 import html
 import json
 import math
+import multiprocessing
 import queue
 import re
 import shutil
@@ -82,7 +83,7 @@ import uuid
 import webbrowser
 import zipfile
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -716,6 +717,8 @@ class ShowerProgrammerApp:
     UI_SETTINGS_FILE_NAME = "shower_programmer_ui_settings.json"
     ACTION_HISTORY_RETENTION_DAYS = 7
     ACTION_HISTORY_FILE_NAME = "action_history.jsonl"
+    STARTUP_RECOVERY_STATE_FILE_NAME = "startup_recovery_notices.json"
+    MANUAL_PROCESS_ORDERS_FILE_NAME = "manual_process_orders.json"
     QUARANTINE_RETENTION_DAYS = 7
     QUARANTINE_FOLDER_NAME = "Recovery"
     DIAGNOSTICS_FOLDER_NAME = "Diagnostics"
@@ -860,6 +863,8 @@ class ShowerProgrammerApp:
         self.recent_external_page_launches: dict[str, float] = {}
         self._manual_overrides_session_output: Path | None = None
         self._manual_overrides_session_data: dict[str, object] | None = None
+        self._main_window_presented = False
+        self._main_window_present_job: str | None = None
 
         shower_cache.configure(Path(self.output_dir_var.get()).resolve() / ".scan_cache")
 
@@ -886,14 +891,64 @@ class ShowerProgrammerApp:
             results = []
         self.startup_recovery_results = results
         actionable = [item for item in results if str(item.get("severity", "")).upper() == "WARN"]
+        state = self.load_startup_recovery_notice_state()
         if not actionable:
+            if str(state.get("active_fingerprint", "")):
+                state["active_fingerprint"] = ""
+                history = state.setdefault("history", [])
+                if isinstance(history, list):
+                    history.append(
+                        {
+                            "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                            "status": "RESOLVED",
+                            "title": "Startup recovery warnings cleared",
+                            "detail": "The previously reported recovery condition is no longer present.",
+                        }
+                    )
+                self.save_startup_recovery_notice_state(state)
+                self.record_action(
+                    "Startup Recovery Resolved",
+                    "Previously reported startup recovery warnings are no longer present.",
+                    status="SUCCESS",
+                )
             return
+        fingerprint = self.startup_recovery_fingerprint(actionable)
+        if fingerprint == str(state.get("active_fingerprint", "")):
+            return
+        state["active_fingerprint"] = fingerprint
+        history = state.setdefault("history", [])
+        if not isinstance(history, list):
+            history = []
+            state["history"] = history
+        now_text = datetime.now().astimezone().isoformat(timespec="seconds")
+        for item in actionable:
+            history.append(
+                {
+                    "timestamp": now_text,
+                    "status": "WARNING",
+                    "title": str(item.get("title", "Recovery item")),
+                    "detail": str(item.get("detail", "")),
+                    "path": str(item.get("path", "")),
+                    "fingerprint": fingerprint,
+                }
+            )
+        state["history"] = history[-100:]
+        self.save_startup_recovery_notice_state(state)
+        self.record_action(
+            "Startup Recovery Warning",
+            f"Found {len(actionable)} new or changed startup recovery warning(s).",
+            status="WARNING",
+            details="; ".join(
+                f"{item.get('title', 'Recovery item')}: {item.get('detail', '')}"
+                for item in actionable
+            ),
+        )
         preview = "\n".join(
-            f"• {item.get('title', 'Recovery item')}: {item.get('detail', '')}"
+            f"- {item.get('title', 'Recovery item')}: {item.get('detail', '')}"
             for item in actionable[:5]
         )
         if len(actionable) > 5:
-            preview += f"\n• ...and {len(actionable) - 5} more"
+            preview += f"\n- ...and {len(actionable) - 5} more"
         choice = messagebox._show(
             "showwarning",
             "Startup recovery check",
@@ -907,21 +962,74 @@ class ShowerProgrammerApp:
         if choice == "recovery":
             self.open_settings("Recovery")
 
+    def startup_recovery_notice_path(self) -> Path:
+        return self.action_history_dir() / self.STARTUP_RECOVERY_STATE_FILE_NAME
+
+    @staticmethod
+    def startup_recovery_fingerprint(items: Iterable[dict[str, str]]) -> str:
+        normalized = sorted(
+            (
+                {
+                    "type": str(item.get("type", "")),
+                    "title": str(item.get("title", "")),
+                    "detail": str(item.get("detail", "")),
+                    "path": str(item.get("path", "")),
+                }
+                for item in items
+            ),
+            key=lambda item: (item["type"], item["title"], item["detail"], item["path"]),
+        )
+        payload = json.dumps(normalized, ensure_ascii=True, sort_keys=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def load_startup_recovery_notice_state(self) -> dict[str, object]:
+        path = self.startup_recovery_notice_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {"active_fingerprint": "", "history": []}
+        return data if isinstance(data, dict) else {"active_fingerprint": "", "history": []}
+
+    def save_startup_recovery_notice_state(self, state: dict[str, object]) -> None:
+        path = self.startup_recovery_notice_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.stem}-{uuid.uuid4().hex[:8]}.tmp")
+        temporary.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+
     def force_main_window_maximized(self) -> None:
-        """Keep the main application maximized after theme/startup rebuilds."""
-        def maximize() -> None:
+        """Settle the main layout at its maximized size before making it visible."""
+        if self._main_window_presented:
+            try:
+                self.maximize_window(self.root)
+                self.root.lift()
+            except tk.TclError:
+                pass
+            return
+        if self._main_window_present_job is not None:
+            return
+
+        def reveal() -> None:
+            self._main_window_present_job = None
             try:
                 self.root.update_idletasks()
                 self.maximize_window(self.root)
+                self.root.update_idletasks()
+                self.root.attributes("-alpha", 1.0)
+                self.root.lift()
+                self._main_window_presented = True
             except tk.TclError:
                 pass
 
-        maximize()
-        for delay in (50, 200, 650):
-            try:
-                self.root.after(delay, maximize)
-            except tk.TclError:
-                pass
+        try:
+            self.root.deiconify()
+            self.root.update_idletasks()
+            self.maximize_window(self.root)
+            self._main_window_present_job = self.root.after_idle(
+                lambda: setattr(self, "_main_window_present_job", self.root.after(80, reveal))
+            )
+        except tk.TclError:
+            pass
 
     @classmethod
     def preferred_runtime_root(cls) -> Path:
@@ -1435,6 +1543,15 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    def create_hidden_toplevel(self, owner: tk.Widget) -> Any:
+        """Create a child window without exposing its unfinished layout."""
+        window = ctk.CTkToplevel(owner) if ctk is not None else tk.Toplevel(owner)
+        try:
+            window.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+        return window
+
     @staticmethod
     def maximize_window(window: Any) -> None:
         """Use a real OS maximize state instead of borderless fullscreen.
@@ -1442,18 +1559,20 @@ class ShowerProgrammerApp:
         Fullscreen hides normal Windows caption controls and can cover the
         taskbar, so it is intentionally not used as a maximize fallback.
         """
+        if os.name == "nt":
+            try:
+                window.update_idletasks()
+                child_hwnd = int(window.winfo_id())
+                root_hwnd = int(ctypes.windll.user32.GetAncestor(child_hwnd, 2))  # GA_ROOT
+                ctypes.windll.user32.ShowWindow(root_hwnd or child_hwnd, 3)  # SW_MAXIMIZE
+                return
+            except Exception:
+                pass
         try:
             window.state("zoomed")
             return
         except tk.TclError:
             pass
-        if os.name == "nt":
-            try:
-                window.update_idletasks()
-                ctypes.windll.user32.ShowWindow(int(window.winfo_id()), 3)  # SW_MAXIMIZE
-                return
-            except Exception:
-                pass
         try:
             window.attributes("-zoomed", True)
         except tk.TclError:
@@ -1545,6 +1664,10 @@ class ShowerProgrammerApp:
             try:
                 window.lift()
                 window.focus_force()
+            except tk.TclError:
+                pass
+            try:
+                window.attributes("-alpha", 1.0)
             except tk.TclError:
                 pass
             try:
@@ -5688,6 +5811,22 @@ class ShowerProgrammerApp:
             except Exception as exc:
                 raise RuntimeError(f"Could not read process list {source.name}: {exc}") from exc
             orders = shower_batch.visible_orders(loaded, config)
+            source_orders: list[shower_batch.ProcessOrder] = []
+            zero_programming_work = False
+            if not loaded:
+                try:
+                    source_orders = shower_batch.load_process_orders_from_file_uncached(
+                        source,
+                        progress_callback,
+                        include_non_waterjet_mirror=True,
+                    )
+                except Exception:
+                    source_orders = []
+                zero_programming_work = bool(source_orders) and all(
+                    item.desired_machine() != "WJ"
+                    for order in source_orders
+                    for item in order.items.values()
+                )
             batch_id = str(source.resolve()).casefold()
             try:
                 stable_identity = shower_state.StateStore.batch_identity(source)
@@ -5701,6 +5840,8 @@ class ShowerProgrammerApp:
                     "path": source.resolve(),
                     "name": source.name,
                     "orders": orders,
+                    "source_orders": source_orders,
+                    "zero_programming_work": zero_programming_work,
                 }
             )
         return batches
@@ -5986,6 +6127,28 @@ class ShowerProgrammerApp:
             check_cancelled()
             stage_started = time.perf_counter()
             all_batches = self.load_process_list_batches(process_list, config, normalization_progress)
+            manual_orders = self.load_manual_process_orders_for_output(output_dir)
+            process_aw_orders = {
+                str(order.aw_order)
+                for batch in all_batches
+                for order in batch.get("orders", [])
+                if isinstance(order, shower_batch.ProcessOrder)
+            }
+            manual_orders = [
+                order for order in manual_orders
+                if str(order.aw_order) not in process_aw_orders
+            ]
+            if manual_orders:
+                all_batches.append(
+                    {
+                        "id": "manual-programming",
+                        "stable_id": "manual-programming",
+                        "path": None,
+                        "name": "Manual Programming",
+                        "orders": manual_orders,
+                        "manual": True,
+                    }
+                )
             process_parse_elapsed = remember_stage("Process-list parse", stage_started)
             self.record_performance("Scan Orders", "Load process lists", process_parse_elapsed * 1000.0, {"batches": len(all_batches)}, output_dir=output_dir)
             copied_process_lists = [
@@ -6053,6 +6216,7 @@ class ShowerProgrammerApp:
                     all_batches,
                     output_dir,
                     self.SHOP_SKETCHES_DIR,
+                    folder,
                 )
                 production_aw_orders = {str(order.aw_order) for order in production_sent_orders}
                 if production_sent_orders:
@@ -6077,6 +6241,14 @@ class ShowerProgrammerApp:
                             "_last_archived_order_sources_by_aw",
                             {},
                         )
+                terminal_orphan_active_orders = self.unique_orders_from_batches(all_batches)
+                orphan_archived, orphan_archive_warnings = self.archive_terminal_orphan_dxfs(
+                    folder,
+                    output_dir,
+                    terminal_orphan_active_orders,
+                )
+                production_input_archived.extend(orphan_archived)
+                production_reconciliation_warnings.extend(orphan_archive_warnings)
                 retired_batch_plans = self.completed_process_list_batches_from_history(
                     all_batches,
                     folder,
@@ -6096,7 +6268,8 @@ class ShowerProgrammerApp:
                     all_batches = [
                         batch
                         for batch in all_batches
-                        if isinstance(batch.get("path"), Path) and Path(batch["path"]).exists()
+                        if bool(batch.get("manual", False))
+                        or (isinstance(batch.get("path"), Path) and Path(batch["path"]).exists())
                     ]
                     process_list_files = shower_batch.process_list_files(process_list)
 
@@ -6461,6 +6634,65 @@ class ShowerProgrammerApp:
 
     def manual_overrides_path(self) -> Path:
         return Path(self.output_dir_var.get()).resolve() / "manual_overrides.json"
+
+    @classmethod
+    def manual_process_orders_path(cls, output_dir: Path) -> Path:
+        return Path(output_dir).resolve() / cls.MANUAL_PROCESS_ORDERS_FILE_NAME
+
+    @classmethod
+    def load_manual_process_orders_for_output(cls, output_dir: Path) -> list[shower_batch.ProcessOrder]:
+        path = cls.manual_process_orders_path(output_dir)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return []
+        records = data.get("orders", []) if isinstance(data, dict) else []
+        orders = shower_batch.process_orders_from_cache(records)
+        for order in orders:
+            setattr(order, "manual_process_order", True)
+        return orders
+
+    @classmethod
+    def save_manual_process_orders_for_output(
+        cls,
+        output_dir: Path,
+        orders: Iterable[shower_batch.ProcessOrder],
+    ) -> None:
+        path = cls.manual_process_orders_path(output_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ordered = sorted(orders, key=lambda order: (str(order.aw_order), str(order.job_name).casefold()))
+        payload = {
+            "schema": 1,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "orders": shower_batch.process_orders_to_cache(ordered),
+        }
+        temporary = path.with_name(f"{path.stem}-{uuid.uuid4().hex[:8]}.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+
+    @staticmethod
+    def inferred_manual_piece_data(pdf_path: Path) -> dict[int, tuple[str, str]]:
+        """Infer editable piece numbers and dimensions without inventing process rules."""
+        inferred: dict[int, tuple[str, str]] = {}
+        reader = PdfReader(str(pdf_path))
+        unlabeled: list[tuple[int, str, str]] = []
+        for page_index, page in enumerate(reader.pages):
+            if page_index == 0:
+                continue
+            text = page.extract_text() or ""
+            if programmer.looks_like_template_page(text):
+                continue
+            width, height = programmer.extract_dimensions(text)
+            width_text = f"{width:.4f}".rstrip("0").rstrip(".") if width is not None else ""
+            height_text = f"{height:.4f}".rstrip("0").rstrip(".") if height is not None else ""
+            item_number = programmer.extract_item_number(text)
+            if item_number is not None:
+                inferred[item_number] = (width_text, height_text)
+            elif text.strip():
+                unlabeled.append((page_index, width_text, height_text))
+        for page_index, width_text, height_text in unlabeled:
+            inferred.setdefault(page_index, (width_text, height_text))
+        return inferred
 
     def processing_history_path(self) -> Path:
         return Path(self.output_dir_var.get()).resolve() / "processing_history.json"
@@ -7315,6 +7547,8 @@ class ShowerProgrammerApp:
         production_dir: Path,
         candidate_aw_orders: set[str],
         process_times: dict[str, float],
+        *,
+        allow_older_aw_orders: set[str] | None = None,
     ) -> tuple[dict[str, list[Path]], list[str], int, int]:
         """Probe exact production sketch names for the current process-list orders."""
         matches: dict[str, list[Path]] = {}
@@ -7338,6 +7572,9 @@ class ShowerProgrammerApp:
                 modified = None
             return aw_order, production_path, modified
 
+        allow_older_aw_orders = {
+            str(value) for value in (allow_older_aw_orders or set())
+        }
         ordered_orders = sorted(candidate_aw_orders)
         worker_count = cls.scan_io_worker_count(len(ordered_orders))
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-scan") as executor:
@@ -7347,7 +7584,11 @@ class ShowerProgrammerApp:
             if modified is None:
                 continue
             process_time = process_times.get(aw_order, 0.0)
-            if process_time and modified + 2.0 < process_time:
+            if (
+                process_time
+                and modified + 2.0 < process_time
+                and aw_order not in allow_older_aw_orders
+            ):
                 stale_matches += 1
                 continue
             matches[aw_order] = [production_path]
@@ -7359,6 +7600,7 @@ class ShowerProgrammerApp:
         batches: list[dict[str, object]],
         output_dir: Path,
         production_dir: Path,
+        order_folder: Path | None = None,
     ) -> tuple[
         list[shower_batch.ProcessOrder],
         dict[str, list[Path]],
@@ -7377,10 +7619,35 @@ class ShowerProgrammerApp:
             if not cls.order_is_terminal_in_history(order, history)
         ]
         candidate_aw_orders = {str(order.aw_order) for order in pending}
+        allow_older_aw_orders: set[str] = set()
+        if order_folder is not None and pending:
+            try:
+                current_inputs = cls.matching_order_files(
+                    Path(order_folder),
+                    pending,
+                    root_only=True,
+                    inspect_pdf_text=True,
+                )
+            except Exception:
+                current_inputs = []
+            orders_with_current_inputs = {
+                str(order.aw_order)
+                for order in pending
+                if any(
+                    cls.file_matches_process_orders(
+                        path,
+                        [order],
+                        inspect_pdf_text=path.suffix.lower() == ".pdf",
+                    )
+                    for path in current_inputs
+                )
+            }
+            allow_older_aw_orders = candidate_aw_orders - orders_with_current_inputs
         matches, warnings, files_checked, stale_matches = cls.production_sketch_matches(
             production_dir,
             candidate_aw_orders,
             process_times,
+            allow_older_aw_orders=allow_older_aw_orders,
         )
         if stale_matches:
             warnings.append(
@@ -7433,7 +7700,110 @@ class ShowerProgrammerApp:
                 json.dump(history, handle, indent=2, sort_keys=True)
         except OSError as exc:
             return [], matches, [*warnings, f"Could not save production sent receipts: {exc}"], files_checked
+        try:
+            state_store = shower_state.StateStore.for_output(output_dir)
+            for order in reconciled:
+                state_store.transition_order(
+                    str(order.aw_order),
+                    shower_state.LifecycleState.SENT,
+                    reason="Reconciled exact sketch from production folder",
+                    job_name=str(order.job_name),
+                    customer=str(order.customer),
+                    process_signature=cls.sent_process_signature(order),
+                    sent_at=str(history_orders[str(order.aw_order)].get("sent_at", "")),
+                )
+        except Exception as exc:
+            warnings.append(f"Could not update durable sent state after production reconciliation: {exc}")
         return reconciled, matches, warnings, files_checked
+
+    @classmethod
+    def archive_terminal_orphan_dxfs(
+        cls,
+        order_folder: Path,
+        output_dir: Path,
+        active_orders: list[shower_batch.ProcessOrder],
+        *,
+        minimum_age_seconds: float = 600.0,
+    ) -> tuple[list[Path], list[str]]:
+        """Archive old DXF-only inputs whose latest durable job state is terminal.
+
+        This deliberately ignores PDFs and any job represented by an active
+        process-list order or a root-level PDF. Those files still require an
+        operator-visible row and must never be retired by the orphan sweep.
+        """
+        folder = Path(order_folder)
+        if not folder.exists() or not folder.is_dir():
+            return [], []
+        try:
+            state_rows = shower_state.StateStore.for_output(output_dir).order_states()
+        except Exception as exc:
+            return [], [f"Could not inspect durable order states for old DXF cleanup: {exc}"]
+
+        latest_by_job: dict[str, dict[str, object]] = {}
+        for row in state_rows:
+            job_number = programmer.extract_job_number(str(row.get("job_name", "")))
+            if not job_number:
+                continue
+            prior = latest_by_job.get(job_number)
+            if prior is None or str(row.get("updated_at", "")) >= str(prior.get("updated_at", "")):
+                latest_by_job[job_number] = row
+
+        active_job_numbers = {
+            job_number
+            for order in active_orders
+            if (job_number := programmer.extract_job_number(order.job_name))
+        }
+        try:
+            root_files = [path for path in folder.iterdir() if path.is_file()]
+        except OSError as exc:
+            return [], [f"Could not inspect local order inputs for old DXF cleanup: {exc}"]
+
+        root_pdfs = [path for path in root_files if path.suffix.lower() == ".pdf"]
+        pdf_job_numbers: set[str] = set()
+        for pdf in root_pdfs:
+            job_number = programmer.extract_job_number(pdf.stem)
+            if not job_number:
+                try:
+                    job_number = programmer.extract_job_number_from_pdf(pdf)
+                except Exception:
+                    job_number = None
+            if job_number:
+                pdf_job_numbers.add(job_number)
+
+        terminal_states = {
+            shower_state.LifecycleState.SENT,
+            shower_state.LifecycleState.DELETED_LOCAL,
+            shower_state.LifecycleState.ARCHIVED,
+        }
+        now = time.time()
+        candidates: list[Path] = []
+        for path in root_files:
+            if path.suffix.lower() != ".dxf":
+                continue
+            job_number = programmer.extract_job_number(path.stem)
+            if not job_number or job_number in active_job_numbers or job_number in pdf_job_numbers:
+                continue
+            row = latest_by_job.get(job_number)
+            if not row or str(row.get("lifecycle_state", "")) not in terminal_states:
+                continue
+            try:
+                if now - path.stat().st_mtime < max(0.0, minimum_age_seconds):
+                    continue
+            except OSError:
+                continue
+            candidates.append(path)
+
+        if not candidates:
+            return [], []
+        archive_dir = cls.archive_dir_for_input_root(folder, cls.dated_archive_folder_name())
+        archived: list[Path] = []
+        warnings: list[str] = []
+        for source in sorted(candidates, key=lambda candidate: candidate.name.casefold()):
+            try:
+                archived.append(cls.move_file_to_folder(source, archive_dir))
+            except (OSError, shutil.Error) as exc:
+                warnings.append(f"Could not archive old terminal DXF {source.name}: {exc}")
+        return archived, warnings
 
     @classmethod
     def filter_retired_sent_orders(
@@ -7755,6 +8125,8 @@ class ShowerProgrammerApp:
         reactivated: list[str] = []
         reactivated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for batch in batches:
+            if bool(batch.get("manual", False)):
+                continue
             source_value = batch.get("path")
             try:
                 source = source_value if isinstance(source_value, Path) else Path(str(source_value))
@@ -9054,6 +9426,231 @@ class ShowerProgrammerApp:
             orders=orders,
         )
 
+    def open_manual_program_dialog(self, process_order: shower_batch.ProcessOrder) -> None:
+        """Create an explicit local process record for an input-only order."""
+        source_pdf_value = getattr(process_order, "source_pdf", None)
+        source_pdf = Path(source_pdf_value) if source_pdf_value else None
+        if source_pdf is None or not source_pdf.is_file():
+            try:
+                source_pdf = programmer.find_pdf(
+                    Path(self.folder_var.get()).resolve(),
+                    process_order.job_name,
+                    None if self.is_input_only_order(process_order) else process_order.aw_order,
+                )
+            except Exception as exc:
+                messagebox.showwarning(
+                    "Manual programming unavailable",
+                    f"The source sketch could not be opened.\n\n{exc}",
+                    parent=self.root,
+                )
+                return
+        try:
+            inferred = self.inferred_manual_piece_data(source_pdf)
+        except Exception as exc:
+            messagebox.showerror("Could not inspect sketch", str(exc), parent=self.root)
+            return
+        existing_manual = bool(getattr(process_order, "manual_process_order", False))
+        inferred_items = sorted(process_order.item_numbers or inferred)
+        if not inferred_items:
+            messagebox.showwarning(
+                "No pieces detected",
+                "No programmable piece pages were found in this sketch.",
+                parent=self.root,
+            )
+            return
+
+        dialog = self.create_hidden_toplevel(self.root)
+        dialog.title("Manual Programming")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        self.set_window_icon(dialog)
+        self.position_child_window(dialog, 660, 610)
+        shell = ctk.CTkFrame(dialog, fg_color=self.APP_BG, corner_radius=0)
+        shell.pack(fill=tk.BOTH, expand=True)
+        card = ctk.CTkFrame(
+            shell,
+            fg_color=self.CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        card.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
+        ctk.CTkLabel(
+            card,
+            text="Program Order Manually",
+            font=("Segoe UI", 20, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=22, pady=(20, 2))
+        ctk.CTkLabel(
+            card,
+            text="Use this only when no usable process-list row exists. The selected machine applies to every listed piece.",
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=570,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", padx=22, pady=(0, 16))
+        card.grid_columnconfigure(1, weight=1)
+
+        aw_default = "" if self.is_input_only_order(process_order) else str(process_order.aw_order)
+        aw_var = tk.StringVar(value=aw_default)
+        job_var = tk.StringVar(value=str(process_order.job_name))
+        customer_default = "" if str(process_order.customer) == "Input file only" else str(process_order.customer)
+        customer_var = tk.StringVar(value=customer_default)
+        items_var = tk.StringVar(value=", ".join(str(item) for item in inferred_items))
+        existing_machines = {
+            item.desired_machine() for item in process_order.items.values() if item.desired_machine()
+        }
+        try:
+            first_page = programmer.extract_first_page_text(source_pdf).upper()
+        except Exception:
+            first_page = ""
+        default_machine = next(iter(existing_machines), "WJ" if "MIRROR" in first_page else "DENVER 2")
+        machine_var = tk.StringVar(value=default_machine)
+
+        def add_field(row: int, label: str, variable: tk.StringVar) -> None:
+            ctk.CTkLabel(
+                card, text=label, font=("Segoe UI", 10, "bold"), text_color=self.TEXT, anchor="w",
+            ).grid(row=row, column=0, sticky="w", padx=(22, 12), pady=7)
+            ctk.CTkEntry(
+                card,
+                textvariable=variable,
+                height=36,
+                corner_radius=9,
+                border_color=self.BORDER,
+                fg_color=self.ENTRY_BG,
+                text_color=self.TEXT,
+            ).grid(row=row, column=1, sticky="ew", padx=(0, 22), pady=7)
+
+        add_field(2, "A&W order", aw_var)
+        add_field(3, "Job", job_var)
+        add_field(4, "Customer (optional)", customer_var)
+        add_field(5, "Pieces", items_var)
+        ctk.CTkLabel(
+            card, text="Machine", font=("Segoe UI", 10, "bold"), text_color=self.TEXT, anchor="w",
+        ).grid(row=6, column=0, sticky="w", padx=(22, 12), pady=7)
+        ctk.CTkOptionMenu(
+            card,
+            variable=machine_var,
+            values=["WJ", "DENVER 1", "DENVER 2"],
+            height=36,
+            corner_radius=9,
+            fg_color=self.ENTRY_BG,
+            button_color=self.ACCENT,
+            button_hover_color=self.ACCENT_DARK,
+            text_color=self.TEXT,
+        ).grid(row=6, column=1, sticky="ew", padx=(0, 22), pady=7)
+        ctk.CTkLabel(
+            card,
+            text=f"Sketch: {source_pdf.name}",
+            font=("Segoe UI", 9),
+            text_color=self.MUTED,
+            anchor="w",
+            wraplength=570,
+        ).grid(row=7, column=0, columnspan=2, sticky="ew", padx=22, pady=(10, 8))
+        error_var = tk.StringVar(value="")
+        ctk.CTkLabel(
+            card,
+            textvariable=error_var,
+            font=("Segoe UI", 9, "bold"),
+            text_color=self.DANGER,
+            anchor="w",
+        ).grid(row=8, column=0, columnspan=2, sticky="ew", padx=22)
+
+        def remove_manual() -> None:
+            output_dir = Path(self.output_dir_var.get()).resolve()
+            stored = self.load_manual_process_orders_for_output(output_dir)
+            remaining = [
+                order for order in stored
+                if str(order.aw_order) != str(process_order.aw_order)
+            ]
+            self.save_manual_process_orders_for_output(output_dir, remaining)
+            self.record_action(
+                "Remove Manual Programming",
+                f"Removed the manual process record for A&W {process_order.aw_order}.",
+                status="SUCCESS",
+                orders=[process_order],
+            )
+            dialog.destroy()
+            self.refresh_local_orders()
+
+        def save_manual() -> None:
+            aw_order = aw_var.get().strip()
+            job_name = programmer.clean_job_name(job_var.get())
+            item_tokens = re.findall(r"\d+", items_var.get())
+            item_numbers = sorted({int(value) for value in item_tokens if int(value) > 0})
+            if not re.fullmatch(r"\d{5,10}", aw_order):
+                error_var.set("Enter the numeric A&W order number shown in A+W.")
+                return
+            if not job_name:
+                error_var.set("Enter the job name or Job Nr.")
+                return
+            if not item_numbers:
+                error_var.set("Enter at least one piece number, such as 1 or 1, 2.")
+                return
+            manual_order = shower_batch.ProcessOrder(
+                aw_order=aw_order,
+                job_name=job_name,
+                customer=customer_var.get().strip(),
+            )
+            for item_number in item_numbers:
+                width_text, height_text = inferred.get(item_number, ("", ""))
+                manual_order.items[item_number] = shower_batch.ProcessItem(
+                    item=item_number,
+                    width_text=width_text,
+                    height_text=height_text,
+                    customer=customer_var.get().strip(),
+                    processing=["MANUAL PROGRAMMING"],
+                    machine_hints=[machine_var.get()],
+                )
+            setattr(manual_order, "manual_process_order", True)
+            output_dir = Path(self.output_dir_var.get()).resolve()
+            stored = self.load_manual_process_orders_for_output(output_dir)
+            original_aw = str(process_order.aw_order)
+            stored = [
+                order for order in stored
+                if str(order.aw_order) not in {original_aw, aw_order}
+                and programmer.normalize_lookup(order.job_name) != programmer.normalize_lookup(job_name)
+            ]
+            stored.append(manual_order)
+            self.save_manual_process_orders_for_output(output_dir, stored)
+            self.record_action(
+                "Manual Programming",
+                f"Created a manual {machine_var.get()} process record for A&W {aw_order}: P{', P'.join(str(value) for value in item_numbers)}.",
+                status="WARNING",
+                orders=[manual_order],
+                details=f"Source sketch={source_pdf.name}",
+            )
+            dialog.destroy()
+            self.refresh_local_orders()
+
+        footer = ctk.CTkFrame(card, fg_color="transparent")
+        footer.grid(row=9, column=0, columnspan=2, sticky="ew", padx=22, pady=(16, 20))
+        footer.grid_columnconfigure(0, weight=1)
+        if existing_manual:
+            self.make_tool_button(footer, "Remove Manual Entry", "trash", remove_manual, width=160).grid(
+                row=0, column=0, sticky="w"
+            )
+        self.make_tool_button(footer, "Cancel", "close", dialog.destroy, width=104).grid(
+            row=0, column=1, padx=(8, 0)
+        )
+        ctk.CTkButton(
+            footer,
+            text="Save Manual Order",
+            command=save_manual,
+            width=160,
+            height=36,
+            corner_radius=9,
+            fg_color=self.ACCENT,
+            hover_color=self.ACCENT_DARK,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("save", 14, "#ffffff", "left"),
+        ).grid(row=0, column=2, padx=(8, 0))
+        dialog.grab_set()
+        self.bring_window_to_front(dialog, make_transient=True)
+
     def open_orders_context_menu(self, event: tk.Event) -> str:
         row_id = self.tree.identify_row(event.y)
         if not row_id:
@@ -9112,6 +9709,17 @@ class ShowerProgrammerApp:
             },
         ]
         if not batch_id and order is not None:
+            if len(selected_orders) == 1 and (
+                self.is_input_only_order(order) or bool(getattr(order, "manual_process_order", False))
+            ):
+                actions.insert(
+                    1,
+                    {
+                        "text": "Edit Manual Programming" if getattr(order, "manual_process_order", False) else "Program Manually",
+                        "icon": "play",
+                        "command": lambda selected=order: self.open_manual_program_dialog(selected),
+                    },
+                )
             actions.insert(
                 1,
                 {
@@ -9153,8 +9761,258 @@ class ShowerProgrammerApp:
                     ),
                 }
             )
+        archive_batch_id = self.archivable_batch_id_for_context(batch_id, selected_orders)
+        if archive_batch_id:
+            actions.insert(
+                1,
+                {
+                    "text": "Send Sent Batch to Archives",
+                    "icon": "archive",
+                    "command": lambda selected_batch=archive_batch_id: self.archive_sent_batch_inputs(selected_batch),
+                },
+            )
+        else:
+            sent_archive_orders = self.sent_orders_for_input_archive_context(batch_id, selected_orders)
+            if sent_archive_orders:
+                sent_order_snapshot = tuple(sent_archive_orders)
+                actions.insert(
+                    1,
+                    {
+                        "text": "Archive Sent Order Inputs",
+                        "icon": "archive",
+                        "command": lambda archived_orders=sent_order_snapshot: self.archive_sent_order_inputs(
+                            list(archived_orders)
+                        ),
+                    },
+                )
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
         return "break"
+
+    def batch_is_fully_sent(self, batch: dict[str, object]) -> bool:
+        raw_orders = batch.get("all_orders", batch.get("orders", []))
+        orders = [order for order in raw_orders if isinstance(order, shower_batch.ProcessOrder)] if isinstance(raw_orders, list) else []
+        if not orders:
+            return False
+        try:
+            history = self.load_processing_history()
+        except Exception:
+            return False
+        for order in orders:
+            entry = self.history_entry_from_data(history, order.aw_order)
+            if not (
+                bool(entry.get("sent_at"))
+                and str(entry.get("sent_process_signature", "")) == self.sent_process_signature(order)
+            ):
+                return False
+        return True
+
+    def batch_is_ready_for_input_archive(
+        self,
+        batch: dict[str, object],
+        history: dict[str, object] | None = None,
+    ) -> bool:
+        """Accept a completed batch when every order is sent or explicitly deleted."""
+        raw_orders = batch.get("all_orders", batch.get("orders", []))
+        orders = [
+            order for order in raw_orders
+            if isinstance(order, shower_batch.ProcessOrder)
+        ] if isinstance(raw_orders, list) else []
+        if not orders:
+            return False
+        if history is None:
+            try:
+                history = self.load_processing_history()
+            except Exception:
+                return False
+        has_current_sent_receipt = False
+        for order in orders:
+            entry = self.history_entry_from_data(history, order.aw_order)
+            signature = self.sent_process_signature(order)
+            if bool(entry.get("sent_at")) and str(entry.get("sent_process_signature", "")) == signature:
+                has_current_sent_receipt = True
+            if not self.order_is_terminal_in_history(order, history):
+                return False
+        return has_current_sent_receipt
+
+    def archivable_batch_id_for_context(
+        self,
+        batch_id: str | None,
+        orders: Iterable[shower_batch.ProcessOrder],
+    ) -> str | None:
+        """Resolve a completed batch from either its parent row or a remaining child row."""
+        candidates: list[str] = []
+        if batch_id:
+            candidates.append(str(batch_id))
+        for order in orders:
+            for candidate in self.order_batch_ids.get(str(order.aw_order), []):
+                candidate_text = str(candidate)
+                if candidate_text not in candidates:
+                    candidates.append(candidate_text)
+        try:
+            history = self.load_processing_history()
+        except Exception:
+            return None
+        for candidate in candidates:
+            batch = self.process_batches.get(candidate, {})
+            if self.batch_is_ready_for_input_archive(batch, history):
+                return candidate
+        return None
+
+    def sent_orders_for_input_archive_context(
+        self,
+        batch_id: str | None,
+        orders: Iterable[shower_batch.ProcessOrder],
+        history: dict[str, object] | None = None,
+    ) -> list[shower_batch.ProcessOrder]:
+        """Return currently-sent orders whose local inputs may be archived independently."""
+        candidates = [order for order in orders if isinstance(order, shower_batch.ProcessOrder)]
+        if batch_id:
+            batch = self.process_batches.get(str(batch_id), {})
+            raw_orders = batch.get("all_orders", batch.get("orders", []))
+            if isinstance(raw_orders, list):
+                candidates = [
+                    order for order in raw_orders
+                    if isinstance(order, shower_batch.ProcessOrder)
+                ]
+        if history is None:
+            try:
+                history = self.load_processing_history()
+            except Exception:
+                return []
+        sent_orders: list[shower_batch.ProcessOrder] = []
+        seen: set[str] = set()
+        for order in candidates:
+            aw_order = str(order.aw_order)
+            if not aw_order or aw_order in seen:
+                continue
+            entry = self.history_entry_from_data(history, aw_order)
+            if not bool(entry.get("sent_at")):
+                continue
+            if str(entry.get("sent_process_signature", "")) != self.sent_process_signature(order):
+                continue
+            seen.add(aw_order)
+            sent_orders.append(order)
+        return sent_orders
+
+    def archive_sent_order_inputs(self, orders: list[shower_batch.ProcessOrder]) -> None:
+        """Archive selected sent order files while retaining an incomplete batch process list."""
+        sent_orders = self.sent_orders_for_input_archive_context(None, orders)
+        if not sent_orders:
+            self.show_themed_notice(
+                "Archive unavailable",
+                "No current sent receipt",
+                "The selected order inputs can be archived after the order has been sent successfully.",
+                icon_name="warning",
+                accent_color=self.WARNING,
+            )
+            return
+        order_numbers = ", ".join(str(order.aw_order) for order in sent_orders)
+        if not messagebox.askyesno(
+            "Archive sent order inputs",
+            f"Move the local PDF/DXF inputs for {order_numbers} into the dated archive?\n\n"
+            "The process list will remain active until every order in its batch is sent or explicitly deleted.",
+            parent=self.root,
+        ):
+            return
+        order_folder = Path(self.folder_var.get()).resolve()
+        process_list_path = Path(self.process_list_var.get()).resolve()
+
+        def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
+            return self.archive_sent_input_files_for_orders(
+                sent_orders,
+                order_folder,
+                process_list_path,
+                include_process_lists=False,
+                completed_process_batches=[],
+                progress_callback=lambda current, total, path: task.progress(
+                    current,
+                    total,
+                    f"Archiving {path.name} ({current}/{total})",
+                ),
+            )
+
+        def finished(payload: object) -> None:
+            archived, warnings = payload if isinstance(payload, tuple) else ([], ["Archive did not return a result."])
+            self.refresh_local_orders()
+            self.show_themed_notice(
+                "Order inputs archived" if not warnings else "Order inputs archived with notes",
+                f"Archived {len(archived)} input file(s)",
+                "The sent order inputs were moved to the dated archive; its incomplete process list remains active."
+                if not warnings else "The completed files were archived; review the notes below.",
+                icon_name="check_circle" if not warnings else "warning",
+                accent_color=self.SUCCESS if not warnings else self.WARNING,
+                details=[("Notes", "\n".join(warnings))] if warnings else None,
+            )
+
+        self.run_managed_task(
+            "Archive Sent Order Inputs",
+            worker,
+            message=f"Archiving sent inputs for {len(sent_orders)} order(s)...",
+            total=max(1, len(sent_orders)),
+            cancellable=True,
+            on_done=finished,
+            on_error=lambda exc: self.show_structured_error(exc, title="Archive sent order inputs failed"),
+        )
+
+    def archive_sent_batch_inputs(self, batch_id: str) -> None:
+        batch = self.process_batches.get(str(batch_id), {})
+        raw_orders = batch.get("all_orders", batch.get("orders", []))
+        orders = [order for order in raw_orders if isinstance(order, shower_batch.ProcessOrder)] if isinstance(raw_orders, list) else []
+        if not orders or not self.batch_is_ready_for_input_archive(batch):
+            self.show_themed_notice(
+                "Archive unavailable",
+                "This batch is not fully sent",
+                "Every order in the batch must have a current sent or explicit deletion receipt before its inputs can be archived.",
+                icon_name="warning",
+                accent_color=self.WARNING,
+            )
+            return
+        if not messagebox.askyesno(
+            "Archive sent batch",
+            f"Move the local order inputs and completed process list for {batch.get('name', 'this batch')} into the dated archives?",
+            parent=self.root,
+        ):
+            return
+        history = self.load_processing_history()
+        plans = self.completed_process_list_batches_for_orders(orders, history=history)
+        order_folder = Path(self.folder_var.get()).resolve()
+        process_list_path = Path(self.process_list_var.get()).resolve()
+
+        def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
+            return self.archive_sent_input_files_for_orders(
+                orders,
+                order_folder,
+                process_list_path,
+                include_process_lists=False,
+                completed_process_batches=plans,
+                progress_callback=lambda current, total, path: task.progress(
+                    current,
+                    total,
+                    f"Archiving {path.name} ({current}/{total})",
+                ),
+            )
+
+        def finished(payload: object) -> None:
+            archived, warnings = payload if isinstance(payload, tuple) else ([], ["Archive did not return a result."])
+            self.refresh_local_orders()
+            self.show_themed_notice(
+                "Batch archived" if not warnings else "Batch archived with notes",
+                f"Archived {len(archived)} input file(s)",
+                "The sent batch was moved into the dated local archives." if not warnings else "The completed files were archived; review the notes below.",
+                icon_name="check_circle" if not warnings else "warning",
+                accent_color=self.SUCCESS if not warnings else self.WARNING,
+                details=[("Notes", "\n".join(warnings))] if warnings else None,
+            )
+
+        self.run_managed_task(
+            "Archive Sent Batch",
+            worker,
+            message=f"Archiving sent batch {batch.get('name', '')}...",
+            total=max(1, len(orders)),
+            cancellable=True,
+            on_done=finished,
+            on_error=lambda exc: self.show_structured_error(exc, title="Archive sent batch failed"),
+        )
 
     def collect_programming_evidence(
         self,
@@ -9253,7 +10111,7 @@ class ShowerProgrammerApp:
                 parent=self.root,
             )
             return
-        dialog = ctk.CTkToplevel(self.root)
+        dialog = self.create_hidden_toplevel(self.root)
         dialog.title(f"Why Programmed This Way - {process_order.aw_order}")
         dialog.configure(fg_color=self.APP_BG)
         dialog.minsize(860, 600)
@@ -9731,6 +10589,17 @@ class ShowerProgrammerApp:
                 root_only=True,
                 inspect_pdf_text=True,
             )
+            cache_folder = self.local_network_pdf_cache_dir(local_order_folder)
+            cache_files = self.matching_order_files(
+                cache_folder,
+                orders,
+                root_only=True,
+                inspect_pdf_text=True,
+            )
+            files = list(dict.fromkeys(files + cache_files))
+            local_allowed_roots = [local_order_folder]
+            if cache_folder.is_dir():
+                local_allowed_roots.append(cache_folder)
             network_files: list[Path] = []
             if network_source is not None:
                 self.queue_scan_progress(18, 100, "Checking the shared input folder for matching files...")
@@ -9751,6 +10620,7 @@ class ShowerProgrammerApp:
                 "include_network": include_network,
                 "deletion_scope_by_aw": dict(deletion_scope_by_aw or {}),
                 "files": files,
+                "local_allowed_roots": local_allowed_roots,
                 "network_files": network_files,
             }
         except shower_tasks.TaskCancelled:
@@ -9826,6 +10696,14 @@ class ShowerProgrammerApp:
             files = [path for path in data.get("files", []) if isinstance(path, Path)]
             network_files = [path for path in data.get("network_files", []) if isinstance(path, Path)]
             local_order_folder = Path(str(data.get("local_order_folder", ""))).resolve()
+            raw_allowed_roots = data.get("local_allowed_roots", [])
+            local_allowed_roots = [
+                Path(path).resolve()
+                for path in raw_allowed_roots
+                if isinstance(path, (Path, str)) and str(path)
+            ] if isinstance(raw_allowed_roots, list) else []
+            if not local_allowed_roots:
+                local_allowed_roots = [local_order_folder]
             process_list_root = Path(str(data.get("process_list_root", ""))).resolve()
             output_dir = Path(str(data.get("output_dir", ""))).resolve()
             include_network = bool(data.get("include_network", False))
@@ -9877,18 +10755,24 @@ class ShowerProgrammerApp:
             deleted, recovery_warnings, quarantine_id = self.quarantine_paths(
                 self.quarantine_root(),
                 files,
-                [local_order_folder],
+                local_allowed_roots,
                 [order.aw_order for order in orders],
                 progress_callback=local_recovery_progress,
             )
             warnings.extend(recovery_warnings)
 
             successfully_deleted_orders: list[shower_batch.ProcessOrder] = []
-            remaining_selected_files = self.matching_order_files(
-                local_order_folder,
-                orders,
-                root_only=True,
-                inspect_pdf_text=True,
+            remaining_selected_files = list(
+                dict.fromkeys(
+                    path
+                    for root in local_allowed_roots
+                    for path in self.matching_order_files(
+                        root,
+                        orders,
+                        root_only=True,
+                        inspect_pdf_text=True,
+                    )
+                )
             )
             verify_total = max(len(orders), 1)
             for index, order in enumerate(orders, start=1):
@@ -9897,13 +10781,15 @@ class ShowerProgrammerApp:
                     100,
                     f"Verifying local cleanup for A&W {order.aw_order} ({index}/{len(orders)})...",
                 )
-                remaining = self.matching_order_files(
-                    local_order_folder,
-                    [order],
-                    root_only=True,
-                    inspect_pdf_text=True,
-                    candidate_files=remaining_selected_files,
-                )
+                remaining = [
+                    path
+                    for path in remaining_selected_files
+                    if self.file_matches_process_orders(
+                        path,
+                        [order],
+                        inspect_pdf_text=path.suffix.lower() == ".pdf",
+                    )
+                ]
                 if remaining:
                     names = ", ".join(path.name for path in remaining[:4])
                     warnings.append(
@@ -10040,6 +10926,22 @@ class ShowerProgrammerApp:
         include_network = bool(data.get("include_network", False))
 
         deleted_aw_orders = {str(order.aw_order) for order in successfully_deleted_orders}
+        if deleted_aw_orders:
+            try:
+                manual_orders = self.load_manual_process_orders_for_output(
+                    Path(self.output_dir_var.get()).resolve()
+                )
+                retained_manual_orders = [
+                    order for order in manual_orders
+                    if str(order.aw_order) not in deleted_aw_orders
+                ]
+                if len(retained_manual_orders) != len(manual_orders):
+                    self.save_manual_process_orders_for_output(
+                        Path(self.output_dir_var.get()).resolve(),
+                        retained_manual_orders,
+                    )
+            except Exception as exc:
+                warnings.append(f"Could not remove the saved manual process record: {exc}")
         for aw_order in deleted_aw_orders:
             row_id = self.tree_rows.pop(aw_order, None)
             if row_id:
@@ -10521,7 +11423,16 @@ class ShowerProgrammerApp:
             def report_result(result: shower_batch.BatchJobResult) -> None:
                 nonlocal completed
                 completed += 1
-                self.worker_queue.put(("result", result))
+                self.worker_queue.put(
+                    (
+                        "result",
+                        {
+                            "result": result,
+                            "completed": completed,
+                            "total": len(orders),
+                        },
+                    )
+                )
                 if task_context is not None:
                     task_context.progress(
                         completed,
@@ -10529,20 +11440,39 @@ class ShowerProgrammerApp:
                         f"{result.status}: A&W {result.aw_order} ({completed}/{len(orders)})",
                     )
 
-            run = shower_batch.run_batch(
-                orders=orders,
-                folder=folder,
-                sketch_output_dir=sketch_dir,
-                dxf_output_dir=programs_dir,
-                report_dir=report_dir,
-                config=config,
-                apply=apply,
-                force=force,
-                skip_pdf=skip_pdf,
-                skip_dxf=skip_dxf,
-                remake_items_by_order=remake_items_by_order,
-                progress=report_result,
-            )
+            sketch_dir.mkdir(parents=True, exist_ok=True)
+            programs_dir.mkdir(parents=True, exist_ok=True)
+            report_dir.mkdir(parents=True, exist_ok=True)
+            results: list[shower_batch.BatchJobResult] = []
+            spawn_context = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=1, mp_context=spawn_context) as executor:
+                for order in orders:
+                    if task_context is not None:
+                        task_context.check_cancelled()
+                    payload = (
+                        order,
+                        folder,
+                        sketch_dir,
+                        programs_dir,
+                        report_dir,
+                        config,
+                        apply,
+                        force,
+                        skip_pdf,
+                        skip_dxf,
+                        None if remake_items_by_order is None else remake_items_by_order.get(order.aw_order),
+                    )
+                    result = executor.submit(shower_batch.process_one_order_isolated, payload).result()
+                    results.append(result)
+                    report_result(result)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            text_report = report_dir / f"batch_programming_report_{timestamp}.txt"
+            csv_report = report_dir / f"batch_programming_report_{timestamp}.csv"
+            html_report = report_dir / f"batch_programming_report_{timestamp}.html"
+            shower_batch.write_batch_text_report(text_report, results, apply)
+            shower_batch.write_batch_csv_report(csv_report, results)
+            shower_batch.write_batch_html_report(html_report, results, apply)
+            run = shower_batch.BatchRunResult(results, text_report, csv_report, html_report)
             if task_context is not None:
                 task_context.check_cancelled()
             if apply:
@@ -11135,11 +12065,23 @@ class ShowerProgrammerApp:
                         details=[("What happened", detail)],
                     )
                 elif kind == "result":
-                    result = payload
+                    progress_data = payload if isinstance(payload, dict) else {}
+                    result = progress_data.get("result") if progress_data else payload
                     assert isinstance(result, shower_batch.BatchJobResult)
                     self.insert_or_update_result(result)
-                    self.progress.step(1)
-                    result_message = f"{result.status}: {result.aw_order} {result.job_name}"
+                    completed = int(progress_data.get("completed", 0) or 0)
+                    total = int(progress_data.get("total", 0) or 0)
+                    if total > 0:
+                        percent = max(0.0, min(100.0, (completed / total) * 100.0))
+                        self.background_progress_percent = percent
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate", maximum=100, value=percent)
+                    row_id = self.tree_rows.get(str(result.aw_order))
+                    if row_id:
+                        self.tree.focus(row_id)
+                        self.tree.see(row_id)
+                    count_text = f" ({completed}/{total})" if total > 0 else ""
+                    result_message = f"{result.status}: A&W {result.aw_order}{count_text}"
                     self.status_var.set(result_message)
                     self.record_activity_progress(result_message)
                 elif kind == "scan_progress":
@@ -11171,7 +12113,8 @@ class ShowerProgrammerApp:
                     current = int(data.get("current", 0) or 0)
                     message = str(data.get("message", "Working..."))
                     if total > 0:
-                        percent = max(0.0, min(99.0, (current / max(total, 1)) * 100.0))
+                        cap = 100.0 if current >= total else 99.0
+                        percent = max(0.0, min(cap, (current / max(total, 1)) * 100.0))
                         self.progress.stop()
                         self.progress.configure(mode="determinate", maximum=100, value=percent)
                     self.status_var.set(message)
@@ -12519,6 +13462,14 @@ a {{ color: #1f4e79; }}
             justify="left",
             wraplength=238,
         ).pack(fill=tk.X, padx=12, pady=(0, 12))
+        review_process_progress = ctk.CTkProgressBar(
+            status_card,
+            mode="indeterminate",
+            height=7,
+            corner_radius=4,
+            progress_color=self.ACCENT,
+            fg_color=self.BORDER,
+        )
 
         complete_card = ctk.CTkFrame(control_panel, fg_color=self.CARD_BG, corner_radius=13, border_width=1, border_color=self.BORDER)
         complete_card.grid(row=6, column=0, sticky="ew", padx=14, pady=(0, 14))
@@ -13412,6 +14363,8 @@ a {{ color: #1f4e79; }}
                             job.panels,
                             machine_changed_items,
                             config,
+                            process_order.aw_order,
+                            programs_dir,
                         )
                         state["dxf_output_skipped"] = False
                         state["dxf_preview_cache"] = {}
@@ -13475,6 +14428,7 @@ a {{ color: #1f4e79; }}
             nonlocal job, source_reader, sketch_reader, raw_issues, issues, config
             if has_pending_item_edits() and not save_review_edits(show_no_edits=False):
                 return
+            processing_started = False
             try:
                 refreshed_config = self.config_with_manual_overrides(folder, output_dir)
                 remake_items = self.editor_remake_items(process_order.aw_order)
@@ -13488,6 +14442,12 @@ a {{ color: #1f4e79; }}
                 ):
                     status.set("DXF processing cancelled. Close the open program file and try again.")
                     return
+                processing_started = True
+                status.set(f"Processing DXF for {process_order.aw_order}.{selected_panel().item}...")
+                process_dxf_button.configure(text="Processing...", state=tk.DISABLED)
+                review_process_progress.pack(fill=tk.X, padx=12, pady=(0, 12))
+                review_process_progress.start()
+                dialog.update_idletasks()
                 if review_skip_pdf:
                     self.remove_order_sketch_files([process_order], sketch_dir)
                 if review_skip_dxf:
@@ -13555,6 +14515,11 @@ a {{ color: #1f4e79; }}
                     details=exc,
                 )
                 messagebox.showerror("Process DXF failed", str(exc), parent=dialog)
+            finally:
+                if processing_started:
+                    review_process_progress.stop()
+                    review_process_progress.pack_forget()
+                    process_dxf_button.configure(text="Process DXF Again", state=tk.NORMAL)
 
         def refresh_prepared_job() -> None:
             nonlocal job, source_reader, raw_issues, issues, config
@@ -13762,11 +14727,11 @@ a {{ color: #1f4e79; }}
 
         def choose_machine_type() -> None:
             panel = selected_panel()
-            current_machine = str(panel.machine or "DENVER 2").strip().upper()
-            if current_machine not in {"DENVER 1", "DENVER 2", "WJ"}:
-                current_machine = "DENVER 2"
+            current_machine = str(panel.machine or "NO MACHINE").strip().upper()
+            if current_machine not in {"DENVER 1", "DENVER 2", "WJ", "NO MACHINE"}:
+                current_machine = "NO MACHINE"
 
-            chooser = ctk.CTkToplevel(dialog)
+            chooser = self.create_hidden_toplevel(dialog)
             chooser.title("Change Machine Type")
             chooser.configure(fg_color=self.APP_BG)
             chooser.resizable(False, False)
@@ -13795,7 +14760,10 @@ a {{ color: #1f4e79; }}
             ).pack(fill=tk.X, padx=18, pady=(18, 4))
             ctk.CTkLabel(
                 card,
-                text="Choose the machine that should receive this piece. Water Jet programs are saved in millimeters.",
+                text=(
+                    "Choose the machine that should receive this piece. Water Jet programs are saved in millimeters. "
+                    "No Machine keeps the order label but removes the indicator and program output."
+                ),
                 font=("Segoe UI", 11),
                 text_color=self.MUTED,
                 justify="left",
@@ -13805,7 +14773,7 @@ a {{ color: #1f4e79; }}
             selected_machine = tk.StringVar(value=current_machine)
             ctk.CTkSegmentedButton(
                 card,
-                values=["DENVER 1", "DENVER 2", "WJ"],
+                values=["DENVER 1", "DENVER 2", "WJ", "NO MACHINE"],
                 variable=selected_machine,
                 height=40,
                 corner_radius=9,
@@ -14114,12 +15082,12 @@ a {{ color: #1f4e79; }}
             decision_textbox.configure(state="disabled")
             if not bool(state.get("show_sketch_marks", True)):
                 status.set(
-                    f"{job.aw_order}.{panel.item}  Original sketch preview  |  "
+                    f"{self.panel_order_label(job, panel)}  Original sketch preview  |  "
                     "Skip Sketch output active; no automatic marks are displayed."
                 )
             else:
                 status.set(
-                    f"{job.aw_order}.{panel.item}  {panel.machine or 'LABEL ONLY'}  "
+                    f"{self.panel_order_label(job, panel)}  {panel.machine or 'LABEL ONLY'}  "
                     f"Sketch view {rotation_var.get()} deg  |  {rotation_text}"
                     + ("  |  Original DXF preview is read-only." if original_dxf_preview else "")
                     + (f"  |  {issue_text}" if issue_text else "")
@@ -15659,6 +16627,11 @@ a {{ color: #1f4e79; }}
         total = base + panel.angle_correction_degrees
         return f"{ShowerProgrammerApp.format_degrees(total)} deg"
 
+    @staticmethod
+    def panel_order_label(job: programmer.Job, panel: programmer.Panel) -> str:
+        """Return the A&W identity while retaining panel.item as the sketch page identity."""
+        return f"{job.aw_order}.{programmer.panel_aw_item(panel)}"
+
     def save_editor_state_positions(
         self,
         job: programmer.Job,
@@ -16203,6 +17176,23 @@ a {{ color: #1f4e79; }}
             order_overrides[str(item_number)] = item_override
 
         kind = machine_kind.strip().upper()
+        if kind in {"", "NONE", "NO MACHINE"}:
+            item_override["machine"] = ""
+            item_override["skip_dxf"] = True
+            item_override["hide_indicator"] = True
+            for field in (
+                "indicator_corner",
+                "rotation_degrees",
+                "indicator_x",
+                "indicator_y",
+                "manual_indicator_corner",
+                "manual_dxf_rotation",
+                "hinge_side",
+                "hinges_up",
+            ):
+                item_override.pop(field, None)
+            self.save_manual_overrides(data)
+            return
         if kind == "WJ":
             item_override["machine"] = "WJ"
             item_override["indicator_corner"] = programmer.default_waterjet_indicator_corner(panel)
@@ -16233,6 +17223,8 @@ a {{ color: #1f4e79; }}
         panels: Iterable[programmer.Panel],
         item_numbers: Iterable[int],
         config: dict[str, object],
+        aw_order: str = "",
+        programs_dir: Path | None = None,
     ) -> list[Path]:
         """Rewrite manually reclassified programs with the selected machine's units."""
         selected = {int(item) for item in item_numbers}
@@ -16242,6 +17234,10 @@ a {{ color: #1f4e79; }}
             if panel.item not in selected:
                 continue
             if panel.skip_dxf:
+                if aw_order and programs_dir is not None:
+                    stale = programs_dir / f"{aw_order}{programmer.panel_aw_item(panel):02d}.dxf"
+                    if stale.is_file():
+                        stale.unlink()
                 continue
             if panel.source_dxf is None or panel.output_dxf is None:
                 missing.append(panel.item)
@@ -18255,6 +19251,8 @@ try {{
 
         plans_by_key: dict[str, dict[str, object]] = {}
         for batch in batches:
+            if bool(batch.get("manual", False)):
+                continue
             source_value = batch.get("path")
             try:
                 source = source_value if isinstance(source_value, Path) else Path(str(source_value))
@@ -18267,7 +19265,13 @@ try {{
                 order for order in raw_orders
                 if isinstance(order, shower_batch.ProcessOrder)
             ]
-            if not batch_orders:
+            zero_programming_work = bool(batch.get("zero_programming_work", False))
+            source_orders_value = batch.get("source_orders", [])
+            source_orders = [
+                order for order in source_orders_value
+                if isinstance(order, shower_batch.ProcessOrder)
+            ] if isinstance(source_orders_value, list) else []
+            if not batch_orders and not zero_programming_work:
                 continue
 
             key = cls.process_list_batch_key(source)
@@ -18278,14 +19282,18 @@ try {{
                     "name": source.stem,
                     "files": [],
                     "orders": [],
+                    "guard_orders": [],
                     "batch_ids": [],
+                    "zero_programming_work": False,
                 },
             )
             plan_files = plan["files"]
             plan_orders = plan["orders"]
+            plan_guard_orders = plan["guard_orders"]
             plan_batch_ids = plan["batch_ids"]
             assert isinstance(plan_files, list)
             assert isinstance(plan_orders, list)
+            assert isinstance(plan_guard_orders, list)
             assert isinstance(plan_batch_ids, list)
             for companion in cls.process_list_companion_files(source) or [source]:
                 if companion not in plan_files:
@@ -18299,6 +19307,17 @@ try {{
                 if str(order.aw_order) not in existing_aw:
                     plan_orders.append(order)
                     existing_aw.add(str(order.aw_order))
+            existing_guard_aw = {
+                str(order.aw_order)
+                for order in plan_guard_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            }
+            for order in source_orders:
+                if str(order.aw_order) not in existing_guard_aw:
+                    plan_guard_orders.append(order)
+                    existing_guard_aw.add(str(order.aw_order))
+            if zero_programming_work:
+                plan["zero_programming_work"] = True
             batch_id = str(batch.get("id", ""))
             if batch_id and batch_id not in plan_batch_ids:
                 plan_batch_ids.append(batch_id)
@@ -18310,11 +19329,20 @@ try {{
                 order for order in raw_orders
                 if isinstance(order, shower_batch.ProcessOrder)
             ] if isinstance(raw_orders, list) else []
-            if not orders or not all(cls.order_is_terminal_in_history(order, history) for order in orders):
+            zero_programming_work = bool(plan.get("zero_programming_work", False))
+            if not zero_programming_work and (
+                not orders
+                or not all(cls.order_is_terminal_in_history(order, history) for order in orders)
+            ):
                 continue
+            raw_guard_orders = plan.get("guard_orders", [])
+            guard_orders = [
+                order for order in raw_guard_orders
+                if isinstance(order, shower_batch.ProcessOrder)
+            ] if isinstance(raw_guard_orders, list) else []
             remaining = cls.matching_order_files(
                 order_folder,
-                orders,
+                list({str(order.aw_order): order for order in [*orders, *guard_orders]}.values()),
                 root_only=True,
                 inspect_pdf_text=True,
             )
@@ -18487,7 +19515,7 @@ try {{
     ) -> None:
         if self.focus_existing_page_window("review_send", "Review / Send"):
             return
-        dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
+        dialog = self.create_hidden_toplevel(self.root)
         self.register_page_window("review_send", dialog)
         dialog.title("Review / Send Output")
         self.position_child_window(dialog, 1180, 760)
@@ -21277,10 +22305,20 @@ try {{
         staged_pdf_count = len(network_pdfs) if unresolved_pdf_orders and network_pdfs else 0
         total_progress = max(1, len(sources) + staged_pdf_count)
         progress_index = 0
-        if unresolved_pdf_orders and network_pdfs:
+        cached_pdf_candidates: list[Path] = []
+        if unresolved_pdf_orders:
             cache_dir = cls.local_network_pdf_cache_dir(target_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
             cls.cleanup_stale_import_partials(cache_dir)
+            try:
+                cached_pdf_candidates.extend(
+                    path
+                    for path in cache_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() == ".pdf"
+                )
+            except OSError:
+                pass
+        if unresolved_pdf_orders and network_pdfs:
             staged: list[Path] = []
             stage_pairs = [(source, cache_dir / source.name) for source in network_pdfs]
             copy_warnings = summary["copy_warnings"]
@@ -21291,20 +22329,21 @@ try {{
                 progress_index += 1
                 if progress_callback is not None:
                     progress_callback(progress_index, total_progress, source, did_stage)
-            for local_copy in staged:
-                if any(
-                    cls.file_matches_missing_order_requirement(
-                        local_copy,
-                        order,
-                        (missing_requirements or {}).get(
-                            str(order.aw_order),
-                            {"pdf": True, "dxf_items": []},
-                        ),
-                        inspect_pdf_text=True,
-                    )
-                    for order in unresolved_pdf_orders
-                ):
-                    staged_matches.append(local_copy)
+            cached_pdf_candidates.extend(staged)
+        for local_copy in dict.fromkeys(cached_pdf_candidates):
+            if any(
+                cls.file_matches_missing_order_requirement(
+                    local_copy,
+                    order,
+                    (missing_requirements or {}).get(
+                        str(order.aw_order),
+                        {"pdf": True, "dxf_items": []},
+                    ),
+                    inspect_pdf_text=True,
+                )
+                for order in unresolved_pdf_orders
+            ):
+                staged_matches.append(local_copy)
 
         summary["staged_pdf_count"] = staged_pdf_count
         summary["considered"] = len(sources) + staged_pdf_count
@@ -22501,7 +23540,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             canvas.create_text(
                 margin,
                 y_cursor + 8,
-                text=f"P{panel.item}  {job.aw_order}.{panel.item}",
+                text=f"P{panel.item}  {self.panel_order_label(job, panel)}",
                 anchor=tk.NW,
                 fill="#1f2933",
                 font=("Arial", 12, "bold"),
@@ -22927,7 +23966,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             })
             avoid_rects.append(df_rect)
 
-        label_lines = programmer.override_text_lines(panel.label_text) or [f"{job.aw_order}.{panel.item}"]
+        label_lines = programmer.override_text_lines(panel.label_text) or [
+            self.panel_order_label(job, panel)
+        ]
         if panel.machine and not panel.label_text:
             label_lines.append(panel.machine)
         font_size = panel.label_font_size or float(pdf_cfg.get("label_font_size", 21))
@@ -23202,7 +24243,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 existing.destroy()
             except tk.TclError:
                 pass
-        dialog = ctk.CTkToplevel(self.root)
+        dialog = self.create_hidden_toplevel(self.root)
         dialog.title("Validation Results")
         dialog.minsize(920, 520)
         self.position_child_window(dialog, 1180, 680)
@@ -23339,7 +24380,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
     def open_action_history(self) -> None:
         if self.focus_existing_page_window("action_history", "Action History", show_notice=False):
             return
-        dialog = ctk.CTkToplevel(self.root)
+        dialog = self.create_hidden_toplevel(self.root)
         dialog.title("Action History")
         dialog.minsize(960, 560)
         self.position_child_window(dialog, 1240, 720)
@@ -23806,7 +24847,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             messagebox.showerror("Hinge detection settings", str(exc), parent=self.root)
             return
 
-        dialog = ctk.CTkToplevel(self.root)
+        dialog = self.create_hidden_toplevel(self.root)
         dialog.title("Hinge Detection Settings")
         dialog.configure(fg_color=self.APP_BG)
         dialog.minsize(620, 500)
@@ -24116,7 +25157,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         if existing is not None:
             self.bring_page_window_to_front(existing)
             return
-        dialog = ctk.CTkToplevel(self.root)
+        dialog = self.create_hidden_toplevel(self.root)
         dialog.title("Network Health")
         dialog.configure(fg_color=self.APP_BG)
         dialog.resizable(False, False)
@@ -24267,6 +25308,10 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             return
 
         dialog = ctk.CTkToplevel(self.root)
+        try:
+            dialog.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
         setattr(dialog, "_shower_settings_hidden", False)
         setattr(dialog, "_shower_settings_retired", False)
         dialog.title("Shower Programmer Settings")
@@ -28337,8 +29382,47 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             font=("Segoe UI", 10, "bold"), **self.ctk_button_icon("undo", 14, "#ffffff", "left"),
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        notice_card = self.make_section(parent, "Startup Warning History", "history")
+        notice_card.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+        notice_card.grid_columnconfigure(0, weight=1)
+        notice_columns = ("time", "status", "warning", "detail")
+        notice_tree = ttk.Treeview(
+            notice_card,
+            columns=notice_columns,
+            show="headings",
+            height=5,
+            style="Orders.Treeview",
+        )
+        for column, label in zip(notice_columns, ("Time", "Status", "Warning", "Detail")):
+            notice_tree.heading(column, text=label)
+        notice_tree.column("time", width=175, minwidth=145, stretch=False)
+        notice_tree.column("status", width=90, minwidth=80, anchor=tk.CENTER, stretch=False)
+        notice_tree.column("warning", width=250, minwidth=180, stretch=False)
+        notice_tree.column("detail", width=620, minwidth=320, stretch=True)
+        notice_tree.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
+
+        def refresh_notice_history() -> None:
+            notice_tree.delete(*notice_tree.get_children())
+            state = self.load_startup_recovery_notice_state()
+            raw_history = state.get("history", [])
+            history = raw_history if isinstance(raw_history, list) else []
+            for item in reversed(history[-100:]):
+                if not isinstance(item, dict):
+                    continue
+                notice_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        str(item.get("timestamp", "")).replace("T", " "),
+                        str(item.get("status", "")),
+                        str(item.get("title", "")),
+                        str(item.get("detail", "")),
+                    ),
+                )
+
         dialog.after(250, refresh)
         dialog.after(350, refresh_reliability)
+        dialog.after(400, refresh_notice_history)
 
     def build_configuration_backup_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -29599,6 +30683,13 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             raise RuntimeError(f"Unexpected application version: {ShowerProgrammerApp.APP_VERSION}")
         if not expected_marker or ShowerProgrammerApp.APP_VERSION_MARKER != expected_marker:
             raise RuntimeError("The release marker is missing or inconsistent.")
+        with ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            worker_probe = executor.submit(shower_batch.isolated_worker_probe, "ok").result(timeout=20)
+        if worker_probe != "isolated:ok":
+            raise RuntimeError("The isolated order-processing worker could not start.")
         bug_url = ShowerProgrammerApp.bug_report_url()
         bug_query = urllib.parse.parse_qs(urllib.parse.urlparse(bug_url).query)
         bug_body = "\n".join(bug_query.get("body", []))
@@ -30907,6 +31998,42 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "automatic_xout_deletion": True,
                 "original_dxf_skip_preview": True,
                 "job_number_source_dxf_matching": True,
+                "mirror_section_machine_routing": True,
+                "mirror_filtered_dxf_sequence": True,
+                "letter_suffix_job_identity": True,
+                "live_per_order_processing_progress": True,
+                "startup_recovery_notice_history": True,
+                "cached_input_cleanup": True,
+                "manual_process_orders": True,
+                "routing_section_isolation": True,
+                "aw_sketch_item_identity": True,
+                "no_machine_override": True,
+                "sent_batch_archive": True,
+                "isolated_order_processing": True,
+                "cut_transition_angle_guard": True,
+                "mirror_label_only_pages": True,
+                "version_1_50_routing_identity_responsiveness": True,
+                "mapped_aw_sketch_labels": True,
+                "terminal_batch_archive_context": True,
+                "hidden_first_window_presentation": True,
+                "optional_manual_customer": True,
+                "windows_app_identity": True,
+                "version_1_51_sketch_identity_archive_presentation": True,
+                "transparent_first_main_window": True,
+                "visible_packaged_startup": True,
+                "version_1_52_visible_startup_recovery": True,
+                "native_maximized_first_presentation": True,
+                "independent_sent_order_input_archive": True,
+                "incomplete_batch_process_list_retention": True,
+                "version_1_53_maximized_sent_input_archive": True,
+                "letter_revision_job_identity": True,
+                "copy_timestamp_safe_production_reconciliation": True,
+                "terminal_orphan_dxf_archive": True,
+                "zero_work_mirror_batch_retirement": True,
+                "version_1_54_terminal_input_retirement": True,
+                "denver_allowed_radius_precedence": True,
+                "explicit_denver_route_preservation": True,
+                "version_1_55_denver_radius_precedence": True,
             }
         )
     except Exception as exc:
@@ -30925,7 +32052,18 @@ def main() -> None:
             raise SystemExit(1)
         return
 
+    if os.name == "nt":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Barefoot.ShowerProgrammer"
+            )
+        except Exception:
+            pass
     root = ctk.CTk() if ctk is not None else tk.Tk()
+    try:
+        root.attributes("-alpha", 0.0)
+    except tk.TclError:
+        pass
     guard = SingleInstanceGuard()
     try:
         if not guard.acquire():

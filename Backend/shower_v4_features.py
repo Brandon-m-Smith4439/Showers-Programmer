@@ -94,6 +94,13 @@ from __future__ import annotations
 # VERSION_1_46_MAIN_UPDATE_WINDOWLESS_INSTALL
 # VERSION_1_47_WATERJET_NOTCH_RADIUS_CALLOUTS
 # VERSION_1_48_RESILIENT_IMPORT_HARDWARE_ROUTING
+# VERSION_1_49_MIRROR_MANUAL_WORKFLOW
+# VERSION_1_50_ROUTING_IDENTITY_RESPONSIVENESS
+# VERSION_1_51_SKETCH_IDENTITY_ARCHIVE_PRESENTATION
+# VERSION_1_52_VISIBLE_STARTUP_RECOVERY
+# VERSION_1_53_MAXIMIZED_SENT_INPUT_ARCHIVE
+# VERSION_1_54_TERMINAL_INPUT_RETIREMENT
+# VERSION_1_55_DENVER_RADIUS_PRECEDENCE
 # VERSION_1_29_MIRROR_WJ_FAST_SEND
 # VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
 # VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED
@@ -2051,6 +2058,7 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                         "order_named_hardware_list_routing": True,
                         "ambiguous_hardware_match_preservation": True,
                         "version_1_48_resilient_import_hardware_routing": True,
+                        "version_1_49_mirror_manual_workflow": True,
                     }
                 )
             except Exception as exc:

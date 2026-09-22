@@ -54,9 +54,12 @@ TEMPLATE_PAGE_MARKERS = ("TEMPLATES FOR GLASS", "TEMPLATE A:", "TEMPLATE B:")
 LABEL_FONT = "Helvetica-Bold"
 PDF_MATRIX_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 INPUT_ARCHIVE_FOLDER_RE = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{2,4}$")
-JOB_NUMBER_TOKEN = r"\d{7,8}(?:\.\d+)*(?:[A-Z]+)?"
+JOB_NUMBER_TOKEN = r"\d{7,8}(?:[A-Z]+)?(?:\.\d+)*(?:[A-Z]+)?"
 JOB_NUMBER_RE = re.compile(
-    rf"(?<![A-Z0-9])({JOB_NUMBER_TOKEN})(?![A-Z0-9.])",
+    # A trailing period is ordinary punctuation for jobs such as ``90239127M.``.
+    # Reject only another alphanumeric character or a numeric dotted revision so
+    # exact revision identities remain protected without losing letter suffixes.
+    rf"(?<![A-Z0-9])({JOB_NUMBER_TOKEN})(?![A-Z0-9]|\.\d)",
     flags=re.IGNORECASE,
 )
 PdfMatrix = tuple[float, float, float, float, float, float]
@@ -244,6 +247,8 @@ class Panel:
     additional_text_boxes: list[dict[str, Any]] = field(default_factory=list)
     manual_x: bool = False
     source_item: int | None = None
+    aw_item: int | None = None
+    mirror_label_only: bool = False
     label_x: float | None = None
     label_y: float | None = None
     indicator_x: float | None = None
@@ -508,7 +513,7 @@ def text_contains_job_number(text: str, job_number: str | None) -> bool:
         return False
     return bool(
         re.search(
-            rf"(?<![A-Z0-9]){re.escape(job_text)}(?![A-Z0-9.])",
+            rf"(?<![A-Z0-9]){re.escape(job_text)}(?![A-Z0-9]|\.\d)",
             text,
             flags=re.IGNORECASE,
         )
@@ -576,12 +581,12 @@ def extract_job_from_pdf(pdf_path: Path) -> str:
         return name_guess or pdf_path.stem
 
     match = re.search(
-        rf"(?P<job>{JOB_NUMBER_TOKEN}\s+[A-Z0-9][A-Z0-9 .#&'/_-]+?)(?:Project Name:|Printed On:|Delivery Date:)",
+        rf"(?P<number>{JOB_NUMBER_TOKEN})(?:\.(?=\s)|\s+)(?P<name>[A-Z0-9][A-Z0-9 .#&'/_-]+?)(?:Project Name:|Printed On:|Delivery Date:)",
         text,
         flags=re.IGNORECASE,
     )
     if match:
-        return clean_job_name(match.group("job"))
+        return clean_job_name(f"{match.group('number')} {match.group('name')}")
     job_number = extract_job_number_from_pdf(pdf_path)
     return name_guess or job_number or pdf_path.stem
 
@@ -591,9 +596,13 @@ def job_from_filename(name: str) -> str | None:
     stem = re.sub(r"^Glass Order(?:\s*[-_]\s*|\s+)", "", stem, flags=re.IGNORECASE).strip()
     if "_" in stem:
         stem = stem.split("_", 1)[1].strip()
-    match = re.search(rf"({JOB_NUMBER_TOKEN}\s+.+)", stem, flags=re.IGNORECASE)
+    match = re.search(
+        rf"({JOB_NUMBER_TOKEN})(?:\.(?=\s)|\s+)(.+)",
+        stem,
+        flags=re.IGNORECASE,
+    )
     if match:
-        return clean_job_name(match.group(1))
+        return clean_job_name(f"{match.group(1)} {match.group(2)}")
     return None
 
 
@@ -1989,7 +1998,7 @@ def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: d
         if panel.skip_dxf:
             continue
         panel.source_dxf = find_source_dxf(dxf_folder, job.job_name, panel, aw_order=job.aw_order)
-        panel.output_dxf = dxf_output_dir / f"{job.aw_order}{panel.item:02d}.dxf"
+        panel.output_dxf = dxf_output_dir / f"{job.aw_order}{panel_aw_item(panel):02d}.dxf"
         note_dxf_output_settings(panel, config)
         if panel.source_dxf is None:
             panel.warnings.append("No matching source DXF found.")
@@ -2114,6 +2123,11 @@ def dxf_hinge_angle_correction(panel: Panel, config: dict[str, Any]) -> tuple[fl
     return correction, amount, side_length
 
 
+def panel_aw_item(panel: Panel) -> int:
+    """Return the A+W item identity used in labels and generated filenames."""
+    return int(panel.aw_item if panel.aw_item is not None else panel.item)
+
+
 def dxf_bottom_angle_correction(panel: Panel, config: dict[str, Any]) -> tuple[float, float, float] | None:
     if panel.source_dxf is None or panel.rotation_degrees is None:
         return None
@@ -2146,7 +2160,9 @@ def dxf_bottom_angle_correction(panel: Panel, config: dict[str, Any]) -> tuple[f
 
     if not candidates:
         return None
-    side_length, amount, correction = max(candidates, key=lambda item: (item[1], item[0]))
+    # Prefer the real supporting edge over a shorter cut-in transition that
+    # happens to have a larger apparent deviation.
+    side_length, amount, correction = max(candidates, key=lambda item: (item[0], item[1]))
     return correction, amount, side_length
 
 
@@ -3814,7 +3830,7 @@ def make_overlay_page(
     if panel.remake and not panel.hide_remake:
         remake_rect = draw_remake_banner(c, width, height, pdf_cfg, bbox, indicator_bbox, label_color, panel, remake_text)
 
-    lines = override_text_lines(panel.label_text) or [f"{order_number}.{panel.item}"]
+    lines = override_text_lines(panel.label_text) or [f"{order_number}.{panel_aw_item(panel)}"]
     if panel.machine and not panel.label_text:
         lines.append(panel.machine)
 
@@ -5426,7 +5442,7 @@ def build_report(job: Job, apply: bool, skip_pdf: bool, skip_dxf: bool) -> str:
         if panel.width is not None and panel.height is not None:
             dims = f"{panel.width:g} x {panel.height:g}"
         machine = panel.machine or "label only"
-        lines.append(f"- P{panel.item}: {job.aw_order}.{panel.item} | {machine} | {dims}")
+        lines.append(f"- P{panel.item}: {job.aw_order}.{panel_aw_item(panel)} | {machine} | {dims}")
         if panel.remake:
             lines.append("  remake: yes")
         elif panel.remake_excluded:

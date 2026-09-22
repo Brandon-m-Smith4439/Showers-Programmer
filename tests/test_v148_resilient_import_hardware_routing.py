@@ -141,13 +141,11 @@ class ResilientImportHardwareRoutingTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("matches multiple orders", warnings[0])
 
-    def test_version_148_release_metadata(self) -> None:
+    def test_version_148_release_marker_is_retained(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(version["version"], "Version 1.48")
-        self.assertEqual(version["version_number"], 148)
-        self.assertEqual(version["marker"], "VERSION_1_48_RESILIENT_IMPORT_HARDWARE_ROUTING")
+        self.assertGreaterEqual(version["version_number"], 148)
         source = (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8")
-        self.assertIn(version["marker"], source)
+        self.assertIn("VERSION_1_48_RESILIENT_IMPORT_HARDWARE_ROUTING", source)
 
 
 if __name__ == "__main__":
