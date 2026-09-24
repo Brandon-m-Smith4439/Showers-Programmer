@@ -30,10 +30,10 @@ CONFIG = {
 
 
 class DenverRadiusPrecedenceTests(unittest.TestCase):
-    def test_239169_scu4_radius_stays_on_explicit_denver_one_route(self) -> None:
+    def test_239169_dimensioned_radius_notch_uses_waterjet(self) -> None:
         panel = programmer.Panel(
-            3,
             2,
+            3,
             '3/8" Clear Tempered\n17-13/16" x 80"\n1/2 Radius',
             17.8125,
             80.0,
@@ -51,9 +51,9 @@ class DenverRadiusPrecedenceTests(unittest.TestCase):
 
         shower_batch.apply_process_hints([panel], order, CONFIG)
 
-        self.assertEqual(panel.machine, "DENVER 1")
+        self.assertEqual(panel.machine, "WJ")
         self.assertIn(
-            "Denver-specific fabrication keeps radius/notch work on DENVER 1",
+            "WJ-only radius/notch fabrication overrides process-list Denver routing",
             panel.reasons,
         )
 
@@ -103,12 +103,15 @@ class DenverRadiusPrecedenceTests(unittest.TestCase):
 
         self.assertEqual(panel.machine, "WJ")
 
-    def test_version_155_release_metadata(self) -> None:
+    def test_version_155_release_marker_is_retained(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
+        marker = "VERSION_1_55_DENVER_RADIUS_PRECEDENCE"
 
-        self.assertEqual(version["version"], "Version 1.55")
-        self.assertEqual(version["version_number"], 155)
-        self.assertEqual(version["marker"], "VERSION_1_55_DENVER_RADIUS_PRECEDENCE")
+        self.assertGreaterEqual(version["version_number"], 155)
+        self.assertIn(
+            marker,
+            (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

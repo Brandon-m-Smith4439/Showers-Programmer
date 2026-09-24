@@ -66,15 +66,15 @@ class IncrementalCacheTests(unittest.TestCase):
                 shower_batch.ProcessOrder("900001", "12345678 TEST A", "Customer"),
                 shower_batch.ProcessOrder("900002", "12345679 TEST B", "Customer"),
             ]
-            original_rglob = Path.rglob
+            original_iterator = programmer.iter_active_input_files
             calls: list[tuple[Path, str]] = []
 
-            def counted_rglob(path: Path, pattern: str):
-                calls.append((path, pattern))
-                return original_rglob(path, pattern)
+            def counted_iterator(path: Path, suffix: str):
+                calls.append((path, suffix))
+                return original_iterator(path, suffix)
 
             with (
-                mock.patch.object(Path, "rglob", counted_rglob),
+                mock.patch.object(programmer, "iter_active_input_files", counted_iterator),
                 mock.patch.object(
                     shower_batch,
                     "preview_process_order_pdf",
@@ -83,7 +83,7 @@ class IncrementalCacheTests(unittest.TestCase):
             ):
                 previews = shower_batch.preview_orders(orders, temp)
             self.assertEqual(len(previews), 2)
-            self.assertEqual(calls, [(temp, "*.pdf")])
+            self.assertEqual(calls, [(temp, ".pdf")])
 
     def test_local_pdf_filename_matches_before_any_pdf_is_opened(self) -> None:
         with writable_test_directory() as temp:
@@ -158,7 +158,7 @@ class IncrementalCacheTests(unittest.TestCase):
             self.assertEqual(stats["hash_hits"], 1)
 
     def test_process_order_cache_round_trip_preserves_evidence(self) -> None:
-        order = shower_batch.ProcessOrder("900001", "12345678 TEST", "Customer")
+        order = shower_batch.ProcessOrder("900001", "12345678 TEST", "Customer", mirror_batch=True)
         item = shower_batch.ProcessItem(
             2,
             width_text='42"',
@@ -175,6 +175,7 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertEqual(restored[0].items[2].processing, ["1/4 Mirror Annealed"])
         self.assertEqual(restored[0].items[2].machine_hints, ["WJ"])
         self.assertEqual(restored[0].items[2].rows, [17])
+        self.assertTrue(restored[0].mirror_batch)
 
     def test_xlsx_process_list_is_parsed_once_then_reused(self) -> None:
         with writable_test_directory() as temp:
@@ -773,7 +774,7 @@ class IncrementalCacheTests(unittest.TestCase):
                     process_row("900002-1", "12345679 PACKING ONLY", "Packing / Shipping"),
                 ]
             )
-            self.assertEqual([order.aw_order for order in orders], ["900001"])
+            self.assertEqual([order.aw_order for order in orders], ["900001", "900002"])
             order_dxf = order_root / "12345678 MIRROR JOB_1.dxf"
             order_dxf.write_text("DXF", encoding="utf-8")
 

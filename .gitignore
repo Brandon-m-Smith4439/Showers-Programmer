@@ -31,3 +31,4 @@ ErrorReports/
 /release/*
 !/release/Shower-Programmer-Windows.zip
 !/release/Shower-Programmer-Windows.json
+/screenshots/

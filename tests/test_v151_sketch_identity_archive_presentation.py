@@ -67,7 +67,7 @@ class SketchIdentityArchivePresentationTests(unittest.TestCase):
 
         self.assertIn("SetCurrentProcessExplicitAppUserModelID", main_source)
         self.assertIn('root.attributes("-alpha", 0.0)', main_source)
-        self.assertIn("self.root.deiconify()", presentation_source)
+        self.assertNotIn("self.root.withdraw()", presentation_source)
         self.assertIn('self.root.attributes("-alpha", 1.0)', presentation_source)
         self.assertNotIn("for delay in", presentation_source)
 

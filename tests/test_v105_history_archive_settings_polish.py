@@ -97,8 +97,8 @@ class Version105HistoryArchiveSettingsPolishTests(unittest.TestCase):
 
     def test_settings_is_maximized_on_first_open_and_reopen(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_settings)
-        self.assertIn("existing.after_idle(lambda window=existing: self.maximize_window(window))", source)
-        self.assertIn("dialog.after_idle(lambda: self.maximize_window(dialog))", source)
+        self.assertGreaterEqual(source.count("self.present_window_without_flash("), 2)
+        self.assertGreaterEqual(source.count("maximize=True"), 2)
 
 
 if __name__ == "__main__":

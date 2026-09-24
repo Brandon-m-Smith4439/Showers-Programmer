@@ -2,17 +2,123 @@
 
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
 
+## [Version 1.62] - 2026-09-24
+
+### Added
+- Warns programmed pieces when no `FP`, `FP-S`, or `SE` edge polish can be detected: `No Polish was detected on any of the edges.`
+- Keeps regular mirror rows without fabrication visible and processes their sketch labels without requiring or inventing a DXF.
+- Identifies mirror work as `Mirror - With Fabrication` or `Mirror - Without Fabrication` in batch summaries, order item text, and Review / Send badges.
+
+### Fixed
+- Preserved fabricated mirror routing to Waterjet while preventing packing/polisher-only mirror rows from being treated as missing CNC programs.
+- Invalidated older process-list caches so formerly filtered non-fabricated mirror rows are loaded automatically.
+
+### Improved
+- Prioritized opening speed over a perfectly settled first frame for the main application and Review Order.
+- Removed the intentional 280 ms main-window settle delay and 310 ms Review Order reveal delay.
+- Removed duplicate synchronous paint passes from common child-window presentation.
+- Revealed the Review Order controls immediately and deferred sketch/DXF preview drawing to the next UI cycle.
+- Replaced the fixed 60 ms Review Order handoff delay with the event loop's next idle opportunity.
+
+### Validation
+- Added speed-first presentation regressions and updated retained presentation tests to prevent fixed delays from returning.
+- Added edge-polish warning, mirror route/category, sketch-only mirror, and process-list cache round-trip coverage.
+
+## [Version 1.61] - 2026-09-23
+
+### Improved
+- Centered the immediate loading panel over the active Shower Programmer window so feedback appears in the middle of the current screen.
+- Deferred `openpyxl` until an XLSX workbook is actually read or an archive-test workbook is created, reducing normal application startup work.
+- Pruned dated input archives before PDF and DXF discovery instead of recursively visiting every archived file during Review Order preparation and order previews.
+- Preserved active root and non-date nested input folders so faster discovery does not narrow valid order matching.
+
+### Validation
+- Added traversal, lazy-import, loading-panel placement, and Version 1.61 release regressions.
+
+## [Version 1.60] - 2026-09-23
+
+### Added
+- Added a Polisher Maximums warning when glass exceeds 113 inches and an `FP` or `FP-S` label is assigned to a short edge.
+- Associated edgework labels with the drawn glass sides so permitted `FP` on a long edge does not cause a false warning; ambiguous pages remain unflagged.
+- Added a configurable `polisher_max_edge_inches` rule with a default of 113 inches.
+- Added immediate opening feedback for Review Order, Review / Send, and the first Settings launch while their complete workspaces are prepared.
+- Added dated `Manually Programmed` archives for sent manual-order records and their local source files.
+
+### Fixed
+- Retained mirror items routed by A+W to Denver long enough for the authoritative PDF mirror rule to correct them to Waterjet; packing-only mirror rows remain excluded.
+- Invalidated older process-list caches so previously omitted Denver-routed mirror rows are reparsed automatically.
+
+### Improved
+- Standardized main and child-window presentation around a transparent build, complete hidden paint cycle, and final-frame reveal.
+- Applied the stable presentation path to Review / Send, Settings, custom notices, text prompts, duplicate-resolution screens, updater, manual programming, diagnostics, and the legacy sketch editor.
+
+### Validation
+- Added portrait and landscape edgework regressions, threshold and ambiguity checks, real-format PDF label extraction coverage, Batch 6626 mirror-routing coverage, manual archive lifecycle checks, and window-presentation source checks.
+
+## [Version 1.59] - 2026-09-23
+
+### Improved
+- Applied the main-window hidden-build and single-maximize presentation pattern to Review Order windows.
+- Review Order now remains transparent while CustomTkinter finishes its title-bar setup, maximizes once, and renders previews against the settled canvas dimensions before becoming visible.
+- Suppressed temporary-size canvas redraws during construction, preventing the sketch and DXF panels from visibly shifting after the window opens.
+- Flushed a full hidden CustomTkinter paint cycle before reveal to prevent transient black or duplicated control regions during the first visible frame.
+
+### Validation
+- Added presentation regressions covering transparent construction, one hidden maximize, deferred reveal, settled-canvas rendering, and retained Version 1.59 metadata.
+
+## [Version 1.58] - 2026-09-23
+
+### Fixed
+- Routed order `239169.2` to Waterjet because its own sketch page contains a dimensioned 1/2-inch radius notch, even though its process rows also contain Denver-capable SCU4 work.
+- Routed order `239170.1` to Denver 2 because it contains FP-S/SCU4 work without piece-level Waterjet-only notch or radius geometry; the process-list Waterjet label alone no longer decides the machine.
+- Prevented words such as `NOTCH` in an order Location field from making every piece page appear to contain Waterjet fabrication.
+
+### Safety
+- Kept SCU4 machine-neutral and based ambiguous routing on piece geometry, dimensions, door evidence, and fabrication details.
+- Preserved Denver 1 precedence for hinge doors and retained manual machine overrides.
+
+### Validation
+- Added paired regressions for `239169.2` and `239170.1`, Location-field keyword isolation, Waterjet SCU4 radius work, Denver SCU4 work, and hinge-door routing.
+
+## [Version 1.57] - 2026-09-23
+
+> Superseded by Version 1.58 after production review showed that process-list machine labels can be noisy and must be reconciled with piece-level fabrication geometry.
+
+### Fixed
+- Preserved Waterjet when it is the only cutting-machine route assigned to a process-list item, even when that item also contains SCU4 slots or other fabrication that Denver can perform.
+- Corrected the routing regression that changed order `239170.1` from its explicit Waterjet route to Denver 2.
+
+### Safety
+- Kept SCU4 machine-neutral: it may run on Waterjet or Denver according to the process-list route and does not decide the machine by itself.
+- Retained fabrication-based conflict resolution only for process-list items that explicitly contain both Waterjet and Denver cutting routes.
+
+### Validation
+- Added routing regressions for unambiguous Waterjet SCU4 pieces, mixed Waterjet/Denver fabrication, Denver-only SCU4 panels, mixed Denver door/panel routing, and Version 1.57 metadata.
+
+## [Version 1.56] - 2026-09-22
+
+### Fixed
+- Removed the visible startup maximize jitter by allowing CustomTkinter to finish native title-bar initialization before applying one hidden Windows maximize transition.
+- The main window now becomes opaque only after maximized geometry has settled, avoiding the normal-size-to-maximized flash during launch.
+- Added a tighter fixed-sidebar layout below 800 px window height so Validate Selected, Check for Updates, and Settings remain reachable at 1366x768 without adding an internal scrollbar.
+
+### Maintenance
+- Updated stale root README release/version text so project documentation reflects the active Version 1.56 line.
+
+### Validation
+- Added startup-presentation regressions covering the single hidden maximize, delayed reveal, retained transparency behavior, and Version 1.56 release metadata.
+
 ## [Version 1.55] - 2026-09-22
 
 ### Fixed
 - Preserved an explicit Denver process-list route when generic radius/notch text belongs to Denver-supported fabrication such as an SCU4 slot.
-- Corrected order `239169.2`, whose `1/2 Radius` was part of an SCU4 operation assigned to Denver 1 rather than independent Waterjet-only fabrication.
+- Corrected order `239169.2`, whose `1/2 Radius` was part of an SCU4 panel operation that should use Denver 2 rather than Waterjet; Denver 1 remains reserved for door/hinge-door routing.
 
 ### Safety
 - Kept true radius/notch pieces on Waterjet when no explicit Denver route is present, including SCU4 pieces assigned to Waterjet.
 
 ### Validation
-- Added routing regressions for the `239169.2` SCU4/Denver 1 case, an unaffected true-radius Waterjet case, and an SCU4 piece explicitly assigned to Waterjet.
+- Added routing regressions for the `239169.2` SCU4/Denver 2 panel case, an unaffected true-radius Waterjet case, and an SCU4 piece explicitly assigned to Waterjet.
 
 ## [Version 1.54] - 2026-09-22
 

@@ -60,7 +60,8 @@ class MaximizedSentInputArchiveTests(unittest.TestCase):
 
         self.assertIn("GetAncestor", maximize_source)
         self.assertLess(maximize_source.index("ShowWindow"), maximize_source.index('window.state("zoomed")'))
-        self.assertIn("self.root.after(80, reveal)", presentation_source)
+        self.assertNotIn("self.root.after(220, settle_and_reveal)", presentation_source)
+        self.assertNotIn("self.root.update()", presentation_source)
         self.assertLess(
             presentation_source.index("self.maximize_window(self.root)"),
             presentation_source.index('self.root.attributes("-alpha", 1.0)'),

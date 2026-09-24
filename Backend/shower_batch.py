@@ -27,7 +27,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Iterable
 
-from openpyxl import load_workbook
 from pypdf import PdfReader
 
 import shower_programmer as programmer
@@ -48,7 +47,7 @@ DEFAULT_PROCESS_LIST = "Process List Per Machine.xlsx"
 PROCESS_LIST_EXTENSIONS = {".xlsx", ".xml", ".rtf", ".xls"}
 PROCESS_LIST_EXTENSION_PRIORITY = {".xlsx": 0, ".xml": 1, ".rtf": 2, ".xls": 3}
 PROCESS_LIST_CACHE_NAMESPACE = "process_orders_v1"
-PROCESS_LIST_CACHE_SCHEMA = 3
+PROCESS_LIST_CACHE_SCHEMA = 5
 ProcessListProgress = Callable[[str, Path, str], None]
 PDF_DIMENSION_MATCH_TOLERANCE = 0.20
 OOS_DXF_OVERALL_TOLERANCE = 0.08
@@ -200,7 +199,9 @@ class ProcessItem:
             ["FAB", "GEN", "HOLE", "NOTCH", "CUTOUT", "CUT-OUT", "RADIUS"],
         )
         text = self.processing_text.upper()
-        return any(keyword in text for keyword in keywords)
+        return self.desired_machine() in {"WJ", "DENVER 1", "DENVER 2"} or any(
+            keyword in text for keyword in keywords
+        )
 
 
 @dataclass
@@ -209,6 +210,7 @@ class ProcessOrder:
     job_name: str
     customer: str = ""
     items: dict[int, ProcessItem] = field(default_factory=dict)
+    mirror_batch: bool = False
 
     @property
     def item_numbers(self) -> list[int]:
@@ -232,6 +234,8 @@ class ProcessOrder:
         ).upper()
 
     def is_mirror(self, config: dict[str, object]) -> bool:
+        if self.mirror_batch:
+            return True
         keywords = upper_config_list(config, "mirror_keywords", ["MIRROR"])
         text = self.text_blob()
         return any(keyword in text for keyword in keywords)
@@ -392,7 +396,7 @@ def load_process_orders_from_file_uncached(
     path: Path,
     progress_callback: ProcessListProgress | None = None,
     *,
-    include_non_waterjet_mirror: bool = False,
+    include_non_waterjet_mirror: bool = True,
 ) -> list[ProcessOrder]:
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
@@ -436,6 +440,7 @@ def process_orders_to_cache(orders: list[ProcessOrder]) -> list[dict[str, object
             "aw_order": order.aw_order,
             "job_name": order.job_name,
             "customer": order.customer,
+            "mirror_batch": order.mirror_batch,
             "items": [
                 {
                     "item": item.item,
@@ -465,7 +470,12 @@ def process_orders_from_cache(records: object) -> list[ProcessOrder]:
         job_name = str(record.get("job_name", "")).strip()
         if not aw_order or not job_name:
             continue
-        order = ProcessOrder(aw_order, job_name, str(record.get("customer", "")))
+        order = ProcessOrder(
+            aw_order,
+            job_name,
+            str(record.get("customer", "")),
+            mirror_batch=bool(record.get("mirror_batch", False)),
+        )
         raw_items = record.get("items", [])
         if isinstance(raw_items, list):
             for raw_item in raw_items:
@@ -504,8 +514,10 @@ def process_orders_from_cache(records: object) -> list[ProcessOrder]:
 def load_process_orders_from_workbook(
     path: Path,
     *,
-    include_non_waterjet_mirror: bool = False,
+    include_non_waterjet_mirror: bool = True,
 ) -> list[ProcessOrder]:
+    from openpyxl import load_workbook
+
     workbook = load_workbook(path, data_only=True, read_only=True)
     worksheet = workbook.active
 
@@ -522,7 +534,7 @@ def load_process_orders_from_legacy_xls(
     path: Path,
     progress_callback: ProcessListProgress | None = None,
     *,
-    include_non_waterjet_mirror: bool = False,
+    include_non_waterjet_mirror: bool = True,
 ) -> list[ProcessOrder]:
     raw_prefix = read_file_prefix(path, 512)
     if raw_prefix.lstrip().startswith(b"\xd0\xcf\x11\xe0"):
@@ -890,25 +902,31 @@ def process_list_is_mirror_batch(rows: Iterable[Iterable[object]]) -> bool:
 
 
 def mirror_waterjet_orders(orders: Iterable[ProcessOrder]) -> list[ProcessOrder]:
-    """Keep only items routed through the Waterjet section of a mirror batch."""
-    waterjet_orders: list[ProcessOrder] = []
+    """Keep mirror items routed to a programmable cutting-machine section.
+
+    A+W occasionally places fabricated antique mirror under a Denver section.
+    The PDF classifier later applies the authoritative mirror-to-WJ rule, but it
+    cannot do that if the process-list row has already been discarded here.
+    Packing/polisher-only rows remain excluded.
+    """
+    programmable_orders: list[ProcessOrder] = []
     for order in orders:
-        waterjet_items = {
+        programmable_items = {
             item_number: item
             for item_number, item in order.items.items()
-            if item.desired_machine() == "WJ"
+            if item.desired_machine() in {"WJ", "DENVER 1", "DENVER 2"}
         }
-        if not waterjet_items:
+        if not programmable_items:
             continue
-        order.items = waterjet_items
-        waterjet_orders.append(order)
-    return waterjet_orders
+        order.items = programmable_items
+        programmable_orders.append(order)
+    return programmable_orders
 
 
 def load_process_orders_from_rows(
     rows: Iterable[Iterable[object]],
     *,
-    include_non_waterjet_mirror: bool = False,
+    include_non_waterjet_mirror: bool = True,
 ) -> list[ProcessOrder]:
     materialized_rows = [list(row) for row in rows]
     mirror_batch = process_list_is_mirror_batch(materialized_rows)
@@ -970,6 +988,9 @@ def load_process_orders_from_rows(
             order.items[item_number].add_row(row_number, width_text, height_text, delivery_date, customer, processing, machine_hint)
 
     loaded_orders = sorted(orders.values(), key=lambda order: int(order.aw_order))
+    if mirror_batch:
+        for order in loaded_orders:
+            order.mirror_batch = True
     if mirror_batch and not include_non_waterjet_mirror:
         return mirror_waterjet_orders(loaded_orders)
     return loaded_orders
@@ -1296,6 +1317,7 @@ def merge_process_order(
         return
     if order.customer and not target.customer:
         target.customer = order.customer
+    target.mirror_batch = target.mirror_batch or order.mirror_batch
     for item_number, item in order.items.items():
         target_item = target.items.get(item_number)
         if target_item is None:
@@ -1338,6 +1360,7 @@ def merge_process_orders_by_aw(orders: Iterable[ProcessOrder]) -> list[ProcessOr
             target.job_name = order.job_name
         if not target.customer and order.customer:
             target.customer = order.customer
+        target.mirror_batch = target.mirror_batch or order.mirror_batch
         for item_number, item in order.items.items():
             target_item = target.items.get(item_number)
             if target_item is None:
@@ -1375,7 +1398,12 @@ def unique_orders_from_batches(batches: list[dict[str, object]]) -> list[Process
     return merge_process_orders_by_aw(ordered)
 
 def clone_process_order(order: ProcessOrder) -> ProcessOrder:
-    cloned = ProcessOrder(aw_order=order.aw_order, job_name=order.job_name, customer=order.customer)
+    cloned = ProcessOrder(
+        aw_order=order.aw_order,
+        job_name=order.job_name,
+        customer=order.customer,
+        mirror_batch=order.mirror_batch,
+    )
     for item_number, item in order.items.items():
         cloned.items[item_number] = ProcessItem(
             item=item.item,
@@ -1405,12 +1433,17 @@ def filter_orders(orders: Iterable[ProcessOrder], requested: str | None) -> list
 
 
 def visible_orders(orders: Iterable[ProcessOrder], config: dict[str, object]) -> list[ProcessOrder]:
-    visible: list[ProcessOrder] = []
-    for order in orders:
-        if order.is_mirror(config) and not order.has_mirror_fabrication(config):
-            continue
-        visible.append(order)
-    return visible
+    del config
+    return list(orders)
+
+
+def mirror_fabrication_category(order: ProcessOrder, config: dict[str, object]) -> str:
+    """Return the operator-facing mirror work category for a process-list order."""
+    if not order.is_mirror(config):
+        return ""
+    if order.has_mirror_fabrication(config):
+        return "Mirror - With Fabrication"
+    return "Mirror - Without Fabrication"
 
 
 def attach_transom_panels(
@@ -1822,21 +1855,32 @@ def apply_process_hints(
                 panel.warnings.append(warning)
 
         process_glass_text = "\n".join((process_item.processing_text, process_item.machine_text))
+        desired_machine = process_item.desired_machine()
         is_mirror_glass = (
             programmer.has_mirror_glass_type(panel.text, config)
             or programmer.has_mirror_glass_type(process_glass_text, config)
         )
         panel.mirror_glass = is_mirror_glass
         if is_mirror_glass:
-            set_panel_machine(panel, "WJ", "mirror glass type always uses WJ")
-            panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
-            panel.rotation_degrees = orientation_rules.default_machine_rotation("WJ", panel.width, panel.height)
+            if process_item.has_mirror_fabrication(config):
+                set_panel_machine(panel, "WJ", "mirror glass type always uses WJ")
+                panel.indicator_corner = programmer.default_waterjet_indicator_corner(panel)
+                panel.rotation_degrees = orientation_rules.default_machine_rotation("WJ", panel.width, panel.height)
+            else:
+                panel.machine = ""
+                panel.label_only = True
+                panel.skip_dxf = True
+                panel.indicator_corner = None
+                panel.rotation_degrees = None
+                panel.reasons.append("mirror without fabrication; sketch label only")
 
-        desired_machine = process_item.desired_machine()
         processing_machine = process_item.inferred_denver_machine(config)
         strong_process_wj = process_item.has_strong_waterjet_fabrication(config)
         strong_pdf_wj = programmer.has_pdf_waterjet_evidence(panel.text, config)
         has_door_evidence = programmer.has_door_programming_evidence(panel, config)
+        machine_text = process_item.machine_text.upper()
+        if "DENVER 1" in machine_text and "DENVER 2" in machine_text:
+            desired_machine = "DENVER 1" if (has_door_evidence or processing_machine == "DENVER 1") else "DENVER 2"
         explicit_denver_fabrication = bool(
             desired_machine.startswith("DENVER")
             and process_item.has_denver_allowed_fabrication(config)
@@ -1853,11 +1897,11 @@ def apply_process_hints(
                     panel.reasons.append(f"process list machine: {desired_machine}")
                 else:
                     set_panel_machine(panel, desired_machine, f"process list machine: {desired_machine}")
-            elif (
-                (strong_process_wj or strong_pdf_wj)
-                and not has_door_evidence
-                and not explicit_denver_fabrication
+            elif not has_door_evidence and (
+                strong_pdf_wj or (strong_process_wj and not explicit_denver_fabrication)
             ):
+                if strong_pdf_wj:
+                    panel.reasons.append("piece-level dimensioned radius/notch geometry detected")
                 set_panel_machine(
                     panel,
                     "WJ",
@@ -2641,7 +2685,11 @@ def job_number_pdf_candidates(
     job_number = programmer.extract_job_number(process_order.job_name)
     if not job_number:
         return []
-    candidates = folder.rglob("*.pdf") if candidate_pdfs is None else candidate_pdfs
+    candidates = (
+        programmer.iter_active_input_files(folder, ".pdf")
+        if candidate_pdfs is None
+        else candidate_pdfs
+    )
     return sorted(
         (
             Path(path)
@@ -3208,11 +3256,7 @@ def preview_orders(
     config: dict[str, object] | None = None,
 ) -> list[BatchJobResult]:
     candidate_pdfs = sorted(
-        (
-            path
-            for path in folder.rglob("*.pdf")
-            if path.is_file() and not programmer.is_archived_input_file(path, folder)
-        ),
+        programmer.iter_active_input_files(folder, ".pdf"),
         key=lambda path: path.name.casefold(),
     )
     results: list[BatchJobResult] = []

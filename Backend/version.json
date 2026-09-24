@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.55",
-  "version_number": 155,
-  "marker": "VERSION_1_55_DENVER_RADIUS_PRECEDENCE",
-  "release_name": "Denver Radius Precedence",
-  "release_date": "2026-09-22",
+  "version": "Version 1.62",
+  "version_number": 162,
+  "marker": "VERSION_1_62_SPEED_FIRST_PRESENTATION",
+  "release_name": "Fast Opening and Mirror Batch Coverage",
+  "release_date": "2026-09-24",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

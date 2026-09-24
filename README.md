@@ -2,7 +2,9 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.22 - Centralized Configuration Workspace**
+Current release: **Version 1.62 - Fast Opening and Mirror Batch Coverage**
+
+The main application and Review Order now prioritize immediate visibility over a perfectly settled first frame. Fixed presentation delays and duplicate hidden paint passes have been removed; Review Order reveals its controls first and draws the sketch/DXF previews in the next UI cycle. Loading feedback remains centered while genuine background preparation is still running. Programmed pieces now warn when no edge polish is detected, and mirror batches retain both fabrication work and sketch-only mirrors with clear with-fabrication/without-fabrication categorization.
 
 
 Version 1.22 adds a comprehensive **Settings > Configuration** workspace for editing the active programmer configuration without opening JSON by hand. The editor discovers every non-note config value, organizes settings into Labels/PDF, Indicators, DXF Output, Machine Routing, Detection Rules, Orientation/Geometry, REMAKE/Overrides, and Advanced sections, and provides search plus type-appropriate editors. Save validates the full configuration and highlights warnings/errors, but validation is advisory: an operator can deliberately **Save Anyway** after acknowledging the warning. Each save is atomic and creates a rotating pre-save configuration backup.
@@ -281,7 +283,7 @@ Do not publish a new source revision without rebuilding and publishing matching 
 
 ## Versioning
 
-The project now uses the **Version 1.06** production series. Revisions continue to advance by `0.01`:
+The project uses the **Version 1.x** production series. Revisions continue to advance by `0.01`:
 
 ```text
 Version 0.82

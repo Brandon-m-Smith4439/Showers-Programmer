@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 1.22 configuration-workspace integration for Shower Programmer.
+"""Release integration layer for Shower Programmer.
 
 Mature workflow behavior now lives in the core GUI/batch modules. This layer is
 kept for the remaining release integrations that still benefit from isolation,
@@ -101,6 +101,13 @@ from __future__ import annotations
 # VERSION_1_53_MAXIMIZED_SENT_INPUT_ARCHIVE
 # VERSION_1_54_TERMINAL_INPUT_RETIREMENT
 # VERSION_1_55_DENVER_RADIUS_PRECEDENCE
+# VERSION_1_56_STARTUP_PRESENTATION_STABILITY
+# VERSION_1_57_WATERJET_ROUTE_PRECEDENCE
+# VERSION_1_58_FABRICATION_GEOMETRY_ROUTING
+# VERSION_1_59_REVIEW_WINDOW_PRESENTATION_STABILITY
+# VERSION_1_60_POLISHER_WARNING_WINDOW_PRESENTATION
+# VERSION_1_61_CENTERED_FAST_OPENING
+# VERSION_1_62_SPEED_FIRST_PRESENTATION
 # VERSION_1_29_MIRROR_WJ_FAST_SEND
 # VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
 # VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED

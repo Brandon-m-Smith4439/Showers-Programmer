@@ -14,12 +14,14 @@ from __future__ import annotations
 # BILATERAL_SCU4_DENVER_ORIENTATION_V36: orient proven symmetric SCU4 panels opposite a bottom-left logo.
 # WATERJET_ELLIPSE_GEOMETRY_V123: preserve DXF ellipse vectors and recognize A+W prefix-radius notation.
 # FPS_HINGE_KICK_OUT_V132: give proven FP-S hinge-side kick-out geometry priority over hinge defaults.
+# POLISHER_SHORT_EDGE_LIMIT_V160: warn when glass over 113 inches has FP/FP-S on a short edge.
 
 import argparse
 import copy
 import io
 import json
 import math
+import os
 import re
 import shutil
 import sys
@@ -629,6 +631,29 @@ class AmbiguousPdfError(RuntimeError):
         self.job_number = str(job_number)
 
 
+def iter_active_input_files(folder: Path, suffix: str) -> Iterable[Path]:
+    """Yield active input files without descending into dated archives."""
+    folder = Path(folder)
+    normalized_suffix = suffix.casefold()
+    if not normalized_suffix.startswith("."):
+        normalized_suffix = f".{normalized_suffix}"
+    if not folder.is_dir():
+        return
+    for current_root, directory_names, file_names in os.walk(folder):
+        directory_names[:] = sorted(
+            (
+                name
+                for name in directory_names
+                if not INPUT_ARCHIVE_FOLDER_RE.match(name)
+            ),
+            key=str.casefold,
+        )
+        current = Path(current_root)
+        for file_name in sorted(file_names, key=str.casefold):
+            if Path(file_name).suffix.casefold() == normalized_suffix:
+                yield current / file_name
+
+
 def find_pdf(
     folder: Path,
     job: str | None,
@@ -644,10 +669,7 @@ def find_pdf(
     a PDF whose filename was changed.
     """
     if candidate_pdfs is None:
-        pdfs = sorted(
-            p for p in folder.rglob("*.pdf")
-            if p.is_file() and not is_archived_input_file(p, folder)
-        )
+        pdfs = list(iter_active_input_files(folder, ".pdf"))
     else:
         pdfs = sorted(
             (
@@ -860,13 +882,21 @@ def has_pdf_waterjet_evidence(text: str, config: dict[str, Any]) -> bool:
     upper = strip_non_fabrication_edge_text(text.upper())
     waterjet_keywords = upper_set(config, "rules", "waterjet_keywords")
     weak_waterjet_keywords = upper_set(config, "rules", "weak_waterjet_keywords")
-    if any(keyword in upper for keyword in waterjet_keywords - weak_waterjet_keywords):
+    generic_keywords = {"NOTCH", "NOTCHED", "RADIUS"}
+    if any(keyword in upper for keyword in waterjet_keywords - weak_waterjet_keywords - generic_keywords):
+        return True
+    if re.search(
+        r"\b(?:DOUBLE|TRIPLE)\s+NOTCH(?:ES)?\b"
+        r"|\b(?:EDGE|CORNER|U)[ -]?NOTCH(?:ES)?\b"
+        r"|\b[1-9]\d*\s+NOTCHED\s+CORNERS?\b",
+        upper,
+    ):
         return True
     rules = config.get("rules", {})
     minimum_fp = int(parse_float(rules.get("waterjet_fp_min_count", 6), 6))
     if count_fp_marks(upper) >= minimum_fp:
         return True
-    return has_radius_text(upper)
+    return has_dimensional_waterjet_radius_text(upper)
 
 
 def has_mirror_glass_type(text: str, config: dict[str, Any]) -> bool:
@@ -1026,6 +1056,19 @@ def has_radius_text(text: str) -> bool:
             rf"\b{waterjet_radius}\s*(?:\"|IN(?:CH(?:ES)?)?)?\s*RADIUS\b"
             rf"|\bR(?:ADIUS)?\s*[:=]?\s*{waterjet_radius}\b"
             r"|\bRADIUS\b",
+            upper,
+        )
+    )
+
+
+def has_dimensional_waterjet_radius_text(text: str) -> bool:
+    """Require an actual 3/8- or 1/2-inch radius callout, not a metadata word."""
+    upper = text.upper()
+    waterjet_radius = r"(?:3/8|1/2|0?\.375|0?\.5)"
+    return bool(
+        re.search(
+            rf"\b{waterjet_radius}\s*(?:\"|IN(?:CH(?:ES)?)?)?\s*RADIUS\b"
+            rf"|\bR(?:ADIUS)?\s*[:=]?\s*{waterjet_radius}\b",
             upper,
         )
     )
@@ -1422,6 +1465,215 @@ def validate_panel_constraints(panel: Panel, config: dict[str, Any]) -> None:
         panel.skip_dxf = True
 
 
+def collect_page_edgework_labels(
+    reader: PdfReader,
+    page_index: int,
+    bbox: tuple[float, float, float, float],
+) -> list[tuple[str, float, float]]:
+    """Return positioned FP, FP-S, and SE labels near the drawn glass outline.
+
+    A+W sketches commonly expose each glyph as a separate PDF text fragment.
+    Reconstructing nearby horizontal and vertical runs keeps this detector tied
+    to the edge annotation instead of the page-wide edgework summary.
+    """
+    page = reader.pages[page_index]
+    left, bottom, right, top = bbox
+    margin = 52.0
+    fragments: list[tuple[str, float, float, float]] = []
+
+    def visitor(text: str, cm: list[float], tm: list[float], font_dict: object, font_size: float) -> None:
+        value = re.sub(r"[^A-Z-]+", "", (text or "").upper())
+        if not value:
+            return
+        try:
+            x, y = text_origin_from_matrices(cm, tm)
+            size = max(5.0, float(font_size))
+        except Exception:
+            return
+        if left - margin <= x <= right + margin and bottom - margin <= y <= top + margin:
+            fragments.append((value, x, y, size))
+
+    try:
+        page.extract_text(visitor_text=visitor)
+    except Exception:
+        return []
+
+    def labels_from_runs(horizontal: bool) -> list[tuple[str, float, float]]:
+        pending = sorted(fragments, key=lambda value: (value[2], value[1]) if horizontal else (value[1], value[2]))
+        runs: list[list[tuple[str, float, float, float]]] = []
+        for fragment in pending:
+            axis = fragment[2] if horizontal else fragment[1]
+            matching: list[tuple[str, float, float, float]] | None = None
+            for run in reversed(runs[-8:]):
+                run_axis = sum(item[2] if horizontal else item[1] for item in run) / len(run)
+                tolerance = max(3.0, fragment[3] * 0.35)
+                if abs(axis - run_axis) <= tolerance:
+                    matching = run
+                    break
+            if matching is None:
+                runs.append([fragment])
+            else:
+                matching.append(fragment)
+
+        found: list[tuple[str, float, float]] = []
+        patterns = (("FP-S", re.compile(r"FP-?S")), ("FP", re.compile(r"FP")), ("SE", re.compile(r"SE")))
+        for run in runs:
+            ordered = sorted(run, key=lambda value: value[1] if horizontal else value[2])
+            chain: list[tuple[str, float, float, float]] = []
+            previous: tuple[str, float, float, float] | None = None
+            for fragment in ordered:
+                if previous is not None:
+                    previous_axis = previous[1] if horizontal else previous[2]
+                    current_axis = fragment[1] if horizontal else fragment[2]
+                    max_gap = max(12.0, previous[3] * 1.8, fragment[3] * 1.8)
+                    if current_axis - previous_axis > max_gap:
+                        found.extend(_edgework_labels_from_fragment_chain(chain, patterns))
+                        chain = []
+                chain.append(fragment)
+                previous = fragment
+            found.extend(_edgework_labels_from_fragment_chain(chain, patterns))
+        return found
+
+    labels = labels_from_runs(horizontal=True) + labels_from_runs(horizontal=False)
+    unique: list[tuple[str, float, float]] = []
+    for label, x, y in labels:
+        if any(existing == label and math.hypot(x - ex, y - ey) <= 4.0 for existing, ex, ey in unique):
+            continue
+        unique.append((label, x, y))
+    return unique
+
+
+def _edgework_labels_from_fragment_chain(
+    chain: list[tuple[str, float, float, float]],
+    patterns: tuple[tuple[str, re.Pattern[str]], ...],
+) -> list[tuple[str, float, float]]:
+    if not chain:
+        return []
+    text = ""
+    owners: list[tuple[str, float, float, float]] = []
+    for fragment in chain:
+        text += fragment[0]
+        owners.extend([fragment] * len(fragment[0]))
+    found: list[tuple[str, float, float]] = []
+    occupied: list[tuple[int, int]] = []
+    for label, pattern in patterns:
+        for match in pattern.finditer(text):
+            if label == "FP" and any(start <= match.start() and match.end() <= end for start, end in occupied):
+                continue
+            matched = owners[match.start():match.end()]
+            if not matched:
+                continue
+            found.append((label, sum(item[1] for item in matched) / len(matched), sum(item[2] for item in matched) / len(matched)))
+            if label == "FP-S":
+                occupied.append(match.span())
+    return found
+
+
+def short_edge_polish_labels(
+    reader: PdfReader,
+    panel: Panel,
+) -> set[str]:
+    """Return FP/FP-S labels confidently associated with a short glass edge."""
+    bbox = estimate_panel_outline_bbox(reader, panel.page_index, panel.width, panel.height)
+    if bbox is None:
+        bbox = estimate_panel_bbox(reader, panel.page_index)
+    if bbox is None:
+        return set()
+    left, bottom, right, top = bbox
+    drawn_width = right - left
+    drawn_height = top - bottom
+    if drawn_width <= 0 or drawn_height <= 0:
+        return set()
+
+    short_edges_are_horizontal = drawn_width <= drawn_height
+    edge_band = max(24.0, min(42.0, min(drawn_width, drawn_height) * 0.16))
+    found: set[str] = set()
+    for label, x, y in collect_page_edgework_labels(reader, panel.page_index, bbox):
+        if label not in {"FP", "FP-S"}:
+            continue
+        if short_edges_are_horizontal:
+            within_span = left - 16.0 <= x <= right + 16.0
+            distance = min(abs(y - bottom), abs(y - top))
+        else:
+            within_span = bottom - 16.0 <= y <= top + 16.0
+            distance = min(abs(x - left), abs(x - right))
+        if within_span and distance <= edge_band:
+            found.add(label)
+    return found
+
+
+def detected_edge_polish_labels(
+    reader: PdfReader,
+    panel: Panel,
+) -> set[str]:
+    """Return polish labels that are spatially associated with any glass edge."""
+    bbox = estimate_panel_outline_bbox(reader, panel.page_index, panel.width, panel.height)
+    if bbox is None:
+        bbox = estimate_panel_bbox(reader, panel.page_index)
+    if bbox is None:
+        return set()
+    left, bottom, right, top = bbox
+    drawn_width = right - left
+    drawn_height = top - bottom
+    if drawn_width <= 0 or drawn_height <= 0:
+        return set()
+
+    edge_band = max(24.0, min(42.0, min(drawn_width, drawn_height) * 0.16))
+    found: set[str] = set()
+    for label, x, y in collect_page_edgework_labels(reader, panel.page_index, bbox):
+        on_horizontal_edge = (
+            left - 16.0 <= x <= right + 16.0
+            and min(abs(y - bottom), abs(y - top)) <= edge_band
+        )
+        on_vertical_edge = (
+            bottom - 16.0 <= y <= top + 16.0
+            and min(abs(x - left), abs(x - right)) <= edge_band
+        )
+        if on_horizontal_edge or on_vertical_edge:
+            found.add(label)
+    return found
+
+
+def validate_edge_polish_presence(reader: PdfReader, panel: Panel) -> None:
+    """Warn when a programmed piece has no detected edge-polish instruction."""
+    if panel.skip_dxf or panel.remake_excluded or panel.label_only or not panel.machine:
+        return
+    if detected_edge_polish_labels(reader, panel):
+        return
+
+    upper = panel.text.upper()
+    summary_has_polish = bool(
+        re.search(r"\bFLAT\s+POLISH\b|\bSEAM(?:ED)?\b", upper)
+    )
+    if summary_has_polish:
+        return
+    add_panel_warning(panel, "No Polish was detected on any of the edges.")
+
+
+def validate_polisher_maximum(reader: PdfReader, panel: Panel, config: dict[str, Any]) -> None:
+    """Warn only when overlength glass requires FP/FP-S on a short edge."""
+    if panel.width is None or panel.height is None:
+        return
+    rules = config.get("rules", {})
+    maximum = float(rules.get("polisher_max_edge_inches", 113.0))
+    longest = max(panel.width, panel.height)
+    if longest <= maximum:
+        return
+
+    labels = short_edge_polish_labels(reader, panel)
+    summary_marks_short = bool(
+        re.search(r"FLAT\s+POLISH[^\r\n]{0,80}\b(?:\d+\s+)?SHORT\b", panel.text.upper())
+    )
+    if not labels and not summary_marks_short:
+        return
+    label_text = "/".join(sorted(labels)) if labels else "FP/FP-S"
+    add_panel_warning(
+        panel,
+        f'Polisher Maximums exceeded: {longest:g}" piece has {label_text} on a short edge '
+        f'({maximum:g}" maximum).',
+    )
+
+
 def add_panel_warning(panel: Panel, message: str) -> None:
     if message not in panel.warnings:
         panel.warnings.append(message)
@@ -1429,6 +1681,8 @@ def add_panel_warning(panel: Panel, message: str) -> None:
 
 def refine_panel_orientations(reader: PdfReader, panels: list[Panel], config: dict[str, Any]) -> None:
     for panel in panels:
+        validate_edge_polish_presence(reader, panel)
+        validate_polisher_maximum(reader, panel, config)
         if panel.machine != "DENVER 1":
             continue
         if panel.manual_rotation_override:
@@ -1880,11 +2134,7 @@ def find_source_dxf(
     job_number = extract_job_number(job_name)
     source_item = panel.source_item or panel.item
     candidates: list[tuple[tuple[int, int, int, int, int], Path]] = []
-    for path in folder.rglob("*.dxf"):
-        if not path.is_file():
-            continue
-        if is_archived_input_file(path, folder):
-            continue
+    for path in iter_active_input_files(folder, ".dxf"):
         score = dxf_match_score(
             path,
             norm_job,

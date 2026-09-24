@@ -38,7 +38,7 @@ class MirrorWorkflowRecoveryTests(unittest.TestCase):
         )
         self.assertFalse(programmer.text_contains_job_number("90239127M.2 Other revision", "90239127M"))
 
-    def test_mirror_waterjet_section_heading_routes_only_fabricated_item(self) -> None:
+    def test_mirror_batch_retains_polish_and_waterjet_items(self) -> None:
         rows = [
             ['1/4" Mirror'],
             ["Kodiak (Polisher)  (2000)"],
@@ -51,8 +51,46 @@ class MirrorWorkflowRecoveryTests(unittest.TestCase):
 
         self.assertEqual(len(orders), 1)
         self.assertEqual(orders[0].aw_order, "239009")
-        self.assertEqual(orders[0].item_numbers, [2])
+        self.assertEqual(orders[0].item_numbers, [1, 2])
         self.assertEqual(orders[0].items[2].desired_machine(), "WJ")
+
+    def test_mirror_denver_section_row_is_retained_for_pdf_waterjet_correction(self) -> None:
+        rows = [
+            ['1/4" French Antique Mirror'],
+            ["Denver 1  (2100)"],
+            ["", "", '87"3/8', '19"1/8', "", "", "239094-1", "0 Notched Corners", "9/23/2026", "", "CUSTOMER", "", "", "90027720M.2 3107 CLOVERFIELD"],
+            ["Packing / Shipping"],
+            ["", "", '40"', '30"', "", "", "239095-1", "Packing", "9/23/2026", "", "CUSTOMER", "", "", "90027721M PACKING ONLY"],
+        ]
+
+        orders = shower_batch.load_process_orders_from_rows(rows)
+
+        self.assertEqual([order.aw_order for order in orders], ["239094", "239095"])
+        self.assertEqual(orders[0].items[1].desired_machine(), "DENVER 1")
+
+        panel = programmer.Panel(
+            item=1,
+            page_index=1,
+            text='1/4" French Antique Mirror',
+            width=87.375,
+            height=19.125,
+            machine="DENVER 1",
+        )
+        shower_batch.apply_process_hints(
+            [panel],
+            orders[0],
+            {
+                "rules": {
+                    "mirror_keywords": ["MIRROR"],
+                    "door_keywords": ["DOOR", "HINGE"],
+                    "fabrication_keywords": ["HOLE", "CUTOUT", "NOTCH"],
+                    "denver_fabrication_keywords": ["HOLE", "SLOT"],
+                    "waterjet_keywords": ["NOTCH", "RADIUS"],
+                }
+            },
+        )
+        self.assertEqual(panel.machine, "WJ")
+        self.assertIn("mirror glass type always uses WJ", panel.reasons)
 
     def test_mirror_waterjet_uses_filtered_dxf_sequence_when_exact_item_is_absent(self) -> None:
         order = shower_batch.ProcessOrder("239009", "90239127M My Shower Door", "Customer")
@@ -98,6 +136,68 @@ class MirrorWorkflowRecoveryTests(unittest.TestCase):
         self.assertEqual(loaded[0].aw_order, "239009")
         self.assertEqual(loaded[0].items[2].desired_machine(), "WJ")
         self.assertTrue(getattr(loaded[0], "manual_process_order", False))
+
+    def test_sent_manual_order_moves_from_active_store_to_dated_archive(self) -> None:
+        first = shower_batch.ProcessOrder("239094", "90027720M.2 3107 CLOVERFIELD", "CUSTOMER")
+        first.items[1] = shower_batch.ProcessItem(item=1, machine_hints=["WJ"])
+        setattr(first, "manual_process_order", True)
+        second = shower_batch.ProcessOrder("239999", "90029999M ACTIVE MANUAL", "CUSTOMER")
+        second.items[1] = shower_batch.ProcessItem(item=1, machine_hints=["WJ"])
+        setattr(second, "manual_process_order", True)
+        gui.ShowerProgrammerApp.save_manual_process_orders_for_output(self.temp, [first, second])
+
+        archived = gui.ShowerProgrammerApp.archive_manual_process_orders_for_output(
+            self.temp,
+            [first],
+        )
+
+        active = gui.ShowerProgrammerApp.load_manual_process_orders_for_output(self.temp)
+        self.assertEqual([order.aw_order for order in active], ["239999"])
+        self.assertEqual(len(archived), 1)
+        self.assertIn(gui.ShowerProgrammerApp.MANUAL_PROCESS_ARCHIVE_FOLDER_NAME, archived[0].parts)
+        archive_payload = json.loads(archived[0].read_text(encoding="utf-8"))
+        archive_orders = shower_batch.process_orders_from_cache(archive_payload["orders"])
+        self.assertEqual([order.aw_order for order in archive_orders], ["239094"])
+
+    def test_manual_order_inputs_archive_below_date_then_manual_folder(self) -> None:
+        order_dir = self.temp / "Input" / "Orders"
+        process_dir = self.temp / "Input" / "Process List"
+        order_dir.mkdir(parents=True)
+        process_dir.mkdir(parents=True)
+        source = order_dir / "90027720M.2 3107 CLOVERFIELD.pdf"
+        source.write_bytes(b"manual source")
+        order = shower_batch.ProcessOrder("239094", "90027720M.2 3107 CLOVERFIELD", "CUSTOMER")
+        setattr(order, "manual_process_order", True)
+
+        class ManualArchiveApp(gui.ShowerProgrammerApp):
+            @classmethod
+            def matching_order_files(
+                cls,
+                folder: Path,
+                orders: list[shower_batch.ProcessOrder],
+                *,
+                root_only: bool,
+                inspect_pdf_text: bool,
+                candidate_files: list[Path] | None = None,
+            ) -> list[Path]:
+                del cls, folder, orders, root_only, inspect_pdf_text
+                if candidate_files is not None:
+                    return list(candidate_files)
+                return [source] if source.exists() else []
+
+        app = object.__new__(ManualArchiveApp)
+        archived, warnings = app.archive_sent_input_files_for_orders(
+            [order],
+            order_dir,
+            process_dir,
+            include_process_lists=False,
+        )
+
+        self.assertFalse(source.exists())
+        self.assertFalse(any("Could not archive input" in warning for warning in warnings))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].parent.name, gui.ShowerProgrammerApp.MANUAL_PROCESS_ARCHIVE_FOLDER_NAME)
+        self.assertRegex(archived[0].parent.parent.name, r"^\d{1,2}\.\d{1,2}\.\d{2}$")
 
     def test_startup_recovery_notice_state_persists_fingerprint_and_history(self) -> None:
         app = gui.ShowerProgrammerApp.__new__(gui.ShowerProgrammerApp)

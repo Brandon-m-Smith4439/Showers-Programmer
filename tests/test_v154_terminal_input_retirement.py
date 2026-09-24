@@ -44,13 +44,14 @@ class TerminalInputRetirementTests(unittest.TestCase):
             self.process_row("900001-1", "12345678M MIRROR JOB", "Packing / Shipping"),
         ]
 
-        self.assertEqual(shower_batch.load_process_orders_from_rows(rows), [])
-        source_orders = shower_batch.load_process_orders_from_rows(
-            rows,
-            include_non_waterjet_mirror=True,
-        )
-
+        source_orders = shower_batch.load_process_orders_from_rows(rows)
         self.assertEqual([order.aw_order for order in source_orders], ["900001"])
+
+        legacy_filtered = shower_batch.load_process_orders_from_rows(
+            rows,
+            include_non_waterjet_mirror=False,
+        )
+        self.assertEqual(legacy_filtered, [])
 
     def test_older_exact_production_sketch_requires_no_active_local_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temp_text:
@@ -165,14 +166,13 @@ class TerminalInputRetirementTests(unittest.TestCase):
             self.assertEqual(archived, [])
             self.assertTrue(source.exists())
 
-    def test_version_154_release_metadata(self) -> None:
+    def test_version_154_release_marker_is_retained(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
+        marker = "VERSION_1_54_TERMINAL_INPUT_RETIREMENT"
 
-        self.assertEqual(version["version"], "Version 1.54")
-        self.assertEqual(version["version_number"], 154)
-        self.assertEqual(version["marker"], "VERSION_1_54_TERMINAL_INPUT_RETIREMENT")
+        self.assertGreaterEqual(version["version_number"], 154)
         self.assertIn(
-            version["marker"],
+            marker,
             (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8"),
         )
 

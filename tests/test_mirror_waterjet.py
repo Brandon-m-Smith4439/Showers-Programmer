@@ -59,7 +59,7 @@ class MirrorWaterjetTests(unittest.TestCase):
         self.assertFalse(panel.skip_dxf)
         self.assertIn("mirror glass type always uses WJ", panel.reasons)
 
-    def test_process_list_mirror_glass_forces_waterjet_when_pdf_is_plain(self) -> None:
+    def test_process_list_mirror_without_fabrication_is_sketch_only_when_pdf_is_plain(self) -> None:
         panel = self.panel('1/4" Clear Annealed', "")
         order = shower_batch.ProcessOrder("900001", "12345678 TEST")
         item = shower_batch.ProcessItem(1, width_text='42"', height_text='83"')
@@ -68,10 +68,11 @@ class MirrorWaterjetTests(unittest.TestCase):
 
         shower_batch.apply_process_hints([panel], order, CONFIG)
 
-        self.assertEqual(panel.machine, "WJ")
+        self.assertEqual(panel.machine, "")
         self.assertTrue(panel.mirror_glass)
-        self.assertFalse(panel.label_only)
-        self.assertFalse(panel.skip_dxf)
+        self.assertTrue(panel.label_only)
+        self.assertTrue(panel.skip_dxf)
+        self.assertIn("mirror without fabrication; sketch label only", panel.reasons)
 
     def test_radius_cutout_overrides_conflicting_denver_process_route(self) -> None:
         panel = self.panel('3/8" Clear Tempered\n1/2 Radius', "WJ")
@@ -143,7 +144,7 @@ class MirrorWaterjetTests(unittest.TestCase):
         row[21] = machine
         return row
 
-    def test_mirror_batch_keeps_only_waterjet_section_orders(self) -> None:
+    def test_mirror_batch_keeps_fabricated_and_nonfabricated_orders(self) -> None:
         rows = [
             ['1/4" Mirror'],
             self.process_row("900001-1", "12345678 MIRROR JOB", "Waterjet"),
@@ -158,10 +159,18 @@ class MirrorWaterjetTests(unittest.TestCase):
 
         orders = shower_batch.load_process_orders_from_rows(rows)
 
-        self.assertEqual([order.aw_order for order in orders], ["900001"])
+        self.assertEqual([order.aw_order for order in orders], ["900001", "900002"])
         self.assertEqual(
             orders[0].items[1].machine_hints,
             ["Waterjet", "Packing / Shipping"],
+        )
+        self.assertEqual(
+            shower_batch.mirror_fabrication_category(orders[0], CONFIG),
+            "Mirror - With Fabrication",
+        )
+        self.assertEqual(
+            shower_batch.mirror_fabrication_category(orders[1], CONFIG),
+            "Mirror - Without Fabrication",
         )
 
     def test_customer_job_named_mirror_does_not_scope_a_clear_glass_batch(self) -> None:
