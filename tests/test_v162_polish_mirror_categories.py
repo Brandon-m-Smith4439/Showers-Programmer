@@ -121,9 +121,19 @@ class MirrorCategoryTests(unittest.TestCase):
         }
 
         label = gui.ShowerProgrammerApp.batch_tree_label(batch)
+        summary = gui.ShowerProgrammerApp.batch_tree_summary(batch)
 
-        self.assertIn("Mirror fab 1", label)
-        self.assertIn("Mirror no fab 1", label)
+        self.assertEqual(label, "Batch 7000.xls")
+        self.assertNotIn("Mirror", label)
+        self.assertEqual(summary, "2 orders")
+        self.assertEqual(
+            gui.ShowerProgrammerApp.mirror_section_label("Mirror - With Fabrication"),
+            "MIRROR • WITH FABRICATION",
+        )
+        self.assertEqual(
+            gui.ShowerProgrammerApp.mirror_section_label("Mirror - Without Fabrication"),
+            "MIRROR • WITHOUT FABRICATION",
+        )
 
 
 if __name__ == "__main__":

@@ -34,8 +34,8 @@ class Version101SettingsLifecycleTests(unittest.TestCase):
         self.assertIn("grabber.grab_release()", self.open_settings)
 
     def test_opening_preferences_does_not_automatically_load_archives(self) -> None:
-        self.assertIn('if selected == "Archives":', self.open_settings)
-        self.assertIn('elif selected == "Action History":', self.open_settings)
+        self.assertIn('if name == "Archives":', self.open_settings)
+        self.assertIn('elif name == "Action History":', self.open_settings)
         self.assertIn("dialog.after_idle(activate_selected_tab)", self.open_settings)
         self.assertNotIn("dialog.after(100, refresh)", self.archive_tab)
         self.assertIn('value="Archives are ready. Open this tab to load the most recent seven days."', self.archive_tab)

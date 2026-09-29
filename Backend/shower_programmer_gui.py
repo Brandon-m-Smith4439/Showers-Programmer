@@ -40,6 +40,7 @@
 # ARCHIVE_BATCH_STATUS_DELETE_REFRESH_V108: batch sent/input summaries, deletion-scope-safe rescans, and richer dimension diagnostics.
 # PROFESSIONAL_HARDENING_V120: direct XLS, revision inspector, health checks, scan timing, provenance, and release smoke validation.
 # POLISHER_WARNING_WINDOW_PRESENTATION_V160: overlength short-edge polish warning and flicker-free window reveals.
+# FLASH_FREE_WINDOW_MAPPING_V166: withdraw-before-map presentation, stable themed first paint, and reliable Review Order foreground ownership.
 # RELIABILITY_ARCHITECTURE_V121: transactional Send recovery, startup recovery, post-send integrity, DB safety, error codes, rollback, and rule modules.
 # CONFIGURATION_WORKSPACE_V122: centralized sectioned configuration editing with advisory validation and save-anyway support.
 # REVIEW_MACHINE_DIALOG_OWNER_V124: keep Change Machine centered on and owned by Review Order.
@@ -84,13 +85,13 @@ import uuid
 import webbrowser
 import zipfile
 from collections import OrderedDict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 from pypdf import PdfReader, PdfWriter
 
@@ -166,10 +167,41 @@ try:
 except Exception:
     ctk = None
 
-try:
-    import pypdfium2 as pdfium
-except Exception:
-    pdfium = None
+pdfium = None
+_pdfium_import_attempted = False
+_pdfium_import_lock = threading.Lock()
+
+
+def close_packager_splash() -> None:
+    """Close PyInstaller's pre-interpreter splash after the Tk startup shield is painted."""
+    if not bool(getattr(sys, "frozen", False)):
+        return
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+
+        if bool(pyi_splash.is_alive()):
+            pyi_splash.close()
+    except Exception:
+        pass
+
+
+def get_pdfium() -> Any | None:
+    """Load PDFium only when a preview actually needs raster rendering."""
+    global pdfium, _pdfium_import_attempted
+    if pdfium is not None:
+        return pdfium
+    with _pdfium_import_lock:
+        if pdfium is not None:
+            return pdfium
+        if _pdfium_import_attempted:
+            return None
+        _pdfium_import_attempted = True
+        try:
+            import pypdfium2 as loaded_pdfium
+        except Exception:
+            return None
+        pdfium = loaded_pdfium
+        return pdfium
 
 try:
     from PIL import Image, ImageDraw, ImageTk
@@ -223,6 +255,11 @@ class _ProgramMessageBox:
             return getattr(_native_messagebox, native_method)(title, message, parent=parent)
 
         app = self._app_for(owner)
+        if app is not None and hasattr(app, "resolve_popup_owner"):
+            try:
+                owner = app.resolve_popup_owner(owner)
+            except Exception:
+                pass
         palette = {
             "app_bg": getattr(app, "APP_BG", "#f4f7fb"),
             "card": getattr(app, "CARD_BG", "#ffffff"),
@@ -249,14 +286,17 @@ class _ProgramMessageBox:
             "success": "check_circle",
         }.get(kind, "info")
         result = {"value": default}
-        dialog = ctk.CTkToplevel(owner)
-        try:
-            dialog.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
+        if app is not None and hasattr(app, "create_hidden_toplevel"):
+            dialog = app.create_hidden_toplevel(owner)
+        else:
+            dialog = FlashFreeToplevel(owner, background=palette["app_bg"])
         dialog.title(str(title))
         dialog.configure(fg_color=palette["app_bg"])
         dialog.resizable(False, False)
+        # Compact modal prompts use their own themed title/controls; removing the
+        # native caption avoids a one-frame Windows title-bar flash and gives these
+        # prompts a consistent modern card appearance.
+        dialog.overrideredirect(True)
         if app is not None:
             try:
                 app.set_window_icon(dialog)
@@ -264,7 +304,6 @@ class _ProgramMessageBox:
                 pass
         try:
             dialog.transient(owner)
-            dialog.grab_set()
         except tk.TclError:
             pass
 
@@ -384,6 +423,11 @@ class _ProgramMessageBox:
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(default))
         dialog.bind("<Escape>", lambda _event: finish(default))
         dialog.bind("<Return>", lambda _event: finish(choices[-1][1]))
+        # The modal grab must not be established until the staged/painted HWND is
+        # actually visible. Grabbing a withdrawn Toplevel can force Tk/Windows to
+        # realize it early and reintroduce the exact white first-frame flash this
+        # presenter is designed to prevent.
+        setattr(dialog, "_shower_grab_on_present", True)
         dialog.update_idletasks()
         width = max(620 if (len(message_text) > 180 or "\n" in message_text) else 500, dialog.winfo_reqwidth())
         height = max(210, dialog.winfo_reqheight())
@@ -398,10 +442,11 @@ class _ProgramMessageBox:
         else:
             try:
                 dialog.update_idletasks()
-                dialog.update()
+                dialog.deiconify()
+                dialog.update_idletasks()
                 dialog.attributes("-alpha", 1.0)
                 dialog.lift()
-                dialog.focus_force()
+                dialog.focus_set()
             except tk.TclError:
                 pass
         dialog.wait_window()
@@ -678,6 +723,369 @@ class ModernProgressBar:
         return getattr(self.widget, name)
 
 
+class FlashFreeToplevel(tk.Toplevel):
+    """Native Tk child shell that never exposes CustomTkinter's first-map behavior.
+
+    CustomTkinter widgets work normally inside a Tk Toplevel, so the app can keep
+    its existing visual system while owning native mapping, theming, and z-order.
+    ``fg_color`` is accepted as an alias for Tk's background so existing window
+    setup code does not need a second styling path.
+    """
+
+    def __init__(self, master: Any, *, background: str) -> None:
+        super().__init__(master, background=background)
+        self._shower_shell_background = background
+        try:
+            self.withdraw()
+        except tk.TclError:
+            pass
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if "fg_color" in kwargs:
+            kwargs["background"] = kwargs.pop("fg_color")
+        if cnf is None:
+            return super().configure(**kwargs)
+        return super().configure(cnf, **kwargs)
+
+    config = configure
+
+
+class WindowPresentationVeil:
+    """Solid in-window veil used during the final mapped paint handoff.
+
+    Tk/CustomTkinter can queue canvas redraws after native geometry is already
+    stable. Keeping a same-color veil above the finished widget tree for a few
+    real event-loop turns prevents those last redraws from becoming visible.
+    """
+
+    def __init__(self, parent: tk.Widget, *, background: str) -> None:
+        self.frame = tk.Frame(parent, background=background, borderwidth=0, highlightthickness=0)
+        self.frame.place(relx=0.0, rely=0.0, relwidth=1.0, relheight=1.0)
+        self.lift()
+
+    def lift(self) -> None:
+        try:
+            self.frame.lift()
+        except tk.TclError:
+            pass
+
+    def destroy(self) -> None:
+        try:
+            self.frame.destroy()
+        except tk.TclError:
+            pass
+
+
+class WindowLoadingCover:
+    """In-window loading surface that hides expensive child-widget first paint.
+
+    Unlike a second Toplevel, this cover lives inside the final native window. The
+    real workspace can therefore construct and settle underneath it without any
+    z-order handoff or intermediate CustomTkinter paint becoming visible.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        background: str,
+        accent: str,
+        text_color: str,
+        muted_color: str,
+        title: str,
+        detail: str,
+    ) -> None:
+        self.parent = parent
+        self.background = background
+        self.accent = accent
+        self.text_color = text_color
+        self.muted_color = muted_color
+        self.title = title
+        self.detail = detail
+        self.angle = 0
+        self._after_id: str | None = None
+        self.frame = tk.Frame(parent, background=background, borderwidth=0, highlightthickness=0)
+        self.frame.place(relx=0.0, rely=0.0, relwidth=1.0, relheight=1.0)
+        self.canvas = tk.Canvas(
+            self.frame,
+            background=background,
+            highlightthickness=0,
+            borderwidth=0,
+            relief=tk.FLAT,
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self._paint())
+        self._paint()
+        self.lift()
+        self._animate()
+
+    def lift(self) -> None:
+        try:
+            self.frame.lift()
+        except tk.TclError:
+            pass
+
+    def set_detail(self, detail: str) -> None:
+        self.detail = str(detail)
+        self._paint()
+
+    def _paint(self) -> None:
+        try:
+            width = max(int(self.canvas.winfo_width()), 1)
+            height = max(int(self.canvas.winfo_height()), 1)
+            cx = width / 2
+            cy = height / 2 - 10
+            radius = 18
+            self.canvas.delete("all")
+            self.canvas.create_arc(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                start=self.angle,
+                extent=280,
+                style=tk.ARC,
+                outline=self.accent,
+                width=4,
+            )
+            self.canvas.create_text(
+                cx,
+                cy + 42,
+                text=self.title,
+                fill=self.text_color,
+                font=("Segoe UI", 15, "bold"),
+                anchor=tk.N,
+            )
+            self.canvas.create_text(
+                cx,
+                cy + 69,
+                text=self.detail,
+                fill=self.muted_color,
+                font=("Segoe UI", 10),
+                anchor=tk.N,
+            )
+        except tk.TclError:
+            pass
+
+    def _animate(self) -> None:
+        try:
+            if not bool(self.frame.winfo_exists()):
+                return
+            self.angle = (self.angle + 24) % 360
+            self._paint()
+            self._after_id = self.frame.after(55, self._animate)
+        except tk.TclError:
+            pass
+
+    def destroy(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.frame.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+        try:
+            self.frame.destroy()
+        except tk.TclError:
+            pass
+
+
+class StartupShield:
+    """Native Tk startup cover that hides CustomTkinter construction and layout churn."""
+
+    def __init__(
+        self,
+        root: tk.Tk,
+        *,
+        background: str,
+        accent: str,
+        text_color: str,
+        muted_color: str,
+        title: str = "Shower Programmer",
+        detail: str = "Starting workspace...",
+    ) -> None:
+        self.root = root
+        self.background = background
+        self.accent = accent
+        self.text_color = text_color
+        self.muted_color = muted_color
+        self.title = title
+        self.detail = detail
+        self.angle = 0
+        self._after_id: str | None = None
+        self.window = tk.Toplevel(root, background=background)
+        # A Toplevel can receive one native default-background paint before Python
+        # applies styling. Keep it completely unmapped until its final background,
+        # canvas, geometry, and transparency are already established.
+        try:
+            self.window.withdraw()
+        except tk.TclError:
+            pass
+        try:
+            self.window.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+        self.window.overrideredirect(True)
+        self.window.configure(bg=background)
+        try:
+            self.window.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self.canvas = tk.Canvas(
+            self.window,
+            background=background,
+            highlightthickness=0,
+            borderwidth=0,
+            relief=tk.FLAT,
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self._paint())
+        self.sync_to_root()
+        self._paint()
+        self._present_fully_painted()
+        self._animate()
+
+    def sync_to_root(self) -> None:
+        """Cover the root monitor's usable work area without covering the taskbar."""
+        try:
+            self.root.update_idletasks()
+            geometry = self._monitor_work_area_geometry()
+            if geometry is None:
+                x = int(self.root.winfo_rootx())
+                y = int(self.root.winfo_rooty())
+                width = max(int(self.root.winfo_width()), 640)
+                height = max(int(self.root.winfo_height()), 480)
+            else:
+                x, y, width, height = geometry
+            self.window.geometry(f"{width}x{height}+{x}+{y}")
+        except tk.TclError:
+            pass
+
+    def _present_fully_painted(self) -> None:
+        """Map the branded cover only after its native and canvas surfaces are ready."""
+        try:
+            self.window.update_idletasks()
+            self.window.deiconify()
+            # Let Tk paint while the native window is still transparent. The next
+            # alpha change therefore reveals the branded surface, never white.
+            self.window.update_idletasks()
+            self.window.lift()
+            self.window.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
+
+    def _monitor_work_area_geometry(self) -> tuple[int, int, int, int] | None:
+        if os.name != "nt":
+            return None
+        try:
+            class Rect(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.c_ulong),
+                    ("rcMonitor", Rect),
+                    ("rcWork", Rect),
+                    ("dwFlags", ctypes.c_ulong),
+                ]
+
+            user32 = ctypes.windll.user32
+            user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            user32.GetAncestor.restype = ctypes.c_void_p
+            user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            user32.MonitorFromWindow.restype = ctypes.c_void_p
+            user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            user32.GetMonitorInfoW.restype = ctypes.c_bool
+            child_hwnd = int(self.root.winfo_id())
+            root_hwnd = user32.GetAncestor(ctypes.c_void_p(child_hwnd), 2)
+            hwnd = int(root_hwnd or child_hwnd)
+            monitor = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+            info = MonitorInfo()
+            info.cbSize = ctypes.sizeof(MonitorInfo)
+            if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                return None
+            left = int(info.rcWork.left)
+            top = int(info.rcWork.top)
+            width = max(int(info.rcWork.right - info.rcWork.left), 640)
+            height = max(int(info.rcWork.bottom - info.rcWork.top), 480)
+            return left, top, width, height
+        except Exception:
+            return None
+
+    def set_detail(self, detail: str) -> None:
+        self.detail = str(detail)
+        self._paint()
+
+    def _paint(self) -> None:
+        try:
+            width = max(int(self.canvas.winfo_width()), 1)
+            height = max(int(self.canvas.winfo_height()), 1)
+            cx = width / 2
+            cy = height / 2 - 10
+            radius = 18
+            self.canvas.delete("all")
+            self.canvas.create_arc(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                start=self.angle,
+                extent=280,
+                style=tk.ARC,
+                outline=self.accent,
+                width=4,
+            )
+            self.canvas.create_text(
+                cx,
+                cy + 42,
+                text=self.title,
+                fill=self.text_color,
+                font=("Segoe UI", 15, "bold"),
+                anchor=tk.N,
+            )
+            self.canvas.create_text(
+                cx,
+                cy + 69,
+                text=self.detail,
+                fill=self.muted_color,
+                font=("Segoe UI", 10),
+                anchor=tk.N,
+            )
+        except tk.TclError:
+            pass
+
+    def _animate(self) -> None:
+        try:
+            if not bool(self.window.winfo_exists()):
+                return
+            self.angle = (self.angle + 24) % 360
+            self._paint()
+            self._after_id = self.window.after(55, self._animate)
+        except tk.TclError:
+            self._after_id = None
+
+    def destroy(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.window.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            pass
+
+
 class ShowerProgrammerApp:
     APP_BG = "#f3f6fb"
     CARD_BG = "#ffffff"
@@ -737,19 +1145,24 @@ class ShowerProgrammerApp:
     NETWORK_HEALTH_REFRESH_MS = 5 * 60 * 1000
     NETWORK_HEALTH_TIMEOUT_SECONDS = 3.0
     SCAN_IO_MAX_WORKERS = 8
+    WORKER_QUEUE_DRAIN_MAX_EVENTS = 12
+    WORKER_QUEUE_DRAIN_BUDGET_SECONDS = 0.010
+    ORDER_FUTURE_POLL_SECONDS = 0.08
     MANUAL_DXF_REVIEW_RESOLUTION_KEY = "manual_dxf_review_resolution"
     ORDER_TREE_COLUMNS = (
         "status", "processed", "delivery", "order", "review",
         "sent", "job", "customer", "items", "issues",
     )
-    # Keep the A&W value in each row for internal lookup, but do not display a duplicate
-    # A&W column because the order number already appears in the tree column. The
-    # Processed column now shows either No or the last processed timestamp.
+    # The native tree gutter is reserved only for batch hierarchy. Review state is
+    # presented as a dedicated compact first data column so order checkboxes never
+    # collide with Treeview indentation/expand glyphs.
     ORDER_TREE_DISPLAY_COLUMNS = (
-        "review", "status", "processed", "sent", "delivery",
+        "review", "order", "status", "processed", "sent", "delivery",
         "job", "customer", "items", "issues",
     )
     ORDER_TREE_HEADER_GRIP = "⋮"
+    ORDER_TREE_ROW_HEIGHT = 38
+    MIRROR_SECTION_BAND_HEIGHT = 19
     ORDER_TREE_INDEX = {name: index for index, name in enumerate(ORDER_TREE_COLUMNS)}
 
     def __init__(self, root: tk.Tk) -> None:
@@ -761,10 +1174,6 @@ class ShowerProgrammerApp:
         self.set_window_icon(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.runtime_root = self.ensure_internal_runtime_folders()
-        try:
-            self.cleanup_stale_update_folders(self.update_install_root())
-        except Exception:
-            pass
         self.folder_var = tk.StringVar(value=str(self.internal_orders_dir()))
         self.import_source_var = tk.StringVar(value=str(self.EDI_IMPORT_ORDERS_DIR))
         self.process_list_var = tk.StringVar(value=str(self.internal_process_list_dir()))
@@ -791,6 +1200,8 @@ class ShowerProgrammerApp:
         self.order_tree_heading_labels: dict[str, str] = {}
         self.order_tree_sort_column = ""
         self.order_tree_sort_descending = False
+        self.mirror_section_overlays: dict[str, tk.Label] = {}
+        self._mirror_section_overlay_after_id: str | None = None
         self.order_search_last_query = ""
         self.order_search_match_index = -1
         self.action_history_lock = threading.RLock()
@@ -815,10 +1226,6 @@ class ShowerProgrammerApp:
         except Exception:
             pass
         self.send_journal = shower_reliability.SendJournal(self.internal_output_dir())
-        try:
-            self.state_store.migrate_processing_history(self.internal_output_dir() / "processing_history.json")
-        except Exception:
-            pass
         self.task_manager = shower_tasks.BackgroundTaskManager(self.queue_task_event)
         self._managed_task_handlers: dict[str, dict[str, Callable[..., None]]] = {}
         self.test_mode_workspace: Path | None = None
@@ -835,12 +1242,18 @@ class ShowerProgrammerApp:
         self.batch_tree_rows: dict[str, str] = {}
         self.process_batches: dict[str, dict[str, object]] = {}
         self.order_batch_ids: dict[str, list[str]] = {}
+        # Keep an in-session handoff back to the exact dated archive a batch was
+        # restored from. This lets the main Orders context menu reverse a Restore
+        # operation without rediscovering history or creating a new dated archive.
+        self.restored_archive_batch_returns: dict[str, list[dict[str, object]]] = {}
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._ignored_import_duplicate_signatures: set[tuple[str, ...]] = set()
         self.pending_import_duplicate_groups: dict[str, list[dict[str, object]]] = {}
         self.last_reports: shower_batch.BatchRunResult | None = None
         self.last_run_folder: Path | None = None
+        self._cancelled_processing_summary: dict[str, object] | None = None
         self.is_busy = False
+        self.background_controls_locked = False
         self.background_progress_percent = 0.0
         self.activity_started_at = 0.0
         self.activity_last_progress_at = 0.0
@@ -859,6 +1272,7 @@ class ShowerProgrammerApp:
         self.review_context_prefetcher = shower_review_service.ReviewContextPrefetcher(max_workers=2)
         self.review_context_cache_limit = 8
         self.pending_review_open_aw = ""
+        self.review_opening_feedback_job: str | None = None
         self.opening_windows: dict[str, tk.Toplevel] = {}
         self.cache_maintenance = shower_maintenance.CacheMaintenanceService()
         self.active_themed_context_popup: tk.Toplevel | None = None
@@ -883,17 +1297,16 @@ class ShowerProgrammerApp:
         self.configure_styles()
         self.build_ui()
         self.force_main_window_maximized()
-        self.root.after(75, self.drain_worker_queue)
+        self.root.after(25, self.drain_worker_queue)
         self.root.after(1000, self.refresh_activity_heartbeat)
-        self.root.after(250, self.archive_old_action_history)
-        self.root.after(350, self.cleanup_expired_quarantine)
+        self.root.after(180, self.start_deferred_startup_housekeeping)
         self.root.after(500, lambda: self.cache_maintenance.start(Path(self.output_dir_var.get()).resolve()))
-        self.root.after(650, self.run_startup_recovery_check)
+        self.root.after(650, self.start_startup_recovery_check_async)
         self.root.after(1400, self.check_network_health_async)
         self.root.after_idle(lambda: self.root.after(1050, self.scan_orders))
 
     def run_startup_recovery_check(self) -> None:
-        """Surface interrupted durable work before the operator starts a new run."""
+        """Run the recovery scan synchronously when explicitly requested."""
         try:
             results = shower_reliability.startup_recovery_issues(
                 Path(getattr(self, "runtime_root", self.preferred_runtime_root())),
@@ -901,6 +1314,35 @@ class ShowerProgrammerApp:
             )
         except Exception:
             results = []
+        self.apply_startup_recovery_results(results)
+
+    def start_startup_recovery_check_async(self) -> None:
+        """Discover interrupted work off Tk, then surface any prompt on the UI thread."""
+        runtime_root = Path(getattr(self, "runtime_root", self.preferred_runtime_root()))
+        output_dir = Path(self.output_dir_var.get()).resolve()
+
+        def worker() -> None:
+            try:
+                results = shower_reliability.startup_recovery_issues(runtime_root, output_dir)
+            except Exception:
+                results = []
+
+            def apply_results() -> None:
+                self.apply_startup_recovery_results(results)
+
+            try:
+                self.root.after(0, apply_results)
+            except (tk.TclError, RuntimeError):
+                pass
+
+        threading.Thread(
+            target=worker,
+            name="shower-startup-recovery-scan",
+            daemon=True,
+        ).start()
+
+    def apply_startup_recovery_results(self, results: list[dict[str, str]]) -> None:
+        """Apply recovery state and any operator prompt on Tk's UI thread."""
         self.startup_recovery_results = results
         actionable = [item for item in results if str(item.get("severity", "")).upper() == "WARN"]
         state = self.load_startup_recovery_notice_state()
@@ -1010,24 +1452,164 @@ class ShowerProgrammerApp:
         os.replace(temporary, path)
 
     def force_main_window_maximized(self) -> None:
-        """Maximize and reveal immediately; any remaining CTk layout may settle visibly."""
+        """Keep the root maximized without mapping it during hidden startup."""
         if self._main_window_presented:
             try:
                 self.maximize_window(self.root)
-                self.root.lift()
+                self.activate_window_above_owner(self.root)
             except tk.TclError:
                 pass
+            return
+        if bool(getattr(self.root, "_shower_startup_shield_active", False)):
+            # Layout may need realistic desktop dimensions, but ShowWindow here would
+            # defeat the flash-free startup contract by mapping the unfinished root.
+            self.prime_hidden_maximized_geometry(self.root, self.root)
             return
         if self._main_window_present_job is not None:
             return
         try:
-            self.root.update_idletasks()
+            self.release_first_map_guard(self.root)
+            self.root.attributes("-alpha", 0.0)
+            self.root.deiconify()
             self.maximize_window(self.root)
+            self.root.update_idletasks()
+            self.apply_native_window_chrome(self.root)
             self.root.attributes("-alpha", 1.0)
-            self.root.lift()
             self._main_window_presented = True
         except (AttributeError, tk.TclError):
             pass
+
+    def finish_startup_presentation(self, shield: StartupShield | None = None) -> None:
+        """Reveal the main shell only after mapped and post-handoff paint barriers.
+
+        A separate startup shield can hide the root while it maps, but destroying that
+        shield used to expose one last delayed CTk redraw. Transfer the visual handoff
+        to an in-root loading cover first, then remove that cover only after additional
+        real event-loop paint turns on the visible maximized root.
+        """
+        root_cover: WindowLoadingCover | None = None
+        try:
+            if shield is not None:
+                shield.set_detail("Finalizing workspace...")
+                shield.sync_to_root()
+            root_cover = WindowLoadingCover(
+                self.root,
+                background=self.APP_BG,
+                accent=self.ACCENT,
+                text_color=self.TEXT,
+                muted_color=self.MUTED,
+                title="Shower Programmer",
+                detail="Finalizing workspace...",
+            )
+            root_cover.lift()
+            self.root.update_idletasks()
+            self.release_first_map_guard(self.root)
+            self.root.attributes("-alpha", 0.0)
+            self.root.deiconify()
+            self.root.update_idletasks()
+            self.maximize_window(self.root)
+            self.root.update_idletasks()
+            self.apply_native_window_chrome(self.root)
+            root_cover.lift()
+            # The external shield still covers this transition; the internal cover
+            # is already painted before the real root becomes opaque.
+            self.root.attributes("-alpha", 1.0)
+            self._main_window_presented = True
+            setattr(self.root, "_shower_startup_shield_active", False)
+        except (AttributeError, tk.TclError):
+            pass
+
+        signatures: list[tuple[int, int, int, int]] = []
+
+        def finish_handoff(pass_index: int = 0) -> None:
+            try:
+                self.root.update_idletasks()
+                self.force_native_window_paint(self.root)
+                if root_cover is not None:
+                    root_cover.lift()
+            except tk.TclError:
+                if root_cover is not None:
+                    root_cover.destroy()
+                return
+            # Keep the in-root cover alive for several actual visible event-loop
+            # turns after the external shield is gone. This is the paint phase that
+            # geometry-only stability checks previously missed.
+            if pass_index >= 3:
+                if root_cover is not None:
+                    root_cover.destroy()
+                self.stabilize_window_foreground(self.root, self.root, retries_ms=(0, 45))
+                return
+            try:
+                self.root.after(18, lambda: finish_handoff(pass_index + 1))
+            except tk.TclError:
+                if root_cover is not None:
+                    root_cover.destroy()
+
+        def stable_pass(pass_index: int = 0) -> None:
+            try:
+                self.root.update_idletasks()
+                self.force_native_window_paint(self.root)
+                signatures.append((
+                    int(self.root.winfo_x()),
+                    int(self.root.winfo_y()),
+                    int(self.root.winfo_width()),
+                    int(self.root.winfo_height()),
+                ))
+                if shield is not None:
+                    shield.sync_to_root()
+                if root_cover is not None:
+                    root_cover.lift()
+            except tk.TclError:
+                return
+
+            stable = len(signatures) >= 2 and signatures[-1] == signatures[-2]
+            if pass_index >= 5 and stable:
+                # The internal cover is already painted inside the real root, so the
+                # external native shield can disappear without exposing the UI tree.
+                if shield is not None:
+                    shield.destroy()
+                self.root.after(1, finish_handoff)
+                return
+            try:
+                self.root.after(22, lambda: stable_pass(pass_index + 1))
+            except tk.TclError:
+                if shield is not None:
+                    shield.destroy()
+                if root_cover is not None:
+                    root_cover.destroy()
+
+        try:
+            self.root.after_idle(stable_pass)
+        except tk.TclError:
+            stable_pass()
+
+
+    def start_deferred_startup_housekeeping(self) -> None:
+        """Run nonvisual cleanup away from Tk so the freshly opened app stays responsive."""
+
+        def worker() -> None:
+            try:
+                self.state_store.migrate_processing_history(self.internal_output_dir() / "processing_history.json")
+            except Exception:
+                pass
+            try:
+                self.cleanup_stale_update_folders(self.update_install_root())
+            except Exception:
+                pass
+            try:
+                self.archive_old_action_history()
+            except Exception:
+                pass
+            try:
+                self.cleanup_expired_quarantine()
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=worker,
+            name="shower-startup-maintenance",
+            daemon=True,
+        ).start()
 
     @classmethod
     def preferred_runtime_root(cls) -> Path:
@@ -1523,17 +2105,29 @@ class ShowerProgrammerApp:
     def internal_output_dir(self) -> Path:
         return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Output"
 
-    @staticmethod
-    def set_window_icon(window: Any) -> None:
-        png_path = ShowerProgrammerApp.APP_ICON_PNG_PATH
-        if png_path.exists():
+    def set_window_icon(self, window: Any) -> None:
+        """Apply the app icon without reopening image assets for every child window."""
+        png_path = self.APP_ICON_PNG_PATH
+        photo = getattr(self.root, "_shower_programmer_shared_icon", None) if hasattr(self, "root") else None
+        if photo is None and png_path.exists():
             try:
-                photo = tk.PhotoImage(file=str(png_path))
+                photo = tk.PhotoImage(master=getattr(self, "root", window), file=str(png_path))
+                if hasattr(self, "root"):
+                    self.root._shower_programmer_shared_icon = photo
+            except tk.TclError:
+                photo = None
+        if photo is not None:
+            try:
                 window.iconphoto(True, photo)
                 window._shower_programmer_icon = photo
             except tk.TclError:
                 pass
-        icon_path = ShowerProgrammerApp.APP_ICON_PATH
+        # The packaged EXE already owns the correct native icon. iconbitmap is
+        # only needed once on the root; reopening the .ico for every Review or
+        # popup adds avoidable disk/UI-thread work during window construction.
+        if window is not getattr(self, "root", None):
+            return
+        icon_path = self.APP_ICON_PATH
         if not icon_path.exists():
             return
         try:
@@ -1541,39 +2135,296 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
-    def create_hidden_toplevel(self, owner: tk.Widget) -> Any:
-        """Create a child window without exposing its unfinished layout."""
-        window = ctk.CTkToplevel(owner) if ctk is not None else tk.Toplevel(owner)
+    @staticmethod
+    def install_first_map_guard(window: Any) -> None:
+        """Block delayed CTk deiconify calls until the app explicitly presents the window."""
+        if bool(getattr(window, "_shower_first_map_guard_installed", False)):
+            return
         try:
+            original_deiconify = window.deiconify
+        except (AttributeError, tk.TclError):
+            return
+        original_wm_deiconify = getattr(window, "wm_deiconify", original_deiconify)
+        setattr(window, "_shower_original_deiconify", original_deiconify)
+        setattr(window, "_shower_original_wm_deiconify", original_wm_deiconify)
+        setattr(window, "_shower_first_map_allowed", False)
+        setattr(window, "_shower_first_map_guard_installed", True)
+
+        def guarded_deiconify(*_args: Any, **_kwargs: Any) -> Any:
+            if not bool(getattr(window, "_shower_first_map_allowed", False)):
+                return None
+            return original_deiconify()
+
+        try:
+            window.deiconify = guarded_deiconify
+            window.wm_deiconify = guarded_deiconify
+        except (AttributeError, tk.TclError):
+            pass
+
+    @staticmethod
+    def release_first_map_guard(window: Any) -> None:
+        """Restore normal deiconify behavior immediately before intentional mapping."""
+        if not bool(getattr(window, "_shower_first_map_guard_installed", False)):
+            return
+        setattr(window, "_shower_first_map_allowed", True)
+        original_deiconify = getattr(window, "_shower_original_deiconify", None)
+        original_wm_deiconify = getattr(window, "_shower_original_wm_deiconify", None)
+        try:
+            if callable(original_deiconify):
+                window.deiconify = original_deiconify
+            if callable(original_wm_deiconify):
+                window.wm_deiconify = original_wm_deiconify
+        except (AttributeError, tk.TclError):
+            pass
+        setattr(window, "_shower_first_map_guard_installed", False)
+
+    def create_hidden_toplevel(self, owner: tk.Widget) -> Any:
+        """Create one withdrawn native Tk shell for a finished app workspace/dialog.
+
+        CustomTkinter controls render inside this ordinary Tk Toplevel.  The shell
+        is withdrawn and transparent before any child controls are constructed, but
+        we deliberately avoid direct Win32 re-parenting or layered-style mutation.
+        Those low-level operations can split Tk's wrapper/client HWND pair into two
+        visible native windows on Windows, which is the blank nested-window failure
+        fixed in Version 1.74.
+        """
+        owner = self.resolve_popup_owner(owner)
+        window = FlashFreeToplevel(owner, background=self.APP_BG)
+        setattr(window, "_shower_logical_owner", owner)
+        self.install_first_map_guard(window)
+        setattr(window, "_shower_never_mapped_unstyled", True)
+        return window
+
+    def create_hidden_native_toplevel(self, owner: tk.Widget, *, background: str | None = None) -> tk.Toplevel:
+        """Create a withdrawn native Tk child without touching its Win32 parent/style."""
+        owner = self.resolve_popup_owner(owner)
+        window = tk.Toplevel(owner, background=background or self.APP_BG)
+        setattr(window, "_shower_logical_owner", owner)
+        try:
+            window.withdraw()
             window.attributes("-alpha", 0.0)
+            window.configure(bg=background or self.APP_BG)
         except tk.TclError:
             pass
+        self.install_first_map_guard(window)
+        setattr(window, "_shower_never_mapped_unstyled", True)
         return window
 
     @staticmethod
-    def maximize_window(window: Any) -> None:
-        """Use a real OS maximize state instead of borderless fullscreen.
+    def native_window_handle(window: Any) -> int | None:
+        """Return the real top-level HWND for a Tk/CTk window on Windows."""
+        if os.name != "nt":
+            return None
+        try:
+            user32 = ctypes.windll.user32
+            user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            user32.GetAncestor.restype = ctypes.c_void_p
+            child_hwnd = int(window.winfo_id())
+            root_hwnd = user32.GetAncestor(ctypes.c_void_p(child_hwnd), 2)  # GA_ROOT
+            return int(root_hwnd or child_hwnd)
+        except Exception:
+            return None
 
-        Fullscreen hides normal Windows caption controls and can cover the
-        taskbar, so it is intentionally not used as a maximize fallback.
+    @staticmethod
+    def monitor_work_area_for_window(window: Any) -> tuple[int, int, int, int] | None:
+        """Return the target monitor work area without mapping the Tk window."""
+        if os.name != "nt":
+            return None
+        try:
+            class Rect(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long),
+                ]
+
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", ctypes.c_ulong),
+                    ("rcMonitor", Rect),
+                    ("rcWork", Rect),
+                    ("dwFlags", ctypes.c_ulong),
+                ]
+
+            user32 = ctypes.windll.user32
+            hwnd = ShowerProgrammerApp.native_window_handle(window)
+            if hwnd is None:
+                return None
+            user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            user32.MonitorFromWindow.restype = ctypes.c_void_p
+            user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            user32.GetMonitorInfoW.restype = ctypes.c_bool
+            monitor = user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+            if not monitor:
+                return None
+            info = MonitorInfo()
+            info.cbSize = ctypes.sizeof(MonitorInfo)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                return None
+            work = info.rcWork
+            return (
+                int(work.left),
+                int(work.top),
+                int(work.right - work.left),
+                int(work.bottom - work.top),
+            )
+        except Exception:
+            return None
+
+    def prime_hidden_maximized_geometry(self, window: Any, owner: Any | None = None) -> None:
+        """Give a withdrawn window maximized-size layout geometry without mapping it."""
+        anchor = owner or self.root
+        work_area = self.monitor_work_area_for_window(anchor)
+        try:
+            if work_area is not None:
+                x, y, width, height = work_area
+                window.geometry(f"{max(width, 900)}x{max(height, 640)}+{x}+{y}")
+            else:
+                anchor.update_idletasks()
+                x = int(anchor.winfo_rootx())
+                y = int(anchor.winfo_rooty())
+                width = max(int(anchor.winfo_width()), 1180)
+                height = max(int(anchor.winfo_height()), 720)
+                window.geometry(f"{width}x{height}+{x}+{y}")
+        except (AttributeError, tk.TclError):
+            pass
+
+    def bind_native_window_owner(self, window: Any, owner: Any | None = None) -> None:
+        """Apply ownership through Tk's window-manager contract only.
+
+        Direct native owner-pointer mutation is intentionally avoided. Tk on Windows
+        owns a wrapper HWND plus a client HWND; changing the wrong handle can turn the
+        client into a separately framed child window. ``wm transient`` keeps normal
+        dialogs above their logical owner without corrupting that native hierarchy.
         """
-        if os.name == "nt":
+        owner_window = owner or self.root
+        if owner_window is window:
+            return
+        try:
+            window.transient(owner_window)
+        except (AttributeError, tk.TclError):
+            pass
+        try:
+            setattr(window, "_shower_native_owner_hwnd", self.native_window_handle(owner_window) or 0)
+        except Exception:
+            setattr(window, "_shower_native_owner_hwnd", 0)
+
+    def set_native_window_alpha(self, window: Any, alpha: int) -> None:
+        """Compatibility wrapper for Tk-managed opacity.
+
+        Version 1.73 temporarily modified the native layered-window style directly. That can interfere with Tk's own
+        wrapper/client HWND bookkeeping, so opacity is now owned exclusively by Tk.
+        """
+        try:
+            window.attributes("-alpha", max(0.0, min(1.0, int(alpha) / 255.0)))
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            pass
+
+    def force_native_window_paint(self, window: Any) -> None:
+        """Force one complete native paint while a staged window is still invisible."""
+        if os.name != "nt":
             try:
                 window.update_idletasks()
-                child_hwnd = int(window.winfo_id())
-                root_hwnd = int(ctypes.windll.user32.GetAncestor(child_hwnd, 2))  # GA_ROOT
-                ctypes.windll.user32.ShowWindow(root_hwnd or child_hwnd, 3)  # SW_MAXIMIZE
+            except (AttributeError, tk.TclError):
+                pass
+            return
+        try:
+            hwnd_value = self.native_window_handle(window)
+            if not hwnd_value:
                 return
+            hwnd = ctypes.c_void_p(hwnd_value)
+            user32 = ctypes.windll.user32
+            user32.RedrawWindow.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint
+            ]
+            user32.RedrawWindow.restype = ctypes.c_bool
+            RDW_INVALIDATE = 0x0001
+            RDW_ALLCHILDREN = 0x0080
+            RDW_UPDATENOW = 0x0100
+            user32.RedrawWindow(
+                hwnd,
+                None,
+                None,
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            )
+            try:
+                ctypes.windll.dwmapi.DwmFlush()
             except Exception:
                 pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _colorref(hex_color: str) -> int:
+        text = str(hex_color or "").strip().lstrip("#")
+        if len(text) != 6:
+            return 0
+        try:
+            red = int(text[0:2], 16)
+            green = int(text[2:4], 16)
+            blue = int(text[4:6], 16)
+        except ValueError:
+            return 0
+        return red | (green << 8) | (blue << 16)
+
+    def apply_native_window_chrome(self, window: Any) -> None:
+        """Pre-theme the Windows caption/border before a child becomes visible."""
+        if os.name != "nt":
+            return
+        try:
+            hwnd = self.native_window_handle(window)
+            if not hwnd:
+                return
+            dark_var = getattr(self, "dark_mode_var", None)
+            try:
+                dark = bool(dark_var.get()) if dark_var is not None else False
+            except Exception:
+                dark = False
+            dwmapi = ctypes.windll.dwmapi
+            dark_value = ctypes.c_int(1 if dark else 0)
+            # Windows 10 20H1+ uses 20; earlier supported builds used 19.
+            for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                try:
+                    dwmapi.DwmSetWindowAttribute(
+                        ctypes.c_void_p(hwnd),
+                        ctypes.c_uint(attribute),
+                        ctypes.byref(dark_value),
+                        ctypes.sizeof(dark_value),
+                    )
+                    break
+                except Exception:
+                    continue
+            # Windows 11 caption/border colors. Unsupported systems simply ignore them.
+            for attribute, color in (
+                (35, getattr(self, "APP_BG", "#f4f7fb")),      # DWMWA_CAPTION_COLOR
+                (34, getattr(self, "BORDER", "#d8e0eb")),      # DWMWA_BORDER_COLOR
+                (36, getattr(self, "TEXT", "#172033")),        # DWMWA_TEXT_COLOR
+            ):
+                try:
+                    value = ctypes.c_uint(self._colorref(str(color)))
+                    dwmapi.DwmSetWindowAttribute(
+                        ctypes.c_void_p(hwnd),
+                        ctypes.c_uint(attribute),
+                        ctypes.byref(value),
+                        ctypes.sizeof(value),
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def maximize_window(window: Any) -> None:
+        """Maximize through Tk without force-showing a hidden native window."""
         try:
             window.state("zoomed")
             return
-        except tk.TclError:
+        except (AttributeError, tk.TclError):
             pass
         try:
             window.attributes("-zoomed", True)
-        except tk.TclError:
+        except (AttributeError, tk.TclError):
             pass
 
     @staticmethod
@@ -1587,9 +2438,18 @@ class ShowerProgrammerApp:
         if os.name == "nt":
             try:
                 window.update_idletasks()
-                hwnd = int(window.winfo_id())
-                is_zoomed = bool(ctypes.windll.user32.IsZoomed(hwnd))
-                ctypes.windll.user32.ShowWindow(hwnd, 9 if is_zoomed else 3)  # SW_RESTORE / SW_MAXIMIZE
+                user32 = ctypes.windll.user32
+                user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+                user32.GetAncestor.restype = ctypes.c_void_p
+                user32.IsZoomed.argtypes = [ctypes.c_void_p]
+                user32.IsZoomed.restype = ctypes.c_bool
+                user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                user32.ShowWindow.restype = ctypes.c_bool
+                child_hwnd = int(window.winfo_id())
+                root_hwnd = user32.GetAncestor(ctypes.c_void_p(child_hwnd), 2)
+                hwnd = int(root_hwnd or child_hwnd)
+                is_zoomed = bool(user32.IsZoomed(ctypes.c_void_p(hwnd)))
+                user32.ShowWindow(ctypes.c_void_p(hwnd), 9 if is_zoomed else 3)  # SW_RESTORE / SW_MAXIMIZE
                 return
             except Exception:
                 pass
@@ -1598,6 +2458,130 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    def activate_window_above_owner(self, window: Any, owner: Any | None = None) -> None:
+        """Activate an owned child without leaving it permanently topmost.
+
+        Windows foreground restrictions and a just-destroyed loading shield can
+        otherwise hand focus back to the main Programmer. Native ownership plus a
+        short, bounded activation sequence makes the child the durable foreground
+        window instead of racing Tk's focus bookkeeping.
+        """
+        owner_window = owner or self.root
+        if owner_window is not self.root:
+            self.bind_native_window_owner(window, owner_window)
+        try:
+            window.lift(owner_window)
+        except (AttributeError, tk.TclError, TypeError):
+            try:
+                window.lift()
+            except (AttributeError, tk.TclError):
+                pass
+        if os.name == "nt":
+            try:
+                user32 = ctypes.windll.user32
+                hwnd_value = self.native_window_handle(window)
+                if not hwnd_value:
+                    raise RuntimeError("Window HWND is unavailable")
+                hwnd = ctypes.c_void_p(hwnd_value)
+                user32.SetWindowPos.argtypes = [
+                    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                    ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+                ]
+                user32.SetWindowPos.restype = ctypes.c_bool
+                user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+                user32.BringWindowToTop.restype = ctypes.c_bool
+                user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+                user32.SetForegroundWindow.restype = ctypes.c_bool
+                user32.SetActiveWindow.argtypes = [ctypes.c_void_p]
+                user32.SetActiveWindow.restype = ctypes.c_void_p
+                user32.GetForegroundWindow.restype = ctypes.c_void_p
+                user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                user32.GetWindowThreadProcessId.restype = ctypes.c_uint
+                user32.GetCurrentThreadId.restype = ctypes.c_uint
+                user32.AttachThreadInput.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_bool]
+                user32.AttachThreadInput.restype = ctypes.c_bool
+
+                HWND_TOP = ctypes.c_void_p(0)
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_SHOWWINDOW = 0x0040
+                flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                user32.SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, flags)
+                user32.BringWindowToTop(hwnd)
+
+                foreground = user32.GetForegroundWindow()
+                current_thread = int(user32.GetCurrentThreadId())
+                foreground_thread = (
+                    int(user32.GetWindowThreadProcessId(foreground, None))
+                    if foreground
+                    else current_thread
+                )
+                attached = False
+                if foreground_thread and foreground_thread != current_thread:
+                    attached = bool(user32.AttachThreadInput(current_thread, foreground_thread, True))
+                try:
+                    user32.SetForegroundWindow(hwnd)
+                    user32.SetActiveWindow(hwnd)
+                    user32.BringWindowToTop(hwnd)
+                finally:
+                    if attached:
+                        user32.AttachThreadInput(current_thread, foreground_thread, False)
+            except Exception:
+                pass
+        try:
+            window.focus_set()
+        except (AttributeError, tk.TclError):
+            pass
+
+    def stabilize_window_foreground(
+        self,
+        window: Any,
+        owner: Any | None = None,
+        *,
+        retries_ms: tuple[int, ...] = (0, 45, 140),
+    ) -> None:
+        """Reassert foreground briefly after map/shield teardown, then stop."""
+        owner_window = owner or self.root
+
+        def activate() -> None:
+            try:
+                exists_method = getattr(window, "winfo_exists", None)
+                if callable(exists_method) and not bool(exists_method()):
+                    return
+            except tk.TclError:
+                return
+            self.activate_window_above_owner(window, owner_window)
+
+        for delay in retries_ms:
+            try:
+                if delay <= 0:
+                    activate()
+                else:
+                    window.after(int(delay), activate)
+            except (AttributeError, tk.TclError):
+                if delay <= 0:
+                    activate()
+
+    def window_is_foreground(self, window: Any) -> bool:
+        """Return True when the supplied top-level currently owns the foreground."""
+        if os.name == "nt":
+            try:
+                hwnd_value = self.native_window_handle(window)
+                if not hwnd_value:
+                    return False
+                user32 = ctypes.windll.user32
+                user32.GetForegroundWindow.restype = ctypes.c_void_p
+                foreground = user32.GetForegroundWindow()
+                return bool(foreground) and int(foreground) == int(hwnd_value)
+            except Exception:
+                return False
+        try:
+            focused = window.focus_displayof()
+            return focused is not None and focused.winfo_toplevel() is window
+        except (AttributeError, tk.TclError):
+            return False
+
+
     def position_child_window(
         self,
         window: tk.Toplevel,
@@ -1605,7 +2589,7 @@ class ShowerProgrammerApp:
         height: int,
         owner: Any | None = None,
     ) -> None:
-        anchor = owner or self.root
+        anchor = owner or getattr(window, "_shower_logical_owner", None) or self.root
         try:
             anchor.update_idletasks()
             root_x = anchor.winfo_rootx()
@@ -1626,7 +2610,7 @@ class ShowerProgrammerApp:
         owner: Any | None = None,
     ) -> None:
         """Center a child on its owner, defaulting to the main application."""
-        anchor = owner or self.root
+        anchor = owner or getattr(window, "_shower_logical_owner", None) or self.root
         try:
             anchor.update_idletasks()
             root_x = anchor.winfo_rootx()
@@ -1653,6 +2637,33 @@ class ShowerProgrammerApp:
             owner=owner,
         )
 
+    def clear_native_window_owner(self, window: Any) -> None:
+        """Clear Tk transient ownership without mutating GWLP_HWNDPARENT directly."""
+        try:
+            window.tk.call("wm", "transient", window._w, "")
+        except Exception:
+            pass
+        setattr(window, "_shower_native_owner_hwnd", 0)
+
+    def stage_window_behind_owner(self, window: Any, owner: Any) -> bool:
+        """Keep a fully built child withdrawn until the final presentation transaction.
+
+        Earlier releases briefly mapped the HWND at the bottom of the Windows z-order
+        to pre-paint it. On Tk/Windows that required manipulating the wrapper HWND and
+        could expose a second blank framed client window. A withdrawn window already
+        has all Tk/CTk geometry available, so Version 1.74 performs the settle passes
+        while it remains completely unmapped and returns False to indicate that no
+        native staging map occurred.
+        """
+        self.clear_native_window_owner(window)
+        try:
+            window.withdraw()
+            window.attributes("-alpha", 0.0)
+            window.update_idletasks()
+        except (AttributeError, tk.TclError):
+            pass
+        return False
+
     def present_window_without_flash(
         self,
         window: tk.Toplevel,
@@ -1661,41 +2672,208 @@ class ShowerProgrammerApp:
         owner: Any | None = None,
         maximize: bool = False,
         delay_ms: int = 0,
+        activate: bool = True,
+        native_owner: bool = True,
+        settle_passes: int = 2,
+        settle_interval_ms: int = 14,
+        post_reveal_passes: int = 3,
+        post_reveal_interval_ms: int = 16,
+        presentation_cover: Any | None = None,
+        release_presentation_cover: bool = True,
+        on_presented: Callable[[], None] | None = None,
+        atomic_reveal: bool | None = None,
     ) -> None:
-        """Present a child promptly, allowing noncritical layout to settle visibly."""
-        transient_owner = owner or self.root
+        """Present one completed Tk/CTk surface without exposing late redraws.
+
+        Geometry can be stable while CustomTkinter still has queued canvas paints.
+        Version 1.75 therefore uses two barriers: pre-map/transparent paint turns,
+        then a same-color in-window veil across several *visible* event-loop turns.
+        Only after that post-map barrier is the veil removed and the window handed
+        to the operator. Major workspaces may supply their own loading cover.
+        """
+        transient_owner = owner or getattr(window, "_shower_logical_owner", None) or self.root
+        if make_transient and transient_owner is self.root:
+            transient_owner = self.resolve_popup_owner(transient_owner)
+        setattr(window, "_shower_logical_owner", transient_owner)
+
+        auto_veil: WindowPresentationVeil | None = None
+        cover = presentation_cover
+        use_atomic_reveal = bool(atomic_reveal) if atomic_reveal is not None else (presentation_cover is None and not maximize)
         try:
             if bool(getattr(window, "_shower_present_pending", False)):
                 return
             setattr(window, "_shower_present_pending", True)
+            window.withdraw()
             window.attributes("-alpha", 0.0)
+            if cover is None:
+                auto_veil = WindowPresentationVeil(window, background=self.APP_BG)
+                cover = auto_veil
+            if hasattr(cover, "lift"):
+                cover.lift()
+            window.update_idletasks()
         except (AttributeError, tk.TclError):
             pass
 
-        def present() -> None:
+        def window_exists() -> bool:
             try:
-                window.deiconify()
+                exists_method = getattr(window, "winfo_exists", None)
+                return bool(exists_method()) if callable(exists_method) else True
+            except (AttributeError, tk.TclError):
+                return False
+
+        def release_cover() -> None:
+            if not release_presentation_cover or cover is None:
+                return
+            try:
+                cover.destroy()
             except (AttributeError, tk.TclError):
                 pass
-            if make_transient:
-                try:
-                    window.transient(transient_owner)
-                except (AttributeError, tk.TclError):
-                    pass
+
+        def finish_visible() -> None:
             try:
+                if not window_exists():
+                    return
+                if use_atomic_reveal:
+                    # Small dialogs should never expose the temporary presentation
+                    # veil. Destroy it and force the finished CTk tree to paint while
+                    # the native Toplevel is still fully transparent, then reveal the
+                    # completed popup in one compositor handoff.
+                    release_cover()
+                    window.update_idletasks()
+                    self.force_native_window_paint(window)
+                    window.attributes("-alpha", 1.0)
+                else:
+                    release_cover()
+                setattr(window, "_shower_present_pending", False)
+                setattr(window, "_shower_never_mapped_unstyled", False)
+                if activate:
+                    self.stabilize_window_foreground(window, transient_owner)
+                if bool(getattr(window, "_shower_grab_on_present", False)):
+                    window.grab_set()
+                    setattr(window, "_shower_grab_on_present", False)
+                if callable(on_presented):
+                    on_presented()
+            except (AttributeError, tk.TclError):
+                setattr(window, "_shower_present_pending", False)
+
+        post_signatures: list[tuple[int, int, int, int]] = []
+
+        def post_reveal_paint_pass(pass_index: int = 0) -> None:
+            try:
+                if not window_exists():
+                    return
+                window.update_idletasks()
+                self.force_native_window_paint(window)
+                if hasattr(cover, "lift"):
+                    cover.lift()
+                signature = (
+                    int(window.winfo_x()),
+                    int(window.winfo_y()),
+                    int(window.winfo_width()),
+                    int(window.winfo_height()),
+                )
+                post_signatures.append(signature)
+            except (AttributeError, tk.TclError):
+                finish_visible()
+                return
+            required = max(int(post_reveal_passes), 2)
+            stable = len(post_signatures) >= 2 and post_signatures[-1] == post_signatures[-2]
+            if pass_index + 1 >= required and stable:
+                finish_visible()
+                return
+            # Never hold a popup indefinitely because a driver keeps reporting a
+            # one-pixel geometry oscillation. The veil still covers at least several
+            # real event-loop turns before this bounded fallback can fire.
+            if pass_index >= required + 4:
+                finish_visible()
+                return
+            try:
+                window.after(max(int(post_reveal_interval_ms), 1), lambda: post_reveal_paint_pass(pass_index + 1))
+            except (AttributeError, tk.TclError):
+                finish_visible()
+
+        def begin_visible_handoff() -> None:
+            try:
+                if not window_exists():
+                    return
+                if hasattr(cover, "lift"):
+                    cover.lift()
+                if not use_atomic_reveal:
+                    window.attributes("-alpha", 1.0)
+                # Major workspaces keep a visible same-color veil while their final
+                # CTk canvases settle. Compact dialogs stay transparent through this
+                # barrier and are revealed only after the veil is removed.
+                window.after(1, post_reveal_paint_pass)
+            except (AttributeError, tk.TclError):
+                finish_visible()
+
+        def mapped_paint_pass(pass_index: int = 0) -> None:
+            try:
+                if not window_exists():
+                    return
+                window.update_idletasks()
+                self.force_native_window_paint(window)
+                if hasattr(cover, "lift"):
+                    cover.lift()
+            except (AttributeError, tk.TclError):
+                begin_visible_handoff()
+                return
+            if pass_index >= 2:
+                begin_visible_handoff()
+                return
+            try:
+                window.after(12, lambda: mapped_paint_pass(pass_index + 1))
+            except (AttributeError, tk.TclError):
+                begin_visible_handoff()
+
+        def map_finished_surface() -> None:
+            try:
+                if make_transient:
+                    self.bind_native_window_owner(window, transient_owner)
+                else:
+                    self.clear_native_window_owner(window)
+                self.release_first_map_guard(window)
+                window.deiconify()
                 if maximize:
                     self.maximize_window(window)
+                window.update_idletasks()
+                self.apply_native_window_chrome(window)
+                if hasattr(cover, "lift"):
+                    cover.lift()
+                mapped_paint_pass()
+            except (AttributeError, tk.TclError):
                 setattr(window, "_shower_present_pending", False)
-                window.attributes("-alpha", 1.0)
-                window.lift()
-                window.focus_force()
-            except (AttributeError, tk.TclError):
-                pass
+
+        def settle_pass(pass_index: int = 0, last_signature: tuple[int, int, int, int] | None = None) -> None:
             try:
-                window.attributes("-topmost", True)
-                window.after(350, lambda: window.attributes("-topmost", False))
+                if not window_exists():
+                    return
+                window.update_idletasks()
+                if hasattr(cover, "lift"):
+                    cover.lift()
+                signature = (
+                    int(window.winfo_x()),
+                    int(window.winfo_y()),
+                    int(window.winfo_width()),
+                    int(window.winfo_height()),
+                )
             except (AttributeError, tk.TclError):
-                pass
+                map_finished_surface()
+                return
+            required = max(int(settle_passes), 1)
+            if pass_index + 1 >= required and (last_signature is None or signature == last_signature):
+                map_finished_surface()
+                return
+            try:
+                window.after(max(int(settle_interval_ms), 1), lambda: settle_pass(pass_index + 1, signature))
+            except (AttributeError, tk.TclError):
+                map_finished_surface()
+
+        def present() -> None:
+            self.stage_window_behind_owner(window, transient_owner)
+            if hasattr(cover, "lift"):
+                cover.lift()
+            settle_pass()
 
         try:
             if delay_ms > 0:
@@ -1705,67 +2883,45 @@ class ShowerProgrammerApp:
         except (AttributeError, tk.TclError):
             present()
 
-    def show_opening_window(self, key: str, title: str, detail: str) -> tk.Toplevel | None:
-        """Show immediate non-blocking feedback while a larger workspace is prepared."""
+    def show_opening_window(self, key: str, title: str, detail: str) -> Any | None:
+        """Show immediate feedback without creating another native HWND.
+
+        Opening Settings/Review-Send used to create a temporary Toplevel. Besides
+        being another opportunity for a white DWM first frame, that temporary window
+        could accidentally become the logical/native parent of the workspace being
+        opened. Destroying the feedback popup could then withdraw/destroy the real
+        page. Keep opening feedback inside the already-painted main HWND instead.
+        """
+        return self.show_workspace_loading_shield(key, title, detail)
+
+
+    def show_workspace_loading_shield(self, key: str, title: str, detail: str) -> Any | None:
+        """Cover the existing main HWND without creating another native window.
+
+        Slow Review preparation used to create a second Toplevel as feedback. Even a
+        pre-themed Toplevel can receive one DWM/default paint. An in-place cover has
+        no new HWND at all, so it is intrinsically flash-free.
+        """
         if not isinstance(getattr(self, "opening_windows", None), dict):
             self.opening_windows = {}
         self.close_opening_window(key)
         try:
-            window = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
-            window.title(title)
-            window.resizable(False, False)
-            self.center_child_window(window, 420, 150)
-            self.set_window_icon(window)
-            if ctk is not None:
-                window.configure(fg_color=self.APP_BG)
-                card = ctk.CTkFrame(
-                    window,
-                    fg_color=self.CARD_BG,
-                    corner_radius=14,
-                    border_width=1,
-                    border_color=self.BORDER,
-                )
-                card.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
-                ctk.CTkLabel(
-                    card,
-                    text=title,
-                    font=("Segoe UI", 16, "bold"),
-                    text_color=self.TEXT,
-                    anchor="w",
-                ).pack(fill=tk.X, padx=18, pady=(16, 3))
-                ctk.CTkLabel(
-                    card,
-                    text=detail,
-                    font=("Segoe UI", 11),
-                    text_color=self.MUTED,
-                    anchor="w",
-                ).pack(fill=tk.X, padx=18)
-                progress = ctk.CTkProgressBar(
-                    card,
-                    mode="indeterminate",
-                    height=8,
-                    corner_radius=4,
-                    progress_color=self.PROGRESS_FILL,
-                    fg_color=self.PROGRESS_TRACK,
-                )
-                progress.pack(fill=tk.X, padx=18, pady=(14, 16))
-                progress.start()
-                setattr(window, "_shower_opening_progress", progress)
-            else:
-                ttk.Label(window, text=title, font=("Segoe UI", 14, "bold")).pack(
-                    anchor=tk.W, padx=18, pady=(18, 4)
-                )
-                ttk.Label(window, text=detail).pack(anchor=tk.W, padx=18)
-                progress = ttk.Progressbar(window, mode="indeterminate")
-                progress.pack(fill=tk.X, padx=18, pady=(14, 18))
-                progress.start(12)
-                setattr(window, "_shower_opening_progress", progress)
-            window.protocol("WM_DELETE_WINDOW", lambda: None)
-            self.opening_windows[key] = window
-            self.present_window_without_flash(window, make_transient=True, delay_ms=0)
-            return window
+            cover = WindowLoadingCover(
+                self.root,
+                background=self.APP_BG,
+                accent=self.ACCENT,
+                text_color=self.TEXT,
+                muted_color=self.MUTED,
+                title=title,
+                detail=detail,
+            )
+            cover.lift()
+            self.root.update_idletasks()
+            self.opening_windows[key] = cover
+            return cover
         except Exception:
             return None
+
 
     def close_opening_window(self, key: str) -> None:
         windows = getattr(self, "opening_windows", {})
@@ -1773,14 +2929,75 @@ class ShowerProgrammerApp:
         if window is None:
             return
         try:
+            if isinstance(window, WindowLoadingCover):
+                window.destroy()
+                return
+            shield = getattr(window, "_shower_startup_shield", None)
+            if isinstance(shield, StartupShield):
+                shield.destroy()
+                return
             progress = getattr(window, "_shower_opening_progress", None)
             if progress is not None:
                 progress.stop()
             window.destroy()
         except (AttributeError, tk.TclError):
             pass
-            pass
 
+
+    def resolve_popup_owner(self, requested_owner: Any | None = None) -> Any:
+        """Return the nearest active app Toplevel for a new popup/dialog.
+
+        Popup ownership must follow the visible UI hierarchy rather than always
+        flattening back to the main Programmer root. This keeps Settings dialogs
+        above Settings, Review dialogs above Review, and nested modal prompts above
+        the window that actually launched them.
+        """
+        def toplevel(widget: Any | None) -> Any | None:
+            if widget is None:
+                return None
+            try:
+                candidate = widget.winfo_toplevel()
+                if not bool(candidate.winfo_exists()):
+                    return None
+                return candidate
+            except (AttributeError, tk.TclError):
+                return None
+
+        requested = toplevel(requested_owner) or self.root
+        if requested is not self.root:
+            try:
+                if str(requested.state()).casefold() not in {"withdrawn", "iconic"}:
+                    return requested
+            except (AttributeError, tk.TclError):
+                return requested
+            requested = self.root
+
+        # A current modal grab is the strongest ownership signal.
+        try:
+            grabbed = toplevel(self.root.grab_current())
+        except (AttributeError, tk.TclError):
+            grabbed = None
+        if grabbed is not None and grabbed is not self.root:
+            return grabbed
+
+        # Focus tells us which major workspace/button actually launched the popup.
+        try:
+            focused = toplevel(self.root.focus_displayof())
+        except (AttributeError, tk.TclError):
+            focused = None
+        if focused is not None and focused is not self.root:
+            return focused
+
+        # Focus can momentarily be absent during a button callback or native dialog
+        # handoff. Reuse the last focused managed page only while it is still visible.
+        last_active = toplevel(getattr(self, "_last_active_page_window", None))
+        if last_active is not None and last_active is not self.root:
+            try:
+                if str(last_active.state()).casefold() not in {"withdrawn", "iconic"}:
+                    return last_active
+            except (AttributeError, tk.TclError):
+                pass
+        return requested
 
     def managed_page_window(self, page_key: str) -> tk.Toplevel | None:
         """Return a live registered page window, clearing stale references automatically."""
@@ -1814,61 +3031,46 @@ class ShowerProgrammerApp:
 
         try:
             window.bind("<Destroy>", unregister, add="+")
+            window.bind(
+                "<FocusIn>",
+                lambda _event, target=window: setattr(self, "_last_active_page_window", target),
+                add="+",
+            )
         except (AttributeError, tk.TclError):
             pass
 
     def bring_page_window_to_front(self, window: tk.Toplevel) -> None:
-        """Restore and reliably activate an existing child page above the main window."""
-
-        def activate() -> None:
-            try:
-                if not bool(window.winfo_exists()):
-                    return
-            except (AttributeError, tk.TclError):
-                return
-            try:
-                if str(window.state()).casefold() == "iconic":
-                    window.deiconify()
-                else:
-                    window.deiconify()
-            except (AttributeError, tk.TclError):
-                pass
-            try:
-                window.lift()
-            except (AttributeError, tk.TclError):
-                pass
-            try:
-                window.attributes("-topmost", True)
-            except (AttributeError, tk.TclError):
-                pass
-            try:
-                window.update_idletasks()
-            except (AttributeError, tk.TclError):
-                pass
-            try:
-                window.focus_set()
-            except (AttributeError, tk.TclError):
-                pass
-            try:
-                window.focus_force()
-            except (AttributeError, tk.TclError):
-                pass
-
-        def release_topmost() -> None:
-            try:
-                if bool(window.winfo_exists()):
-                    window.attributes("-topmost", False)
-                    window.lift()
-                    window.focus_force()
-            except (AttributeError, tk.TclError):
-                pass
-
-        activate()
+        """Restore and activate an existing page using the native owner contract."""
         try:
-            window.after(60, activate)
-            window.after(450, release_topmost)
+            if not bool(window.winfo_exists()):
+                return
         except (AttributeError, tk.TclError):
-            pass
+            return
+
+        self.apply_native_window_chrome(window)
+        page_owner = self.resolve_popup_owner(getattr(window, "_shower_logical_owner", None) or self.root)
+        setattr(window, "_shower_logical_owner", page_owner)
+        try:
+            state = str(window.state()).casefold()
+        except (AttributeError, tk.TclError):
+            state = ""
+        if state in {"withdrawn", "iconic"}:
+            # Reopening an existing page still goes through the same staged reveal so
+            # Settings/Review/etc. never fall back to a raw Tk deiconify path.
+            self.present_window_without_flash(
+                window,
+                make_transient=page_owner is not self.root,
+                owner=page_owner,
+                maximize=True,
+                delay_ms=0,
+                settle_passes=2,
+                settle_interval_ms=12,
+            )
+            return
+        if page_owner is not self.root:
+            self.bind_native_window_owner(window, page_owner)
+        self.stabilize_window_foreground(window, page_owner, retries_ms=(0, 45, 140))
+
 
     def focus_existing_page_window(
         self,
@@ -2017,15 +3219,11 @@ class ShowerProgrammerApp:
                 menu.grab_release()
             return
 
-        popup = ctk.CTkToplevel(parent)
+        popup_owner = parent.winfo_toplevel()
+        popup = self.create_hidden_toplevel(popup_owner)
         self.active_themed_context_popup = popup
-        popup.withdraw()
         popup.overrideredirect(True)
         popup.configure(fg_color=self.CARD_BG)
-        try:
-            popup.transient(parent.winfo_toplevel())
-        except tk.TclError:
-            pass
         try:
             popup.attributes("-topmost", True)
         except tk.TclError:
@@ -2105,11 +3303,7 @@ class ShowerProgrammerApp:
             if keep_open:
                 if callable(command):
                     command()
-                try:
-                    popup.lift()
-                    popup.focus_force()
-                except tk.TclError:
-                    pass
+                self.stabilize_window_foreground(popup, popup_owner, retries_ms=(0, 45))
                 return
 
             # Hide and unregister the popup before dispatching the command, but do
@@ -2184,11 +3378,14 @@ class ShowerProgrammerApp:
         x = max(x_min, min(int(x_root), x_max))
         y = max(y_min, min(int(y_root), y_max))
         popup.geometry(f"{width}x{height}+{x}+{y}")
-        popup.deiconify()
-        try:
-            popup.focus_force()
-        except tk.TclError:
-            pass
+        self.present_window_without_flash(
+            popup,
+            make_transient=True,
+            owner=popup_owner,
+            delay_ms=0,
+            activate=True,
+            native_owner=True,
+        )
 
         def close_menu(_event: tk.Event | None = None) -> str:
             retire_popup(destroy=True)
@@ -2250,12 +3447,13 @@ class ShowerProgrammerApp:
         prompt.title(title)
         prompt.configure(fg_color=self.APP_BG)
         prompt.resizable(False, False)
+        prompt.overrideredirect(True)
         self.set_window_icon(prompt)
         try:
             prompt.transient(parent.winfo_toplevel())
-            prompt.grab_set()
         except tk.TclError:
             pass
+        setattr(prompt, "_shower_grab_on_present", True)
 
         shell = ctk.CTkFrame(
             prompt,
@@ -2351,9 +3549,7 @@ class ShowerProgrammerApp:
         prompt.bind("<Escape>", lambda _event: cancel())
         prompt.wait_window()
         try:
-            owner.deiconify()
-            owner.lift()
-            owner.focus_force()
+            self.stabilize_window_foreground(owner, self.root, retries_ms=(0, 45))
         except tk.TclError:
             pass
         return result["value"]
@@ -2393,9 +3589,9 @@ class ShowerProgrammerApp:
         self.set_window_icon(dialog)
         try:
             dialog.transient(self.root)
-            dialog.grab_set()
         except tk.TclError:
             pass
+        setattr(dialog, "_shower_grab_on_present", True)
 
         shell = ctk.CTkFrame(
             dialog,
@@ -2615,9 +3811,9 @@ class ShowerProgrammerApp:
         self.set_window_icon(dialog)
         try:
             dialog.transient(self.root)
-            dialog.grab_set()
         except tk.TclError:
             pass
+        setattr(dialog, "_shower_grab_on_present", True)
 
         shell = ctk.CTkFrame(
             dialog,
@@ -2835,6 +4031,146 @@ class ShowerProgrammerApp:
 
 
 
+    def ask_themed_confirmation(
+        self,
+        title: str,
+        heading: str,
+        message: str,
+        *,
+        parent: tk.Widget | None = None,
+        confirm_text: str = "Confirm",
+        cancel_text: str = "Cancel",
+        icon_name: str = "warning",
+        accent_color: str | None = None,
+    ) -> bool:
+        """Show a staged, theme-aware confirmation without a native white flash."""
+        owner = parent.winfo_toplevel() if parent is not None else self.root
+        if ctk is None:
+            return bool(messagebox.askyesno(title, message, parent=owner))
+
+        accent = accent_color or self.WARNING
+        result = {"confirmed": False}
+        finished = tk.BooleanVar(master=self.root, value=False)
+        dialog = self.create_hidden_toplevel(owner)
+        dialog.title(title)
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.resizable(False, False)
+        dialog.overrideredirect(True)
+        self.set_window_icon(dialog)
+        try:
+            dialog.transient(owner)
+        except tk.TclError:
+            pass
+        setattr(dialog, "_shower_grab_on_present", True)
+
+        shell = ctk.CTkFrame(
+            dialog,
+            fg_color=self.CARD_BG,
+            corner_radius=18,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.grid_columnconfigure(1, weight=1)
+
+        icon_box = ctk.CTkFrame(
+            shell,
+            fg_color=self.PANEL_BG,
+            corner_radius=15,
+            width=52,
+            height=52,
+            border_width=1,
+            border_color=self.BORDER,
+        )
+        icon_box.grid(row=0, column=0, rowspan=2, sticky="n", padx=(14, 12), pady=(16, 0))
+        icon_box.grid_propagate(False)
+        ctk.CTkLabel(
+            icon_box,
+            text="",
+            image=self.ctk_button_icon(icon_name, 24, accent).get("image"),
+        ).pack(expand=True)
+        ctk.CTkLabel(
+            shell,
+            text=heading,
+            font=("Segoe UI", 18, "bold"),
+            text_color=self.TEXT,
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=(16, 3))
+        ctk.CTkLabel(
+            shell,
+            text=message,
+            font=("Segoe UI", 10),
+            text_color=self.MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=460,
+        ).grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 14))
+
+        button_row = ctk.CTkFrame(shell, fg_color="transparent")
+        button_row.grid(row=2, column=0, columnspan=2, sticky="e", padx=14, pady=(0, 14))
+
+        def finish(confirmed: bool) -> None:
+            result["confirmed"] = bool(confirmed)
+            try:
+                finished.set(True)
+            except tk.TclError:
+                pass
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+        ctk.CTkButton(
+            button_row,
+            text=cancel_text,
+            command=lambda: finish(False),
+            width=108,
+            height=36,
+            corner_radius=10,
+            fg_color=self.SOFT_CARD_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.BORDER,
+            text_color=self.TEXT,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        ctk.CTkButton(
+            button_row,
+            text=confirm_text,
+            command=lambda: finish(True),
+            width=122,
+            height=36,
+            corner_radius=10,
+            fg_color=accent,
+            hover_color=self.ACCENT_DARK if accent in {self.ACCENT, self.ACCENT_DARK} else accent,
+            text_color="#ffffff",
+            font=("Segoe UI", 10, "bold"),
+            **self.ctk_button_icon("check", 15, "#ffffff", "left"),
+        ).pack(side=tk.RIGHT)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        dialog.bind("<Escape>", lambda _event: finish(False))
+        dialog.update_idletasks()
+        width = max(500, dialog.winfo_reqwidth())
+        height = max(210, dialog.winfo_reqheight())
+        self.center_child_window(dialog, width, height, owner=owner)
+        self.present_window_without_flash(
+            dialog,
+            make_transient=True,
+            owner=owner,
+            post_reveal_passes=4,
+            post_reveal_interval_ms=16,
+        )
+        try:
+            self.root.wait_variable(finished)
+        except tk.TclError:
+            pass
+        return bool(result["confirmed"])
+
     def show_themed_notice(
         self,
         title: str,
@@ -2864,12 +4200,13 @@ class ShowerProgrammerApp:
         dialog.title(title)
         dialog.configure(fg_color=self.APP_BG)
         dialog.resizable(False, False)
+        dialog.overrideredirect(True)
         self.set_window_icon(dialog)
         try:
             dialog.transient(owner)
-            dialog.grab_set()
         except tk.TclError:
             pass
+        setattr(dialog, "_shower_grab_on_present", True)
 
         shell = ctk.CTkFrame(
             dialog,
@@ -3062,8 +4399,12 @@ class ShowerProgrammerApp:
         if window is not None:
             try:
                 if window.winfo_exists():
-                    window.deiconify()
-                    window.lift()
+                    self.present_window_without_flash(
+                        window,
+                        make_transient=True,
+                        owner=self.root,
+                        delay_ms=0,
+                    )
                     return
             except tk.TclError:
                 pass
@@ -3170,6 +4511,22 @@ class ShowerProgrammerApp:
             base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
             return base / "Shower Programmer" / cls.UI_SETTINGS_FILE_NAME
 
+    @classmethod
+    def startup_palette(cls) -> tuple[bool, str, str, str, str]:
+        """Read only the saved color-mode bit needed for the pre-CTk startup surface."""
+        dark = False
+        try:
+            path = cls.preferred_ui_settings_path()
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    dark = bool(data.get("dark_mode", False))
+        except Exception:
+            dark = False
+        if dark:
+            return True, "#111827", "#3b82f6", "#f9fafb", "#98a2b3"
+        return False, "#e7edf5", "#2563eb", "#111827", "#667085"
+
     def load_ui_settings(self) -> dict[str, object]:
         path = self.preferred_ui_settings_path()
         try:
@@ -3274,7 +4631,8 @@ class ShowerProgrammerApp:
         self.update_activity_detail()
 
     def update_activity_detail(self) -> None:
-        if not self.is_busy:
+        active_task = getattr(getattr(self, "task_manager", None), "active", None)
+        if not self.is_busy and active_task is None:
             self.activity_detail_var.set(str(getattr(self, "last_scan_performance_summary", "")))
             return
         now = time.monotonic()
@@ -3326,6 +4684,7 @@ class ShowerProgrammerApp:
             self.TREE_HEADER_TEXT = "#d0d5dd"
             self.TREE_SELECTED_BG = "#1d4ed8"
             self.TREE_SELECTED_TEXT = "#ffffff"
+            self.MIRROR_SECTION_BG = "#2b3a50"
             self.TREE_SENT_BG = "#174832"
             self.TREE_CHECKED_BG = "#2b3248"
             self.TREE_SENT_CHECKED_BG = "#1b4132"
@@ -3367,6 +4726,7 @@ class ShowerProgrammerApp:
             self.TREE_HEADER_TEXT = "#344054"
             self.TREE_SELECTED_BG = "#dbeafe"
             self.TREE_SELECTED_TEXT = "#111827"
+            self.MIRROR_SECTION_BG = "#e7eef8"
             self.TREE_SENT_BG = "#d9f2e2"
             self.TREE_CHECKED_BG = "#eef1f8"
             self.TREE_SENT_CHECKED_BG = "#d5edde"
@@ -3650,7 +5010,7 @@ class ShowerProgrammerApp:
         # changing the appearance of Treeviews used by other review windows.
         style.configure(
             "Orders.Treeview",
-            rowheight=38,
+            rowheight=self.ORDER_TREE_ROW_HEIGHT,
             fieldbackground=self.TREE_BG,
             background=self.TREE_BG,
             foreground=self.TEXT,
@@ -3668,7 +5028,7 @@ class ShowerProgrammerApp:
             darkcolor=self.BORDER,
             borderwidth=1,
             relief="raised",
-            padding=(12, 12),
+            padding=(0, 10),
         )
         style.map(
             "Orders.Treeview",
@@ -4446,7 +5806,7 @@ class ShowerProgrammerApp:
 
         resize_hint = ctk.CTkLabel(
             table_toolbar,
-            text="Drag the ⋮ grips on either side of a header to resize that column",
+            text="Drag ⋮ to resize • double-click a divider to auto-fit",
             text_color=self.MUTED,
             font=("Segoe UI", 10, "italic"),
             anchor="e",
@@ -4483,52 +5843,85 @@ class ShowerProgrammerApp:
             selectmode="extended",
             style="Orders.Treeview",
         )
+        self.mirror_section_overlays = {}
+        self._mirror_section_overlay_after_id = None
         headings = {
             "status": "Status",
             "processed": "Processed",
             "delivery": "Delivery",
-            "order": "A&W",  # Hidden internal lookup column.
+            "order": "Batch / A&W",
             "sent": "Sent",
             "job": "Job",
             "customer": "Customer",
             "items": "Items",
-            "review": "Mark Checked",
+            "review": "",
             "issues": "Issues",
         }
-        self.order_tree_heading_labels = {"#0": "Batch / Process List", **headings}
+        self.order_tree_heading_labels = dict(headings)
         widths = {
-            "status": 88,
-            "processed": 190,
-            "delivery": 102,
-            "order": 88,
-            "sent": 112,
-            "job": 250,
-            "customer": 205,
-            "items": 110,
-            "review": 134,
-            "issues": 620,
+            "status": 72,
+            "processed": 148,
+            "delivery": 86,
+            "order": 158,
+            "sent": 90,
+            "job": 168,
+            "customer": 148,
+            "items": 172,
+            "review": 90,
+            "issues": 350,
         }
-        self.tree.heading(
-            "#0",
-            text=self.order_tree_heading_text("Batch / Process List"),
-            anchor=tk.CENTER,
-            command=lambda: self.sort_orders_by_column("#0"),
-        )
-        self.tree.column("#0", width=270, minwidth=210, anchor=tk.W, stretch=True)
+        # Keep the native hierarchy gutter tiny and visually separate from the
+        # dedicated checked-state column. This avoids the jumbled child-indent +
+        # checkbox rendering seen when both were forced into #0.
+        self.tree.heading("#0", text="", anchor=tk.CENTER)
+        self.tree.column("#0", width=16, minwidth=14, anchor=tk.CENTER, stretch=False)
         for col in columns:
+            if col == "review":
+                self.tree.heading(col, text="✓", anchor=tk.CENTER)
+                self.tree.column(col, width=40, minwidth=38, anchor=tk.CENTER, stretch=False)
+                continue
             self.tree.heading(
                 col,
                 text=self.order_tree_heading_text(headings[col]),
                 anchor=tk.CENTER,
                 command=lambda column=col: self.sort_orders_by_column(column),
             )
-            min_width = {"status": 62, "processed": 150, "issues": 260}.get(col, 74)
-            stretch = col in {"job", "customer", "issues"}
-            self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=stretch)
+            min_width = {
+                "status": 58,
+                "processed": 124,
+                "delivery": 74,
+                "order": 112,
+                "sent": 76,
+                "job": 120,
+                "customer": 110,
+                "items": 120,
+                "review": 72,
+                "issues": 220,
+            }.get(col, 72)
+            # Keep operator-selected widths stable. Compact defaults plus an early
+            # Issues column let common warnings remain visible without sacrificing
+            # horizontal scrolling for wider Job/Customer/Items content.
+            self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=False)
 
         self.tree.tag_configure("BATCH", foreground=self.ACCENT_DARK, background=self.SOFT_CARD_BG, font=("Segoe UI", 10, "bold"))
+        # Mirror section rows are structural spacers. Their visible band is a
+        # separate overlay that spans the entire Orders viewport, so the label is
+        # never clipped by an individual Treeview column boundary.
+        self.tree.tag_configure(
+            "MIRROR_SECTION_FAB",
+            foreground=self.TREE_BG,
+            background=self.TREE_BG,
+            font=("Segoe UI", 8),
+        )
+        self.tree.tag_configure(
+            "MIRROR_SECTION_NO_FAB",
+            foreground=self.TREE_BG,
+            background=self.TREE_BG,
+            font=("Segoe UI", 8),
+        )
         self.tree.tag_configure("OK", foreground=self.SUCCESS)
         self.tree.tag_configure("READY", foreground=self.ACCENT_DARK)
+        self.tree.tag_configure("PROCESSING", foreground=self.ACCENT_DARK, background=self.ACCENT_LIGHT)
         self.tree.tag_configure("ISSUES", foreground=self.WARNING)
         self.tree.tag_configure("FAILED", foreground=self.DANGER)
         self.tree.tag_configure("SKIPPED", foreground=self.DANGER)
@@ -4545,7 +5938,8 @@ class ShowerProgrammerApp:
             background=self.TREE_SENT_CHECKED_BG,
             font=("Segoe UI", 10, "bold"),
         )
-        self.tree.bind("<Double-1>", self.open_order_review)
+        self.tree.bind("<Button-1>", self.toggle_order_checked_from_tree_checkbox, add="+")
+        self.tree.bind("<Double-1>", self.on_orders_tree_double_click)
         self.tree.bind("<Button-3>", self.open_orders_context_menu)
         self.tree.bind("<<TreeviewSelect>>", self.on_orders_tree_selection, add="+")
         self.tree.bind("<Control-a>", self.select_all_orders)
@@ -4553,10 +5947,30 @@ class ShowerProgrammerApp:
         self.tree.bind("<Motion>", self.update_orders_tree_resize_cursor, add="+")
         self.tree.bind("<Leave>", self.clear_orders_tree_resize_cursor, add="+")
 
-        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        def scroll_orders_horizontally(event: tk.Event) -> str:
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta:
+                self.tree.xview_scroll(-3 if delta > 0 else 3, "units")
+            return "break"
+
+        self.tree.bind("<Shift-MouseWheel>", scroll_orders_horizontally, add="+")
+
+        def scroll_orders_vertical(*args: object) -> None:
+            self.tree.yview(*args)
+            self.schedule_mirror_section_overlay_refresh()
+
+        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=scroll_orders_vertical)
         x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
-        self.tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+
+        def sync_orders_vertical_scroll(first: str, last: str) -> None:
+            y_scroll.set(first, last)
+            self.schedule_mirror_section_overlay_refresh()
+
+        self.tree.configure(yscrollcommand=sync_orders_vertical_scroll, xscrollcommand=x_scroll.set)
         self.tree.grid(row=1, column=0, sticky="nsew")
+        self.tree.bind("<Configure>", lambda _event: self.schedule_mirror_section_overlay_refresh(), add="+")
+        self.tree.bind("<<TreeviewOpen>>", lambda _event: self.schedule_mirror_section_overlay_refresh(), add="+")
+        self.tree.bind("<<TreeviewClose>>", lambda _event: self.schedule_mirror_section_overlay_refresh(), add="+")
         y_scroll.grid(row=1, column=1, sticky="ns")
         x_scroll.grid(row=2, column=0, sticky="ew")
 
@@ -4739,7 +6153,8 @@ class ShowerProgrammerApp:
             try:
                 if not widget.winfo_exists():
                     return
-                window = tk.Toplevel(widget)
+                tooltip_owner = widget.winfo_toplevel()
+                window = self.create_hidden_native_toplevel(tooltip_owner, background="#101828")
                 window.wm_overrideredirect(True)
                 window.attributes("-topmost", True)
                 x = widget.winfo_rootx() + max(4, widget.winfo_width() // 2)
@@ -4756,6 +6171,14 @@ class ShowerProgrammerApp:
                     relief=tk.SOLID,
                     borderwidth=1,
                 ).pack()
+                self.present_window_without_flash(
+                    window,
+                    make_transient=False,
+                    owner=tooltip_owner,
+                    delay_ms=0,
+                    activate=False,
+                    native_owner=True,
+                )
                 tooltip["window"] = window
             except tk.TclError:
                 tooltip["window"] = None
@@ -5075,24 +6498,24 @@ class ShowerProgrammerApp:
             width=104,
         ).grid(row=0, column=2, sticky=tk.E)
     def choose_folder(self) -> None:
-        path = filedialog.askdirectory(initialdir=self.folder_var.get())
+        path = filedialog.askdirectory(initialdir=self.folder_var.get(), parent=self.resolve_popup_owner(self.root))
         if path:
             self.folder_var.set(path)
 
     def choose_import_source(self) -> None:
-        path = filedialog.askdirectory(initialdir=self.import_source_var.get())
+        path = filedialog.askdirectory(initialdir=self.import_source_var.get(), parent=self.resolve_popup_owner(self.root))
         if path:
             self.import_source_var.set(path)
 
     def choose_process_list(self) -> None:
         current = Path(self.process_list_var.get())
         initial = current if current.is_dir() else current.parent
-        path = filedialog.askdirectory(initialdir=str(initial), title="Select process-list folder")
+        path = filedialog.askdirectory(initialdir=str(initial), title="Select process-list folder", parent=self.resolve_popup_owner(self.root))
         if path:
             self.process_list_var.set(path)
 
     def choose_output_dir(self) -> None:
-        path = filedialog.askdirectory(initialdir=self.output_dir_var.get())
+        path = filedialog.askdirectory(initialdir=self.output_dir_var.get(), parent=self.resolve_popup_owner(self.root))
         if path:
             self.output_dir_var.set(path)
 
@@ -5125,6 +6548,8 @@ class ShowerProgrammerApp:
         on_done: Callable[[object], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
         on_cancelled: Callable[[], None] | None = None,
+        lock_controls: bool = True,
+        mark_busy: bool = True,
     ) -> bool:
         """Start one production-safe worker using the shared progress/cancel contract.
 
@@ -5148,7 +6573,12 @@ class ShowerProgrammerApp:
                     status="ERROR",
                 )
             return False
-        self.start_background_activity(message, maximum=total or None)
+        self.start_background_activity(
+            message,
+            maximum=total or None,
+            lock_controls=lock_controls,
+            mark_busy=mark_busy,
+        )
         try:
             snapshot = self.task_manager.start(
                 name,
@@ -5285,8 +6715,9 @@ class ShowerProgrammerApp:
             f"Internal: {structured.code}\n\n"
             f"{structured.message}"
         )
+        error_owner = self.resolve_popup_owner(self.root)
         if ctk is None:
-            messagebox.showerror(f"{title} [{operator_code}]", display_message, parent=self.root)
+            messagebox.showerror(f"{title} [{operator_code}]", display_message, parent=error_owner)
             return
 
         buttons: list[tuple[str, str]] = [("Close", "close"), ("Copy Diagnostics", "copy")]
@@ -5296,7 +6727,7 @@ class ShowerProgrammerApp:
             "showerror",
             f"{title} [{operator_code}]",
             display_message,
-            parent=self.root,
+            parent=error_owner,
             kind="error",
             buttons=buttons,
             default="close",
@@ -5455,13 +6886,29 @@ class ShowerProgrammerApp:
             for chosen in chosen_files:
                 source_archive = ""
                 source_batch = ""
-                for revision in revisions:
-                    raw_files = revision.get("order_files", [])
-                    revision_files = [Path(path) for path in raw_files if isinstance(path, Path)] if isinstance(raw_files, list) else []
-                    if any(path == chosen for path in revision_files):
-                        source_archive = str(revision.get("archive_name", ""))
-                        source_batch = str(revision.get("batch_name", ""))
-                        break
+                archive_parent = chosen.parent
+                if archive_parent.name == cls.MANUAL_PROCESS_ARCHIVE_FOLDER_NAME:
+                    archive_parent = archive_parent.parent
+                actual_dated_archive = (
+                    archive_parent.name
+                    if cls.INPUT_ARCHIVE_FOLDER_RE.match(archive_parent.name)
+                    else ""
+                )
+                entry_archive_name = str(entry.get("archive_name", archive_name))
+                if actual_dated_archive and actual_dated_archive != entry_archive_name:
+                    source_archive = actual_dated_archive
+                    source_batch = "Dated order archive fallback"
+                else:
+                    for revision in revisions:
+                        raw_files = revision.get("order_files", [])
+                        revision_files = [Path(path) for path in raw_files if isinstance(path, Path)] if isinstance(raw_files, list) else []
+                        if any(path == chosen for path in revision_files):
+                            source_archive = str(revision.get("archive_name", ""))
+                            source_batch = str(revision.get("batch_name", ""))
+                            break
+                if not source_archive and actual_dated_archive:
+                    source_archive = actual_dated_archive
+                    source_batch = "Dated order archive fallback"
                 file_rows.append({
                     "type": chosen.suffix.lower().lstrip("."),
                     "source": str(chosen),
@@ -5585,8 +7032,9 @@ class ShowerProgrammerApp:
             raise RuntimeError(
                 "The archived batch process list was prepared, but Test Mode could not restore "
                 f"the required PDF/DXF source files for: {details}. "
-                "The archive was left unchanged. Refresh Archives and retry; if the files are "
-                "stored under an older batch revision, the revision fallback should locate them."
+                "The archive was left unchanged. Test Mode searched the selected batch revisions "
+                "and the earlier dated order archives. Refresh Archives and retry; if the source "
+                "files were never archived or were moved outside the dated Input archive, they must be restored first."
             )
         provenance_manifest = cls.write_test_mode_provenance_manifest(
             workspace,
@@ -5774,7 +7222,7 @@ class ShowerProgrammerApp:
             cancellable=True,
         )
 
-    def refresh_local_orders(self) -> None:
+    def refresh_local_orders(self, *, lock_controls: bool = True) -> None:
         """Rebuild the Orders view strictly from local folders without touching shared input.
 
         Local deletion uses this refresh so the operator immediately sees the exact
@@ -5812,6 +7260,8 @@ class ShowerProgrammerApp:
             message="Refreshing the order list from local Input folders...",
             total=5,
             cancellable=True,
+            lock_controls=lock_controls,
+            mark_busy=lock_controls,
         )
 
     def import_edi_orders(self) -> None:
@@ -5855,14 +7305,27 @@ class ShowerProgrammerApp:
             cancellable=True,
         )
 
-    def start_background_activity(self, message: str, maximum: int | None = None) -> None:
-        self.is_busy = True
+    def start_background_activity(
+        self,
+        message: str,
+        maximum: int | None = None,
+        *,
+        lock_controls: bool = True,
+        mark_busy: bool = True,
+    ) -> None:
+        # A soft background task may keep the Orders workspace interactive while
+        # the task manager still prevents conflicting production work. This is
+        # used by restored-archive return/refresh so the application never looks
+        # frozen merely because a file operation is active.
+        self.is_busy = bool(mark_busy)
+        self.background_controls_locked = bool(lock_controls)
         self.background_progress_percent = 0.0
         now = time.monotonic()
         self.activity_started_at = now
         self.activity_last_progress_at = now
         self.activity_stage_message = message
-        self.set_controls_enabled(False)
+        if self.background_controls_locked:
+            self.set_controls_enabled(False)
         self.progress.stop()
         if maximum:
             self.progress.configure(mode="determinate", maximum=100, value=0)
@@ -5872,6 +7335,10 @@ class ShowerProgrammerApp:
         self.status_var.set(message)
         if hasattr(self, "cancel_task_button"):
             self.cancel_task_button.grid()
+            try:
+                self.cancel_task_button.configure(state=tk.NORMAL)
+            except (AttributeError, tk.TclError):
+                pass
         self.update_activity_detail()
 
     def finish_background_activity(self) -> None:
@@ -5883,7 +7350,9 @@ class ShowerProgrammerApp:
         self.activity_last_progress_at = 0.0
         self.activity_stage_message = ""
         self.activity_detail_var.set("")
-        self.set_controls_enabled(True)
+        if self.background_controls_locked:
+            self.set_controls_enabled(True)
+        self.background_controls_locked = False
         if hasattr(self, "cancel_task_button"):
             self.cancel_task_button.grid_remove()
 
@@ -8436,9 +9905,11 @@ class ShowerProgrammerApp:
             return ()
         status = str(values[self.ORDER_TREE_INDEX["status"]]).strip().upper()
         sent_text = str(values[self.ORDER_TREE_INDEX["sent"]]).strip().casefold()
-        review_text = str(values[self.ORDER_TREE_INDEX["review"]]).strip().casefold()
+        review_text = values[self.ORDER_TREE_INDEX["review"]]
         is_sent = sent_text == "sent" or sent_text.startswith("sent ")
-        is_checked = "checked" in review_text
+        is_checked = self.order_tree_value_is_checked(review_text)
+        if status == "PROCESSING":
+            return ("PROCESSING",)
         if is_sent and is_checked:
             return ("SENT_CHECKED",)
         if is_checked:
@@ -8494,12 +9965,15 @@ class ShowerProgrammerApp:
             self.process_batches[batch_id] = batch
             count = len(batch_orders)
             label = self.batch_tree_label(batch)
+            summary = self.batch_tree_summary(batch, count)
             parent_id = self.tree.insert(
                 "",
                 tk.END,
-                text=f"{label}  ({count} order{'s' if count != 1 else ''})",
+                text="",
                 values=tuple(
-                    "BATCH" if column == "status" else str(count) if column == "items" else ""
+                    label if column == "order"
+                    else summary if column == "items"
+                    else ""
                     for column in self.ORDER_TREE_COLUMNS
                 ),
                 tags=("BATCH",),
@@ -8507,26 +9981,277 @@ class ShowerProgrammerApp:
             )
             self.batch_tree_rows[batch_id] = parent_id
             self.tree_row_batches[parent_id] = batch_id
+            self.insert_mirror_section_dividers(parent_id, batch)
             for order in batch_orders:
                 if isinstance(order, shower_batch.ProcessOrder):
                     self.order_batch_ids.setdefault(str(order.aw_order), []).append(batch_id)
 
     @staticmethod
     def batch_tree_label(batch: dict[str, object]) -> str:
+        """Keep the collapsible tree column focused on the process-list identity."""
+        return str(batch.get("name", "Process List"))
+
+    @staticmethod
+    def batch_tree_summary(batch: dict[str, object], count: int | None = None) -> str:
+        """Return batch metadata for the wider Items column instead of tree text."""
         batch_orders = batch.get("orders", [])
-        count = len(batch_orders) if isinstance(batch_orders, list) else 0
-        label = f"{batch.get('name', 'Process List')}  ({count} order{'s' if count != 1 else ''})"
+        order_count = int(count) if count is not None else (len(batch_orders) if isinstance(batch_orders, list) else 0)
+        return f"{order_count} order{'s' if order_count != 1 else ''}"
+
+    @staticmethod
+    def mirror_section_tag(category: str) -> str:
+        if category == "Mirror - With Fabrication":
+            return "MIRROR_SECTION_FAB"
+        if category == "Mirror - Without Fabrication":
+            return "MIRROR_SECTION_NO_FAB"
+        return ""
+
+    @staticmethod
+    def mirror_section_label(category: str) -> str:
+        if category == "Mirror - With Fabrication":
+            return "MIRROR • WITH FABRICATION"
+        if category == "Mirror - Without Fabrication":
+            return "MIRROR • WITHOUT FABRICATION"
+        return category
+
+    def insert_mirror_section_dividers(self, parent_id: str, batch: dict[str, object]) -> None:
+        """Insert compact sibling divider rows for the two mirror fabrication classes."""
         categories = batch.get("mirror_categories", {})
         if not isinstance(categories, dict):
-            return label
-        with_fabrication = len(categories.get("Mirror - With Fabrication", []))
-        without_fabrication = len(categories.get("Mirror - Without Fabrication", []))
-        details: list[str] = []
-        if with_fabrication:
-            details.append(f"Mirror fab {with_fabrication}")
-        if without_fabrication:
-            details.append(f"Mirror no fab {without_fabrication}")
-        return f"{label}  |  {'  |  '.join(details)}" if details else label
+            return
+        for category in ("Mirror - With Fabrication", "Mirror - Without Fabrication"):
+            members = categories.get(category, [])
+            if not isinstance(members, list) or not members:
+                continue
+            tag = self.mirror_section_tag(category)
+            row_id = self.tree.insert(
+                parent_id,
+                tk.END,
+                text="",
+                values=tuple("" for _column in self.ORDER_TREE_COLUMNS),
+                tags=("MIRROR_SECTION", tag),
+            )
+            self.ensure_mirror_section_overlay(row_id, category)
+        self.schedule_mirror_section_overlay_refresh()
+
+    def ensure_mirror_section_overlay(self, row_id: str, category: str) -> None:
+        """Create one compact viewport-spanning band for a mirror section row."""
+        existing = self.mirror_section_overlays.get(row_id)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    return
+            except tk.TclError:
+                pass
+        foreground = self.WARNING if category == "Mirror - With Fabrication" else self.ACCENT_DARK
+        label = tk.Label(
+            self.tree,
+            text=self.mirror_section_overlay_text(row_id, category),
+            anchor="w",
+            bg=self.MIRROR_SECTION_BG,
+            fg=foreground,
+            bd=0,
+            highlightthickness=0,
+            padx=10,
+            pady=0,
+            font=("Segoe UI", 8, "bold"),
+            cursor="arrow",
+        )
+
+        def relay_mousewheel(event: tk.Event) -> str:
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta:
+                self.tree.yview_scroll(-3 if delta > 0 else 3, "units")
+                self.schedule_mirror_section_overlay_refresh()
+            return "break"
+
+        label.bind("<MouseWheel>", relay_mousewheel, add="+")
+        self.mirror_section_overlays[row_id] = label
+
+    def mirror_section_overlay_text(self, row_id: str, category: str | None = None) -> str:
+        """Return the spanning divider label and current order count."""
+        resolved = category or self.mirror_section_category_for_row(row_id)
+        count = 0
+        try:
+            parent_id = self.tree.parent(row_id)
+        except tk.TclError:
+            parent_id = ""
+        batch_id = self.tree_row_batches.get(parent_id, "")
+        batch = self.process_batches.get(batch_id, {}) if batch_id else {}
+        categories = batch.get("mirror_categories", {}) if isinstance(batch, dict) else {}
+        if isinstance(categories, dict):
+            members = categories.get(resolved, [])
+            if isinstance(members, list):
+                count = len(members)
+        label = self.mirror_section_label(resolved)
+        suffix = f"  •  {count} order{'s' if count != 1 else ''}" if count else ""
+        return f"{label}{suffix}"
+
+    def schedule_mirror_section_overlay_refresh(self) -> None:
+        """Coalesce overlay repositioning while the Orders tree scrolls/reflows."""
+        if not hasattr(self, "tree"):
+            return
+        if self._mirror_section_overlay_after_id is not None:
+            return
+        try:
+            self._mirror_section_overlay_after_id = self.root.after_idle(self.refresh_mirror_section_overlays)
+        except tk.TclError:
+            self._mirror_section_overlay_after_id = None
+
+    def refresh_mirror_section_overlays(self) -> None:
+        """Keep mirror bands aligned to their structural rows and span the viewport."""
+        self._mirror_section_overlay_after_id = None
+        if not hasattr(self, "tree"):
+            return
+        try:
+            tree_width = max(1, int(self.tree.winfo_width()))
+        except tk.TclError:
+            return
+        stale: list[str] = []
+        for row_id, label in list(self.mirror_section_overlays.items()):
+            try:
+                if not self.tree.exists(row_id):
+                    stale.append(row_id)
+                    continue
+                category = self.mirror_section_category_for_row(row_id)
+                if not category:
+                    stale.append(row_id)
+                    continue
+                bbox = self.tree.bbox(row_id, "#0")
+                if not bbox:
+                    label.place_forget()
+                    continue
+                _x, y, _width, row_height = [int(value) for value in bbox]
+                band_height = min(
+                    max(14, int(self.MIRROR_SECTION_BAND_HEIGHT)),
+                    max(14, row_height - 4),
+                )
+                band_y = y + max(0, (row_height - band_height) // 2)
+                foreground = self.WARNING if category == "Mirror - With Fabrication" else self.ACCENT_DARK
+                label.configure(
+                    text=self.mirror_section_overlay_text(row_id, category),
+                    bg=self.MIRROR_SECTION_BG,
+                    fg=foreground,
+                )
+                label.place(x=2, y=band_y, width=max(1, tree_width - 4), height=band_height)
+                label.lift()
+            except tk.TclError:
+                stale.append(row_id)
+        for row_id in stale:
+            label = self.mirror_section_overlays.pop(row_id, None)
+            if label is not None:
+                try:
+                    label.destroy()
+                except tk.TclError:
+                    pass
+
+    def mirror_section_category_for_row(self, row_id: str) -> str:
+        try:
+            tags = set(str(tag) for tag in self.tree.item(row_id, "tags"))
+        except tk.TclError:
+            return ""
+        if "MIRROR_SECTION_FAB" in tags:
+            return "Mirror - With Fabrication"
+        if "MIRROR_SECTION_NO_FAB" in tags:
+            return "Mirror - Without Fabrication"
+        return ""
+
+    def reflow_mirror_sections_for_batch(self, batch_id: str) -> None:
+        """Keep mirror divider rows immediately above the orders they describe."""
+        parent_id = self.batch_tree_rows.get(str(batch_id))
+        batch = self.process_batches.get(str(batch_id), {})
+        if not parent_id or not batch:
+            return
+        try:
+            children = list(self.tree.get_children(parent_id))
+        except tk.TclError:
+            return
+        section_rows = {
+            self.mirror_section_category_for_row(row_id): row_id
+            for row_id in children
+            if self.mirror_section_category_for_row(row_id)
+        }
+        if not section_rows:
+            return
+        mirror_categories = batch.get("mirror_categories", {})
+        if not isinstance(mirror_categories, dict):
+            mirror_categories = {}
+        for category, divider in list(section_rows.items()):
+            members = mirror_categories.get(category, [])
+            member_count = len(members) if isinstance(members, list) else 0
+            if member_count <= 0:
+                overlay = self.mirror_section_overlays.pop(divider, None)
+                if overlay is not None:
+                    try:
+                        overlay.destroy()
+                    except tk.TclError:
+                        pass
+                try:
+                    self.tree.delete(divider)
+                except tk.TclError:
+                    pass
+                section_rows.pop(category, None)
+                continue
+            self.ensure_mirror_section_overlay(divider, category)
+        if not section_rows:
+            return
+        category_by_order = batch.get("mirror_category_by_order", {})
+        if not isinstance(category_by_order, dict):
+            category_by_order = {}
+        order_rows = [row_id for row_id in children if row_id in self.tree_row_orders]
+
+        def maybe_sorted(rows: list[str]) -> list[str]:
+            column = self.order_tree_sort_column
+            if not column:
+                return rows
+            reverse = self.order_tree_sort_descending
+            def key(row_id: str) -> tuple[int, object]:
+                values = self.tree.item(row_id, "values")
+                index = self.ORDER_TREE_INDEX.get(column)
+                value = values[index] if index is not None and len(values) > index else ""
+                return self.order_sort_value(value, column)
+            return sorted(rows, key=key, reverse=reverse)
+
+        grouped: dict[str, list[str]] = {
+            "Mirror - With Fabrication": [],
+            "Mirror - Without Fabrication": [],
+        }
+        ungrouped: list[str] = []
+        for row_id in order_rows:
+            order = self.tree_row_orders.get(row_id)
+            aw_order = str(order.aw_order) if order is not None else ""
+            category = str(category_by_order.get(aw_order, ""))
+            if category in grouped:
+                grouped[category].append(row_id)
+            else:
+                ungrouped.append(row_id)
+
+        index = 0
+        for category in ("Mirror - With Fabrication", "Mirror - Without Fabrication"):
+            divider = section_rows.get(category)
+            if divider:
+                try:
+                    self.tree.move(divider, parent_id, index)
+                except tk.TclError:
+                    continue
+                index += 1
+            for row_id in maybe_sorted(grouped[category]):
+                try:
+                    self.tree.move(row_id, parent_id, index)
+                except tk.TclError:
+                    continue
+                index += 1
+        for row_id in maybe_sorted(ungrouped):
+            try:
+                self.tree.move(row_id, parent_id, index)
+            except tk.TclError:
+                continue
+            index += 1
+        self.schedule_mirror_section_overlay_refresh()
+
+    def reflow_mirror_sections_for_order(self, aw_order: str) -> None:
+        for batch_id in self.order_batch_ids.get(str(aw_order), []):
+            self.reflow_mirror_sections_for_batch(str(batch_id))
 
     def mirror_category_for_order(self, aw_order: str) -> str:
         for batch_id in self.order_batch_ids.get(str(aw_order), []):
@@ -8549,7 +10274,7 @@ class ShowerProgrammerApp:
         """Wrap an Orders heading with visible drag grips on both sides."""
         grip = cls.ORDER_TREE_HEADER_GRIP
         arrow = " \u25B2" if direction == "asc" else " \u25BC" if direction == "desc" else ""
-        return f"{grip}  {label}{arrow}  {grip}"
+        return f"{grip}{label}{arrow.strip()}{grip}"
 
     @staticmethod
     def natural_sort_key(value: object) -> tuple[tuple[int, object], ...]:
@@ -8570,7 +10295,7 @@ class ShowerProgrammerApp:
         """Normalize dates, status text, and natural text for stable Orders sorting."""
         text = str(value or "").strip()
         if column in {"processed", "delivery", "sent"}:
-            date_text = re.sub(r"^REMAKE\s+[^0-9]*", "", text, flags=re.IGNORECASE).strip()
+            date_text = re.sub(r"^(?:🔴\s*)?REMAKE\s+[^0-9]*", "", text, flags=re.IGNORECASE).strip()
             date_text = re.sub(r"^Sent\s+", "", date_text, flags=re.IGNORECASE).strip()
             for format_text in (
                 "%Y-%m-%d %H:%M:%S",
@@ -8592,10 +10317,13 @@ class ShowerProgrammerApp:
 
     def refresh_order_tree_headings(self) -> None:
         for column, label in self.order_tree_heading_labels.items():
-            direction = ""
-            if column == self.order_tree_sort_column:
-                direction = "desc" if self.order_tree_sort_descending else "asc"
             try:
+                if column == "review":
+                    self.tree.heading(column, text="✓", anchor=tk.CENTER, command="")
+                    continue
+                direction = ""
+                if column == self.order_tree_sort_column:
+                    direction = "desc" if self.order_tree_sort_descending else "asc"
                 self.tree.heading(
                     column,
                     text=self.order_tree_heading_text(label, direction),
@@ -8626,6 +10354,14 @@ class ShowerProgrammerApp:
             for index, row_id in enumerate(sorted(batch_rows, key=row_key, reverse=reverse)):
                 self.tree.move(row_id, "", index)
         for parent_id in batch_rows:
+            batch_id = self.tree_row_batches.get(parent_id, "")
+            section_rows = [
+                row_id for row_id in self.tree.get_children(parent_id)
+                if self.mirror_section_category_for_row(row_id)
+            ]
+            if section_rows and batch_id:
+                self.reflow_mirror_sections_for_batch(batch_id)
+                continue
             order_rows = [row_id for row_id in self.tree.get_children(parent_id) if row_id in self.tree_row_orders]
             for index, row_id in enumerate(sorted(order_rows, key=row_key, reverse=reverse)):
                 self.tree.move(row_id, parent_id, index)
@@ -8640,6 +10376,8 @@ class ShowerProgrammerApp:
         else:
             self.order_tree_sort_column = column
             self.order_tree_sort_descending = False
+        self.mirror_section_overlays: dict[str, tk.Label] = {}
+        self._mirror_section_overlay_after_id: str | None = None
         self.refresh_order_tree_headings()
         self.apply_order_tree_sort()
         label = self.order_tree_heading_labels.get(column, column)
@@ -8697,6 +10435,82 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
+    def orders_tree_column_from_display_identifier(self, identifier: str) -> str:
+        """Translate Treeview #N display identifiers into the configured data column."""
+        if not str(identifier).startswith("#"):
+            return ""
+        try:
+            index = int(str(identifier)[1:])
+        except ValueError:
+            return ""
+        if index <= 0:
+            return ""
+        display_columns = list(self.ORDER_TREE_DISPLAY_COLUMNS)
+        return display_columns[index - 1] if index <= len(display_columns) else ""
+
+    def autofit_orders_tree_column(self, column: str) -> int:
+        """Fit one Orders column to its visible content with practical width caps."""
+        if column not in self.ORDER_TREE_COLUMNS or not hasattr(self, "tree"):
+            return 0
+        if column == "review":
+            target = 42
+            try:
+                self.tree.column(column, width=target)
+            except tk.TclError:
+                return 0
+            return target
+        try:
+            body_font = tkfont.Font(root=self.root, family="Segoe UI", size=10)
+            heading_font = tkfont.Font(root=self.root, family="Segoe UI", size=10, weight="bold")
+            label = self.order_tree_heading_labels.get(column, column)
+            measured = heading_font.measure(label) + 22
+            value_index = self.ORDER_TREE_INDEX[column]
+
+            def visit(parent_id: str) -> None:
+                nonlocal measured
+                for row_id in self.tree.get_children(parent_id):
+                    values = self.tree.item(row_id, "values")
+                    if len(values) > value_index:
+                        measured = max(measured, body_font.measure(str(values[value_index])) + 20)
+                    visit(row_id)
+
+            visit("")
+            min_width = int(self.tree.column(column, "minwidth") or 36)
+            max_width = {
+                "order": 250,
+                "status": 120,
+                "processed": 230,
+                "sent": 170,
+                "delivery": 140,
+                "job": 300,
+                "customer": 260,
+                "items": 360,
+                "issues": 620,
+            }.get(column, 360)
+            target = max(min_width, min(max_width, measured))
+            self.tree.column(column, width=target)
+            self.status_var.set(f"Auto-fit {self.order_tree_heading_labels.get(column, column)} column to {target}px.")
+            return target
+        except (tk.TclError, RuntimeError):
+            return 0
+
+    def on_orders_tree_double_click(self, event: tk.Event) -> str | None:
+        """Auto-fit separators; otherwise keep the established Review Order double-click."""
+        try:
+            region = self.tree.identify_region(event.x, event.y)
+        except tk.TclError:
+            region = ""
+        if region == "separator":
+            try:
+                identifier = self.tree.identify_column(event.x)
+            except tk.TclError:
+                identifier = ""
+            column = self.orders_tree_column_from_display_identifier(identifier)
+            if column:
+                self.autofit_orders_tree_column(column)
+            return "break"
+        return self.open_order_review(event)
+
     def insert_or_update_result(self, result: shower_batch.BatchJobResult) -> None:
         source_result = copy.copy(result)
         source_result.issues = list(result.issues)
@@ -8707,14 +10521,15 @@ class ShowerProgrammerApp:
             effective_status = "OK"
         processed = self.processed_summary_for_order(result.aw_order)
         display_status = self.persisted_display_status(result.aw_order, effective_status)
-        category = self.mirror_category_for_order(result.aw_order)
-        displayed_items = f"{category}: {result.items}" if category else result.items
+        displayed_items = result.items
+        review_status = self.review_status_for_order(result.aw_order)
+        review_glyph = self.order_tree_check_text(review_status)
         values = (
             display_status,
             processed,
             result.delivery_date,
             result.aw_order,
-            self.review_status_for_order(result.aw_order),
+            review_glyph,
             self.sent_summary_for_order(result.aw_order),
             result.job_name,
             result.customer,
@@ -8724,13 +10539,13 @@ class ShowerProgrammerApp:
         row_id = self.tree_rows.get(result.aw_order)
         tags = self.order_tree_tags_for_values(values)
         if row_id:
-            self.tree.item(row_id, text=f"Order {result.aw_order}", values=values, tags=tags)
+            self.tree.item(row_id, text="", values=values, tags=tags)
         else:
             parent_id = self.parent_tree_row_for_order(result.aw_order)
             row_id = self.tree.insert(
                 parent_id,
                 tk.END,
-                text=f"Order {result.aw_order}",
+                text="",
                 values=values,
                 tags=tags,
             )
@@ -8738,6 +10553,7 @@ class ShowerProgrammerApp:
             order = self.order_by_aw.get(str(result.aw_order))
             if order is not None:
                 self.tree_row_orders[row_id] = order
+        self.reflow_mirror_sections_for_order(str(result.aw_order))
         self.update_summary_strip()
 
     def all_order_tree_rows(self) -> list[str]:
@@ -8771,7 +10587,7 @@ class ShowerProgrammerApp:
             processed_value = str(values[self.ORDER_TREE_INDEX["processed"]]).strip().casefold()
             if processed_value and processed_value != "no":
                 processed += 1
-            if "checked" in str(values[self.ORDER_TREE_INDEX["review"]]).lower():
+            if self.order_tree_value_is_checked(values[self.ORDER_TREE_INDEX["review"]]):
                 checked += 1
         self.summary_var.set(
             f"Orders {total}   Ready {ready}   Issues {issues}   Processed {processed}   Checked {checked}"
@@ -8818,7 +10634,7 @@ class ShowerProgrammerApp:
         history = self.history_for_order(aw_order)
         last_processed = str(history.get("last_processed", "")).strip()
         if last_processed:
-            prefix = "REMAKE • " if self.history_has_remake(history) else ""
+            prefix = "🔴 REMAKE • " if self.history_has_remake(history) else ""
             return f"{prefix}{last_processed}"
         output_dir = Path(self.output_dir_var.get()).resolve()
         sketch_path = self.find_order_sketch_path(aw_order, output_dir)
@@ -8940,7 +10756,7 @@ class ShowerProgrammerApp:
         output_path: Path,
         dpi: int,
     ) -> bool:
-        if pdfium is None or Image is None:
+        if get_pdfium() is None or Image is None:
             return False
         page = None
         bitmap = None
@@ -8970,11 +10786,12 @@ class ShowerProgrammerApp:
         output_path: Path,
         dpi: int,
     ) -> bool:
-        if pdfium is None:
+        pdfium_module = get_pdfium()
+        if pdfium_module is None:
             return False
         document = None
         try:
-            document = pdfium.PdfDocument(str(pdf_path))
+            document = pdfium_module.PdfDocument(str(pdf_path))
             if page_index < 0 or page_index >= len(document):
                 return False
             return self.render_pdfium_page_to_file(document, page_index, output_path, dpi)
@@ -8989,11 +10806,12 @@ class ShowerProgrammerApp:
         expected_paths: list[Path],
         dpi: int,
     ) -> bool:
-        if pdfium is None:
+        pdfium_module = get_pdfium()
+        if pdfium_module is None:
             return False
         document = None
         try:
-            document = pdfium.PdfDocument(str(pdf_path))
+            document = pdfium_module.PdfDocument(str(pdf_path))
             page_total = min(len(document), len(expected_paths))
             if page_total <= 0:
                 return False
@@ -9056,6 +10874,8 @@ class ShowerProgrammerApp:
         output_dir: Path,
         state: dict[str, Any],
         redraw_callback: Callable[[], object] | None = None,
+        *,
+        priority_page_index: int | None = None,
     ) -> None:
         render_dpi = self.REVIEW_RENDER_DPI
         cache_key = (str(pdf_path.resolve()), self.file_signature(pdf_path), page_count, render_dpi)
@@ -9066,12 +10886,50 @@ class ShowerProgrammerApp:
 
         root = state.get("render_root")
 
+        def notify_redraw() -> None:
+            if redraw_callback is None:
+                return
+
+            def run_callback() -> None:
+                try:
+                    redraw_callback()
+                except tk.TclError:
+                    pass
+
+            try:
+                if root is not None:
+                    root.after(0, run_callback)
+                else:
+                    run_callback()
+            except tk.TclError:
+                pass
+
         def worker() -> None:
+            priority_ready = False
+            if priority_page_index is not None and 0 <= priority_page_index < page_count:
+                priority_path = self.review_raster_page_path(
+                    output_dir,
+                    pdf_path,
+                    render_dpi,
+                    priority_page_index,
+                )
+                if priority_path.exists():
+                    priority_ready = True
+                else:
+                    priority_ready = self.render_pdfium_single_page_to_file(
+                        pdf_path,
+                        priority_page_index,
+                        priority_path,
+                        render_dpi,
+                    )
+                if priority_ready:
+                    notify_redraw()
+
             ok = self.ensure_review_pdf_raster_cache(pdf_path, page_count, output_dir, render_dpi)
 
             def finish() -> None:
                 state.setdefault("raster_rendering", set()).discard(cache_key)
-                if ok and redraw_callback is not None:
+                if ok and not priority_ready and redraw_callback is not None:
                     try:
                         redraw_callback()
                     except tk.TclError:
@@ -9135,6 +10993,8 @@ class ShowerProgrammerApp:
             prefetcher = getattr(self, "review_context_prefetcher", None)
             if prefetcher is not None:
                 prefetcher.cancel_pending()
+            self.pending_review_open_aw = ""
+            self.cancel_review_opening_feedback()
 
     def review_context_paths(
         self,
@@ -9179,6 +11039,14 @@ class ShowerProgrammerApp:
         except Exception:
             return None
         cache_key = self.review_context_cache_key(process_order, folder, output_dir, sketch_path)
+        return self.cached_review_context_for_key(process_order, cache_key)
+
+    def cached_review_context_for_key(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        cache_key: tuple[object, ...],
+    ) -> dict[str, Any] | None:
+        """Return a valid cached context when the caller already resolved its disk signature."""
         aw_order = str(process_order.aw_order)
         with self.review_context_cache_lock:
             cached = self.review_context_cache.get(aw_order)
@@ -9209,7 +11077,7 @@ class ShowerProgrammerApp:
         ) = self.review_context_paths(process_order, folder, output_dir)
         cache_key = self.review_context_cache_key(process_order, folder, output_dir, sketch_path)
         if use_cache:
-            cached = self.cached_order_review_context(process_order, folder, output_dir)
+            cached = self.cached_review_context_for_key(process_order, cache_key)
             if cached is not None:
                 return cached
 
@@ -9224,6 +11092,42 @@ class ShowerProgrammerApp:
             remake_items=self.editor_remake_items(process_order.aw_order, output_dir),
         )
         sketch_reader = PdfReader(str(sketch_path))
+        visible_issues = self.visible_order_issues(
+            process_order.aw_order,
+            list(issues),
+            output_dir=output_dir,
+            panels=job.panels,
+        )
+        initial_overview: dict[str, Any] | None = None
+        try:
+            overview_available = bool(job.panels) and min(panel.page_index for panel in job.panels) > 0 and len(source_reader.pages) > 0
+            if overview_available:
+                initial_overview = self.order_review_overview_data(
+                    process_order,
+                    job,
+                    visible_issues,
+                    output_dir,
+                    generated_sketch_path,
+                )
+        except Exception:
+            initial_overview = None
+
+        # Warm the first useful DXF preview while this context is already running
+        # off the Tk thread. Review Order can then draw from memory instead of
+        # parsing DXF geometry during its first visible frame.
+        dxf_preview_cache: dict[Any, dict[str, Any]] = {}
+        for panel in job.panels[:2]:
+            preview_path = (
+                panel.source_dxf
+                if dxf_output_skipped
+                else panel.output_dxf if panel.output_dxf and panel.output_dxf.exists() else panel.source_dxf
+            )
+            if preview_path is None or not preview_path.exists():
+                continue
+            try:
+                self.order_review_dxf_preview_data(preview_path, {"dxf_preview_cache": dxf_preview_cache})
+            except Exception:
+                continue
         context = {
             "cache_key": cache_key,
             "folder": folder,
@@ -9241,6 +11145,9 @@ class ShowerProgrammerApp:
             "job": job,
             "source_reader": source_reader,
             "issues": issues,
+            "visible_issues": visible_issues,
+            "initial_overview": initial_overview,
+            "dxf_preview_cache": dxf_preview_cache,
             "sketch_reader": sketch_reader,
             "source_pdf_path": job.pdf_path,
             "source_pdf_signature": self.file_signature(job.pdf_path),
@@ -9321,6 +11228,33 @@ class ShowerProgrammerApp:
             if 0 <= position < len(self.orders)
         ]
         self.start_review_cache_warmup(adjacent)
+
+    def cancel_review_opening_feedback(self) -> None:
+        job = getattr(self, "review_opening_feedback_job", None)
+        self.review_opening_feedback_job = None
+        if job is None:
+            return
+        try:
+            self.root.after_cancel(job)
+        except tk.TclError:
+            pass
+
+    def schedule_review_opening_feedback(self, process_order: shower_batch.ProcessOrder) -> None:
+        """Avoid flashing a loading window when review preparation finishes quickly."""
+        self.cancel_review_opening_feedback()
+        aw_order = str(process_order.aw_order)
+
+        def show_if_still_waiting() -> None:
+            self.review_opening_feedback_job = None
+            if self.pending_review_open_aw != aw_order:
+                return
+            self.show_workspace_loading_shield(
+                "review_order",
+                f"Review Order {aw_order}",
+                "Preparing sketch, DXF preview, and editing tools...",
+            )
+
+        self.review_opening_feedback_job = self.root.after(140, show_if_still_waiting)
 
     def request_order_review_context(
         self,
@@ -9450,6 +11384,58 @@ class ShowerProgrammerApp:
                 changed_orders += 1
         return changed_orders
 
+    @staticmethod
+    def order_tree_check_text(review_text: object) -> str:
+        """Return a font-stable boxed check indicator for the first Orders column."""
+        text = str(review_text or "").strip().casefold()
+        checked = "checked" in text or text in {"✓", "☑", "[✓]"}
+        # Bracketed form is deliberate: unlike ballot-box glyphs, it renders
+        # consistently in Segoe UI across Windows/Tk builds and clearly shows the
+        # check inside its box at the compact column width.
+        return "[✓]" if checked else "[ ]"
+
+    @staticmethod
+    def order_tree_value_is_checked(review_text: object) -> bool:
+        text = str(review_text or "").strip().casefold()
+        return text in {"✓", "☑", "[✓]"} or "checked" in text
+
+    def sync_order_tree_check_indicator(self, row_id: str, values: list[object] | tuple[object, ...]) -> None:
+        """Keep the dedicated checked-state column synchronized with review state."""
+        try:
+            review_index = self.ORDER_TREE_INDEX["review"]
+            current = values[review_index] if len(values) > review_index else ""
+            glyph = self.order_tree_check_text(current)
+            mutable = list(values)
+            if len(mutable) > review_index:
+                mutable[review_index] = glyph
+                self.tree.item(row_id, text="", values=mutable)
+        except (AttributeError, tk.TclError):
+            pass
+
+    def toggle_order_checked_from_tree_checkbox(self, event: tk.Event) -> str | None:
+        """Toggle an order by clicking the dedicated compact checked-state column."""
+        try:
+            if self.tree.identify_region(event.x, event.y) != "cell":
+                return None
+            if self.tree.identify_column(event.x) != "#1":
+                return None
+            row_id = self.tree.identify_row(event.y)
+        except tk.TclError:
+            return None
+        if row_id in self.tree_row_batches:
+            return "break"
+        order = self.order_for_tree_row(row_id)
+        if order is None:
+            return None
+        checked = self.order_review_is_complete(order)
+        self.set_selected_orders_checked(not checked, [order])
+        try:
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+        except tk.TclError:
+            pass
+        return "break"
+
     def selected_orders_are_all_checked(
         self,
         orders: list[shower_batch.ProcessOrder] | None = None,
@@ -9520,14 +11506,19 @@ class ShowerProgrammerApp:
             checked,
         )
         self.save_manual_overrides(data)
-        review_text = "Order checked" if checked else ""
+        review_text = self.order_tree_check_text("Order checked" if checked else "")
         for order in orders:
             row_id = self.tree_rows.get(order.aw_order)
             if row_id:
                 values = list(self.tree.item(row_id, "values"))
                 if len(values) > self.ORDER_TREE_INDEX["review"]:
                     values[self.ORDER_TREE_INDEX["review"]] = review_text
-                    self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+                    self.tree.item(
+                        row_id,
+                        text="",
+                        values=values,
+                        tags=self.order_tree_tags_for_values(values),
+                    )
         self.update_summary_strip()
         self.update_checked_action_button()
         self.apply_order_tree_sort()
@@ -9847,7 +11838,7 @@ class ShowerProgrammerApp:
             font=("Segoe UI", 10, "bold"),
             **self.ctk_button_icon("save", 14, "#ffffff", "left"),
         ).grid(row=0, column=2, padx=(8, 0))
-        dialog.grab_set()
+        setattr(dialog, "_shower_grab_on_present", True)
         self.bring_window_to_front(dialog, make_transient=True)
 
     def open_orders_context_menu(self, event: tk.Event) -> str:
@@ -9857,7 +11848,6 @@ class ShowerProgrammerApp:
             return "break"
 
         if row_id not in self.tree.selection():
-            self.tree.selection_set(row_id)
             self.tree.focus(row_id)
 
         batch_id = self.tree_row_batches.get(row_id)
@@ -9960,30 +11950,41 @@ class ShowerProgrammerApp:
                     ),
                 }
             )
-        archive_batch_id = self.archivable_batch_id_for_context(batch_id, selected_orders)
-        if archive_batch_id:
+        restored_batch_id = self.restored_archive_batch_id_for_context(batch_id, selected_orders)
+        if restored_batch_id:
             actions.insert(
                 1,
                 {
-                    "text": "Send Sent Batch to Archives",
+                    "text": "Return Restored Batch to Archive",
                     "icon": "archive",
-                    "command": lambda selected_batch=archive_batch_id: self.archive_sent_batch_inputs(selected_batch),
+                    "command": lambda selected_batch=restored_batch_id: self.return_restored_batch_inputs(selected_batch),
                 },
             )
         else:
-            sent_archive_orders = self.sent_orders_for_input_archive_context(batch_id, selected_orders)
-            if sent_archive_orders:
-                sent_order_snapshot = tuple(sent_archive_orders)
+            archive_batch_id = self.archivable_batch_id_for_context(batch_id, selected_orders)
+            if archive_batch_id:
                 actions.insert(
                     1,
                     {
-                        "text": "Archive Sent Order Inputs",
+                        "text": "Send Sent Batch to Archives",
                         "icon": "archive",
-                        "command": lambda archived_orders=sent_order_snapshot: self.archive_sent_order_inputs(
-                            list(archived_orders)
-                        ),
+                        "command": lambda selected_batch=archive_batch_id: self.archive_sent_batch_inputs(selected_batch),
                     },
                 )
+            else:
+                sent_archive_orders = self.sent_orders_for_input_archive_context(batch_id, selected_orders)
+                if sent_archive_orders:
+                    sent_order_snapshot = tuple(sent_archive_orders)
+                    actions.insert(
+                        1,
+                        {
+                            "text": "Archive Sent Order Inputs",
+                            "icon": "archive",
+                            "command": lambda archived_orders=sent_order_snapshot: self.archive_sent_order_inputs(
+                                list(archived_orders)
+                            ),
+                        },
+                    )
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
         return "break"
 
@@ -10115,9 +12116,10 @@ class ShowerProgrammerApp:
             return
         order_folder = Path(self.folder_var.get()).resolve()
         process_list_path = Path(self.process_list_var.get()).resolve()
+        output_dir = Path(self.output_dir_var.get()).resolve()
 
         def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
-            return self.archive_sent_input_files_for_orders(
+            archived, warnings = self.archive_sent_input_files_for_orders(
                 sent_orders,
                 order_folder,
                 process_list_path,
@@ -10129,6 +12131,17 @@ class ShowerProgrammerApp:
                     f"Archiving {path.name} ({current}/{total})",
                 ),
             )
+            try:
+                manual_archives = self.archive_manual_process_orders_for_output(
+                    output_dir,
+                    sent_orders,
+                )
+                archived.extend(path for path in manual_archives if path not in archived)
+            except (OSError, ValueError, TypeError) as exc:
+                warnings.append(
+                    f"Could not retire manual programming records into the dated archive: {exc}"
+                )
+            return archived, warnings
 
         def finished(payload: object) -> None:
             archived, warnings = payload if isinstance(payload, tuple) else ([], ["Archive did not return a result."])
@@ -10153,15 +12166,97 @@ class ShowerProgrammerApp:
             on_error=lambda exc: self.show_structured_error(exc, title="Archive sent order inputs failed"),
         )
 
+    def return_restored_batch_inputs(self, batch_id: str) -> None:
+        """Reverse an archive Restore without blocking Tk or creating a new archive date."""
+        entries = self.restored_archive_entries_for_batch(batch_id)
+        batch = self.process_batches.get(str(batch_id), {})
+        if not entries:
+            self.show_themed_notice(
+                "Archive return unavailable",
+                "Restore provenance is no longer available",
+                "Refresh Archives and use Return Batch there if this restored batch still needs to be removed from active Input.",
+                icon_name="warning",
+                accent_color=self.WARNING,
+            )
+            return
+        label = str(batch.get("name", "Restored Batch"))
+        if not messagebox.askyesno(
+            "Return restored batch to archive",
+            f"Remove the active Input copies for {label} and return any changed copies to their original dated archive?\n\n"
+            "The original dated archive is preserved; this does not create a new archive date.",
+            parent=self.root,
+        ):
+            return
+
+        order_folder = Path(self.folder_var.get()).resolve()
+        process_list_path = Path(self.process_list_var.get()).resolve()
+
+        def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
+            task.progress(0, max(len(entries), 1), f"Preparing archive return for {label}...")
+            task.check_cancelled()
+            return self.return_archived_batch_to_archive(
+                entries,
+                order_folder,
+                process_list_path,
+                task_context=task,
+            )
+
+        def finished(payload: object) -> None:
+            if not isinstance(payload, tuple) or len(payload) != 2:
+                self.show_structured_error(
+                    RuntimeError("Restored batch return completed without a valid result."),
+                    title="Archive return failed",
+                )
+                return
+            returned, warnings = payload
+            self.forget_restored_archive_batch(batch_id)
+            restored_orders = [
+                entry.get("order")
+                for entry in entries
+                if isinstance(entry.get("order"), shower_batch.ProcessOrder)
+            ]
+            self.record_action(
+                "Return Restored Batch",
+                f"Returned active copies for restored archive batch {label}.",
+                status="WARNING" if warnings else "SUCCESS",
+                orders=restored_orders,
+                details=f"Returned/removed files={len(returned)}",
+            )
+            self.refresh_local_orders(lock_controls=False)
+            self.show_themed_notice(
+                "Restored batch returned" if not warnings else "Restored batch returned with notes",
+                f"Returned/removed {len(returned)} active file(s)",
+                "The active viewing/test copies were removed or returned to their original dated archive."
+                if not warnings else "The archive return completed; review the notes below.",
+                icon_name="check_circle" if not warnings else "warning",
+                accent_color=self.SUCCESS if not warnings else self.WARNING,
+                details=[("Notes", "\n".join(warnings))] if warnings else None,
+            )
+
+        self.run_managed_task(
+            "Return Restored Batch",
+            worker,
+            message=f"Returning restored batch {label} to its dated archive...",
+            total=max(1, len(entries)),
+            cancellable=True,
+            on_done=finished,
+            on_error=lambda exc: self.show_structured_error(exc, title="Archive return failed"),
+            lock_controls=False,
+            mark_busy=False,
+        )
+
     def archive_sent_batch_inputs(self, batch_id: str) -> None:
+        """Archive a completed production batch without doing file/history I/O on Tk."""
         batch = self.process_batches.get(str(batch_id), {})
         raw_orders = batch.get("all_orders", batch.get("orders", []))
-        orders = [order for order in raw_orders if isinstance(order, shower_batch.ProcessOrder)] if isinstance(raw_orders, list) else []
-        if not orders or not self.batch_is_ready_for_input_archive(batch):
+        orders = [
+            order for order in raw_orders if isinstance(order, shower_batch.ProcessOrder)
+        ] if isinstance(raw_orders, list) else []
+        if not orders:
             self.show_themed_notice(
                 "Archive unavailable",
-                "This batch is not fully sent",
-                "Every order in the batch must have a current sent or explicit deletion receipt before its inputs can be archived.",
+                "This batch has no active orders",
+                "Refresh the Orders view and try again.",
                 icon_name="warning",
                 accent_color=self.WARNING,
             )
@@ -10172,32 +12267,74 @@ class ShowerProgrammerApp:
             parent=self.root,
         ):
             return
-        history = self.load_processing_history()
-        plans = self.completed_process_list_batches_for_orders(orders, history=history)
+
         order_folder = Path(self.folder_var.get()).resolve()
         process_list_path = Path(self.process_list_var.get()).resolve()
+        output_dir = Path(self.output_dir_var.get()).resolve()
 
-        def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
-            return self.archive_sent_input_files_for_orders(
+        def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str], bool]:
+            task.progress(0, max(len(orders), 1), "Checking sent/deleted receipts and archive plan...")
+            task.check_cancelled()
+            try:
+                history = self.load_processing_history_for_output(output_dir)
+            except Exception as exc:
+                return [], [f"Could not read processing history: {exc}"], False
+            if not self.batch_is_ready_for_input_archive(batch, history):
+                return [], [
+                    "Every order in the batch must have a current sent or explicit deletion receipt before its inputs can be archived."
+                ], False
+            task.check_cancelled()
+            plans = self.completed_process_list_batches_for_orders(orders, history=history)
+
+            def archive_progress(current: int, total: int, path: Path) -> None:
+                task.progress(current, total, f"Archiving {path.name} ({current}/{total})")
+                task.check_cancelled()
+
+            archived, warnings = self.archive_sent_input_files_for_orders(
                 orders,
                 order_folder,
                 process_list_path,
                 include_process_lists=False,
                 completed_process_batches=plans,
-                progress_callback=lambda current, total, path: task.progress(
-                    current,
-                    total,
-                    f"Archiving {path.name} ({current}/{total})",
-                ),
+                progress_callback=archive_progress,
             )
+            task.check_cancelled()
+            try:
+                manual_archives = self.archive_manual_process_orders_for_output(
+                    output_dir,
+                    orders,
+                )
+                archived.extend(path for path in manual_archives if path not in archived)
+            except (OSError, ValueError, TypeError) as exc:
+                warnings.append(
+                    f"Could not retire manual programming records into the dated archive: {exc}"
+                )
+            return archived, warnings, True
 
         def finished(payload: object) -> None:
-            archived, warnings = payload if isinstance(payload, tuple) else ([], ["Archive did not return a result."])
+            if not isinstance(payload, tuple) or len(payload) != 3:
+                self.show_structured_error(
+                    RuntimeError("Archive sent batch completed without a valid result."),
+                    title="Archive sent batch failed",
+                )
+                return
+            archived, warnings, ready = payload
+            if not ready:
+                self.show_themed_notice(
+                    "Archive unavailable",
+                    "This batch is not fully sent",
+                    warnings[0] if warnings else "The batch is not ready to archive.",
+                    icon_name="warning",
+                    accent_color=self.WARNING,
+                    details=[("Notes", "\n".join(warnings[1:]))] if len(warnings) > 1 else None,
+                )
+                return
             self.refresh_local_orders()
             self.show_themed_notice(
                 "Batch archived" if not warnings else "Batch archived with notes",
                 f"Archived {len(archived)} input file(s)",
-                "The sent batch was moved into the dated local archives." if not warnings else "The completed files were archived; review the notes below.",
+                "The sent batch was moved into the dated local archives."
+                if not warnings else "The completed files were archived; review the notes below.",
                 icon_name="check_circle" if not warnings else "warning",
                 accent_color=self.SUCCESS if not warnings else self.WARNING,
                 details=[("Notes", "\n".join(warnings))] if warnings else None,
@@ -10206,7 +12343,7 @@ class ShowerProgrammerApp:
         self.run_managed_task(
             "Archive Sent Batch",
             worker,
-            message=f"Archiving sent batch {batch.get('name', '')}...",
+            message=f"Checking and archiving sent batch {batch.get('name', '')}...",
             total=max(1, len(orders)),
             cancellable=True,
             on_done=finished,
@@ -11198,11 +13335,19 @@ class ShowerProgrammerApp:
                 self.process_batches.pop(batch_id, None)
             elif parent_id:
                 count = len(remaining) if isinstance(remaining, list) else 0
+                label = self.batch_tree_label(batch)
+                summary = self.batch_tree_summary(batch, count)
                 self.tree.item(
                     parent_id,
-                    text=self.batch_tree_label(batch),
-                    values=("BATCH", "", "", "", "", "", "", "", str(count), ""),
+                    text="",
+                    values=tuple(
+                        label if column == "order"
+                        else summary if column == "items"
+                        else ""
+                        for column in self.ORDER_TREE_COLUMNS
+                    ),
                 )
+                self.reflow_mirror_sections_for_batch(batch_id)
 
         for aw_order in deleted_aw_orders:
             self.order_batch_ids.pop(aw_order, None)
@@ -11258,6 +13403,9 @@ class ShowerProgrammerApp:
                     expanded.append(child_id)
         if expanded == selected:
             self.update_checked_action_button()
+            selected_orders = self.selected_orders()
+            if len(selected_orders) == 1 and not self.is_input_only_order(selected_orders[0]):
+                self.start_review_cache_warmup(selected_orders)
             return
         self._expanding_batch_selection = True
         try:
@@ -11269,6 +13417,9 @@ class ShowerProgrammerApp:
         finally:
             self._expanding_batch_selection = False
         self.update_checked_action_button()
+        selected_orders = self.selected_orders()
+        if len(selected_orders) == 1 and not self.is_input_only_order(selected_orders[0]):
+            self.start_review_cache_warmup(selected_orders)
 
     def selected_orders(self) -> list[shower_batch.ProcessOrder]:
         selected_by_aw: dict[str, shower_batch.ProcessOrder] = {}
@@ -11445,7 +13596,7 @@ class ShowerProgrammerApp:
                 expected_dxf_count = len(order.item_numbers)
                 state = row_state.get(aw_order, {})
                 issue_text = str(state.get("issues", "")).strip()
-                checked = "checked" in str(state.get("review", "")).casefold()
+                checked = self.order_tree_value_is_checked(state.get("review", ""))
                 machines: list[str] = []
                 for item_number in order.item_numbers:
                     item = order.items[item_number]
@@ -11563,6 +13714,7 @@ class ShowerProgrammerApp:
             details=f"Skip sketch={skip_pdf}; skip DXF={skip_dxf}; overwrite={force}",
         )
 
+        self._cancelled_processing_summary = None
         self.run_managed_task(
             operation_name,
             lambda task: self.worker_run_batch(
@@ -11581,7 +13733,126 @@ class ShowerProgrammerApp:
             total=len(orders),
             cancellable=True,
             on_error=lambda error: self.worker_queue.put(("error", error)),
+            on_cancelled=self.finish_cancelled_processing_run,
         )
+
+    def mark_order_processing(self, aw_order: str, current: int, total: int, *, apply: bool) -> None:
+        """Update one order row immediately when its isolated worker starts."""
+        row_id = self.tree_rows.get(str(aw_order))
+        if not row_id:
+            return
+        try:
+            values = list(self.tree.item(row_id, "values"))
+        except tk.TclError:
+            return
+        if len(values) < len(self.ORDER_TREE_COLUMNS):
+            return
+        values[self.ORDER_TREE_INDEX["status"]] = "PROCESSING"
+        values[self.ORDER_TREE_INDEX["processed"]] = (
+            f"Processing {current}/{total}" if apply else f"Checking {current}/{total}"
+        )
+        try:
+            self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+            parent_id = self.tree.parent(row_id)
+            if parent_id:
+                self.tree.item(parent_id, open=True)
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+            self.tree.see(row_id)
+        except tk.TclError:
+            pass
+
+    def apply_live_processing_result(
+        self,
+        result: shower_batch.BatchJobResult,
+        *,
+        completed: int,
+        total: int,
+        apply: bool,
+    ) -> None:
+        """Apply a completed result without synchronous history/config disk reads."""
+        source_result = copy.copy(result)
+        source_result.issues = list(result.issues)
+        self.order_result_sources[str(result.aw_order)] = source_result
+        visible_issues = self.visible_order_issues(result.aw_order, result.issues)
+        effective_status = str(result.status or "READY").strip().upper() or "READY"
+        if effective_status == "ISSUES" and not visible_issues:
+            effective_status = "OK"
+        row_id = self.tree_rows.get(str(result.aw_order))
+        if not row_id:
+            # Rare fallback for a row created after processing started. The normal
+            # path always has an existing scan row and therefore stays I/O-free.
+            self.insert_or_update_result(result)
+            return
+        try:
+            values = list(self.tree.item(row_id, "values"))
+        except tk.TclError:
+            return
+        if len(values) < len(self.ORDER_TREE_COLUMNS):
+            self.insert_or_update_result(result)
+            return
+        values[self.ORDER_TREE_INDEX["status"]] = effective_status
+        if apply:
+            values[self.ORDER_TREE_INDEX["processed"]] = f"Processed {completed}/{total} • finalizing"
+        values[self.ORDER_TREE_INDEX["delivery"]] = result.delivery_date
+        values[self.ORDER_TREE_INDEX["order"]] = result.aw_order
+        values[self.ORDER_TREE_INDEX["job"]] = result.job_name
+        values[self.ORDER_TREE_INDEX["customer"]] = result.customer
+        values[self.ORDER_TREE_INDEX["items"]] = result.items
+        values[self.ORDER_TREE_INDEX["issues"]] = self.issue_summary(visible_issues)
+        try:
+            # Keep the native tree gutter reserved for batch expand/collapse only.
+            # Order identity belongs in the Batch / A&W data column.
+            self.tree.item(row_id, text="", values=values, tags=self.order_tree_tags_for_values(values))
+            self.tree.focus(row_id)
+            self.tree.see(row_id)
+        except tk.TclError:
+            pass
+
+    def finalize_live_processing_rows(
+        self,
+        run: shower_batch.BatchRunResult,
+        *,
+        processed_at: str,
+        apply: bool,
+    ) -> None:
+        """Finalize live row labels from worker-provided metadata without rereading history per row."""
+        for result in run.results:
+            row_id = self.tree_rows.get(str(result.aw_order))
+            if not row_id:
+                continue
+            try:
+                values = list(self.tree.item(row_id, "values"))
+            except tk.TclError:
+                continue
+            if len(values) < len(self.ORDER_TREE_COLUMNS):
+                continue
+            if apply and processed_at:
+                prefix = "🔴 REMAKE • " if result.remake_items is not None else ""
+                values[self.ORDER_TREE_INDEX["processed"]] = f"{prefix}{processed_at}"
+            try:
+                self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+            except tk.TclError:
+                continue
+        self.update_summary_strip()
+
+    def finish_cancelled_processing_run(self) -> None:
+        """Present a safe partial-run summary after cancellation between orders."""
+        summary = self._cancelled_processing_summary or {}
+        completed = int(summary.get("completed", 0) or 0)
+        total = int(summary.get("total", 0) or 0)
+        if completed:
+            message = f"Processing cancelled safely after {completed} of {total} order(s). Completed orders were kept."
+        else:
+            message = "Processing cancelled before another order was started."
+        self.status_var.set(message)
+        self.record_action(
+            "Process Orders",
+            message,
+            status="WARNING",
+            details=str(summary.get("run_folder", "")),
+        )
+        self._cancelled_processing_summary = None
 
     def existing_output_conflicts(
         self,
@@ -11616,25 +13887,21 @@ class ShowerProgrammerApp:
         *,
         task_context: shower_tasks.TaskContext | None = None,
     ) -> None:
+        """Process orders off Tk and publish fine-grained, cancellable UI events.
+
+        One isolated process is intentionally reused for the batch. Cancellation is
+        cooperative: an order already writing output is allowed to finish safely,
+        then no additional order is scheduled. Completed results are finalized and
+        retained before TaskCancelled is raised back to the task manager.
+        """
         try:
             if task_context is not None:
                 task_context.check_cancelled()
             run_folder = self.next_batch_run_folder(output_dir, process_list_path) if apply else output_dir / "Reviews" / "DryRun"
             sketch_dir, programs_dir, report_dir = self.output_dirs_for_run(run_folder)
-            if apply and force:
-                self.clear_existing_outputs_for_orders(orders, output_dir, skip_pdf, skip_dxf)
-            if apply and skip_pdf:
-                # A batch/date folder may be reused by a later run. Remove only
-                # stale marked sketches in this run folder so Skip Sketch output
-                # cannot appear to have generated a PDF from an earlier run.
-                self.remove_order_sketch_files(orders, sketch_dir)
-            if apply and skip_dxf:
-                # Apply the same stale-output protection to program files. A reused
-                # batch folder must not expose DXFs left by an earlier run when the
-                # latest run intentionally skips DXF output.
-                self.remove_order_program_files(orders, programs_dir)
             config = self.config_with_manual_overrides(folder, output_dir)
             completed = 0
+            cancelled = False
 
             def report_result(result: shower_batch.BatchJobResult) -> None:
                 nonlocal completed
@@ -11646,10 +13913,11 @@ class ShowerProgrammerApp:
                             "result": result,
                             "completed": completed,
                             "total": len(orders),
+                            "apply": apply,
                         },
                     )
                 )
-                if task_context is not None:
+                if task_context is not None and not task_context.cancelled:
                     task_context.progress(
                         completed,
                         len(orders),
@@ -11662,9 +13930,36 @@ class ShowerProgrammerApp:
             results: list[shower_batch.BatchJobResult] = []
             spawn_context = multiprocessing.get_context("spawn")
             with ProcessPoolExecutor(max_workers=1, mp_context=spawn_context) as executor:
-                for order in orders:
+                for index, order in enumerate(orders, start=1):
+                    if task_context is not None and task_context.cancelled:
+                        cancelled = True
+                        break
+                    self.worker_queue.put(
+                        (
+                            "order_started",
+                            {
+                                "aw_order": str(order.aw_order),
+                                "current": index,
+                                "total": len(orders),
+                                "apply": apply,
+                            },
+                        )
+                    )
                     if task_context is not None:
-                        task_context.check_cancelled()
+                        task_context.progress(
+                            completed,
+                            len(orders),
+                            f"{'Processing' if apply else 'Checking'} A&W {order.aw_order} ({index}/{len(orders)})",
+                        )
+                    # Destructive stale-output cleanup is intentionally scoped to
+                    # the order that is about to run. A cancellation can therefore
+                    # never remove output belonging to a later, unprocessed order.
+                    if apply and force:
+                        self.clear_existing_outputs_for_orders([order], output_dir, skip_pdf, skip_dxf)
+                    if apply and skip_pdf:
+                        self.remove_order_sketch_files([order], sketch_dir)
+                    if apply and skip_dxf:
+                        self.remove_order_program_files([order], programs_dir)
                     payload = (
                         order,
                         folder,
@@ -11678,24 +13973,81 @@ class ShowerProgrammerApp:
                         skip_dxf,
                         None if remake_items_by_order is None else remake_items_by_order.get(order.aw_order),
                     )
-                    result = executor.submit(shower_batch.process_one_order_isolated, payload).result()
+                    future = executor.submit(shower_batch.process_one_order_isolated, payload)
+                    cancellation_announced = False
+                    while True:
+                        try:
+                            result = future.result(timeout=self.ORDER_FUTURE_POLL_SECONDS)
+                            break
+                        except FutureTimeoutError:
+                            if task_context is not None and task_context.cancelled and not cancellation_announced:
+                                cancellation_announced = True
+                                self.worker_queue.put(
+                                    (
+                                        "order_cancel_pending",
+                                        {
+                                            "aw_order": str(order.aw_order),
+                                            "current": index,
+                                            "total": len(orders),
+                                        },
+                                    )
+                                )
                     results.append(result)
                     report_result(result)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            text_report = report_dir / f"batch_programming_report_{timestamp}.txt"
-            csv_report = report_dir / f"batch_programming_report_{timestamp}.csv"
-            html_report = report_dir / f"batch_programming_report_{timestamp}.html"
-            shower_batch.write_batch_text_report(text_report, results, apply)
-            shower_batch.write_batch_csv_report(csv_report, results)
-            shower_batch.write_batch_html_report(html_report, results, apply)
-            run = shower_batch.BatchRunResult(results, text_report, csv_report, html_report)
+                    if task_context is not None and task_context.cancelled:
+                        cancelled = True
+                        break
+
+            processed_at = ""
+            run: shower_batch.BatchRunResult | None = None
+            if results:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                text_report = report_dir / f"batch_programming_report_{timestamp}.txt"
+                csv_report = report_dir / f"batch_programming_report_{timestamp}.csv"
+                html_report = report_dir / f"batch_programming_report_{timestamp}.html"
+                shower_batch.write_batch_text_report(text_report, results, apply)
+                shower_batch.write_batch_csv_report(csv_report, results)
+                shower_batch.write_batch_html_report(html_report, results, apply)
+                run = shower_batch.BatchRunResult(results, text_report, csv_report, html_report)
+                if apply:
+                    processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.write_run_manifest(run, run_folder, sketch_dir, programs_dir, report_dir, processed_at, remake_items_by_order, skip_pdf, skip_dxf)
+                    self.update_processing_history(run, output_dir, processed_at, run_folder, remake_items_by_order, skip_pdf, skip_dxf)
+
+            if cancelled:
+                if run is not None:
+                    self.worker_queue.put(
+                        (
+                            "batch_cancelled_partial",
+                            {
+                                "run": run,
+                                "run_folder": run_folder,
+                                "processed_at": processed_at,
+                                "apply": apply,
+                                "completed": len(results),
+                                "total": len(orders),
+                            },
+                        )
+                    )
+                raise shower_tasks.TaskCancelled(
+                    f"Processing cancelled safely after {len(results)} of {len(orders)} order(s)."
+                )
+
             if task_context is not None:
                 task_context.check_cancelled()
-            if apply:
-                processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.write_run_manifest(run, run_folder, sketch_dir, programs_dir, report_dir, processed_at, remake_items_by_order, skip_pdf, skip_dxf)
-                self.update_processing_history(run, output_dir, processed_at, run_folder, remake_items_by_order, skip_pdf, skip_dxf)
-            self.worker_queue.put(("done", (run, run_folder)))
+            if run is None:
+                raise RuntimeError("Processing finished without producing any order results.")
+            self.worker_queue.put(
+                (
+                    "done",
+                    {
+                        "run": run,
+                        "run_folder": run_folder,
+                        "processed_at": processed_at,
+                        "apply": apply,
+                    },
+                )
+            )
         except shower_tasks.TaskCancelled:
             raise
         except Exception as exc:
@@ -12147,9 +14499,15 @@ class ShowerProgrammerApp:
         return max(runs, key=lambda path: path.stat().st_mtime) if runs else None
 
     def drain_worker_queue(self) -> None:
+        drain_started = time.monotonic()
+        drained_events = 0
         try:
-            while True:
+            while (
+                drained_events < self.WORKER_QUEUE_DRAIN_MAX_EVENTS
+                and (time.monotonic() - drain_started) < self.WORKER_QUEUE_DRAIN_BUDGET_SECONDS
+            ):
                 kind, payload = self.worker_queue.get_nowait()
+                drained_events += 1
                 if kind == "update_progress":
                     data = payload
                     assert isinstance(data, dict)
@@ -12170,6 +14528,7 @@ class ShowerProgrammerApp:
                     if generation != self.review_cache_generation or self.pending_review_open_aw != aw_order:
                         continue
                     self.pending_review_open_aw = ""
+                    self.cancel_review_opening_feedback()
                     if isinstance(error, programmer.AmbiguousPdfError):
                         self.close_opening_window("review_order")
                         choice = self.show_ambiguous_pdf_dialog(process_order, list(error.candidates))
@@ -12193,6 +14552,7 @@ class ShowerProgrammerApp:
                         process_order_override=process_order,
                         review_confirmed=True,
                         opening_ready=True,
+                        prepared_context=data.get("context") if isinstance(data.get("context"), dict) else None,
                     )
                 elif kind == "update_no_updates":
                     data = payload
@@ -12286,26 +14646,69 @@ class ShowerProgrammerApp:
                         accent_color=self.DANGER,
                         details=[("What happened", detail)],
                     )
+                elif kind == "order_started":
+                    data = payload
+                    assert isinstance(data, dict)
+                    aw_order = str(data.get("aw_order", ""))
+                    current = int(data.get("current", 0) or 0)
+                    total = int(data.get("total", 0) or 0)
+                    apply = bool(data.get("apply", True))
+                    self.mark_order_processing(aw_order, current, total, apply=apply)
+                    message = f"{'Processing' if apply else 'Checking'} A&W {aw_order} ({current}/{total})"
+                    self.status_var.set(message)
+                    self.record_activity_progress(message)
+                elif kind == "order_cancel_pending":
+                    data = payload
+                    assert isinstance(data, dict)
+                    aw_order = str(data.get("aw_order", ""))
+                    current = int(data.get("current", 0) or 0)
+                    total = int(data.get("total", 0) or 0)
+                    message = (
+                        f"Cancellation requested. Finishing A&W {aw_order} safely "
+                        f"({current}/{total}); no additional orders will start."
+                    )
+                    self.status_var.set(message)
+                    self.record_activity_progress(message)
                 elif kind == "result":
                     progress_data = payload if isinstance(payload, dict) else {}
                     result = progress_data.get("result") if progress_data else payload
                     assert isinstance(result, shower_batch.BatchJobResult)
-                    self.insert_or_update_result(result)
                     completed = int(progress_data.get("completed", 0) or 0)
                     total = int(progress_data.get("total", 0) or 0)
+                    apply = bool(progress_data.get("apply", True))
+                    self.apply_live_processing_result(
+                        result,
+                        completed=completed,
+                        total=total,
+                        apply=apply,
+                    )
                     if total > 0:
                         percent = max(0.0, min(100.0, (completed / total) * 100.0))
                         self.background_progress_percent = percent
                         self.progress.stop()
                         self.progress.configure(mode="determinate", maximum=100, value=percent)
-                    row_id = self.tree_rows.get(str(result.aw_order))
-                    if row_id:
-                        self.tree.focus(row_id)
-                        self.tree.see(row_id)
                     count_text = f" ({completed}/{total})" if total > 0 else ""
                     result_message = f"{result.status}: A&W {result.aw_order}{count_text}"
                     self.status_var.set(result_message)
                     self.record_activity_progress(result_message)
+                elif kind == "batch_cancelled_partial":
+                    data = payload
+                    assert isinstance(data, dict)
+                    run = data.get("run")
+                    run_folder = data.get("run_folder")
+                    if isinstance(run, shower_batch.BatchRunResult):
+                        self.last_reports = run
+                        self.last_run_folder = run_folder if isinstance(run_folder, Path) else self.last_run_folder
+                        self.finalize_live_processing_rows(
+                            run,
+                            processed_at=str(data.get("processed_at", "")),
+                            apply=bool(data.get("apply", True)),
+                        )
+                    self._cancelled_processing_summary = {
+                        "completed": int(data.get("completed", 0) or 0),
+                        "total": int(data.get("total", 0) or 0),
+                        "run_folder": str(run_folder or ""),
+                    }
                 elif kind == "scan_progress":
                     data = payload
                     assert isinstance(data, dict)
@@ -12518,13 +14921,18 @@ class ShowerProgrammerApp:
                         parent=self.root,
                     )
                 elif kind == "done":
-                    run, run_folder = payload
+                    data = payload if isinstance(payload, dict) else {}
+                    run = data.get("run") if data else None
+                    run_folder = data.get("run_folder") if data else None
                     assert isinstance(run, shower_batch.BatchRunResult)
                     self.last_reports = run
                     self.last_run_folder = run_folder if isinstance(run_folder, Path) else self.latest_run_folder(Path(self.output_dir_var.get()).resolve())
                     self.finish_background_activity()
-                    for result in run.results:
-                        self.insert_or_update_result(result)
+                    self.finalize_live_processing_rows(
+                        run,
+                        processed_at=str(data.get("processed_at", "")),
+                        apply=bool(data.get("apply", True)),
+                    )
                     counts = shower_batch.count_statuses(run.results)
                     self.status_var.set("Done. " + ", ".join(f"{k}={v}" for k, v in counts.items()))
                     self.apply_order_tree_sort()
@@ -12967,7 +15375,18 @@ class ShowerProgrammerApp:
                     messagebox.showerror("Send failed", friendly_error_message("Review / Send", payload))
         except queue.Empty:
             pass
-        self.root.after(150, self.drain_worker_queue)
+        active_task = getattr(getattr(self, "task_manager", None), "active", None)
+        if not self.worker_queue.empty():
+            # Yield back to Tk before draining more events so paint, scrolling, and
+            # the Cancel button stay responsive during fast multi-order batches.
+            next_delay = 1
+        elif self.pending_review_open_aw:
+            next_delay = 10
+        elif self.is_busy or active_task is not None:
+            next_delay = 20
+        else:
+            next_delay = 90
+        self.root.after(next_delay, self.drain_worker_queue)
 
     @staticmethod
     def scan_status_message(
@@ -13329,6 +15748,7 @@ a {{ color: #1f4e79; }}
         process_order_override: shower_batch.ProcessOrder | None = None,
         review_confirmed: bool = False,
         opening_ready: bool = False,
+        prepared_context: dict[str, Any] | None = None,
     ) -> None:
         if event is not None:
             row_id = self.tree.identify_row(event.y)
@@ -13362,29 +15782,22 @@ a {{ color: #1f4e79; }}
         if not review_confirmed and not self.confirm_unprocessed_order_review(process_order.aw_order):
             self.status_var.set(f"Review canceled for unprocessed order {process_order.aw_order}.")
             return
+        folder = Path(self.folder_var.get()).resolve()
+        output_dir = Path(self.output_dir_var.get()).resolve()
         if not opening_ready:
-            self.status_var.set(f"Opening Review Order {process_order.aw_order}...")
-            self.show_opening_window(
-                "review_order",
-                f"Opening Review Order {process_order.aw_order}",
-                "Preparing the sketch, DXF preview, and editing tools...",
-            )
-            self.root.after_idle(
-                lambda current=process_order: self.open_order_review(
-                    process_order_override=current,
-                    review_confirmed=True,
-                    opening_ready=True,
-                ),
-            )
-            return
+            prepared_context = self.cached_order_review_context(process_order, folder, output_dir)
+            if prepared_context is None:
+                self.status_var.set(f"Opening Review Order {process_order.aw_order}...")
+                self.request_order_review_context(process_order, folder, output_dir)
+                self.schedule_review_opening_feedback(process_order)
+                return
+            opening_ready = True
         try:
-            folder = Path(self.folder_var.get()).resolve()
-            output_dir = Path(self.output_dir_var.get()).resolve()
             self.status_var.set(f"Preparing review for {process_order.aw_order}...")
-            self.root.update_idletasks()
-            context = self.cached_order_review_context(process_order, folder, output_dir)
+            context = prepared_context or self.cached_order_review_context(process_order, folder, output_dir)
             if context is None:
                 self.request_order_review_context(process_order, folder, output_dir)
+                self.schedule_review_opening_feedback(process_order)
                 return
             run_folder = context["run_folder"]
             sketch_dir = context["sketch_dir"]
@@ -13396,17 +15809,23 @@ a {{ color: #1f4e79; }}
             job = context["job"]
             source_reader = context["source_reader"]
             raw_issues = list(context["issues"])
-            issues = self.visible_order_issues(
-                process_order.aw_order,
-                raw_issues,
-                output_dir=output_dir,
-                panels=job.panels,
+            cached_visible_issues = context.get("visible_issues")
+            issues = (
+                list(cached_visible_issues)
+                if isinstance(cached_visible_issues, list)
+                else self.visible_order_issues(
+                    process_order.aw_order,
+                    raw_issues,
+                    output_dir=output_dir,
+                    panels=job.panels,
+                )
             )
             sketch_reader = context["sketch_reader"]
             sketch_output_skipped = bool(context.get("sketch_output_skipped", False))
             dxf_output_skipped = bool(context.get("dxf_output_skipped", False))
             self.prefetch_adjacent_review_contexts(process_order, folder, output_dir)
         except programmer.AmbiguousPdfError as exc:
+            self.cancel_review_opening_feedback()
             self.close_opening_window("review_order")
             choice = self.show_ambiguous_pdf_dialog(process_order, list(exc.candidates))
             if choice is not None:
@@ -13420,6 +15839,7 @@ a {{ color: #1f4e79; }}
             return
 
         except Exception as exc:
+            self.cancel_review_opening_feedback()
             self.close_opening_window("review_order")
             if isinstance(exc, FileNotFoundError):
                 messagebox.showinfo("No sketch yet", str(exc))
@@ -13427,40 +15847,78 @@ a {{ color: #1f4e79; }}
                 messagebox.showerror("Order review failed", str(exc))
             return
         if not job.panels:
+            self.cancel_review_opening_feedback()
             self.close_opening_window("review_order")
             messagebox.showinfo("No pieces", "No piece pages were found for this order.")
             return
-        self.record_action(
-            "Review Order",
-            f"Opened Review Order for {process_order.aw_order}.",
-            status="INFO",
-            orders=[process_order],
+        review_ui_started = time.perf_counter()
+        # Cover the already-visible Programmer *inside its existing HWND* before any
+        # Review widgets are constructed. This has no native first-map of its own,
+        # so the operator sees a stable themed surface while Tk builds the Review
+        # workspace completely off-screen.
+        review_host_cover = WindowLoadingCover(
+            self.root,
+            background=self.APP_BG,
+            accent=self.ACCENT,
+            text_color=self.TEXT,
+            muted_color=self.MUTED,
+            title=f"Review Order {process_order.aw_order}",
+            detail="Building review workspace...",
         )
+        review_host_cover.lift()
         try:
-            self.begin_manual_overrides_session(output_dir)
-        except Exception as exc:
-            self.close_opening_window("review_order")
-            messagebox.showerror("Sketch editor unavailable", str(exc))
-            return
-
-        dialog = ctk.CTkToplevel(self.root) if ctk is not None else tk.Toplevel(self.root)
-        self.register_page_window("review_order", dialog)
-        dialog.title(f"Review Order - {process_order.aw_order}")
-        # Build the review workspace transparently. CTk performs delayed Windows
-        # title-bar setup and restores the state it saw at construction time, so
-        # using withdraw() here can hide the completed window again afterward.
-        try:
-            dialog.attributes("-alpha", 0.0)
+            self.root.update_idletasks()
         except tk.TclError:
             pass
-        self.position_child_window(dialog, 1180, 820)
+        self.cancel_review_opening_feedback()
+        self.close_opening_window("review_order")
+
+        dialog = self.create_hidden_toplevel(self.root)
+        self.register_page_window("review_order", dialog)
+        dialog.title(f"Review Order - {process_order.aw_order}")
         dialog.minsize(1100, 620)
         dialog.resizable(True, True)
         self.set_window_icon(dialog)
         dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
+        # Give the hidden Review workspace its final monitor-sized layout geometry
+        # without calling ShowWindow. The actual native maximize happens exactly
+        # once, after every control is built and the HWND has a real Windows owner.
+        self.prime_hidden_maximized_geometry(dialog, self.root)
 
         dialog.grid_columnconfigure(0, weight=1)
-        dialog.grid_rowconfigure(1, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+        review_content = tk.Frame(dialog, background=self.APP_BG, borderwidth=0, highlightthickness=0)
+        review_content.grid(row=0, column=0, sticky="nsew")
+        review_content.grid_columnconfigure(0, weight=1)
+        review_content.grid_rowconfigure(1, weight=1)
+        review_cover = WindowLoadingCover(
+            dialog,
+            background=self.APP_BG,
+            accent=self.ACCENT,
+            text_color=self.TEXT,
+            muted_color=self.MUTED,
+            title=f"Review Order {process_order.aw_order}",
+            detail="Loading review tools...",
+        )
+
+        def cleanup_review_host_cover(event: tk.Event | None = None) -> None:
+            if event is not None and getattr(event, "widget", None) is not dialog:
+                return
+            review_host_cover.destroy()
+
+        dialog.bind("<Destroy>", cleanup_review_host_cover, add="+")
+
+        try:
+            self.begin_manual_overrides_session(output_dir)
+        except Exception as exc:
+            review_cover.destroy()
+            review_host_cover.destroy()
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+            messagebox.showerror("Sketch editor unavailable", str(exc), parent=self.root)
+            return
 
         overview_label = "Order Overview"
         overview_available = min(panel.page_index for panel in job.panels) > 0 and len(source_reader.pages) > 0
@@ -13478,7 +15936,7 @@ a {{ color: #1f4e79; }}
         )
         review_info_var = tk.StringVar(value="")
 
-        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header = ctk.CTkFrame(review_content, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 10))
         header.grid_columnconfigure(0, weight=1)
         header.grid_columnconfigure(1, weight=0)
@@ -13513,7 +15971,7 @@ a {{ color: #1f4e79; }}
             pady=7,
         ).pack(side=tk.RIGHT)
 
-        workspace = ctk.CTkFrame(dialog, fg_color="transparent")
+        workspace = ctk.CTkFrame(review_content, fg_color="transparent")
         workspace.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 14))
         workspace.grid_columnconfigure(0, weight=0, minsize=286)
         # Keep the sketch and reference columns on one stable geometry contract.
@@ -13894,8 +16352,10 @@ a {{ color: #1f4e79; }}
             "last_y": 0.0,
             "page_images": [],
             "render_cache": {},
+            "raster_source_cache": {},
             "overlay_cache": {},
-            "dxf_preview_cache": {},
+            "dxf_preview_cache": dict(context.get("dxf_preview_cache", {})) if isinstance(context.get("dxf_preview_cache"), dict) else {},
+            "initial_overview": copy.deepcopy(context.get("initial_overview")) if isinstance(context.get("initial_overview"), dict) else None,
             "render_temp_dir": tempfile.mkdtemp(prefix="shower_order_review_"),
             "render_root": dialog,
             "output_dir": output_dir,
@@ -13916,6 +16376,8 @@ a {{ color: #1f4e79; }}
             "canvas_sizes": {},
             "review_geometry_settled": False,
             "review_window_presented": False,
+            "first_sketch_frame_ready": False,
+            "first_dxf_frame_ready": False,
             "piece_action_state": None,
             "history_button_states": None,
             "undo_stack": [],
@@ -13926,6 +16388,7 @@ a {{ color: #1f4e79; }}
 
         def clear_sketch_preview_caches() -> None:
             state["render_cache"] = {}
+            state["raster_source_cache"] = {}
             state["overlay_cache"] = {}
             state["page_images"] = []
             state["raster_rendering"] = set()
@@ -14037,11 +16500,16 @@ a {{ color: #1f4e79; }}
             if not current_panel_manual_dxf_review_unresolved():
                 status.set(f"P{panel.item} has no unresolved manual DXF review.")
                 return
-            if not messagebox.askyesno(
+            if not self.ask_themed_confirmation(
                 "Resolve manual DXF review",
+                "Confirm manual DXF review",
                 f"Confirm that you manually inspected and corrected {process_order.aw_order}.P{panel.item}.\n\n"
                 "This order will become eligible for Send unless another issue blocks it.",
                 parent=dialog,
+                confirm_text="Mark Resolved",
+                cancel_text="Keep Reviewing",
+                icon_name="warning",
+                accent_color=self.DANGER,
             ):
                 return
             try:
@@ -14052,7 +16520,15 @@ a {{ color: #1f4e79; }}
                     output_dir,
                 )
             except Exception as exc:
-                messagebox.showerror("DXF review not resolved", str(exc), parent=dialog)
+                self.show_themed_notice(
+                    "DXF review not resolved",
+                    "Manual DXF review could not be saved",
+                    str(exc),
+                    icon_name="warning",
+                    accent_color=self.DANGER,
+                    parent=dialog,
+                    button_text="Close",
+                )
                 return
             issues = self.visible_order_issues(
                 process_order.aw_order,
@@ -15002,9 +17478,9 @@ a {{ color: #1f4e79; }}
             self.center_child_window(chooser, 500, 300, owner=dialog)
             try:
                 chooser.transient(dialog)
-                chooser.grab_set()
             except tk.TclError:
                 pass
+            setattr(chooser, "_shower_grab_on_present", True)
 
             card = ctk.CTkFrame(
                 chooser,
@@ -15238,14 +17714,17 @@ a {{ color: #1f4e79; }}
                         fill=self.PREVIEW_BG, outline="",
                     )
                     sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Overview preview failed: {exc}", fill=self.DANGER)
-                overview = self.order_review_overview_data(
-                    process_order,
-                    job,
-                    issues,
-                    output_dir,
-                    generated_sketch_path,
-                )
+                overview = state.pop("initial_overview", None)
+                if not isinstance(overview, dict):
+                    overview = self.order_review_overview_data(
+                        process_order,
+                        job,
+                        issues,
+                        output_dir,
+                        generated_sketch_path,
+                    )
                 self.draw_order_review_overview(dxf_canvas, overview)
+                state["first_dxf_frame_ready"] = True
                 review_info_var.set(
                     "\n".join(
                         [
@@ -15321,6 +17800,8 @@ a {{ color: #1f4e79; }}
                 dxf_canvas.delete("all")
                 dxf_canvas.create_rectangle(0, 0, dxf_canvas.winfo_width(), dxf_canvas.winfo_height(), fill=self.PREVIEW_CARD_BG, outline="")
                 dxf_canvas.create_text(16, 16, anchor=tk.NW, text=f"DXF preview failed: {exc}", fill=self.DANGER)
+            finally:
+                state["first_dxf_frame_ready"] = True
             issue_text = "; ".join(issues[:2]) if issues else ""
             rotation_text = (
                 "Not applied - Skip DXF output"
@@ -15435,8 +17916,13 @@ a {{ color: #1f4e79; }}
             if row_id:
                 values = list(self.tree.item(row_id, "values"))
                 if len(values) > self.ORDER_TREE_INDEX["review"]:
-                    values[self.ORDER_TREE_INDEX["review"]] = "Order checked"
-                    self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+                    values[self.ORDER_TREE_INDEX["review"]] = self.order_tree_check_text("Order checked")
+                    self.tree.item(
+                        row_id,
+                        text="",
+                        values=values,
+                        tags=self.order_tree_tags_for_values(values),
+                    )
             self.update_summary_strip()
             self.update_checked_action_button()
             self.status_var.set(f"Marked order {process_order.aw_order} checked.")
@@ -15481,26 +17967,154 @@ a {{ color: #1f4e79; }}
         dialog.bind("<Destroy>", cleanup_render_temp, add="+")
 
         def present_review_window() -> None:
-            try:
-                if not bool(dialog.winfo_exists()):
-                    return
-                try:
-                    dialog.state("zoomed")
-                except tk.TclError:
-                    self.maximize_window(dialog)
-                state["review_geometry_settled"] = True
-                dialog.attributes("-alpha", 1.0)
-                state["review_window_presented"] = True
-                dialog.deiconify()
-                dialog.lift()
-                dialog.focus_force()
-            except (AttributeError, tk.TclError):
-                return
-            self.close_opening_window("review_order")
-            dialog.after(75, redraw)
+            state["review_window_presented"] = True
+            review_host_cover.set_detail("Preparing final review frame...")
+            review_host_cover.lift()
+            review_cover.set_detail("Finalizing preview...")
+            review_cover.lift()
 
-        # Speed is preferred over a perfectly settled first frame. Reveal the
-        # complete control shell now and render the previews on the next cycle.
+            # Build the first real Review frame while the window is still withdrawn.
+            # The primed monitor geometry gives the canvases their final usable size,
+            # so the first visible frame does not resize/reflow after presentation.
+            try:
+                dialog.update_idletasks()
+                state["review_geometry_settled"] = True
+                redraw()
+                dialog.update_idletasks()
+                review_cover.lift()
+            except (AttributeError, tk.TclError):
+                review_host_cover.destroy()
+                return
+
+            def review_is_in_front() -> None:
+                # Keep the Programmer-side veil alive behind Review until the Review
+                # window has proved it owns the foreground. Windows can hand focus
+                # back to the main Programmer for one compositor frame during a
+                # maximize/activation transition; leaving this veil in place turns
+                # that race into a stable loading surface instead of a visible flash.
+                review_host_cover.set_detail("Opening finished review...")
+                review_host_cover.lift()
+                review_cover.lift()
+
+                stable_signatures: list[tuple[int, int, int, int]] = []
+
+                def reveal_after_stable_paint(pass_index: int = 0) -> None:
+                    try:
+                        if not bool(dialog.winfo_exists()):
+                            return
+                        dialog.update_idletasks()
+                        signature = (
+                            int(dialog.winfo_x()),
+                            int(dialog.winfo_y()),
+                            int(dialog.winfo_width()),
+                            int(dialog.winfo_height()),
+                        )
+                        stable_signatures.append(signature)
+                        review_cover.lift()
+                    except (AttributeError, tk.TclError):
+                        return
+                    # Give CTk canvases/title bars several actual event-loop turns after
+                    # maximize. The cover stays up until geometry has repeated unchanged
+                    # and at least ~70ms of post-map paint time has elapsed.
+                    preview_ready = bool(state.get("first_sketch_frame_ready")) and bool(state.get("first_dxf_frame_ready"))
+                    geometry_stable = len(stable_signatures) >= 2 and stable_signatures[-1] == stable_signatures[-2]
+                    # Geometry settling alone can finish before PDF raster callbacks.
+                    # Keep the Review cover until both visible panes have produced a
+                    # real first frame, with a bounded fallback so a failed renderer
+                    # can never hold the workspace indefinitely.
+                    if (pass_index >= 4 and geometry_stable and preview_ready) or pass_index >= 28:
+                        review_cover.destroy()
+                        try:
+                            # Temporary topmost is used only for this handoff. It is
+                            # released as soon as the Review HWND has stayed foreground
+                            # for consecutive checks; normal popup ownership remains
+                            # unchanged afterward.
+                            dialog.attributes("-topmost", True)
+                        except (AttributeError, tk.TclError):
+                            pass
+                        self.activate_window_above_owner(dialog, self.root)
+
+                        foreground_checks = {"stable": 0}
+
+                        def finish_review_foreground_handoff(check_index: int = 0) -> None:
+                            try:
+                                if not bool(dialog.winfo_exists()):
+                                    review_host_cover.destroy()
+                                    return
+                                dialog.update_idletasks()
+                                dialog.lift()
+                                self.activate_window_above_owner(dialog, self.root)
+                                self.force_native_window_paint(dialog)
+                            except (AttributeError, tk.TclError):
+                                review_host_cover.destroy()
+                                return
+
+                            if self.window_is_foreground(dialog):
+                                foreground_checks["stable"] += 1
+                            else:
+                                foreground_checks["stable"] = 0
+
+                            if foreground_checks["stable"] >= 2 or check_index >= 8:
+                                # Remove the Programmer veil only after Review has
+                                # remained foreground across multiple real paint turns.
+                                review_host_cover.destroy()
+
+                                def release_handoff_topmost() -> None:
+                                    try:
+                                        dialog.attributes("-topmost", False)
+                                    except (AttributeError, tk.TclError):
+                                        pass
+                                    self.stabilize_window_foreground(
+                                        dialog,
+                                        self.root,
+                                        retries_ms=(0, 45, 140),
+                                    )
+                                    elapsed_ms = (time.perf_counter() - review_ui_started) * 1000.0
+                                    self.record_performance(
+                                        "Review Order",
+                                        "Stable first frame",
+                                        elapsed_ms,
+                                        {"order": str(process_order.aw_order), "pieces": len(job.panels)},
+                                        output_dir=output_dir,
+                                    )
+                                    dialog.after(
+                                        1,
+                                        lambda: self.record_action(
+                                            "Review Order",
+                                            f"Opened Review Order for {process_order.aw_order}.",
+                                            status="INFO",
+                                            orders=[process_order],
+                                        ),
+                                    )
+
+                                dialog.after(32, release_handoff_topmost)
+                                return
+                            dialog.after(16, lambda: finish_review_foreground_handoff(check_index + 1))
+
+                        dialog.after(1, finish_review_foreground_handoff)
+                        return
+                    dialog.after(18, lambda: reveal_after_stable_paint(pass_index + 1))
+
+                dialog.after_idle(reveal_after_stable_paint)
+
+            # Global presentation stages the already-painted Review HWND behind the
+            # Programmer first. Only after those hidden paint turns does Windows assign
+            # native ownership/maximize it and bring the covered Review window forward.
+            self.present_window_without_flash(
+                dialog,
+                make_transient=False,
+                owner=self.root,
+                maximize=True,
+                delay_ms=0,
+                settle_passes=3,
+                settle_interval_ms=16,
+                presentation_cover=review_cover,
+                release_presentation_cover=False,
+                post_reveal_passes=4,
+                post_reveal_interval_ms=16,
+                on_presented=review_is_in_front,
+            )
+
         present_review_window()
 
     def order_review_overview_data(
@@ -15662,9 +18276,14 @@ a {{ color: #1f4e79; }}
         )
         canvas.create_rectangle(0, 0, canvas.winfo_width(), canvas.winfo_height(), fill=self.PREVIEW_BG, outline="")
         if image is None:
-            message = "Rendering sketch preview..." if state.get("raster_rendering") else "Could not render sketch preview."
+            rendering = bool(state.get("raster_rendering"))
+            message = "Rendering sketch preview..." if rendering else "Could not render sketch preview."
             canvas.create_text(16, 16, anchor=tk.NW, text=message, fill=self.MUTED)
+            if not rendering:
+                # A stable failure/placeholder frame is still a finished first frame.
+                state["first_sketch_frame_ready"] = True
             return
+        state["first_sketch_frame_ready"] = True
         state["page_images"].append(image)
         x = max(8.0, (canvas.winfo_width() - image.width()) / 2)
         y = max(8.0, (canvas.winfo_height() - image.height()) / 2)
@@ -19415,6 +22034,104 @@ try {{
     def process_list_batch_key(source: Path) -> str:
         """Identify companion exports even when spacing or punctuation differs."""
         return re.sub(r"[^a-z0-9]+", "", source.stem.casefold())
+
+    def register_restored_archive_batch(
+        self,
+        batch_name: str,
+        process_files: Iterable[Path],
+        entries: list[dict[str, object]],
+    ) -> None:
+        """Remember how to reverse an archive restore during this app session.
+
+        Restore-for-viewing intentionally leaves the original dated archive intact.
+        The Orders screen therefore should remove/return the active copies to those
+        exact source folders instead of treating them as a newly completed batch.
+        """
+        snapshot = copy.deepcopy([entry for entry in entries if isinstance(entry, dict)])
+        if not snapshot:
+            return
+        keys = {
+            self.process_list_batch_key(path)
+            for path in process_files
+            if isinstance(path, Path) and path.stem
+        }
+        if str(batch_name).strip():
+            keys.add(self.process_list_batch_key(Path(str(batch_name))))
+        for key in keys:
+            if key:
+                self.restored_archive_batch_returns[key] = copy.deepcopy(snapshot)
+
+    def restored_archive_entries_for_batch(self, batch_id: str | None) -> list[dict[str, object]]:
+        if not batch_id:
+            return []
+        batch = self.process_batches.get(str(batch_id), {})
+        source_value = batch.get("path")
+        keys: list[str] = []
+        try:
+            source = source_value if isinstance(source_value, Path) else Path(str(source_value))
+            if str(source_value or "").strip():
+                keys.append(self.process_list_batch_key(source))
+        except (TypeError, ValueError):
+            pass
+        name = str(batch.get("name", "")).strip()
+        if name:
+            keys.append(self.process_list_batch_key(Path(name)))
+        for key in keys:
+            entries = self.restored_archive_batch_returns.get(key)
+            if entries:
+                return copy.deepcopy(entries)
+        return []
+
+    def restored_archive_batch_id_for_context(
+        self,
+        batch_id: str | None,
+        orders: Iterable[shower_batch.ProcessOrder],
+    ) -> str | None:
+        """Resolve a restored archive batch without disk/history I/O on right-click."""
+        candidates: list[str] = []
+        if batch_id:
+            candidates.append(str(batch_id))
+        for order in orders:
+            for candidate in self.order_batch_ids.get(str(order.aw_order), []):
+                candidate_text = str(candidate)
+                if candidate_text not in candidates:
+                    candidates.append(candidate_text)
+        for candidate in candidates:
+            if self.restored_archive_entries_for_batch(candidate):
+                return candidate
+        return None
+
+    def forget_restored_archive_batch(self, batch_id: str | None) -> None:
+        if not batch_id:
+            return
+        active_entries = self.restored_archive_entries_for_batch(batch_id)
+        active_orders = {
+            str(order.aw_order)
+            for entry in active_entries
+            for order in [entry.get("order")]
+            if isinstance(order, shower_batch.ProcessOrder)
+        }
+        batch = self.process_batches.get(str(batch_id), {})
+        keys: set[str] = set()
+        source_value = batch.get("path")
+        try:
+            source = source_value if isinstance(source_value, Path) else Path(str(source_value))
+            if str(source_value or "").strip():
+                keys.add(self.process_list_batch_key(source))
+        except (TypeError, ValueError):
+            pass
+        name = str(batch.get("name", "")).strip()
+        if name:
+            keys.add(self.process_list_batch_key(Path(name)))
+        for key, stored_entries in list(self.restored_archive_batch_returns.items()):
+            stored_orders = {
+                str(order.aw_order)
+                for entry in stored_entries
+                for order in [entry.get("order")]
+                if isinstance(entry, dict) and isinstance(order, shower_batch.ProcessOrder)
+            }
+            if key in keys or (active_orders and stored_orders == active_orders):
+                self.restored_archive_batch_returns.pop(key, None)
 
     @staticmethod
     def process_list_companion_files(source: Path) -> list[Path]:
@@ -23207,11 +25924,16 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             values = list(self.tree.item(row_id, "values"))
             if len(values) >= len(self.ORDER_TREE_COLUMNS):
                 values[self.ORDER_TREE_INDEX["processed"]] = self.processed_summary_for_order(aw_order)
-                values[self.ORDER_TREE_INDEX["review"]] = self.review_status_for_order(aw_order)
+                values[self.ORDER_TREE_INDEX["review"]] = self.order_tree_check_text(self.review_status_for_order(aw_order))
                 values[self.ORDER_TREE_INDEX["status"]] = (
                     "ISSUES" if str(values[self.ORDER_TREE_INDEX["issues"]]).strip() else "READY"
                 )
-                self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+                self.tree.item(
+                    row_id,
+                    text="",
+                    values=values,
+                    tags=self.order_tree_tags_for_values(values),
+                )
         self.update_summary_strip()
         self.update_checked_action_button()
         self.apply_order_tree_sort()
@@ -23284,11 +26006,16 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 continue
             if len(values) >= len(self.ORDER_TREE_COLUMNS):
                 values[self.ORDER_TREE_INDEX["processed"]] = self.processed_summary_for_order(aw_order)
-                values[self.ORDER_TREE_INDEX["review"]] = self.review_status_for_order(aw_order)
+                values[self.ORDER_TREE_INDEX["review"]] = self.order_tree_check_text(self.review_status_for_order(aw_order))
                 values[self.ORDER_TREE_INDEX["status"]] = (
                     "ISSUES" if str(values[self.ORDER_TREE_INDEX["issues"]]).strip() else "READY"
                 )
-                self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+                self.tree.item(
+                    row_id,
+                    text="",
+                    values=values,
+                    tags=self.order_tree_tags_for_values(values),
+                )
         self.update_summary_strip()
         self.apply_order_tree_sort()
         self.status_var.set(
@@ -23547,11 +26274,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         if issues:
             self.status_var.set("; ".join(issues[:3]))
 
-        dialog = tk.Toplevel(self.root)
-        try:
-            dialog.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
+        dialog = self.create_hidden_native_toplevel(self.root, background=self.APP_BG)
         self.register_page_window("sketch_editor", dialog)
         dialog.title(f"Edit Sketch - {process_order.aw_order}")
         self.position_child_window(dialog, 1040, 820)
@@ -23785,8 +26508,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 if row_id:
                     values = list(self.tree.item(row_id, "values"))
                     if len(values) >= len(self.ORDER_TREE_COLUMNS):
-                        values[self.ORDER_TREE_INDEX["review"]] = self.review_status_for_order(job.aw_order)
-                        self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
+                        values[self.ORDER_TREE_INDEX["review"]] = self.order_tree_check_text(self.review_status_for_order(job.aw_order))
+                        self.tree.item(
+                            row_id,
+                            text="",
+                            values=values,
+                            tags=self.order_tree_tags_for_values(values),
+                        )
                 self.update_checked_action_button()
             except Exception as exc:
                 messagebox.showerror("Review mark failed", str(exc), parent=dialog)
@@ -23995,69 +26723,56 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             return cache[key]
 
         output_dir = state.get("output_dir")
+        if not isinstance(output_dir, Path):
+            # Review/editor callers without a production output folder still use
+            # the asynchronous raster cache. This keeps PDFium/Ghostscript work
+            # off Tk's event thread instead of falling back to a blocking render.
+            output_dir = Path(str(state.get("render_temp_dir") or tempfile.gettempdir()))
+            output_dir.mkdir(parents=True, exist_ok=True)
         page_count = int(state.get("pdf_page_count") or 0)
+        if page_count <= 0:
+            return None
         render_dpi = self.REVIEW_RENDER_DPI
-        cached_page_path: Path | None = None
-        if isinstance(output_dir, Path):
-            cached_page_path = self.review_raster_page_path(output_dir, pdf_path, render_dpi, page_index)
-            cache_dir = self.review_raster_cache_dir(output_dir, pdf_path, render_dpi)
-            all_pages_cached = page_count > 0 and all(
-                (cache_dir / f"page_{idx + 1:03d}.png").exists()
-                for idx in range(page_count)
+        cached_page_path = self.review_raster_page_path(output_dir, pdf_path, render_dpi, page_index)
+        cache_dir = self.review_raster_cache_dir(output_dir, pdf_path, render_dpi)
+        all_pages_cached = all(
+            (cache_dir / f"page_{idx + 1:03d}.png").exists()
+            for idx in range(page_count)
+        )
+        if not cached_page_path.exists():
+            callback = state.get("render_callback")
+            self.start_async_review_raster_render(
+                pdf_path,
+                page_count,
+                output_dir,
+                state,
+                callback if callable(callback) else None,
+                priority_page_index=page_index,
             )
-            if not cached_page_path.exists() and page_count > 0:
-                self.render_pdfium_single_page_to_file(pdf_path, page_index, cached_page_path, render_dpi)
-                all_pages_cached = page_count > 0 and all(
-                    (cache_dir / f"page_{idx + 1:03d}.png").exists()
-                    for idx in range(page_count)
-                )
-            if cached_page_path.exists() and page_count > 1 and not all_pages_cached:
-                callback = state.get("render_callback")
-                self.start_async_review_raster_render(
-                    pdf_path,
-                    page_count,
-                    output_dir,
-                    state,
-                    callback if callable(callback) else None,
-                )
-            if not cached_page_path.exists() and page_count > 0:
-                callback = state.get("render_callback")
-                self.start_async_review_raster_render(
-                    pdf_path,
-                    page_count,
-                    output_dir,
-                    state,
-                    callback if callable(callback) else None,
-                )
-                return None
-            output_path = cached_page_path
-        else:
-            temp_dir = Path(str(state.get("render_temp_dir") or tempfile.gettempdir()))
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            output_path = temp_dir / f"page_{page_index + 1}_{abs(hash(key))}.png"
-            if not self.render_pdfium_single_page_to_file(pdf_path, page_index, output_path, render_dpi):
-                ghostscript = self.ghostscript_executable()
-                if ghostscript is None:
-                    return None
-                command = [
-                    str(ghostscript),
-                    "-q",
-                    "-dSAFER",
-                    "-dBATCH",
-                    "-dNOPAUSE",
-                    "-sDEVICE=png16m",
-                    f"-r{render_dpi}",
-                    f"-dFirstPage={page_index + 1}",
-                    f"-dLastPage={page_index + 1}",
-                    f"-sOutputFile={output_path}",
-                    str(pdf_path),
-                ]
-                try:
-                    subprocess.run(command, check=True, capture_output=True, timeout=30)
-                except Exception:
-                    return None
+            return None
+        if page_count > 1 and not all_pages_cached:
+            callback = state.get("render_callback")
+            self.start_async_review_raster_render(
+                pdf_path,
+                page_count,
+                output_dir,
+                state,
+                callback if callable(callback) else None,
+                priority_page_index=page_index,
+            )
+        output_path = cached_page_path
         try:
-            image = Image.open(output_path).convert("RGB")
+            source_cache = state.setdefault("raster_source_cache", {})
+            source_stat = output_path.stat()
+            source_key = (str(output_path.resolve()), source_stat.st_mtime_ns, source_stat.st_size)
+            source_image = source_cache.get(source_key) if isinstance(source_cache, dict) else None
+            if source_image is None:
+                source_image = Image.open(output_path).convert("RGB")
+                if isinstance(source_cache, dict):
+                    if len(source_cache) >= 12:
+                        source_cache.clear()
+                    source_cache[source_key] = source_image.copy()
+            image = source_image.copy()
             if normalized_rotation:
                 image = image.rotate(-normalized_rotation, expand=True)
             if normalized_rotation % 180:
@@ -24069,12 +26784,6 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             photo = ImageTk.PhotoImage(image)
         except Exception:
             return None
-        finally:
-            if cached_page_path is None:
-                try:
-                    output_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
         if isinstance(cache, dict):
             cache[key] = photo
         return photo
@@ -25216,9 +27925,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.position_child_window(dialog, 660, 560)
         try:
             dialog.transient(self.root)
-            dialog.grab_set()
         except tk.TclError:
             pass
+        setattr(dialog, "_shower_grab_on_present", True)
 
         shell = ctk.CTkFrame(
             dialog,
@@ -25649,22 +28358,38 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             try:
                 setattr(existing, "_shower_settings_hidden", False)
                 if self.settings_tabview is not None:
-                    self.settings_tabview.set(initial_tab)
-                    ensure_tab = getattr(existing, "_settings_ensure_tab", None)
-                    if callable(ensure_tab):
-                        ensure_tab(initial_tab)
+                    select_tab = getattr(existing, "_settings_select_tab", None)
+                    if callable(select_tab):
+                        select_tab(initial_tab)
+                    else:
+                        self.settings_tabview.set(initial_tab)
+                        ensure_tab = getattr(existing, "_settings_ensure_tab", None)
+                        if callable(ensure_tab):
+                            ensure_tab(initial_tab)
             except (AttributeError, tk.TclError, ValueError):
                 pass
             try:
+                existing.withdraw()
                 existing.attributes("-alpha", 0.0)
             except (AttributeError, tk.TclError):
                 pass
-            self.bring_page_window_to_front(existing)
+            existing_cover = WindowLoadingCover(
+                existing,
+                background=self.APP_BG,
+                accent=self.ACCENT,
+                text_color=self.TEXT,
+                muted_color=self.MUTED,
+                title="Settings",
+                detail="Restoring workspace...",
+            )
             self.present_window_without_flash(
                 existing,
                 make_transient=False,
                 maximize=True,
                 delay_ms=0,
+                post_reveal_passes=4,
+                post_reveal_interval_ms=16,
+                presentation_cover=existing_cover,
             )
             activate_selected = getattr(existing, "_settings_activate_selected", None)
             if callable(activate_selected):
@@ -25686,11 +28411,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             )
             return
 
-        dialog = ctk.CTkToplevel(self.root)
-        try:
-            dialog.attributes("-alpha", 0.0)
-        except tk.TclError:
-            pass
+        dialog = self.create_hidden_toplevel(self.root)
         setattr(dialog, "_shower_settings_hidden", False)
         setattr(dialog, "_shower_settings_retired", False)
         dialog.title("Shower Programmer Settings")
@@ -25743,20 +28464,90 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except (AttributeError, tk.TclError):
             pass
         self.settings_tabview = tabview
-        tab_builders = {
-            "Preferences": lambda: self.build_preferences_settings_tab(tabview.tab("Preferences"), dialog),
-            "Folder Setup": lambda: self.build_folder_settings_tab(tabview.tab("Folder Setup"), dialog),
-            "Configuration": lambda: self.build_configuration_settings_tab(tabview.tab("Configuration"), dialog),
-            "System Health": lambda: self.build_system_health_settings_tab(tabview.tab("System Health"), dialog),
-            "Rule Test": lambda: self.build_rule_test_settings_tab(tabview.tab("Rule Test"), dialog),
-            "Archives": lambda: self.build_archive_settings_tab(tabview.tab("Archives"), dialog),
-            "Recovery": lambda: self.build_recovery_settings_tab(tabview.tab("Recovery"), dialog),
-            "Backup & Restore": lambda: self.build_configuration_backup_tab(tabview.tab("Backup & Restore"), dialog),
-            "Action History": lambda: self.build_action_history_settings_tab(tabview.tab("Action History"), dialog),
-        }
-        for tab_name in tab_builders:
+        settings_tab_names = (
+            "Preferences", "Folder Setup", "Configuration", "System Health", "Rule Test",
+            "Archives", "Recovery", "Backup & Restore", "Action History",
+        )
+        for tab_name in settings_tab_names:
             tabview.add(tab_name)
+
+        # Build every tab inside a permanent content host. Loading covers are siblings
+        # of these hosts, so widgets created later can never jump above a still-active
+        # loading surface and produce the loader/content flicker seen in 1.78.
+        tab_content_hosts: dict[str, ctk.CTkFrame] = {}
+        for tab_name in settings_tab_names:
+            tab_parent = tabview.tab(tab_name)
+            tab_parent.grid_columnconfigure(0, weight=1)
+            tab_parent.grid_rowconfigure(0, weight=1)
+            host = ctk.CTkFrame(tab_parent, fg_color="transparent", corner_radius=0)
+            host.grid(row=0, column=0, sticky="nsew")
+            tab_content_hosts[tab_name] = host
+
+        tab_builders = {
+            "Preferences": lambda: self.build_preferences_settings_tab(tab_content_hosts["Preferences"], dialog),
+            "Folder Setup": lambda: self.build_folder_settings_tab(tab_content_hosts["Folder Setup"], dialog),
+            "Configuration": lambda: self.build_configuration_settings_tab(tab_content_hosts["Configuration"], dialog),
+            "System Health": lambda: self.build_system_health_settings_tab(tab_content_hosts["System Health"], dialog),
+            "Rule Test": lambda: self.build_rule_test_settings_tab(tab_content_hosts["Rule Test"], dialog),
+            "Archives": lambda: self.build_archive_settings_tab(tab_content_hosts["Archives"], dialog),
+            "Recovery": lambda: self.build_recovery_settings_tab(tab_content_hosts["Recovery"], dialog),
+            "Backup & Restore": lambda: self.build_configuration_backup_tab(tab_content_hosts["Backup & Restore"], dialog),
+            "Action History": lambda: self.build_action_history_settings_tab(tab_content_hosts["Action History"], dialog),
+        }
         built_tabs: set[str] = set()
+        tab_build_in_progress: set[str] = set()
+        tab_build_after_ids: dict[str, str] = {}
+        tab_loading_covers: dict[str, WindowLoadingCover] = {}
+        async_initial_tabs = {"System Health", "Archives", "Action History"}
+
+        def ensure_tab_loading_cover(tab_name: str) -> WindowLoadingCover:
+            name = str(tab_name or "Preferences")
+            existing_cover = tab_loading_covers.get(name)
+            if existing_cover is not None:
+                existing_cover.lift()
+                return existing_cover
+            parent = tabview.tab(name)
+            cover = WindowLoadingCover(
+                parent,
+                background=self.APP_BG,
+                accent=self.ACCENT,
+                text_color=self.TEXT,
+                muted_color=self.MUTED,
+                title=name,
+                detail=f"Loading {name}...",
+            )
+            tab_loading_covers[name] = cover
+            cover.lift()
+            return cover
+
+        def finish_tab_loading_cover(tab_name: str, pass_index: int = 0) -> None:
+            name = str(tab_name or "Preferences")
+            cover = tab_loading_covers.get(name)
+            if cover is None:
+                return
+            try:
+                if not bool(dialog.winfo_exists()):
+                    return
+                dialog.update_idletasks()
+                self.force_native_window_paint(dialog)
+                cover.lift()
+            except (AttributeError, tk.TclError):
+                cover.destroy()
+                tab_loading_covers.pop(name, None)
+                return
+            if pass_index >= 3:
+                cover.destroy()
+                if tab_loading_covers.get(name) is cover:
+                    tab_loading_covers.pop(name, None)
+                return
+            dialog.after(16, lambda: finish_tab_loading_cover(name, pass_index + 1))
+
+        def mark_settings_tab_ready(tab_name: str) -> None:
+            name = str(tab_name or "Preferences")
+            if name in tab_loading_covers:
+                finish_tab_loading_cover(name)
+
+        setattr(dialog, "_settings_mark_tab_ready", mark_settings_tab_ready)
 
         def ensure_tab_built(tab_name: str) -> None:
             name = str(tab_name or "Preferences")
@@ -25772,7 +28563,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 # empty data page. Surface widget-construction failures directly in
                 # the affected tab so the operator has an actionable error to report.
                 built_tabs.add(name)
-                parent = tabview.tab(name)
+                parent = tab_content_hosts[name]
                 message = f"{exc.__class__.__name__}: {str(exc).strip() or 'Unknown Settings tab construction error'}"
                 try:
                     failure = ctk.CTkFrame(
@@ -25825,42 +28616,106 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     )
                 except Exception:
                     pass
+                mark_settings_tab_ready(name)
                 return
             built_tabs.add(name)
 
-        setattr(dialog, "_settings_ensure_tab", ensure_tab_built)
+        def activate_tab_data(name: str) -> None:
+            if name == "Archives":
+                activate_archive = getattr(dialog, "_archive_activate", None)
+                if callable(activate_archive):
+                    activate_archive()
+            elif name == "Action History":
+                activate_history = getattr(dialog, "_action_history_activate", None)
+                if callable(activate_history):
+                    activate_history()
+
+        def build_tab_with_loading(tab_name: str) -> None:
+            name = str(tab_name or "Preferences")
+            if name in built_tabs:
+                activate_tab_data(name)
+                return
+            ensure_tab_loading_cover(name)
+            if name in tab_build_in_progress:
+                return
+            tab_build_in_progress.add(name)
+
+            def build_selected_tab() -> None:
+                tab_build_after_ids.pop(name, None)
+                try:
+                    selected = str(tabview.get())
+                except (AttributeError, tk.TclError):
+                    selected = name
+                # If the operator changed tabs while the loading surface was
+                # painting, do not spend the UI thread building a tab they are no
+                # longer looking at. Its content-local cover remains ready for the
+                # next visit.
+                if selected != name:
+                    tab_build_in_progress.discard(name)
+                    return
+                try:
+                    ensure_tab_built(name)
+                finally:
+                    tab_build_in_progress.discard(name)
+                if selected == name:
+                    activate_tab_data(name)
+                # Tabs with asynchronous first-load data keep their own content
+                # cover until the background loader reports ready/error/cancelled.
+                if name not in async_initial_tabs:
+                    finish_tab_loading_cover(name)
+
+            # Give the tab-local loading surface a paint turn and keep the tab
+            # selector responsive before any potentially large CTk widget tree is
+            # constructed. A quick switch away cancels this build until revisited.
+            after_id = dialog.after(24, build_selected_tab)
+            tab_build_after_ids[name] = str(after_id)
+
         try:
             tabview.set(initial_tab)
         except ValueError:
             initial_tab = "Preferences"
             tabview.set(initial_tab)
-        ensure_tab_built(initial_tab)
+        if initial_tab == "Preferences":
+            ensure_tab_built(initial_tab)
+        else:
+            ensure_tab_loading_cover(initial_tab)
 
         def activate_selected_tab() -> None:
             try:
                 selected = str(tabview.get())
             except (AttributeError, tk.TclError):
                 return
-            ensure_tab_built(selected)
-            if selected == "Archives":
-                activate_archive = getattr(dialog, "_archive_activate", None)
-                if callable(activate_archive):
-                    activate_archive()
-            elif selected == "Action History":
-                activate_history = getattr(dialog, "_action_history_activate", None)
-                if callable(activate_history):
-                    activate_history()
+            if selected not in built_tabs:
+                build_tab_with_loading(selected)
+                return
+            activate_tab_data(selected)
 
         def settings_tab_changed() -> None:
-            # Build expensive/complex tabs only when selected. Preferences therefore
-            # opens with the smallest possible widget tree and zero archive I/O.
+            # The segmented tab selector stays outside each tab-local loading
+            # surface, so operators can switch immediately while another tab is
+            # still loading data in the background.
             activate_selected_tab()
 
         try:
             tabview.configure(command=settings_tab_changed)
         except (AttributeError, tk.TclError, ValueError):
             pass
+        setattr(dialog, "_settings_ensure_tab", ensure_tab_built)
         setattr(dialog, "_settings_activate_selected", activate_selected_tab)
+
+        def select_settings_tab(tab_name: str) -> None:
+            name = str(tab_name or "Preferences")
+            try:
+                tabview.set(name)
+            except ValueError:
+                name = "Preferences"
+                tabview.set(name)
+            if name not in built_tabs:
+                build_tab_with_loading(name)
+            else:
+                activate_tab_data(name)
+
+        setattr(dialog, "_settings_select_tab", select_settings_tab)
 
         def clear_reference(event: tk.Event | None = None) -> None:
             if event is not None and getattr(event, "widget", None) is not dialog:
@@ -25907,9 +28762,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             def restore_main_focus() -> None:
                 try:
                     if bool(self.root.winfo_exists()):
-                        self.root.deiconify()
-                        self.root.lift()
-                        self.root.focus_force()
+                        self.stabilize_window_foreground(self.root, self.root, retries_ms=(0, 45))
                 except (AttributeError, tk.TclError):
                     pass
 
@@ -25923,16 +28776,38 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         dialog.bind("<Escape>", close_settings)
         dialog.protocol("WM_DELETE_WINDOW", close_settings)
         dialog.after_idle(activate_selected_tab)
+        settings_cover = WindowLoadingCover(
+            dialog,
+            background=self.APP_BG,
+            accent=self.ACCENT,
+            text_color=self.TEXT,
+            muted_color=self.MUTED,
+            title="Settings",
+            detail="Finishing workspace...",
+        )
         self.present_window_without_flash(
             dialog,
             make_transient=False,
             maximize=True,
             delay_ms=90,
+            post_reveal_passes=4,
+            post_reveal_interval_ms=16,
+            presentation_cover=settings_cover,
+            on_presented=lambda: self.close_opening_window("settings"),
         )
-        self.root.after(500, lambda: self.close_opening_window("settings"))
 
     def build_configuration_settings_tab(self, parent: tk.Widget, dialog: tk.Toplevel) -> None:
         """Build the centralized sectioned editor for all config-backed rules."""
+        configuration_outer_cover_released = {"done": False}
+
+        def release_outer_configuration_cover() -> None:
+            if configuration_outer_cover_released["done"]:
+                return
+            configuration_outer_cover_released["done"] = True
+            marker = getattr(dialog, "_settings_mark_tab_ready", None)
+            if callable(marker):
+                marker("Configuration")
+
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(2, weight=1)
 
@@ -25941,6 +28816,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             loaded_config = programmer.load_config(config_path)
             if not isinstance(loaded_config, dict):
                 raise ValueError("The active Shower Programmer configuration is not a JSON object.")
+            loaded_config = shower_configuration.prune_deprecated_configuration(loaded_config)
             loaded_config, orientation_defaults_added = self.configuration_with_hinge_orientation_defaults(loaded_config)
             if orientation_defaults_added:
                 try:
@@ -25968,6 +28844,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 wraplength=1000,
                 anchor="w",
             ).pack(fill=tk.X, padx=18, pady=(0, 18))
+            release_outer_configuration_cover()
             return
 
         state: dict[str, Any] = {
@@ -26079,14 +28956,16 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             inner.add(section)
         hinge_tab_name = "Hinge Detection"
         inner.add(hinge_tab_name)
-        self.build_hinge_settings_tab(inner.tab(hinge_tab_name), dialog)
 
-        def select_configuration_tab(tab_name: str) -> None:
-            available = [*visible_sections, hinge_tab_name]
-            if tab_name in available:
-                inner.set(tab_name)
+        configuration_tab_hosts: dict[str, ctk.CTkFrame] = {}
+        for tab_name in [*visible_sections, hinge_tab_name]:
+            tab_parent = inner.tab(tab_name)
+            tab_parent.grid_columnconfigure(0, weight=1)
+            tab_parent.grid_rowconfigure(0, weight=1)
+            host = ctk.CTkFrame(tab_parent, fg_color="transparent", corner_radius=0)
+            host.grid(row=0, column=0, sticky="nsew")
+            configuration_tab_hosts[tab_name] = host
 
-        setattr(dialog, "_configuration_select_tab", select_configuration_tab)
 
         def mark_dirty(*_args: Any) -> None:
             if bool(state.get("reloading")):
@@ -26103,117 +28982,297 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 return str(editor["widget"].get("1.0", "end-1c"))
             return str(editor["var"].get())
 
-        for section in visible_sections:
-            tab = inner.tab(section)
-            tab.grid_columnconfigure(0, weight=1)
-            tab.grid_rowconfigure(0, weight=1)
-            scroll = ctk.CTkScrollableFrame(
-                tab,
-                fg_color="transparent",
-                corner_radius=0,
-            )
-            scroll.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
-            scroll.grid_columnconfigure(0, weight=1)
+        built_configuration_tabs: set[str] = set()
+        configuration_tab_build_pending: set[str] = set()
+        configuration_tab_after_ids: dict[str, str] = {}
+        configuration_tab_covers: dict[str, WindowLoadingCover] = {}
 
-            for row_index, field in enumerate(fields_by_section[section]):
-                card = ctk.CTkFrame(
-                    scroll,
-                    fg_color=self.CARD_BG,
-                    corner_radius=12,
+        def ensure_configuration_tab_cover(tab_name: str) -> WindowLoadingCover:
+            name = str(tab_name)
+            existing_cover = configuration_tab_covers.get(name)
+            if existing_cover is not None:
+                existing_cover.lift()
+                return existing_cover
+            cover = WindowLoadingCover(
+                inner.tab(name),
+                background=self.APP_BG,
+                accent=self.ACCENT,
+                text_color=self.TEXT,
+                muted_color=self.MUTED,
+                title=name,
+                detail=f"Loading {name} settings...",
+            )
+            configuration_tab_covers[name] = cover
+            cover.lift()
+            return cover
+
+        def finish_configuration_tab_cover(tab_name: str, pass_index: int = 0) -> None:
+            name = str(tab_name)
+            cover = configuration_tab_covers.get(name)
+            if cover is None:
+                return
+            try:
+                if not bool(dialog.winfo_exists()):
+                    return
+                dialog.update_idletasks()
+                self.force_native_window_paint(dialog)
+                cover.lift()
+            except (AttributeError, tk.TclError):
+                cover.destroy()
+                configuration_tab_covers.pop(name, None)
+                return
+            if pass_index >= 4:
+                cover.destroy()
+                if configuration_tab_covers.get(name) is cover:
+                    configuration_tab_covers.pop(name, None)
+                release_outer_configuration_cover()
+                return
+            dialog.after(16, lambda: finish_configuration_tab_cover(name, pass_index + 1))
+
+        configuration_section_progress: dict[str, dict[str, Any]] = {}
+
+        def build_configuration_field_card(
+            scroll: tk.Widget,
+            row_index: int,
+            field: shower_configuration.ConfigurationField,
+        ) -> None:
+            current_value = shower_configuration.get_path(state["config"], field.path, field.value)
+            current_type = shower_configuration.value_type(current_value)
+            card = ctk.CTkFrame(
+                scroll,
+                fg_color=self.CARD_BG,
+                corner_radius=12,
+                border_width=1,
+                border_color=self.BORDER,
+            )
+            card.grid(row=row_index, column=0, sticky="ew", padx=4, pady=(4, 6))
+            card.grid_columnconfigure(0, weight=0, minsize=350)
+            card.grid_columnconfigure(1, weight=1, minsize=540)
+            field_cards[field.path] = card
+
+            info = ctk.CTkFrame(card, fg_color="transparent")
+            info.grid(row=0, column=0, sticky="nsew", padx=(14, 16), pady=12)
+            info.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                info,
+                text=field.label,
+                text_color=self.TEXT,
+                font=("Segoe UI", 11, "bold"),
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew")
+            ctk.CTkLabel(
+                info,
+                text=field.path,
+                text_color=self.ACCENT,
+                font=("Consolas", 9),
+                anchor="w",
+            ).grid(row=1, column=0, sticky="ew", pady=(2, 2))
+            ctk.CTkLabel(
+                info,
+                text=field.description,
+                text_color=self.MUTED,
+                font=("Segoe UI", 9),
+                anchor="w",
+                justify="left",
+                wraplength=330,
+            ).grid(row=2, column=0, sticky="ew")
+
+            editor_shell = ctk.CTkFrame(card, fg_color="transparent")
+            editor_shell.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=12)
+            editor_shell.grid_columnconfigure(0, weight=1)
+            template = copy.deepcopy(current_value)
+
+            if current_type == "bool":
+                variable = tk.BooleanVar(value=bool(current_value))
+                widget = ctk.CTkSwitch(
+                    editor_shell,
+                    text="Enabled" if bool(current_value) else "Disabled",
+                    variable=variable,
+                    onvalue=True,
+                    offvalue=False,
+                    command=lambda var=variable: (
+                        mark_dirty(),
+                        None,
+                    ),
+                    text_color=self.TEXT,
+                    progress_color=self.ACCENT,
+                )
+                widget.grid(row=0, column=0, sticky="e")
+
+                def update_switch_text(*_args: Any, switch=widget, var=variable) -> None:
+                    try:
+                        switch.configure(text="Enabled" if bool(var.get()) else "Disabled")
+                    except (AttributeError, tk.TclError):
+                        pass
+
+                variable.trace_add("write", update_switch_text)
+                editors[field.path] = {"kind": "bool", "widget": widget, "var": variable, "template": template}
+            elif current_type in {"list", "dict"}:
+                height = 126 if current_type == "dict" else 88
+                widget = ctk.CTkTextbox(
+                    editor_shell,
+                    height=height,
+                    fg_color=self.ENTRY_BG,
                     border_width=1,
                     border_color=self.BORDER,
-                )
-                card.grid(row=row_index, column=0, sticky="ew", padx=4, pady=(4, 6))
-                card.grid_columnconfigure(0, weight=0, minsize=350)
-                card.grid_columnconfigure(1, weight=1, minsize=540)
-                field_cards[field.path] = card
-
-                info = ctk.CTkFrame(card, fg_color="transparent")
-                info.grid(row=0, column=0, sticky="nsew", padx=(14, 16), pady=12)
-                info.grid_columnconfigure(0, weight=1)
-                ctk.CTkLabel(
-                    info,
-                    text=field.label,
                     text_color=self.TEXT,
-                    font=("Segoe UI", 11, "bold"),
-                    anchor="w",
-                ).grid(row=0, column=0, sticky="ew")
-                ctk.CTkLabel(
-                    info,
-                    text=field.path,
-                    text_color=self.ACCENT,
-                    font=("Consolas", 9),
-                    anchor="w",
-                ).grid(row=1, column=0, sticky="ew", pady=(2, 2))
-                ctk.CTkLabel(
-                    info,
-                    text=field.description,
-                    text_color=self.MUTED,
-                    font=("Segoe UI", 9),
-                    anchor="w",
-                    justify="left",
-                    wraplength=330,
-                ).grid(row=2, column=0, sticky="ew")
+                    font=("Consolas", 10),
+                    wrap="word",
+                )
+                widget.grid(row=0, column=0, sticky="ew")
+                widget.insert("1.0", shower_configuration.format_editor_value(current_value))
+                widget.bind("<KeyRelease>", lambda _event: mark_dirty(), add="+")
+                editors[field.path] = {"kind": current_type, "widget": widget, "template": template}
+            else:
+                variable = tk.StringVar(value=shower_configuration.format_editor_value(current_value))
+                widget = ctk.CTkEntry(
+                    editor_shell,
+                    textvariable=variable,
+                    height=34,
+                    fg_color=self.ENTRY_BG,
+                    border_color=self.BORDER,
+                    text_color=self.TEXT,
+                )
+                widget.grid(row=0, column=0, sticky="ew")
+                widget.bind("<KeyRelease>", lambda _event: mark_dirty(), add="+")
+                editors[field.path] = {"kind": "entry", "widget": widget, "var": variable, "template": template}
 
-                editor_shell = ctk.CTkFrame(card, fg_color="transparent")
-                editor_shell.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=12)
-                editor_shell.grid_columnconfigure(0, weight=1)
-                template = copy.deepcopy(field.value)
+            # Respect an active search while a lazy section is still constructing.
+            # Without this, cards built after the operator typed a query could flash
+            # into view until the next search edit triggered apply_filter().
+            query = search_var.get().strip().casefold()
+            if query:
+                haystack = f"{field.label} {field.path} {field.description}".casefold()
+                if query not in haystack:
+                    card.grid_remove()
 
-                if field.value_type == "bool":
-                    variable = tk.BooleanVar(value=bool(field.value))
-                    widget = ctk.CTkSwitch(
-                        editor_shell,
-                        text="Enabled" if bool(field.value) else "Disabled",
-                        variable=variable,
-                        onvalue=True,
-                        offvalue=False,
-                        command=lambda var=variable: (
-                            mark_dirty(),
-                            None,
-                        ),
-                        text_color=self.TEXT,
-                        progress_color=self.ACCENT,
-                    )
-                    widget.grid(row=0, column=0, sticky="e")
 
-                    def update_switch_text(*_args: Any, switch=widget, var=variable) -> None:
-                        try:
-                            switch.configure(text="Enabled" if bool(var.get()) else "Disabled")
-                        except (AttributeError, tk.TclError):
-                            pass
+        def build_configuration_section(section: str) -> None:
+            progress = configuration_section_progress.get(section)
+            if progress is None:
+                tab = configuration_tab_hosts[section]
+                tab.grid_columnconfigure(0, weight=1)
+                tab.grid_rowconfigure(0, weight=1)
+                scroll = ctk.CTkScrollableFrame(
+                    tab,
+                    fg_color="transparent",
+                    corner_radius=0,
+                )
+                scroll.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+                scroll.grid_columnconfigure(0, weight=1)
+                progress = {"scroll": scroll, "index": 0, "scheduled": False}
+                configuration_section_progress[section] = progress
+            if bool(progress.get("scheduled")):
+                return
 
-                    variable.trace_add("write", update_switch_text)
-                    editors[field.path] = {"kind": "bool", "widget": widget, "var": variable, "template": template}
-                elif field.value_type in {"list", "dict"}:
-                    height = 126 if field.value_type == "dict" else 88
-                    widget = ctk.CTkTextbox(
-                        editor_shell,
-                        height=height,
-                        fg_color=self.ENTRY_BG,
-                        border_width=1,
-                        border_color=self.BORDER,
-                        text_color=self.TEXT,
-                        font=("Consolas", 10),
-                        wrap="word",
-                    )
-                    widget.grid(row=0, column=0, sticky="ew")
-                    widget.insert("1.0", shower_configuration.format_editor_value(field.value))
-                    widget.bind("<KeyRelease>", lambda _event: mark_dirty(), add="+")
-                    editors[field.path] = {"kind": field.value_type, "widget": widget, "template": template}
-                else:
-                    variable = tk.StringVar(value=shower_configuration.format_editor_value(field.value))
-                    widget = ctk.CTkEntry(
-                        editor_shell,
-                        textvariable=variable,
-                        height=34,
-                        fg_color=self.ENTRY_BG,
-                        border_color=self.BORDER,
-                        text_color=self.TEXT,
-                    )
-                    widget.grid(row=0, column=0, sticky="ew")
-                    widget.bind("<KeyRelease>", lambda _event: mark_dirty(), add="+")
-                    editors[field.path] = {"kind": "entry", "widget": widget, "var": variable, "template": template}
+            def build_next_batch() -> None:
+                progress["scheduled"] = False
+                try:
+                    selected = str(inner.get())
+                except (AttributeError, tk.TclError):
+                    selected = section
+                # Pause construction immediately when the operator leaves this
+                # section. The tab-local loader remains in place and the next visit
+                # resumes from the next unbuilt field instead of starting over.
+                if selected != section:
+                    return
+                section_fields = fields_by_section[section]
+                index = int(progress.get("index", 0) or 0)
+                stop = min(index + 3, len(section_fields))
+                scroll = progress["scroll"]
+                for row_index in range(index, stop):
+                    build_configuration_field_card(scroll, row_index, section_fields[row_index])
+                progress["index"] = stop
+                cover = configuration_tab_covers.get(section)
+                if cover is not None:
+                    try:
+                        cover.lift()
+                        dialog.after_idle(cover.lift)
+                    except (AttributeError, tk.TclError):
+                        pass
+                if stop >= len(section_fields):
+                    built_configuration_tabs.add(section)
+                    finish_configuration_tab_cover(section)
+                    return
+                progress["scheduled"] = True
+                dialog.after(1, build_next_batch)
+
+            progress["scheduled"] = True
+            dialog.after(1, build_next_batch)
+
+        def ensure_configuration_tab_built(tab_name: str) -> bool:
+            name = str(tab_name)
+            if name in built_configuration_tabs:
+                return True
+            if name == hinge_tab_name:
+                self.build_hinge_settings_tab(configuration_tab_hosts[hinge_tab_name], dialog)
+                built_configuration_tabs.add(name)
+                return True
+            if name in visible_sections:
+                build_configuration_section(name)
+                return False
+            return False
+
+        def request_configuration_tab(tab_name: str) -> None:
+            name = str(tab_name)
+            available = [*visible_sections, hinge_tab_name]
+            if name not in available:
+                return
+            if name in built_configuration_tabs:
+                return
+            ensure_configuration_tab_cover(name)
+            if name in configuration_tab_build_pending:
+                return
+            configuration_tab_build_pending.add(name)
+
+            def build_selected_configuration_tab() -> None:
+                configuration_tab_after_ids.pop(name, None)
+                try:
+                    selected = str(inner.get())
+                except (AttributeError, tk.TclError):
+                    selected = name
+                if selected != name:
+                    configuration_tab_build_pending.discard(name)
+                    return
+                completed_synchronously = False
+                try:
+                    completed_synchronously = ensure_configuration_tab_built(name)
+                except Exception as exc:
+                    # Keep the failure inside the affected configuration section
+                    # instead of exposing a partially constructed tab.
+                    tab = inner.tab(name)
+                    failure = ctk.CTkFrame(tab, fg_color=self.CARD_BG, corner_radius=12, border_width=2, border_color=self.DANGER)
+                    failure.place(relx=0.5, rely=0.48, anchor=tk.CENTER, relwidth=0.88)
+                    ctk.CTkLabel(failure, text=f"{name} could not finish loading", text_color=self.DANGER, font=("Segoe UI", 16, "bold")).pack(fill=tk.X, padx=16, pady=(14, 4))
+                    ctk.CTkLabel(failure, text=f"{exc.__class__.__name__}: {exc}", text_color=self.TEXT, font=("Segoe UI", 10), justify="left", wraplength=900).pack(fill=tk.X, padx=16, pady=(0, 14))
+                    built_configuration_tabs.add(name)
+                finally:
+                    configuration_tab_build_pending.discard(name)
+                if completed_synchronously:
+                    finish_configuration_tab_cover(name)
+
+            after_id = dialog.after(28, build_selected_configuration_tab)
+            configuration_tab_after_ids[name] = str(after_id)
+
+        def configuration_tab_changed() -> None:
+            try:
+                request_configuration_tab(str(inner.get()))
+            except (AttributeError, tk.TclError):
+                return
+
+        try:
+            inner.configure(command=configuration_tab_changed)
+        except (AttributeError, tk.TclError, ValueError):
+            pass
+
+        def select_configuration_tab(tab_name: str) -> None:
+            available = [*visible_sections, hinge_tab_name]
+            if tab_name not in available:
+                return
+            inner.set(tab_name)
+            request_configuration_tab(tab_name)
+
+        setattr(dialog, "_configuration_select_tab", select_configuration_tab)
 
         validation = ctk.CTkFrame(parent, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
         validation.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
@@ -26284,7 +29343,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             validation_box.configure(state="disabled")
 
         def collect_configuration() -> tuple[dict[str, Any], list[shower_configuration.ConfigurationIssue]]:
-            candidate = copy.deepcopy(state["config"])
+            candidate = shower_configuration.prune_deprecated_configuration(state["config"])
             parse_issues: list[shower_configuration.ConfigurationIssue] = []
             for path_text, editor in editors.items():
                 raw_text = editor_text(editor)
@@ -26305,14 +29364,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             render_validation(issues)
             return candidate, issues
 
-        def reload_from_disk() -> None:
-            try:
-                fresh = programmer.load_config(config_path)
-                if not isinstance(fresh, dict):
-                    raise ValueError("The configuration is not a JSON object.")
-            except Exception as exc:
-                messagebox.showerror("Reload Configuration", str(exc), parent=dialog)
-                return
+        def apply_configuration_values(fresh: dict[str, Any], status_text: str) -> None:
             state["reloading"] = True
             try:
                 state["config"] = copy.deepcopy(fresh)
@@ -26329,11 +29381,76 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     else:
                         editor["var"].set(shower_configuration.format_editor_value(value))
                 state["dirty"] = False
-                dirty_var.set("Reloaded from disk")
+                dirty_var.set(status_text)
                 dirty_label.configure(text_color=self.SUCCESS)
                 render_validation(shower_configuration.validate_configuration(fresh))
             finally:
                 state["reloading"] = False
+
+        def reload_from_disk() -> None:
+            try:
+                fresh = programmer.load_config(config_path)
+                if not isinstance(fresh, dict):
+                    raise ValueError("The configuration is not a JSON object.")
+                fresh = shower_configuration.prune_deprecated_configuration(fresh)
+            except Exception as exc:
+                messagebox.showerror("Reload Configuration", str(exc), parent=dialog)
+                return
+            apply_configuration_values(fresh, "Reloaded from disk")
+            hinge_parent = inner.tab(hinge_tab_name)
+            hinge_reload = getattr(hinge_parent, "_reload_hinge_config", None)
+            if callable(hinge_reload):
+                hinge_reload()
+
+        def reset_to_defaults() -> None:
+            if not messagebox.askyesno(
+                "Reset configuration to defaults?",
+                (
+                    "Restore the current Shower Programmer release defaults and save them immediately?\n\n"
+                    "This resets routing thresholds, labels/indicators, keyword lists, hinge defaults, "
+                    "DXF output settings, and clears exact-order overrides. A backup of the current "
+                    "configuration will be created first."
+                ),
+                parent=dialog,
+            ):
+                return
+            defaults = shower_configuration.default_configuration()
+            backup_dir = Path(self.output_dir_var.get()).resolve() / "Configuration Backups"
+            try:
+                backup = shower_configuration.backup_configuration(config_path, backup_dir=backup_dir)
+                if config_path.is_file() and backup is None:
+                    raise RuntimeError("The current configuration could not be backed up.")
+                shower_configuration.atomic_write_configuration(config_path, defaults)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Reset Configuration",
+                    f"Defaults were not applied because the current configuration could not be backed up and replaced:\n\n{exc}",
+                    parent=dialog,
+                )
+                return
+            apply_configuration_values(defaults, "Release defaults restored")
+            hinge_parent = inner.tab(hinge_tab_name)
+            hinge_reload = getattr(hinge_parent, "_reload_hinge_config", None)
+            if callable(hinge_reload):
+                hinge_reload()
+            try:
+                self.record_action(
+                    "Configuration Reset",
+                    "Restored the current release configuration defaults.",
+                    status="SUCCESS",
+                    details=f"Backup: {backup or 'none'}\nConfiguration: {config_path}",
+                )
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Configuration Reset",
+                (
+                    "The current release defaults were restored and saved.\n\n"
+                    f"Backup: {backup or 'none'}\n\n"
+                    "New scans and processing runs will use these defaults."
+                ),
+                parent=dialog,
+            )
 
         def save_configuration() -> None:
             candidate, issues = validate_current()
@@ -26443,8 +29560,8 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         ctk.CTkLabel(
             footer,
             text=(
-                "Invalid settings are never silently corrected. Save Anyway keeps exactly what you entered; "
-                "a pre-save backup is created automatically under Output\\Configuration Backups."
+                "Invalid settings are never silently corrected. Reset to Defaults restores the shipped release baseline; "
+                "every save/reset keeps a backup under Output\\Configuration Backups."
             ),
             text_color=self.MUTED,
             font=("Segoe UI", 9),
@@ -26473,6 +29590,18 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         ).grid(row=0, column=2, padx=(8, 0))
         ctk.CTkButton(
             footer,
+            text="Reset to Defaults",
+            width=138,
+            height=34,
+            fg_color=self.PANEL_BG,
+            hover_color=self.BUTTON_HOVER,
+            border_width=1,
+            border_color=self.WARNING,
+            text_color=self.WARNING,
+            command=reset_to_defaults,
+        ).grid(row=0, column=3, padx=(8, 0))
+        ctk.CTkButton(
+            footer,
             text="Validate Configuration",
             width=156,
             height=34,
@@ -26480,7 +29609,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             hover_color=self.BUTTON_HOVER,
             text_color=self.TEXT,
             command=validate_current,
-        ).grid(row=0, column=3, padx=(8, 0))
+        ).grid(row=0, column=4, padx=(8, 0))
         ctk.CTkButton(
             footer,
             text="Save Configuration",
@@ -26491,14 +29620,14 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             text_color="white",
             font=("Segoe UI", 10, "bold"),
             command=save_configuration,
-        ).grid(row=0, column=4, padx=(8, 0))
+        ).grid(row=0, column=5, padx=(8, 0))
 
         requested_inner_tab = str(getattr(self, "_settings_configuration_requested_tab", "") or "")
         if requested_inner_tab == hinge_tab_name:
             select_configuration_tab(hinge_tab_name)
         elif visible_sections:
             try:
-                inner.set(visible_sections[0])
+                select_configuration_tab(visible_sections[0])
             except ValueError:
                 pass
         self._settings_configuration_requested_tab = ""
@@ -26650,6 +29779,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             warnings = sum(1 for result in results if result.get("status") == "WARN")
             passed = sum(1 for result in results if result.get("status") == "PASS")
             status_var.set(f"Health check complete: {passed} passed, {warnings} warning(s), {failed} failed.")
+            mark_ready = getattr(dialog, "_settings_mark_tab_ready", None)
+            if callable(mark_ready):
+                mark_ready("System Health")
 
         def run_checks() -> None:
             if running["value"]:
@@ -26667,6 +29799,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 running["value"] = False
                 run_button.configure(state="normal")
                 status_var.set(f"Health check could not start: {exc}")
+                mark_ready = getattr(dialog, "_settings_mark_tab_ready", None)
+                if callable(mark_ready):
+                    mark_ready("System Health")
                 return
 
             def worker() -> None:
@@ -27707,10 +30842,132 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 if selected_pdf:
                     break
 
+        if not selected_pdf or not selected_dxf:
+            historical, history_warnings = cls.archived_order_files_from_dated_history(
+                entry,
+                order,
+                need_pdf=not bool(selected_pdf),
+                need_dxf=not bool(selected_dxf),
+            )
+            warnings.extend(history_warnings)
+            if not selected_pdf:
+                selected_pdf = [path for path in historical if path.suffix.lower() == ".pdf"]
+            if not selected_dxf:
+                selected_dxf = [path for path in historical if path.suffix.lower() == ".dxf"]
+
         selected = sorted(
             {Path(path) for path in [*selected_pdf, *selected_dxf]},
             key=lambda candidate: (candidate.suffix.lower(), candidate.name.casefold()),
         )
+        return selected, warnings
+
+    @classmethod
+    def archived_order_files_from_dated_history(
+        cls,
+        entry: dict[str, object],
+        order: shower_batch.ProcessOrder,
+        *,
+        need_pdf: bool = True,
+        need_dxf: bool = True,
+    ) -> tuple[list[Path], list[str]]:
+        """Find order PDF/DXF in dated archives even when no process-list revision exists there.
+
+        Order inputs are archived as individual orders are sent, while a process list
+        can remain active until the final order in its batch is sent. Therefore an
+        archived batch may legitimately have its process list on a later date than
+        several of its order PDFs/DXFs. Test Mode must search the dated order archive
+        history itself instead of assuming physical files share a process-list date.
+        """
+        warnings: list[str] = []
+        raw_dir = entry.get("order_archive_dir")
+        if not isinstance(raw_dir, Path):
+            return [], warnings
+
+        date_dir = raw_dir
+        if not cls.INPUT_ARCHIVE_FOLDER_RE.match(date_dir.name):
+            current = date_dir.parent
+            while current != current.parent:
+                if cls.INPUT_ARCHIVE_FOLDER_RE.match(current.name):
+                    date_dir = current
+                    break
+                current = current.parent
+        if not cls.INPUT_ARCHIVE_FOLDER_RE.match(date_dir.name):
+            return [], warnings
+
+        archive_root = date_dir.parent
+        archive_date = entry.get("archive_date")
+        if not isinstance(archive_date, datetime):
+            archive_date = cls.archive_date_from_name(date_dir.name)
+        history_dirs = cls.archive_date_directories(
+            archive_root,
+            date_to=archive_date if isinstance(archive_date, datetime) else None,
+        )
+        known_revision_dirs = {
+            os.path.normcase(os.path.abspath(str(path)))
+            for path in entry.get("_archive_batch_revision_order_dirs", [])
+            if isinstance(path, Path)
+        } if isinstance(entry.get("_archive_batch_revision_order_dirs", []), list) else set()
+        known_revision_dirs.add(os.path.normcase(os.path.abspath(str(date_dir))))
+        history_dirs = [
+            path for path in history_dirs
+            if os.path.normcase(os.path.abspath(str(path))) not in known_revision_dirs
+        ]
+
+        selected_pdf: list[Path] = []
+        selected_dxf: list[Path] = []
+
+        def candidates_for(directory: Path, *, inspect_pdf_text: bool) -> list[Path]:
+            candidates: list[Path] = []
+            search_dirs = [directory]
+            manual_dir = directory / cls.MANUAL_PROCESS_ARCHIVE_FOLDER_NAME
+            if manual_dir.is_dir():
+                search_dirs.append(manual_dir)
+            for search_dir in search_dirs:
+                try:
+                    candidates.extend(
+                        cls.matching_order_files(
+                            search_dir,
+                            [order],
+                            root_only=True,
+                            inspect_pdf_text=inspect_pdf_text,
+                        )
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"Could not inspect dated archive {search_dir.name} for A&W {order.aw_order}: {exc}"
+                    )
+            return sorted(set(candidates), key=lambda path: path.name.casefold())
+
+        # Cheap filename/DXF correlation across all older dated archives first.
+        for directory in history_dirs:
+            mapped = candidates_for(directory, inspect_pdf_text=False)
+            if need_pdf and not selected_pdf:
+                selected_pdf = [path for path in mapped if path.suffix.lower() == ".pdf"]
+            if need_dxf and not selected_dxf:
+                selected_dxf = [path for path in mapped if path.suffix.lower() == ".dxf"]
+            if (not need_pdf or selected_pdf) and (not need_dxf or selected_dxf):
+                break
+
+        # Only pay for PDF text extraction if no filename-based PDF was found.
+        if need_pdf and not selected_pdf:
+            for directory in history_dirs:
+                mapped = candidates_for(directory, inspect_pdf_text=True)
+                selected_pdf = [path for path in mapped if path.suffix.lower() == ".pdf"]
+                if selected_pdf:
+                    break
+
+        selected = sorted(
+            {Path(path) for path in [*selected_pdf, *selected_dxf]},
+            key=lambda path: (path.suffix.lower(), path.name.casefold()),
+        )
+        if selected:
+            history_sources = entry.setdefault("_archive_order_history_sources", [])
+            if isinstance(history_sources, list):
+                seen = {str(path).casefold() for path in history_sources if isinstance(path, Path)}
+                for path in selected:
+                    if str(path).casefold() not in seen:
+                        history_sources.append(path)
+                        seen.add(str(path).casefold())
         return selected, warnings
 
     @classmethod
@@ -27840,6 +31097,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     process_sources[key] = source
 
         restored: list[Path] = []
+        restored_order_targets: dict[str, Path] = {}
         ordered_sources = sorted(archive_sources.values(), key=lambda candidate: candidate.name.casefold())
         ordered_process_sources = sorted(process_sources.values(), key=lambda candidate: candidate.name.casefold())
         total_steps = max(len(valid_entries) + len(ordered_sources) + len(ordered_process_sources) + 1, 1)
@@ -27860,16 +31118,45 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     same = target.stat().st_size == source.stat().st_size and cls.sha256_file(target) == cls.sha256_file(source)
                     if same:
                         restored.append(target)
+                        try:
+                            source_key = os.path.normcase(os.path.abspath(str(source.resolve())))
+                        except OSError:
+                            source_key = os.path.normcase(os.path.abspath(str(source)))
+                        restored_order_targets[source_key] = target
                         continue
                     target = cls.unique_target_path(target)
                 cls.copy_file_atomically(source, target)
                 restored.append(target)
+                try:
+                    source_key = os.path.normcase(os.path.abspath(str(source.resolve())))
+                except OSError:
+                    source_key = os.path.normcase(os.path.abspath(str(source)))
+                restored_order_targets[source_key] = target
             except OSError as exc:
                 warnings.append(f"Could not restore {source.name}: {exc}")
             finally:
                 completed_steps += 1
 
+        # Persist exact archive -> active file handoffs on each entry. Returning a
+        # restored batch can then reverse only the files we copied instead of
+        # rescanning Input and reopening PDFs to rediscover ownership.
+        for entry in valid_entries:
+            pairs: list[dict[str, Path]] = []
+            raw_sources = entry.get("order_files", [])
+            for source in raw_sources if isinstance(raw_sources, list) else []:
+                if not isinstance(source, Path):
+                    continue
+                try:
+                    source_key = os.path.normcase(os.path.abspath(str(source.resolve())))
+                except OSError:
+                    source_key = os.path.normcase(os.path.abspath(str(source)))
+                active = restored_order_targets.get(source_key)
+                if active is not None:
+                    pairs.append({"active": active, "archive": source})
+            entry["_restored_active_order_file_pairs"] = pairs
+
         restored_process_lists: list[Path] = []
+        restored_process_targets: dict[str, Path] = {}
         for source in ordered_process_sources:
             if task_context is not None:
                 task_context.progress(
@@ -27886,14 +31173,36 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     same = target.stat().st_size == source.stat().st_size and cls.sha256_file(target) == cls.sha256_file(source)
                     if same:
                         restored_process_lists.append(target)
+                        try:
+                            source_key = os.path.normcase(os.path.abspath(str(source.resolve())))
+                        except OSError:
+                            source_key = os.path.normcase(os.path.abspath(str(source)))
+                        restored_process_targets[source_key] = target
                         continue
                     target = cls.unique_target_path(target)
                 cls.copy_file_atomically(source, target)
                 restored_process_lists.append(target)
+                try:
+                    source_key = os.path.normcase(os.path.abspath(str(source.resolve())))
+                except OSError:
+                    source_key = os.path.normcase(os.path.abspath(str(source)))
+                restored_process_targets[source_key] = target
             except OSError as exc:
                 warnings.append(f"Could not restore process list {source.name}: {exc}")
             finally:
                 completed_steps += 1
+
+        if restored_process_targets and valid_entries:
+            process_pairs: list[dict[str, Path]] = []
+            for source in ordered_process_sources:
+                try:
+                    source_key = os.path.normcase(os.path.abspath(str(source.resolve())))
+                except OSError:
+                    source_key = os.path.normcase(os.path.abspath(str(source)))
+                active = restored_process_targets.get(source_key)
+                if active is not None:
+                    process_pairs.append({"active": active, "archive": source})
+            valid_entries[0]["_restored_active_process_file_pairs"] = process_pairs
 
         if not restored_process_lists:
             if task_context is not None:
@@ -27975,6 +31284,39 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         return returned, warnings
 
     @classmethod
+    def return_exact_restored_file_pair(
+        cls,
+        active_file: Path,
+        archived_file: Path,
+        fallback_archive_dir: Path,
+    ) -> Path | None:
+        """Reverse one exact restore handoff without rediscovering the order file."""
+        active = Path(active_file)
+        archived = Path(archived_file)
+        if not active.exists() or not active.is_file():
+            return archived if archived.exists() and archived.is_file() else None
+        if cls.same_path(active, archived):
+            return archived
+        archive_dir = archived.parent if str(archived.parent) else Path(fallback_archive_dir)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        if archived.exists() and archived.is_file():
+            active_stat = active.stat()
+            archived_stat = archived.stat()
+            # Restore uses shutil.copy2, so an untouched active copy retains the
+            # archive size and modification timestamp. Avoid rereading/hashing
+            # large PDFs/DXFs in that overwhelmingly common return path.
+            same = (
+                active_stat.st_size == archived_stat.st_size
+                and active_stat.st_mtime_ns == archived_stat.st_mtime_ns
+            )
+            if not same and active_stat.st_size == archived_stat.st_size:
+                same = cls.sha256_file(active) == cls.sha256_file(archived)
+            if same:
+                active.unlink()
+                return archived
+        return cls.move_file_to_folder(active, archive_dir)
+
+    @classmethod
     def return_archived_order_to_archive(
         cls,
         entry: dict[str, object],
@@ -27988,32 +31330,63 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             return [], ["The selected archive row does not contain a valid archive destination."]
         warnings: list[str] = []
         returned: list[Path] = []
-        try:
-            active_files = cls.matching_order_files(
-                Path(order_folder),
-                [order],
-                root_only=True,
-                inspect_pdf_text=True,
-            )
-        except Exception as exc:
-            return [], [f"Could not identify active files for A&W {order.aw_order}: {exc}"]
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        for source in active_files:
-            destination = archive_dir / source.name
+        exact_pairs = entry.get("_restored_active_order_file_pairs", [])
+        if isinstance(exact_pairs, list) and exact_pairs:
+            for pair in exact_pairs:
+                if not isinstance(pair, dict):
+                    continue
+                active = pair.get("active")
+                archived = pair.get("archive")
+                if not isinstance(active, Path) or not isinstance(archived, Path):
+                    continue
+                try:
+                    returned_path = cls.return_exact_restored_file_pair(active, archived, archive_dir)
+                    if returned_path is not None:
+                        returned.append(returned_path)
+                except OSError as exc:
+                    warnings.append(f"Could not return {active.name} to {archive_dir.name}: {exc}")
+        else:
+            # Compatibility fallback for restores made by older releases. New
+            # restores always carry exact file pairs and never need PDF text scans.
             try:
-                if destination.exists() and destination.is_file():
-                    same = (
-                        destination.stat().st_size == source.stat().st_size
-                        and cls.sha256_file(destination) == cls.sha256_file(source)
+                active_candidates = [
+                    path for path in Path(order_folder).iterdir()
+                    if path.is_file() and path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS
+                ]
+                active_files = cls.matching_order_files(
+                    Path(order_folder),
+                    [order],
+                    root_only=True,
+                    inspect_pdf_text=False,
+                    candidate_files=active_candidates,
+                )
+                if not active_files:
+                    active_files = cls.matching_order_files(
+                        Path(order_folder),
+                        [order],
+                        root_only=True,
+                        inspect_pdf_text=True,
+                        candidate_files=active_candidates,
                     )
-                    if same:
-                        source.unlink()
-                        returned.append(destination)
-                        continue
-                    destination = cls.unique_target_path(destination)
-                returned.append(cls.move_file_to_folder(source, archive_dir))
-            except OSError as exc:
-                warnings.append(f"Could not return {source.name} to {archive_dir.name}: {exc}")
+            except Exception as exc:
+                return [], [f"Could not identify active files for A&W {order.aw_order}: {exc}"]
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            for source in active_files:
+                destination = archive_dir / source.name
+                try:
+                    if destination.exists() and destination.is_file():
+                        same = (
+                            destination.stat().st_size == source.stat().st_size
+                            and cls.sha256_file(destination) == cls.sha256_file(source)
+                        )
+                        if same:
+                            source.unlink()
+                            returned.append(destination)
+                            continue
+                        destination = cls.unique_target_path(destination)
+                    returned.append(cls.move_file_to_folder(source, archive_dir))
+                except OSError as exc:
+                    warnings.append(f"Could not return {source.name} to {archive_dir.name}: {exc}")
 
         process_root = Path(process_list_path)
         if process_root.suffix:
@@ -28024,28 +31397,47 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         except OSError as exc:
             warnings.append(f"Could not remove {generated.name}: {exc}")
 
-        # Also return an original process list if an operator manually moved it
-        # out of the archive instead of using Restore for Testing.
-        raw_process_files = entry.get("process_list_files", [])
-        for archived_process in raw_process_files if isinstance(raw_process_files, list) else []:
-            if not isinstance(archived_process, Path):
-                continue
-            active_process = process_root / archived_process.name
-            if not active_process.exists() or not active_process.is_file():
-                continue
-            try:
-                if archived_process.exists() and archived_process.is_file():
-                    same = (
-                        archived_process.stat().st_size == active_process.stat().st_size
-                        and cls.sha256_file(archived_process) == cls.sha256_file(active_process)
+        # Exact process-list handoffs avoid filename rediscovery and also handle
+        # conflict-suffixed active copies created during Restore.
+        exact_process_pairs = entry.get("_restored_active_process_file_pairs", [])
+        if isinstance(exact_process_pairs, list) and exact_process_pairs:
+            for pair in exact_process_pairs:
+                if not isinstance(pair, dict):
+                    continue
+                active_process = pair.get("active")
+                archived_process = pair.get("archive")
+                if not isinstance(active_process, Path) or not isinstance(archived_process, Path):
+                    continue
+                try:
+                    returned_path = cls.return_exact_restored_file_pair(
+                        active_process, archived_process, archived_process.parent
                     )
-                    if same:
-                        active_process.unlink()
-                        returned.append(archived_process)
-                        continue
-                returned.append(cls.move_file_to_folder(active_process, archived_process.parent))
-            except OSError as exc:
-                warnings.append(f"Could not return process list {active_process.name}: {exc}")
+                    if returned_path is not None:
+                        returned.append(returned_path)
+                except OSError as exc:
+                    warnings.append(f"Could not return process list {active_process.name}: {exc}")
+        else:
+            # Compatibility fallback for older restore manifests.
+            raw_process_files = entry.get("process_list_files", [])
+            for archived_process in raw_process_files if isinstance(raw_process_files, list) else []:
+                if not isinstance(archived_process, Path):
+                    continue
+                active_process = process_root / archived_process.name
+                if not active_process.exists() or not active_process.is_file():
+                    continue
+                try:
+                    if archived_process.exists() and archived_process.is_file():
+                        same = (
+                            archived_process.stat().st_size == active_process.stat().st_size
+                            and cls.sha256_file(archived_process) == cls.sha256_file(active_process)
+                        )
+                        if same:
+                            active_process.unlink()
+                            returned.append(archived_process)
+                            continue
+                    returned.append(cls.move_file_to_folder(active_process, archived_process.parent))
+                except OSError as exc:
+                    warnings.append(f"Could not return process list {active_process.name}: {exc}")
         return returned, warnings
 
     def load_archive_settings_inventory(
@@ -28948,6 +32340,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         message = "Archive task completed without a valid inventory result."
                         archive_status_var.set(message)
                         set_archive_progress("Archive load failed", message, state="error")
+                        mark_ready = getattr(dialog, "_settings_mark_tab_ready", None)
+                        if callable(mark_ready):
+                            mark_ready("Archives")
                 elif kind == "task_cancelled":
                     archive_task_meta.pop(task_id, None)
                     refresh_inflight.discard(mode)
@@ -28958,6 +32353,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         "No partial archive result was applied. Use Retry or reopen Archives to load again.",
                         state="cancelled",
                     )
+                    mark_ready = getattr(dialog, "_settings_mark_tab_ready", None)
+                    if callable(mark_ready):
+                        mark_ready("Archives")
                     if archive_cancelled_for_hide:
                         archive_cancelled_for_hide = False
                         try:
@@ -28981,12 +32379,18 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         message,
                         state="error",
                     )
+                    mark_ready = getattr(dialog, "_settings_mark_tab_ready", None)
+                    if callable(mark_ready):
+                        mark_ready("Archives")
             while True:
                 try:
                     payload = archive_result_queue.get_nowait()
                 except queue.Empty:
                     break
                 apply_archive_payload(payload)
+                mark_ready = getattr(dialog, "_settings_mark_tab_ready", None)
+                if callable(mark_ready):
+                    mark_ready("Archives")
             archive_poll_after_id = dialog.after(100, poll_archive_refresh)
 
         def apply_date_filter() -> None:
@@ -29084,6 +32488,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 restored, process_files, warnings = result
                 for entry in entries:
                     entry["_active_copy"] = bool(restored)
+                self.register_restored_archive_batch(batch_name, process_files, entries)
                 render()
                 self.scan_orders()
                 message = (
@@ -30267,6 +33672,26 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     code_list.focus(item_id)
                     code_list.see(item_id)
 
+        def reload_hinge_config() -> None:
+            try:
+                fresh = programmer.load_config(path)
+                fresh_codes = self.normalize_hinge_detection_codes(fresh.get("rules", {}).get("hinge_label_keywords", []))
+                if not fresh_codes:
+                    fresh_codes = list(programmer.DEFAULT_HINGE_LABEL_KEYWORDS)
+                fresh_orientations = programmer.hinge_label_orientations(fresh)
+                codes[:] = fresh_codes
+                orientations.clear()
+                orientations.update({
+                    code: fresh_orientations.get(code, programmer.DEFAULT_HINGE_LABEL_ORIENTATIONS.get(code, "down"))
+                    for code in codes
+                })
+                refresh_codes()
+                status_var.set("Hinge codes reloaded from the active configuration.")
+            except Exception as exc:
+                status_var.set(f"Could not reload hinge settings: {exc}")
+
+        setattr(parent, "_reload_hinge_config", reload_hinge_config)
+
         def selected_code() -> str | None:
             selection = code_list.selection()
             if not selection:
@@ -30783,6 +34208,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         count_var.set("Action History could not render")
                         append_history_diagnostic(f"RENDER ERROR: {exc.__class__.__name__}: {exc}")
                         set_history_diagnostics_expanded(True)
+                        mark_ready = getattr(dialog, "_settings_mark_tab_ready", None) if dialog is not None else None
+                        if callable(mark_ready):
+                            mark_ready("Action History")
                     else:
                         set_history_progress(
                             1,
@@ -30792,11 +34220,17 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         append_history_diagnostic(
                             f"READY: {len(loaded_events)} record(s) loaded and rendered in {elapsed_ms / 1000.0:.2f}s."
                         )
+                        mark_ready = getattr(dialog, "_settings_mark_tab_ready", None) if dialog is not None else None
+                        if callable(mark_ready):
+                            mark_ready("Action History")
                 elif kind == "task_cancelled":
                     history_refresh_needed = True
                     elapsed_ms = float(event.get("elapsed_ms", 0.0) or 0.0)
                     load_status_var.set("Action History load cancelled safely. Press Retry Load or Apply Range to try again.")
                     append_history_diagnostic(f"CANCELLED after {elapsed_ms / 1000.0:.2f}s.")
+                    mark_ready = getattr(dialog, "_settings_mark_tab_ready", None) if dialog is not None else None
+                    if callable(mark_ready):
+                        mark_ready("Action History")
                 elif kind == "task_error":
                     history_refresh_needed = True
                     error = event.get("error", RuntimeError("Unknown Action History load failure"))
@@ -30808,6 +34242,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     if traceback_text:
                         append_history_diagnostic(traceback_text)
                     set_history_diagnostics_expanded(True)
+                    mark_ready = getattr(dialog, "_settings_mark_tab_ready", None) if dialog is not None else None
+                    if callable(mark_ready):
+                        mark_ready("Action History")
             if dialog is not None:
                 try:
                     history_poll_after_id = dialog.after(100, poll_history_tasks)
@@ -30997,6 +34434,9 @@ def validate_runtime_contracts() -> None:
         "set_manual_dxf_rotation_override",
         "clear_manual_program_fields",
         "set_order_checked_state_in_overrides",
+        "order_tree_check_text",
+        "order_tree_value_is_checked",
+        "toggle_order_checked_from_tree_checkbox",
         "selected_orders_are_all_checked",
         "update_checked_action_button",
         "toggle_selected_orders_checked",
@@ -31087,9 +34527,19 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             raise RuntimeError("The visible version badge does not target the GitHub changelog.")
         display_columns = ShowerProgrammerApp.ORDER_TREE_DISPLAY_COLUMNS
         if not display_columns or display_columns[0] != "review":
-            raise RuntimeError("Mark Checked is not directly to the right of Batch / Process List.")
-        if "order" in display_columns:
-            raise RuntimeError("The duplicate A&W overview column is still visible.")
+            raise RuntimeError("The compact checked-state column is not the first visible Orders data column.")
+        if len(display_columns) < 2 or display_columns[1] != "order":
+            raise RuntimeError("Batch / A&W is not directly beside the checked-state column.")
+        if ShowerProgrammerApp.order_tree_check_text("Order checked") != "[✓]":
+            raise RuntimeError("Checked Orders do not render the compact check indicator.")
+        if ShowerProgrammerApp.order_tree_check_text("") != "[ ]":
+            raise RuntimeError("Unchecked Orders do not render the compact empty-box indicator.")
+        if display_columns[-1] != "issues":
+            raise RuntimeError("Issues is not the rightmost Orders column.")
+        if ShowerProgrammerApp.mirror_section_label("Mirror - With Fabrication") != "MIRROR • WITH FABRICATION":
+            raise RuntimeError("Mirror fabrication section divider label is missing.")
+        if ShowerProgrammerApp.mirror_section_label("Mirror - Without Fabrication") != "MIRROR • WITHOUT FABRICATION":
+            raise RuntimeError("Mirror no-fabrication section divider label is missing.")
         processed_index = display_columns.index("processed")
         if processed_index + 1 >= len(display_columns) or display_columns[processed_index + 1] != "sent":
             raise RuntimeError("Sent is not directly to the right of Processed.")
@@ -31140,6 +34590,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         selection_app.tree = FakeSelectionTree()
         selection_app.tree_row_batches = {"batch": "batch-id"}
         selection_app.tree_row_orders = {"order_1": TestOrder("100001"), "order_2": TestOrder("100002")}
+        selection_app.process_batches = {}
         selection_app._expanding_batch_selection = False
         selection_app.status_var = FakeStatusVar()
         selection_app.on_orders_tree_selection()
@@ -31256,6 +34707,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         page_app.recent_external_page_launches = {}
         page_app.status_var = FakeStatusVar()
         fake_page = FakePageWindow()
+        page_app.root = fake_page
         page_app.register_page_window("review_send", fake_page)
         if not page_app.focus_existing_page_window("review_send", "Review / Send", show_notice=False):
             raise RuntimeError("Single-page window focus self-test failed.")
@@ -31969,11 +35421,17 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 production_named_c,
             ):
                 production_path.write_text("sketch", encoding="utf-8")
-            production_time = time.time() - 3600
-            os.utime(production_process_file, (production_time + 100, production_time + 100))
-            os.utime(production_match_a, (production_time + 200, production_time + 200))
+            # Use whole-second, widely separated timestamps and then read the
+            # actual filesystem values back.  The packaged Windows runtime can
+            # observe slightly different timestamp rounding than source Python,
+            # so the self-test must verify the relationship the production rule
+            # uses rather than assume an exact floating-point mtime survived.
+            production_time = float(int(time.time()) - 3600)
+            os.utime(production_process_file, (production_time + 120, production_time + 120))
+            os.utime(production_match_a, (production_time + 600, production_time + 600))
             os.utime(production_stale_b, (production_time, production_time))
-            os.utime(production_named_c, (production_time + 200, production_time + 200))
+            os.utime(production_named_c, (production_time + 600, production_time + 600))
+            production_process_mtime = production_process_file.stat().st_mtime
             production_output_root = temp_root / "production_reconciliation_output"
             production_batch = {
                 "id": "production-batch",
@@ -31985,8 +35443,9 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             newer_production_process_file.write_text("newer process-list", encoding="utf-8")
             os.utime(
                 newer_production_process_file,
-                (production_time + 250, production_time + 250),
+                (production_time + 900, production_time + 900),
             )
+            newer_production_process_mtime = newer_production_process_file.stat().st_mtime
             _duplicate_orders, duplicate_process_times = (
                 ShowerProgrammerApp.production_sketch_process_times(
                     [
@@ -32000,7 +35459,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                     ]
                 )
             )
-            if duplicate_process_times.get(cleanup_order_a.aw_order) != production_time + 250:
+            if duplicate_process_times.get(cleanup_order_a.aw_order) != newer_production_process_mtime:
                 raise RuntimeError("Newest duplicate-order process-list timestamp was not authoritative.")
             (
                 production_reconciled,
@@ -32037,16 +35496,43 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 cleanup_order_b.aw_order,
             ):
                 raise RuntimeError("A stale production sketch was incorrectly marked sent.")
-            os.utime(production_stale_b, (production_time + 300, production_time + 300))
-            second_reconciled, _second_matches, second_warnings, _second_checked = (
+            updated_production_time = max(
+                production_process_mtime + 600.0,
+                float(int(time.time()) + 10),
+            )
+            os.utime(production_stale_b, (updated_production_time, updated_production_time))
+            updated_production_mtime = production_stale_b.stat().st_mtime
+            second_reconciled, second_matches, second_warnings, second_checked = (
                 ShowerProgrammerApp.reconcile_orders_sent_from_production(
                     [production_batch],
                     production_output_root,
                     production_sketch_root,
                 )
             )
-            if [order.aw_order for order in second_reconciled] != ["236506"] or second_warnings:
-                raise RuntimeError("Updated production sketch reconciliation self-test failed.")
+            second_aw = [order.aw_order for order in second_reconciled]
+            stale_second_warnings = [
+                warning
+                for warning in second_warnings
+                if "older production sketch" in str(warning).lower()
+            ]
+            # This block specifically tests that a formerly stale production
+            # sketch becomes eligible after its timestamp is refreshed.  Other
+            # optional subsystem warnings (for example a durable-state warning)
+            # are validated by their own self-tests and must not make this
+            # timestamp reconciliation contract flaky only in the frozen EXE.
+            if (
+                second_aw != ["236506"]
+                or set(second_matches) != {"236506"}
+                or second_checked != 1
+                or stale_second_warnings
+            ):
+                raise RuntimeError(
+                    "Updated production sketch reconciliation self-test failed: "
+                    f"reconciled={second_aw!r}, matches={sorted(second_matches)!r}, "
+                    f"checked={second_checked!r}, warnings={second_warnings!r}, "
+                    f"process_mtime={production_process_mtime!r}, "
+                    f"updated_sketch_mtime={updated_production_mtime!r}."
+                )
             if ShowerProgrammerApp.leading_job_number_from_filename("87576307.2 AMARA 8_1") != "87576307.2":
                 raise RuntimeError("Leading Job Nr extraction self-test failed.")
             revision_jobs = ("88893379.2R", "88893379.2.2R")
@@ -32454,6 +35940,123 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "nonfabricated_mirror_sketch_processing": True,
                 "mirror_fabrication_batch_categories": True,
                 "version_1_62_speed_first_presentation": True,
+                "lazy_pdfium_startup": True,
+                "selection_driven_review_prefetch": True,
+                "prepared_review_context_handoff": True,
+                "adaptive_ui_queue_polling": True,
+                "async_priority_review_raster": True,
+                "deferred_startup_housekeeping": True,
+                "deferred_history_migration": True,
+                "async_startup_recovery_scan": True,
+                "manual_archive_retirement": True,
+                "mirror_selftest_current_scope": True,
+                "version_1_63_snappy_review_startup": True,
+                "version_1_64_manual_archive_rebuild_fix": True,
+                "startup_loading_shield": True,
+                "premaximized_review_shell": True,
+                "single_frame_review_reveal": True,
+                "version_1_65_professional_window_presentation": True,
+                "withdraw_before_first_map": True,
+                "transparent_painted_window_reveal": True,
+                "review_foreground_reassertion": True,
+                "global_flash_free_child_presentation": True,
+                "ctk_first_map_guard": True,
+                "version_1_66_flash_free_window_mapping": True,
+                "native_owned_child_windows": True,
+                "flash_free_native_toplevel_shell": True,
+                "unmapped_maximized_layout": True,
+                "dwm_prethemed_window_chrome": True,
+                "withdrawn_root_bootstrap": True,
+                "review_native_owner_foreground": True,
+                "version_1_67_native_window_ownership": True,
+                "in_window_review_loading_cover": True,
+                "background_dxf_preview_warmup": True,
+                "background_review_overview_warmup": True,
+                "cached_child_window_icon": True,
+                "stable_review_first_frame_timing": True,
+                "version_1_68_stable_review_first_frame": True,
+                "staged_native_first_paint": True,
+                "inline_workspace_loading_veil": True,
+                "stable_startup_reveal_barrier": True,
+                "native_tk_root_shell": True,
+                "packager_startup_splash": True,
+                "version_1_69_full_surface_presentation": True,
+                "responsive_processing_queue": True,
+                "visible_order_processing_cursor": True,
+                "safe_between_order_cancellation": True,
+                "incremental_batch_finalization": True,
+                "enabled_processing_cancel_button": True,
+                "version_1_70_responsive_batch_processing": True,
+                "hierarchical_popup_ownership": True,
+                "dated_archive_test_mode_fallback": True,
+                "version_1_71_popup_ownership_archive_test": True,
+                "cumulative_release_test_compatibility": True,
+                "retained_release_version_floor": True,
+                "version_1_72_rebuild_regression_reliability": True,
+                "native_pre_map_alpha": True,
+                "native_hidden_first_paint": True,
+                "inline_workspace_opening_feedback": True,
+                "stable_major_page_ownership": True,
+                "deferred_popup_modal_grab": True,
+                "version_1_73_popup_first_map_settings_lifecycle": True,
+                "single_surface_tk_children": True,
+                "tk_managed_transient_ownership": True,
+                "no_direct_win32_reparent": True,
+                "no_direct_layered_child_style": True,
+                "hidden_mapped_paint_reveal": True,
+                "version_1_74_single_surface_window_recovery": True,
+                "post_map_presentation_veil": True,
+                "startup_internal_cover_handoff": True,
+                "review_first_content_frame_gate": True,
+                "settings_target_window_cover": True,
+                "version_1_75_stable_paint_handoff": True,
+                "review_foreground_cover_handoff": True,
+                "themed_manual_dxf_confirmation": True,
+                "settings_tab_loading_covers": True,
+                "version_1_76_foreground_handoff_tab_loading": True,
+                "settings_content_local_loading": True,
+                "settings_loading_tab_switching": True,
+                "settings_async_tab_cover_lifecycle": True,
+                "version_1_77_interactive_settings_tab_loading": True,
+                "atomic_popup_reveal": True,
+                "modern_borderless_compact_prompts": True,
+                "lazy_configuration_inner_tabs": True,
+                "switchable_configuration_section_loading": True,
+                "curated_active_configuration": True,
+                "canonical_configuration_defaults": True,
+                "reset_configuration_defaults": True,
+                "horizontal_orders_grid": True,
+                "batch_metadata_items_column": True,
+                "version_1_78_configuration_orders_polish": True,
+                "stable_settings_overlay_hosts": True,
+                "stable_configuration_overlay_hosts": True,
+                "compact_orders_columns": True,
+                "direct_order_check_gutter": True,
+                "early_issues_column": True,
+                "compact_header_grips": True,
+                "version_1_79_stable_settings_compact_orders": True,
+                "restored_batch_exact_archive_return": True,
+                "archive_return_background_preflight": True,
+                "restored_batch_context_fastpath": True,
+                "version_1_80_archive_roundtrip_responsiveness": True,
+                "exact_restored_file_manifest": True,
+                "nonblocking_archive_return_controls": True,
+                "nonblocking_post_return_refresh": True,
+                "dedicated_order_check_column": True,
+                "version_1_81_nonblocking_archive_return_checks": True,
+                "orders_check_column_alignment": True,
+                "issues_rightmost_column": True,
+                "orders_separator_autofit": True,
+                "mirror_fabrication_section_dividers": True,
+                "remake_process_red_indicator": True,
+                "archive_return_soft_busy_progress": True,
+                "version_1_82_orders_archive_workflow_polish": True,
+                "packaged_reconciliation_selftest_stability": True,
+                "version_1_83_packaged_selftest_reliability": True,
+                "spanning_mirror_section_bands": True,
+                "half_height_mirror_section_bands": True,
+                "clear_order_checkboxes": True,
+                "version_1_84_mirror_section_check_polish": True,
             }
         )
     except Exception as exc:
@@ -32479,12 +36082,43 @@ def main() -> None:
             )
         except Exception:
             pass
-    root = ctk.CTk() if ctk is not None else tk.Tk()
+
+    dark_mode, startup_bg, startup_accent, startup_text, startup_muted = ShowerProgrammerApp.startup_palette()
+    if ctk is not None:
+        try:
+            ctk.set_appearance_mode("Dark" if dark_mode else "Light")
+            ctk.set_default_color_theme("blue")
+        except Exception:
+            pass
+
+    # Use a native Tk root as the window shell. CustomTkinter controls still render
+    # normally inside it, but CTk's delayed root-titlebar/deiconify path can no longer
+    # expose an unthemed white first frame during application startup.
+    root = tk.Tk()
+    # Never allow the native Tk/CTk root to receive its default first paint. CTk
+    # may schedule a delayed deiconify during title-bar setup, so guard that call
+    # and keep the root withdrawn until the branded startup shield is already live.
+    ShowerProgrammerApp.install_first_map_guard(root)
+    try:
+        root.withdraw()
+    except tk.TclError:
+        pass
+    root.title(f"Shower Programmer {ShowerProgrammerApp.APP_VERSION}")
+    root.geometry("1180x720")
+    root.minsize(980, 560)
+    try:
+        root.configure(bg=startup_bg)
+    except tk.TclError:
+        pass
     try:
         root.attributes("-alpha", 0.0)
     except tk.TclError:
         pass
+
     guard = SingleInstanceGuard()
+    startup_shield: StartupShield | None = None
+    app_holder: dict[str, ShowerProgrammerApp] = {}
+    startup_error: list[BaseException] = []
     try:
         if not guard.acquire():
             root.withdraw()
@@ -32497,10 +36131,64 @@ def main() -> None:
             )
             root.destroy()
             return
-        validate_runtime_contracts()
-        ShowerProgrammerApp(root)
+
+        # Keep the Programmer root fully unmapped. The branded shield is the first
+        # and only visible startup HWND; the real root is mapped later underneath it.
+        setattr(root, "_shower_startup_shield_active", True)
+        startup_shield = StartupShield(
+            root,
+            background=startup_bg,
+            accent=startup_accent,
+            text_color=startup_text,
+            muted_color=startup_muted,
+            detail="Preparing workspace...",
+        )
+        # The PyInstaller splash is visible during interpreter/module import. Only
+        # hand off after our native Tk shield has completed its own first paint.
+        close_packager_splash()
+
+        def construct_application() -> None:
+            try:
+                if startup_shield is not None:
+                    startup_shield.set_detail("Loading controls and production state...")
+                validate_runtime_contracts()
+                app = ShowerProgrammerApp(root)
+                app_holder["app"] = app
+                if startup_shield is not None:
+                    startup_shield.set_detail("Finishing layout...")
+                    startup_shield.sync_to_root()
+
+                # Let CTk/Tk complete deferred geometry work while the startup cover
+                # is still above the application, then atomically reveal the shell.
+                root.after_idle(lambda: root.after(16, lambda: app.finish_startup_presentation(startup_shield)))
+            except BaseException as exc:
+                startup_error.append(exc)
+                if startup_shield is not None:
+                    startup_shield.destroy()
+                try:
+                    setattr(root, "_shower_startup_shield_active", False)
+                    root.withdraw()
+                    messagebox.showerror(
+                        "Shower Programmer could not start",
+                        friendly_error_message("Program startup", exc),
+                        parent=root,
+                    )
+                except Exception:
+                    print(friendly_error_message("Program startup", exc), file=sys.stderr)
+                try:
+                    root.after_idle(root.destroy)
+                except tk.TclError:
+                    pass
+
+        # Give Windows one paint turn for the maximized branded loading surface
+        # before CustomTkinter builds the much larger widget tree.
+        root.after(18, construct_application)
         root.mainloop()
+        if startup_error:
+            return
     except Exception as exc:
+        if startup_shield is not None:
+            startup_shield.destroy()
         try:
             root.withdraw()
             messagebox.showerror(

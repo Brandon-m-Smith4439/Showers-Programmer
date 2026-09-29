@@ -46,6 +46,12 @@ class FakeChild:
     def after(self, _delay: int, callback) -> None:
         callback()
 
+    def withdraw(self) -> None:
+        return
+
+    def update_idletasks(self) -> None:
+        return
+
     def deiconify(self) -> None:
         return
 
@@ -56,6 +62,9 @@ class FakeChild:
         return
 
     def focus_force(self) -> None:
+        self.focused = True
+
+    def focus_set(self) -> None:
         self.focused = True
 
     def attributes(self, *_args) -> None:

@@ -16,13 +16,15 @@ import shower_programmer_gui as gui
 
 
 class VisibleStartupRecoveryTests(unittest.TestCase):
-    def test_main_window_uses_transparency_without_withdrawal(self) -> None:
+    def test_main_window_remains_hidden_until_controlled_first_map(self) -> None:
         main_source = inspect.getsource(gui.main)
-        presentation_source = inspect.getsource(gui.ShowerProgrammerApp.force_main_window_maximized)
+        presentation_source = inspect.getsource(gui.ShowerProgrammerApp.finish_startup_presentation)
 
         self.assertIn('root.attributes("-alpha", 0.0)', main_source)
         startup = main_source.split("guard = SingleInstanceGuard()", 1)[0]
-        self.assertNotIn("root.withdraw()", startup)
+        self.assertIn("ShowerProgrammerApp.install_first_map_guard(root)", startup)
+        self.assertIn("root.withdraw()", startup)
+        self.assertIn("self.release_first_map_guard(self.root)", presentation_source)
         self.assertIn('self.root.attributes("-alpha", 1.0)', presentation_source)
 
     def test_version_152_release_marker_is_retained(self) -> None:

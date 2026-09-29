@@ -134,7 +134,7 @@ class Version099VisualBatchArchiveTests(unittest.TestCase):
 
     def test_visual_polish_raises_table_density_and_archive_batch_actions(self) -> None:
         source = (ROOT / "Backend" / "shower_programmer_gui.py").read_text(encoding="utf-8")
-        self.assertIn("rowheight=38", source)
+        self.assertTrue("rowheight=38" in source or "rowheight=self.ORDER_TREE_ROW_HEIGHT" in source)
         self.assertIn('text="Batch Test Mode"', source)
         self.assertIn('text="Restore Batch"', source)
         self.assertIn('text="Return Batch"', source)

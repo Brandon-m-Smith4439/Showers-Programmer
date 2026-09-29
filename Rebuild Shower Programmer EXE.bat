@@ -214,6 +214,7 @@ echo Building one-folder EXE...
   --windowed ^
   --name "%APP_NAME%" ^
   --icon "%CD%\%ICON_FILE%" ^
+  --splash "%CD%\Assets\ShowersProgrammerSplash.png" ^
   --distpath "build\release" ^
   --workpath "build\pyinstaller" ^
   --specpath "build\pyinstaller" ^

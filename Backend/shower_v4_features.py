@@ -108,6 +108,20 @@ from __future__ import annotations
 # VERSION_1_60_POLISHER_WARNING_WINDOW_PRESENTATION
 # VERSION_1_61_CENTERED_FAST_OPENING
 # VERSION_1_62_SPEED_FIRST_PRESENTATION
+# VERSION_1_63_SNAPPY_REVIEW_STARTUP
+# VERSION_1_64_MANUAL_ARCHIVE_REBUILD_FIX
+# VERSION_1_65_PROFESSIONAL_WINDOW_PRESENTATION
+# VERSION_1_66_FLASH_FREE_WINDOW_MAPPING
+# VERSION_1_67_NATIVE_WINDOW_OWNERSHIP
+# VERSION_1_68_STABLE_REVIEW_FIRST_FRAME
+# VERSION_1_69_FULL_SURFACE_PRESENTATION
+# VERSION_1_70_RESPONSIVE_BATCH_PROCESSING
+# VERSION_1_71_POPUP_OWNERSHIP_ARCHIVE_TEST
+# VERSION_1_72_REBUILD_REGRESSION_RELIABILITY
+# VERSION_1_73_POPUP_FIRST_MAP_SETTINGS_LIFECYCLE
+# VERSION_1_74_SINGLE_SURFACE_WINDOW_RECOVERY
+# VERSION_1_75_STABLE_PAINT_HANDOFF
+# VERSION_1_76_FOREGROUND_HANDOFF_TAB_LOADING
 # VERSION_1_29_MIRROR_WJ_FAST_SEND
 # VERSION_1_30_EXACT_CLEANUP_SEND_PREFLIGHT
 # VERSION_1_31_SEND_PIPELINE_CLEANUP_SPEED
@@ -685,10 +699,16 @@ def show_send_conflict_dialog(app: Any, conflicts: list[SendConflict], gui: Any)
         return "replace" if answer is True else "keep" if answer is False else "cancel"
 
     parent = getattr(app, "send_review_window", None) or getattr(app, "root", None)
-    dialog = ctk.CTkToplevel(parent)
+    try:
+        dialog = app.create_hidden_toplevel(parent)
+    except Exception:
+        shell_type = getattr(gui, "FlashFreeToplevel", None)
+        if shell_type is None:
+            return "cancel"
+        dialog = shell_type(parent, background=app.APP_BG)
     dialog.title("Production File Conflicts")
     try:
-        app.position_child_window(dialog, 780, 560)
+        app.position_child_window(dialog, 780, 560, owner=parent)
         app.set_window_icon(dialog)
     except Exception:
         dialog.geometry("780x560")
@@ -800,10 +820,21 @@ def show_send_conflict_dialog(app: Any, conflicts: list[SendConflict], gui: Any)
 
     dialog.protocol("WM_DELETE_WINDOW", lambda: finish("cancel"))
     try:
-        app.bring_window_to_front(dialog, make_transient=True)
+        setattr(dialog, "_shower_grab_on_present", True)
+        app.present_window_without_flash(
+            dialog,
+            make_transient=True,
+            owner=parent,
+            delay_ms=0,
+            activate=True,
+            native_owner=True,
+        )
     except Exception:
-        pass
-    dialog.grab_set()
+        try:
+            dialog.deiconify()
+            dialog.grab_set()
+        except Exception:
+            pass
     dialog.wait_window()
     return str(choice["value"])
 
@@ -1757,8 +1788,20 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
                     ["", "", '36"', '42"', "", "", "900002-1", "Flat Polish side(s) 1/2/3/4", "", "", "Customer", "", "", "12345679 PACKING ONLY", "", "", "", "", "", "", "", "Packing / Shipping"],
                 ]
                 mirror_orders = shower_batch.load_process_orders_from_rows(mirror_rows)
-                if [order.aw_order for order in mirror_orders] != ["900001"]:
-                    raise RuntimeError("Mirror batches are not scoped to Waterjet-routed orders.")
+                if [order.aw_order for order in mirror_orders] != ["900001", "900002"]:
+                    raise RuntimeError("Mirror batches do not retain fabricated and non-fabricated work.")
+                mirror_categories = [
+                    shower_batch.mirror_fabrication_category(order, {"rules": {"mirror_keywords": ["MIRROR"]}})
+                    for order in mirror_orders
+                ]
+                if mirror_categories != ["Mirror - With Fabrication", "Mirror - Without Fabrication"]:
+                    raise RuntimeError("Mirror fabrication categories are not preserved by the integrated self-test.")
+                legacy_scoped_orders = shower_batch.load_process_orders_from_rows(
+                    mirror_rows,
+                    include_non_waterjet_mirror=False,
+                )
+                if [order.aw_order for order in legacy_scoped_orders] != ["900001"]:
+                    raise RuntimeError("Legacy Waterjet-only mirror scoping is unavailable when explicitly requested.")
                 required_v120_helpers = (
                     "archive_revision_inspector_text",
                     "run_system_health_checks",
@@ -2335,3 +2378,15 @@ def _run_v4_self_tests(programmer: Any, shower_batch: Any, gui: Any, scratch_par
         raise RuntimeError("Strong Waterjet geometry did not override conflicting Denver routing.")
     if not all(programmer.has_hinge_label_text(code, decision_config) for code in ("JRG037", "GEN180")):
         raise RuntimeError("Configured JRG037/GEN180 hinge detection self-test failed.")
+
+# VERSION_1_77_INTERACTIVE_SETTINGS_TAB_LOADING
+# VERSION_1_78_CONFIGURATION_ORDERS_POLISH
+
+# VERSION_1_79_STABLE_SETTINGS_COMPACT_ORDERS
+# VERSION_1_80_ARCHIVE_ROUNDTRIP_RESPONSIVENESS
+# VERSION_1_81_NONBLOCKING_ARCHIVE_RETURN_CHECKS
+# VERSION_1_82_ORDERS_ARCHIVE_WORKFLOW_POLISH
+
+# VERSION_1_83_PACKAGED_SELFTEST_RELIABILITY
+
+# VERSION_1_84_MIRROR_SECTION_CHECK_POLISH

@@ -142,17 +142,22 @@ class WindowPresentationTests(unittest.TestCase):
 
         self.assertIn("self.present_window_without_flash", send_source)
         self.assertIn("maximize=True", send_source)
-        self.assertIn('dialog.attributes("-alpha", 0.0)', settings_source)
+        self.assertIn("self.create_hidden_toplevel(self.root)", settings_source)
         self.assertIn("self.present_window_without_flash", settings_source)
         self.assertIn("self.create_hidden_toplevel(owner)", notice_source)
 
-    def test_slow_workspaces_show_immediate_opening_feedback(self) -> None:
+    def test_slow_workspaces_show_opening_feedback_without_review_flash(self) -> None:
         review_source = inspect.getsource(gui.ShowerProgrammerApp.open_order_review)
+        review_feedback_source = inspect.getsource(gui.ShowerProgrammerApp.schedule_review_opening_feedback)
         send_source = inspect.getsource(gui.ShowerProgrammerApp.send_all_to_shop)
         settings_source = inspect.getsource(gui.ShowerProgrammerApp.open_settings)
 
-        self.assertIn('self.show_opening_window(', review_source)
-        self.assertIn('"review_order"', review_source)
+        # Review Order delays its loading panel briefly so cached/prefetched opens
+        # do not flash a transient window. Other genuinely slow workspaces retain
+        # their immediate opening feedback.
+        self.assertIn('self.schedule_review_opening_feedback(process_order)', review_source)
+        self.assertTrue('self.show_workspace_loading_shield(' in review_feedback_source or 'self.show_opening_window(' in review_feedback_source)
+        self.assertIn('"review_order"', review_feedback_source)
         self.assertIn('self.show_opening_window(', send_source)
         self.assertIn('"review_send"', send_source)
         self.assertIn('self.show_opening_window(', settings_source)

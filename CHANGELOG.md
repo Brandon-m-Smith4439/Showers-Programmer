@@ -1,6 +1,339 @@
+## [Version 1.84] - 2026-09-29
+
+### Improved
+- Replaced column-bound mirror fabrication divider text with compact viewport-spanning section bands so **MIRROR • WITH FABRICATION** and **MIRROR • WITHOUT FABRICATION** are never clipped by Batch / A&W, Items, or other column boundaries.
+- Set mirror section bands to approximately half the normal Orders row/header height and gave them a subtle offset shade from the batch header while preserving distinct fabrication/no-fabrication text accents.
+- Replaced font-dependent ballot-box glyphs with a compact `[ ]` / `[✓]` checked-state indicator in the dedicated far-left Orders column for consistent rendering across Windows/Tk environments.
+
+### Validation
+- Added Version 1.84 regressions for full-width mirror bands, half-height presentation, offset palette treatment, and checked-state rendering.
+- Updated retained 1.81-1.83 release tests to accept the current checked-state presentation and future version floors.
+
+## [Version 1.83] - 2026-09-29
+
+### Fixed
+- Hardened the packaged-EXE production-sketch reconciliation self-test that could fail after a completely successful source test/build on Windows. The test now uses filesystem-read-back whole-second timestamps with wide freshness margins instead of depending on exact floating-point `utime` behavior.
+- Scoped the second-pass reconciliation assertion to the behavior it is meant to validate: the formerly stale sketch must become the sole matched/reconciled order and must no longer emit an `older production sketch` warning. Unrelated optional subsystem warnings remain covered by their own dedicated self-tests.
+- Expanded packaged self-test failure diagnostics to report reconciled orders, exact matches, files checked, warnings, and observed process/sketch mtimes if this contract ever fails again.
+
+### Validation
+- Added Version 1.83 regression coverage preventing the packaged reconciliation self-test from returning to the timing-sensitive blanket-warning assertion.
+- Re-ran source compile checks, focused release tests, integrated source self-test, and retained current-release regression coverage.
+
+## [Version 1.82] - 2026-09-29
+
+### Fixed
+- Removed the redundant `BATCH` text from batch Status cells; batch identity remains visible through the collapsible Batch / A&W row styling.
+- Fixed the left-side Orders layout so live processing never writes order text into Tk's hierarchy gutter. The gutter is reserved for batch expand/collapse and the dedicated `☐` / `☑` column stays aligned and unclipped.
+- Restored-batch return now uses a true soft background state: the bottom progress/cancel UI remains active, elapsed/heartbeat detail stays visible, and the rest of the application is not globally marked busy while the task manager still blocks conflicting production work.
+- Untouched restored PDFs/DXFs/process lists now use the preserved `copy2` size/timestamp metadata fast path when returning to Archives, avoiding unnecessary full-file SHA-256 reads for the common unchanged case.
+
+### Improved
+- Moved **Issues** back to the rightmost Orders column while keeping the far-left checked indicator and compact Batch / A&W, Status, Processed, Sent, Delivery, Job, Customer, and Items columns.
+- Double-clicking a column divider now auto-fits that column to the visible header/data content with practical width limits; normal double-clicking an order still opens Review Order.
+- Header resize grips now use zero horizontal heading padding so the `⋮` affordances sit directly against the column edges.
+- Mirror batches now show compact **MIRROR • WITH FABRICATION** and **MIRROR • WITHOUT FABRICATION** divider rows directly inside the batch, grouping the relevant orders instead of repeating the fabrication label in every Items cell.
+- REMAKE processing timestamps now carry a red `🔴 REMAKE` marker in the Processed column for immediate visual recognition.
+
+### Validation
+- Added Version 1.82 regressions for left-column alignment, rightmost Issues placement, separator auto-fit, blank batch Status, mirror fabrication dividers, REMAKE process marking, soft archive-return activity, and the no-hash restored-file fast path.
+- Re-ran retained mirror routing/category, archive round-trip, responsive processing, compact Orders, and current release regression coverage.
+
+## [Version 1.81] - 2026-09-28
+
+### Fixed
+- Restored-batch return no longer rescans `Input\Orders` once per order or reopens PDFs to rediscover files. Archive restore now records exact archive-to-active PDF/DXF/process-list handoffs and the return path reverses only those known copies.
+- The archive-return task and its local-only follow-up refresh no longer disable every application button. They use a soft busy state with visible progress/cancel while conflicting managed tasks remain blocked by the shared task manager.
+- Moved the per-order checked indicator out of the native Treeview hierarchy gutter, where child indentation and checkbox glyphs could overlap/jumble, into a dedicated compact first data column.
+
+### Improved
+- Exact restored-file return still preserves the original dated archive: unchanged active copies are deleted after byte verification, while changed copies are returned beside the original using a unique archive filename.
+- The hierarchy gutter is now reserved only for batch expand/collapse behavior; order rows use a centered `□` / `✓` checked control in the adjacent 36-pixel column.
+- Returning a restored batch remains responsive during the automatic local Orders refresh instead of appearing frozen for the duration of the refresh scan.
+
+### Validation
+- Added Version 1.81 regressions proving exact restore manifests return without calling folder-wide `matching_order_files`, soft archive-return/refresh control behavior, dedicated checked-column placement, and current release metadata.
+- Re-ran retained archive round-trip, compact Orders, Settings/presentation, responsive-task, and integrated source self-test coverage.
+
+## [Version 1.80] - 2026-09-28
+
+### Fixed
+- Restored archive batches no longer freeze the main Programmer when the operator right-clicks the batch and returns it to Archives. The restore operation now registers an in-session archive handoff, and the Orders context menu exposes **Return Restored Batch to Archive** without rereading processing history on the Tk thread.
+- Returning a restored batch now reverses the restore against its original dated archive entries instead of routing those active viewing/test copies through the normal new-date sent-batch archive workflow.
+- Normal **Send Sent Batch to Archives** preflight no longer performs processing-history reads or process-list companion discovery on the Tk thread; readiness validation and archive planning run inside the managed background task.
+
+### Improved
+- Restored-batch return reports per-order progress, remains cancellable at safe boundaries, preserves the original dated archive, and refreshes only local Orders after completion.
+- The restored-batch context-menu fast path avoids the normal sent/deleted-history lookup entirely, keeping right-click actions responsive for archive review workflows.
+
+### Validation
+- Added Version 1.80 regressions for restored-batch provenance registration, no-I/O context-menu detection, background archive preflight, managed exact archive return, cancellation/progress hooks, and retained Version 1.79 behavior.
+
+## [Version 1.79] - 2026-09-28
+
+### Fixed
+- Eliminated Settings/Configuration loading-cover flicker by separating each tab into a permanent content host underneath a persistent sibling loading overlay. Newly created CustomTkinter controls can no longer jump above an active loader while a tab is still building.
+- Configuration internal sections now use the same host/overlay layering model, keeping their loading surface continuously visible through lazy field-card construction and paint settling.
+
+### Improved
+- Replaced the wide visible `Mark Checked` Orders column with a compact far-left `☐` / `☑` order indicator. Clicking the indicator directly toggles that order checked or unchecked; batch rows retain their normal expand/collapse behavior in the same narrow hierarchy gutter.
+- Added a compact visible `Batch / A&W` column for process-list identity and order numbers while keeping review state internal.
+- Moved Issues ahead of Job/Customer/Items and reduced default column widths so common warnings are visible much earlier without horizontal scrolling.
+- Reduced Orders header horizontal padding and removed extra spacing around the `⋮` resize grips so column titles and resize affordances use less width.
+- Horizontal scrolling and operator column resizing from Version 1.78 remain available for wider data.
+
+### Validation
+- Added Version 1.79 regressions for persistent Settings/Configuration overlay stacking, compact header grips, the far-left checked toggle, early Issues placement, and current release metadata.
+- Re-ran retained Settings lifecycle/loading, Configuration, Orders-grid, presentation, responsive-processing, release-contract, and integrated source self-test coverage.
+
+## [Version 1.78] - 2026-09-28
+
+### Improved
+- Compact themed prompts now use an atomic transparent reveal and borderless in-app cards so confirmation, warning, information, and text-entry popups do not expose an intermediate native white caption/frame while opening.
+- Settings > Configuration now lazy-builds each internal configuration section behind its own content-level loading cover. Field cards are constructed in small event-loop batches and pause immediately when the operator switches sections, so the Configuration tab strip stays responsive instead of revealing controls while they assemble.
+- Configuration search remains applied to field cards that are created later during lazy construction, preventing filtered-out settings from briefly flashing into view.
+- The Configuration workspace is curated to active production controls. Retired label X/Y ratios, obsolete DIAMON FUSION placement/minimum-font controls, and the no-longer-used angle-direction setting are removed from the shipped defaults and hidden/pruned from older configs.
+- Added a backed-up **Reset to Defaults** workflow that restores an immutable in-code copy of the exact Version 1.78 shop defaults, updates already-built editors, and clears exact-order overrides.
+- Orders columns are now fixed-width/operator-resizable rather than stretching back into the viewport. The existing horizontal scrollbar therefore exposes the full table after columns are widened, with Shift+mouse-wheel horizontal navigation as an additional shortcut.
+- Batch/process-list parent rows keep only their process-list identity in the collapsible tree column. Order count plus `Mirror fab` / `Mirror no fab` metadata now lives in the wider Items column so it is not clipped by the hierarchy column boundary.
+
+### Fixed
+- Removed stale validation checks for configuration keys that were intentionally retired, so the cleaned release-default configuration validates with zero errors. Added validation for the active mirror-fabrication keyword list.
+
+### Validation
+- Added Version 1.78 regressions for atomic popup presentation, lazy/switchable Configuration sections, curated release defaults, immutable default reset behavior, horizontal Orders scrolling, batch metadata placement, and retained Version 1.77 behavior.
+
+## [Version 1.77] - 2026-09-25
+
+### Changed
+- Settings tab loading now covers only the selected tab's content area instead of blocking the full Settings workspace.
+- The Settings tab selector remains usable while a tab is loading, so operators can switch to another tab immediately.
+- If a tab is changed before its heavy widget construction begins, that build is deferred until the tab is selected again instead of consuming the UI thread in the background.
+- Archives, Action History, and System Health keep independent tab-local loading covers through their asynchronous first data load; switching away does not cancel the background load, and returning shows the correct per-tab loading/ready state.
+- Each Settings tab owns its own loading-cover lifecycle so one tab completing no longer tears down another tab's loading state.
+
+### Tests
+- Added Version 1.77 regressions for content-local Settings loading, switchable tab navigation during loading, deferred unselected-tab construction, asynchronous tab-cover completion, and retained Version 1.76 behavior.
+
 # Shower Programmer Changelog
 
+## [Version 1.76] - 2026-09-25
+
+### Fixed
+- Closed the remaining Review Order foreground handoff gap. The main Programmer loading veil now stays alive behind Review until the Review window has remained the actual Windows foreground window across consecutive paint turns, eliminating the split-second return to the main Programmer during the final reveal.
+- Manual DXF Review resolution no longer uses the native Windows message box path that could paint a white dialog surface before the themed popup appeared. It now uses the same hidden, staged CustomTkinter confirmation surface as the rest of the professional popup workflow.
+
+### Improved
+- Added Settings tab loading covers for tabs that have not been built yet. The cover paints first, expensive tab controls are then constructed, and the cover remains through a short mapped-paint barrier so operators do not watch Configuration, Archives, Recovery, Action History, or other Settings tabs assemble.
+- Review uses temporary topmost state only during the final covered foreground handoff, then immediately restores normal z-order behavior after the main-window veil is retired.
+
+### Validation
+- Added Version 1.76 regressions for the Review foreground-cover handoff, themed Manual DXF Review confirmation, Settings tab loading covers, foreground HWND verification, and current release metadata.
+- Re-ran retained startup, Settings, Review, popup, ownership, responsive processing, release metadata/flag, and integrated source self-test coverage.
+
+## [Version 1.75] - 2026-09-25
+
+### Fixed
+- Closed the remaining post-loader flash race where Tk geometry had stabilized but delayed CustomTkinter canvas redraws could still become visible immediately after a loading surface disappeared.
+- Settings now keeps a loading cover inside the final Settings Toplevel through mapped paint turns instead of relying only on the main-window opening veil.
+- Review Order no longer removes its final cover based only on geometry stability; it waits for the first sketch frame and first DXF/overview frame, with a bounded fallback if rendering fails.
+
+### Improved
+- Shared child-window presentation now adds a same-color in-window veil during the final transparent-to-visible handoff and keeps it above the widget tree for several real event-loop turns before exposing controls.
+- Startup transfers from the external native splash/shield to an in-root loading cover before the shield is destroyed, then keeps that internal cover alive through additional visible paint turns. This hides late CustomTkinter redraws without adding a large fixed startup delay.
+- Historical Version 1.74 release coverage now treats 1.74 as a retained version floor instead of pinning the current build to 1.74.
+
+### Validation
+- Added Version 1.75 regressions for the post-map presentation veil, startup cover handoff, first-content-frame Review gate, Settings target-window cover, and current release metadata.
+- Re-ran retained startup, Settings, Review, popup, ownership, responsive processing, release metadata/flag, and integrated source self-test coverage.
+
+## [Version 1.74] - 2026-09-25
+
+### Fixed
+- Reverted the unsafe direct Win32 child-window re-parent/layered-alpha technique introduced in Version 1.73. On Windows/Tk, mutating `GWLP_HWNDPARENT` / `WS_EX_LAYERED` on Tk's native wrapper can split the wrapper/client HWND pair and produce the blank, separately framed white window seen inside Settings and Review Order.
+- Settings and Review Order now remain one native Toplevel each. Normal popups use Tk `wm transient` ownership only, preserving the correct Settings -> popup and Review -> popup hierarchy without re-parenting Tk's internal client window.
+- Child presentation no longer maps an unfinished HWND behind its owner or invokes native `ShowWindow` during the hidden phase. Hidden geometry settles while withdrawn, then the completed window maps at Tk alpha 0, maximizes/themes/paints, and reveals after two mapped paint turns.
+
+### Improved
+- The flash-free presenter keeps the safe Version 1.69-1.73 in-place loading covers, first-map guard, delayed modal grab, DWM caption theming, and foreground stabilization while removing the native operations that caused the nested blank-window regression.
+- Maximization now prefers Tk's `state("zoomed")` path so a hidden Toplevel is not force-mapped by a Win32 `ShowWindow` call.
+
+### Validation
+- Added Version 1.74 regressions that prohibit direct `GWLP_HWNDPARENT`, `WS_EX_LAYERED`, `SetLayeredWindowAttributes`, and child-presentation `ShowWindow` usage, and verify Settings/Review continue to use a single shared Tk Toplevel shell.
+- Re-ran retained Settings lifecycle, Review presentation, popup ownership, responsive processing, archive Test Mode, release metadata/flag checks, integrated source self-test, and the complete unit-test suite.
+
 All user-facing releases are tracked here. The current version is stored in `Backend/version.json`, displayed by the application, and written into update-package metadata by the rebuild script.
+
+## [Version 1.73] - 2026-09-25
+
+### Fixed
+- Settings and other major workspaces no longer inherit a temporary opening/progress Toplevel as their Tk/Win32 owner. Opening feedback now renders inside the already-painted Programmer surface, preventing the temporary feedback window from closing a page when it is retired.
+- Popup first-map transparency is now applied at the Win32 HWND layer before mapping (`WS_EX_LAYERED` + native alpha 0), closing the DWM timing gap where a default white client/caption frame could appear before Tk's `-alpha` state took effect.
+- Custom message/confirmation dialogs defer their modal grab until the staged popup has actually been presented, avoiding early native realization of a withdrawn dialog.
+
+### Improved
+- The shared presenter forces a complete native paint while the child HWND is still fully transparent, then performs ownership/maximize/layout work, and only raises native opacity after the final paint is ready.
+- Opening Settings and Review / Send no longer create a separate native loading popup; they use the same in-window loading veil already used by the flash-free Review workflow.
+
+### Validation
+- Added Version 1.73 regressions for Settings lifecycle ownership, no-native-HWND opening feedback, Win32 pre-map alpha, hidden native first paint, and deferred modal grabs.
+- Re-ran retained Settings/window-presentation tests, release metadata/flag checks, integrated source self-test, and the complete unit-test suite.
+
+## [Version 1.72] - 2026-09-25
+
+### Fixed
+- Retained Version 1.63 adaptive-polling regression now validates the current responsive queue contract (`1 ms` queued work, `10 ms` pending Review, `20 ms` busy work, `90 ms` idle) instead of requiring the obsolete `25 ms` polling cadence.
+- Retained Version 1.69 and Version 1.71 release tests now treat their version numbers as historical floors rather than requiring the current application to remain exactly on an older release.
+- Incremental packaging is cumulative from Version 1.69 for this recovery release so workstations that applied Version 1.71 directly over Version 1.69 also receive the retained-test updates introduced with Version 1.70.
+
+### Validation
+- Added Version 1.72 regression coverage that rejects exact historical version pinning and obsolete queue-delay assertions in retained release tests.
+- Re-ran the focused rebuild suite, integrated source self-test, release-flag command-line safety check, and complete unit-test suite.
+
+## [Version 1.71] - 2026-09-25
+
+### Fixed
+- Popup/dialog ownership now follows the active workspace hierarchy instead of being flattened back to the main Programmer. Prompts opened from Settings remain above Settings; Review and nested dialogs remain above their launching workspace; structured errors and native folder dialogs use the same owner resolution.
+- Archived batch Test Mode now searches earlier dated order-input archives when a PDF/DXF was archived before the batch process list was retired. This covers normal production batches whose individual orders were sent on different days.
+- Test Mode provenance retains dated-history source paths discovered by the fallback, while the dated archive itself remains read-only.
+
+### Improved
+- Managed page focus is tracked so modal prompts have a reliable parent even during short native-dialog/focus handoffs. Child-window centering and first-paint presentation honor that logical owner chain.
+- The Test Mode failure message now distinguishes a genuinely missing/moved source from the previously unsupported cross-date archive layout.
+
+### Validation
+- Added Version 1.71 regressions for Settings/Review popup owner resolution, logical child ownership, structured-error parenting, and Test Mode recovery when PDFs/DXFs live in an earlier dated archive with no process-list revision on that date.
+
+## [Version 1.70] - 2026-09-25
+
+### Fixed
+- **Process Selected** and **Process All** now keep Tk's message loop responsive throughout multi-order programming instead of allowing queued result/progress callbacks to monopolize the UI thread. Worker-queue draining is time-budgeted and yields back to Windows between small batches of UI events.
+- The visible **Cancel** control is explicitly re-enabled after production controls are locked, fixing the case where it could inherit the disabled state from the rest of the workflow controls.
+- Batch completion no longer re-runs every completed order through the expensive full tree/history refresh path. Completed rows are finalized from worker-provided metadata without rereading processing history/configuration for each order.
+- Overwrite/skip cleanup is now scoped to the single order about to run instead of the whole batch up front, so cancelling mid-batch cannot remove stale output for an order that was never processed.
+
+### Improved
+- Each order now changes to **PROCESSING** as soon as its isolated worker starts, the table automatically follows the active row, and status/progress text advances order-by-order so operators can watch the batch move down the list.
+- Cancellation is cooperative and production-safe: if an order is already writing output, the UI immediately reports that cancellation is pending, lets that one order finish, persists its reports/history, and stops before another order is scheduled. Completed work is retained instead of becoming an untracked partial run.
+- Per-order completion updates use an I/O-free live-row path; processing-history and run-manifest disk work remains in the background worker.
+
+### Validation
+- Added Version 1.70 regressions for time-budgeted UI queue draining, visible per-order processing events, enabled cancellation, safe between-order cancellation, partial-run finalization, and removal of duplicate end-of-batch row refreshes.
+- Updated the retained Version 1.63 adaptive-polling regression to accept the faster busy-task queue cadence introduced by Version 1.70.
+
+## [Version 1.69] - 2026-09-25
+
+### Fixed
+- Eliminated the remaining Review Order white-first-frame path by staging the fully built Review HWND behind the already-visible Programmer before native ownership/maximize/foreground activation. Even if Windows/DWM paints one default native frame, it is physically hidden behind the owner.
+- Review Order now covers the existing Programmer in-place before building any Review widgets, so operators never watch the Review control tree assemble. The completed Review window comes forward with its own already-painted loading cover, then removes that cover only after repeated stable post-maximize paint turns.
+- Replaced the slow Review preparation Toplevel with an in-place main-window loading veil, removing another native window that could flash during background context preparation.
+- Reopening existing Settings/major page windows and the update-progress window now returns through the shared staged presentation controller instead of raw `deiconify()` paths.
+
+### Improved
+- The main application root now uses a native `tk.Tk` shell while continuing to host the existing CustomTkinter controls. This removes CustomTkinter root-window delayed mapping/title-bar behavior from first startup.
+- The startup shield remains visible for a measured multi-frame stability barrier after the real maximized Programmer is mapped, preventing delayed CustomTkinter canvases/layout from becoming visible while they settle.
+- Added a branded PyInstaller startup splash so packaged builds show immediate feedback during Python/module import, before the Tk application can exist. The splash hands off only after the native startup shield is painted.
+- All normal child-window presentation now clears early Tk/Win32 ownership, maps and paints the finished child underneath its owner, waits for stable paint turns, then establishes the final owner/transient relationship and foreground state. This applies to Settings, dialogs, tooltips, context menus, update windows, Review/Send, and shared popups.
+
+### Validation
+- Added Version 1.69 regressions for staged-behind-owner first paint, inline slow-workspace covers, native Tk root startup, startup stability barrier, PyInstaller splash packaging, Review host-cover ordering, and the absence of direct CustomTkinter Toplevel creation in application window paths.
+- Updated retained Version 1.59-1.68 presentation tests to validate the stronger staged-paint architecture while preserving their original reliability guarantees.
+
+## [Version 1.68] - 2026-09-25
+
+### Fixed
+- Review Order no longer exposes its CustomTkinter control tree while buttons, cards, textboxes, and canvases are still painting. The final maximized Review HWND now opens immediately behind an in-window branded loading cover, builds the full workspace underneath it, performs the first redraw, then removes the cover in one visual swap.
+- Removed the second Review window presentation/maximize transaction; the final Review window is mapped only once and stays in place while its contents initialize.
+
+### Improved
+- Warms the Order Overview status payload and the first two DXF preview geometry caches inside the existing background Review context prefetch so initial Review drawing avoids first-open history/DXF work on Tk's UI thread.
+- Reuses one cached application icon image for child windows instead of reopening PNG/ICO assets every time a Review window or popup is created.
+- Defers Review Order action-history file I/O until after the stable first frame is visible.
+- Records `Review Order / Stable first frame` timing in the existing performance diagnostics so real Windows opening performance can be measured per order.
+- Keeps the final Review loading surface inside the owned Review window itself, eliminating a second native-window teardown/reveal handoff.
+
+### Validation
+- Added Version 1.68 regressions for the in-window Review loading cover, cover-before-CustomTkinter construction, background DXF preview warmup, cached child-window icons, single Review map/maximize, and stable-first-frame timing.
+- Updated retained Version 1.65-1.67 presentation tests to validate the stronger covered-build architecture rather than the superseded hidden-until-fully-built sequence.
+
+## [Version 1.67] - 2026-09-24
+
+### Fixed
+- Fixed **Review Order** opening behind the main Programmer by establishing a real Win32 owned-window relationship before the Review HWND is ever mapped, then using a short bounded foreground stabilization after its loading shield closes.
+- Removed Review Order's premature `ShowWindow(SW_MAXIMIZE)` call that could map an unfinished native window before its controls existed. Hidden Review layout now uses monitor-sized geometry without mapping, and the real maximize occurs exactly once during final presentation.
+- Reworked application startup so the CustomTkinter root stays fully withdrawn until the branded loading shield is already visible; the root is mapped and maximized invisibly underneath that shield.
+- Eliminated remaining CustomTkinter Toplevel first-map races by moving shared child windows to a native `FlashFreeToplevel` shell. CustomTkinter controls remain unchanged inside that shell.
+- Routed themed context menus, tooltips, production-conflict dialogs, Settings, Review Order, and other shared windows through the same hidden/native-owner presentation path.
+
+### Improved
+- Pre-applies Windows DWM dark/light caption, border, and title-text colors before a window becomes opaque so the non-client title bar does not briefly paint white and then retheme.
+- Native child ownership is now separate from Tk's transient styling, so full-featured maximized workspaces keep normal title-bar behavior while Windows still guarantees they stay above the Programmer that owns them.
+- Existing page reactivation now uses the same owner/foreground controller instead of temporary topmost and `focus_force()` loops.
+- Startup and Review Order retain Version 1.63's asynchronous loading/prefetch work while presenting only one settled visual frame.
+
+### Validation
+- Added Version 1.67 regressions for native Win32 ownership-before-map, native flash-free Toplevel shells, hidden monitor-sized Review layout, withdrawn-root startup, DWM pre-theming, and bounded Review foreground stabilization.
+- Updated retained presentation regressions from Versions 1.52, 1.65, and 1.66 to reflect the stronger withdrawn/native-owner architecture.
+
+## [Version 1.66] - 2026-09-24
+
+### Fixed
+- Eliminated the remaining native white first-frame flash by keeping new Tk/CustomTkinter windows fully **withdrawn** until their background, geometry, widgets, and transparency are ready.
+- Fixed **Review Order** sometimes opening behind the main Programmer after its loading shield closed by explicitly reasserting the finished Review Order window in the Windows foreground/z-order.
+- Applied the same withdraw-before-first-map presentation path to Settings, opening feedback, themed message dialogs, manual-programming dialogs, sketch editor windows, context menus, tooltips, and other shared child windows.
+- Added a first-map guard around CustomTkinter child windows so its delayed internal title-bar initialization cannot `deiconify()` a window before the application explicitly releases it for presentation.
+- Deferred modal `grab_set()` until a dialog is actually viewable so flash-free hidden construction does not weaken modal behavior.
+
+### Improved
+- Startup now keeps the real maximized Programmer fully transparent until the branded loading surface is already painted; the root becomes opaque only underneath that cover and is activated after the cover is removed.
+- Child windows now perform their final layout while unmapped, map at zero alpha, complete one paint/layout turn, and then become opaque as a finished themed frame.
+- Replaced forced focus during normal presentation with controlled foreground activation and a temporary Windows z-order promotion that is immediately removed, preventing child workspaces from landing behind the main window without leaving them permanently topmost.
+
+### Validation
+- Added Version 1.66 regressions for withdraw-before-map creation, transparent painted reveal, startup shield ordering, Review Order foreground restoration, and deferred modal grabs.
+- Updated retained presentation regressions from Versions 1.59/1.60/1.62/1.65 to validate the centralized flash-free presenter rather than obsolete per-window alpha calls.
+
+## [Version 1.65] - 2026-09-24
+
+### Improved
+- Reworked first-window presentation so Windows establishes the final maximized main-window state before the CustomTkinter widget tree becomes visible.
+- Added a lightweight native startup loading shield that uses the saved light/dark palette, a centered loading ring, and a stable app-colored background while CustomTkinter builds behind it.
+- Review Order now creates transparent, enters its maximized native state before control layout begins, and performs one hidden geometry settle before its first visible frame.
+- Slow Review Order preparation uses the same full-workspace loading shield so operators see a stable loading surface instead of a small popup followed by white/native intermediate frames.
+- Removed Review Order's visible normal-size-to-maximized transition and avoids `deiconify()` / `focus_force()` during first presentation, reducing white flashes, focus jumps, and resize jitter.
+
+### Validation
+- Added Version 1.65 presentation regressions covering startup shielding, pre-maximized Review Order geometry, hidden layout settling, and single-frame reveal behavior.
+- Retains Version 1.63 asynchronous preview/prefetch performance work and Version 1.64 manual archive/rebuild fixes.
+
+## [Version 1.64] - 2026-09-24
+
+### Fixed
+- Updated the integrated release self-test to match the Version 1.62 mirror workflow: mirror batches retain both fabricated and non-fabricated mirror orders by default while the explicit legacy Waterjet-only filter remains available.
+- Fixed **Archive Sent Order Inputs** so archived manual-programming orders are retired from the active `manual_process_orders.json` store into the dated `Manually Programmed` archive instead of reappearing on the next scan.
+- Applied the same manual-record retirement to sent-batch archival so both archive entry points have consistent lifecycle behavior.
+
+### Validation
+- Added Version 1.64 regressions for the integrated mirror self-test contract and manual-order archive retirement wiring.
+- Retains all Version 1.63 startup and Review Order performance optimizations.
+
+## [Version 1.63] - 2026-09-24
+
+### Improved
+- Opens cached Review Order work directly instead of flashing an intermediate loading window.
+- Starts Review Order context prefetch as soon as a single order is selected, reducing wait time before the operator opens it.
+- Passes completed background review contexts directly into the Review Order builder instead of repeating path/signature lookups on Tk's thread.
+- Uses adaptive worker-queue polling so review completions are picked up quickly while idle polling remains bounded.
+- Renders the first visible PDF preview page off the Tk thread and prioritizes that page before warming the remaining raster cache.
+- Reuses decoded preview-page images during resizing and redraws to reduce repeated PNG decode work.
+- Defers PDFium loading until a raster preview is actually needed, reducing normal application startup work.
+- Moves updater cleanup, action-history rotation, and expired-recovery cleanup to deferred background startup maintenance.
+- Defers legacy processing-history migration and performs startup recovery discovery in a background worker; any recovery prompt is still applied safely on Tk's UI thread.
+- Removed a duplicate main-window layout flush and the remaining fixed 75 ms delay before the first Review Order preview redraw.
+
+### Validation
+- Added Version 1.63 regressions for lazy startup imports, cached-context handoff, selection prefetch, adaptive queue polling, and asynchronous priority raster rendering.
+- Retained the Version 1.62 no-polish and mirror-batch behavior while extending the speed-first presentation contract.
 
 ## [Version 1.62] - 2026-09-24
 

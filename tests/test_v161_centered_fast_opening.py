@@ -48,11 +48,14 @@ class ActiveInputTraversalTests(unittest.TestCase):
 
 
 class OpeningPerformanceTests(unittest.TestCase):
-    def test_opening_feedback_uses_owner_centering(self) -> None:
+    def test_opening_feedback_uses_existing_workspace_surface(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.show_opening_window)
 
-        self.assertIn("self.center_child_window(window, 420, 150)", source)
-        self.assertNotIn("self.position_child_window(window, 420, 150)", source)
+        # Later flash-free presentation superseded the centered opening Toplevel.
+        # Keep the historical fast-feedback contract while ensuring no extra native
+        # HWND is created just to display opening progress.
+        self.assertIn("self.show_workspace_loading_shield", source)
+        self.assertNotIn("create_hidden_toplevel", source)
 
     def test_openpyxl_is_loaded_only_when_workbook_features_are_used(self) -> None:
         batch_source = (BACKEND / "shower_batch.py").read_text(encoding="utf-8")

@@ -24,28 +24,36 @@ class SpeedFirstPresentationTests(unittest.TestCase):
         self.assertNotIn(".update()", source)
         self.assertIn('self.root.attributes("-alpha", 1.0)', source)
 
-    def test_review_shell_opens_before_deferred_preview_redraw(self) -> None:
+    def test_review_shell_builds_under_cover_before_native_presentation(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_order_review)
+        host = source.index("review_host_cover = WindowLoadingCover(")
+        cover = source.index("review_cover = WindowLoadingCover(", host)
+        first_ctk = source.index("header = ctk.CTkFrame(review_content", cover)
+        present = source.index("self.present_window_without_flash(", first_ctk)
+        self.assertLess(host, cover)
+        self.assertLess(cover, first_ctk)
+        self.assertLess(first_ctk, present)
+
         presentation = source.split("def present_review_window() -> None:", 1)[1]
+        self.assertIn("redraw()", presentation)
+        self.assertIn("reveal_after_stable_paint", presentation)
+        self.assertIn("dialog.update_idletasks()", presentation)
+        self.assertLess(presentation.index("redraw()"), presentation.index("review_cover.destroy()"))
+        self.assertNotIn("dialog.update()", presentation)
 
-        self.assertIn('dialog.attributes("-alpha", 1.0)', presentation)
-        self.assertIn("dialog.after(75, redraw)", presentation)
-        self.assertNotIn("dialog.after(220", presentation)
-        self.assertNotIn("dialog.after(90", presentation)
-        self.assertNotIn("dialog.update_idletasks()", presentation)
 
-    def test_review_reentry_uses_idle_queue_instead_of_fixed_delay(self) -> None:
+    def test_review_reentry_uses_background_context_handoff_without_fixed_delay(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_order_review)
 
-        self.assertIn("self.root.after_idle(", source)
+        self.assertIn("self.request_order_review_context(process_order, folder, output_dir)", source)
+        self.assertIn("prepared_context", source)
         self.assertNotIn("self.root.after(\n                60,", source)
 
-    def test_version_162_release_marker_is_current(self) -> None:
+    def test_version_162_release_marker_is_retained(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
         marker = "VERSION_1_62_SPEED_FIRST_PRESENTATION"
 
-        self.assertEqual(version["version_number"], 162)
-        self.assertEqual(version["marker"], marker)
+        self.assertGreaterEqual(version["version_number"], 162)
         self.assertIn(marker, (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8"))
         self.assertIn(
             "version_1_62_speed_first_presentation",

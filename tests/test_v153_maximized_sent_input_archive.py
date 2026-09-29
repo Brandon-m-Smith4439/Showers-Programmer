@@ -54,12 +54,12 @@ class MaximizedSentInputArchiveTests(unittest.TestCase):
         self.assertIn("include_process_lists=False", source)
         self.assertIn("completed_process_batches=[]", source)
 
-    def test_main_window_uses_native_maximize_before_reveal(self) -> None:
+    def test_main_window_maximizes_before_reveal(self) -> None:
         maximize_source = inspect.getsource(gui.ShowerProgrammerApp.maximize_window)
         presentation_source = inspect.getsource(gui.ShowerProgrammerApp.force_main_window_maximized)
 
-        self.assertIn("GetAncestor", maximize_source)
-        self.assertLess(maximize_source.index("ShowWindow"), maximize_source.index('window.state("zoomed")'))
+        self.assertIn('window.state("zoomed")', maximize_source)
+        self.assertNotIn("ShowWindow", maximize_source)
         self.assertNotIn("self.root.after(220, settle_and_reveal)", presentation_source)
         self.assertNotIn("self.root.update()", presentation_source)
         self.assertLess(

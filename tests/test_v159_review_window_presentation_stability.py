@@ -6,7 +6,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "Backend"
 if str(BACKEND) not in sys.path:
@@ -16,22 +15,27 @@ import shower_programmer_gui as gui
 
 
 class ReviewWindowPresentationStabilityTests(unittest.TestCase):
-    def test_review_window_presents_shell_before_preview_render(self) -> None:
+    def test_review_window_presents_only_after_preview_shell_is_built(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_order_review)
-        presentation = source.split("def present_review_window() -> None:", 1)[1]
+        host_cover = source.index("review_host_cover = WindowLoadingCover(")
+        cover = source.index("review_cover = WindowLoadingCover(")
+        first_ctk = source.index("header = ctk.CTkFrame(review_content")
+        present = source.index("self.present_window_without_flash(", first_ctk)
+        self.assertLess(host_cover, cover)
+        self.assertLess(cover, first_ctk)
+        self.assertLess(first_ctk, present)
 
-        self.assertIn('dialog.state("zoomed")', presentation)
-        self.assertIn('dialog.attributes("-alpha", 1.0)', presentation)
+        presentation = source.split("def present_review_window() -> None:", 1)[1]
         self.assertIn('state["review_geometry_settled"] = True', presentation)
-        self.assertIn("dialog.after(75, redraw)", presentation)
-        self.assertNotIn("dialog.after(220", presentation)
-        self.assertNotIn("dialog.after(90", presentation)
-        self.assertNotIn("dialog.update_idletasks()", presentation)
+        self.assertIn("redraw()", presentation)
+        self.assertIn("reveal_after_stable_paint", presentation)
+        self.assertLess(presentation.index("redraw()"), presentation.index("review_cover.destroy()"))
         self.assertNotIn("dialog.update()", presentation)
+        self.assertNotIn("dialog.deiconify()", presentation)
+        self.assertNotIn("dialog.focus_force()", presentation)
 
     def test_temporary_canvas_sizes_do_not_trigger_visible_redraws(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_order_review)
-
         self.assertIn('"review_geometry_settled": False', source)
         self.assertIn('"review_window_presented": False', source)
         self.assertIn('if not bool(state.get("review_geometry_settled")):', source)
@@ -40,13 +44,9 @@ class ReviewWindowPresentationStabilityTests(unittest.TestCase):
     def test_version_159_release_marker_is_current(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
         marker = "VERSION_1_59_REVIEW_WINDOW_PRESENTATION_STABILITY"
-
         self.assertGreaterEqual(version["version_number"], 159)
         self.assertIn(marker, (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8"))
-        self.assertIn(
-            "version_1_59_review_window_presentation_stability",
-            (BACKEND / "release_required_flags.txt").read_text(encoding="utf-8"),
-        )
+        self.assertIn("version_1_59_review_window_presentation_stability", (BACKEND / "release_required_flags.txt").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -60,16 +60,271 @@ OPAQUE_DICT_PATHS = {
     "item_overrides",
 }
 
+# Retired values were either superseded by the newer nested placement controls or
+# were no longer read anywhere in the production programming path.  Keep the list
+# explicit so old external configs can be cleaned without guessing.
+DEPRECATED_CONFIGURATION_PATHS = {
+    "pdf.label_x_ratio",
+    "pdf.label_y_ratio",
+    "pdf.diamon_fusion_min_font_size",
+    "pdf.diamon_fusion_y_ratio",
+    "rules.auto_angle_direction",
+}
+
+# Canonical shop defaults for the current release.  This is intentionally kept in
+# code rather than read from the mutable external JSON so Reset to Defaults always
+# restores the known release baseline even after an operator has edited that file.
+DEFAULT_CONFIGURATION: dict[str, Any] = {'_notes': {'pdf': 'Visual placement controls. Positive Y moves up on the PDF page. Existing values here are safe to '
+                   'tweak for sketch appearance.',
+            'dxf': 'Program DXF output controls. Denver programs stay in inches; WJ programs are scaled to millimeters '
+                   'for NCEditor.',
+            'rules': 'Shop decision rules for machine choice and orientation. Keywords are case-insensitive.',
+            'item_overrides': 'Use only for one-off corrections. Do not add example-order rules here unless that exact '
+                              'order needs a manual fix.'},
+ 'pdf': {'_notes': {'label_color_rgb': 'Blue used for order labels, machine labels, WJ marker, REMAKE, X-out, and '
+                                       'DIAMON FUSION.',
+                    'diamon_fusion_above_remake_gap': 'When REMAKE and DIAMON FUSION are both present, this is the '
+                                                      'vertical gap above REMAKE.',
+                    'diamon_fusion_edge_gap': 'Gap between the detected top glass edge and the bottom of DIAMON FUSION '
+                                              'when there is no REMAKE text.',
+                    'hinge_side_band_ratio': 'How wide the left/right side zones are when detecting hinge cutouts on '
+                                             'Denver 1 doors.',
+                    'hinge_side_min_delta': 'How much stronger one side must be before the program trusts it as the '
+                                            'hinge side.',
+                    'avoid_corner_text_with_indicator': 'Nudges automatic sketch indicators slightly when they would '
+                                                        'cover source text such as BUG.',
+                    'corner_text_avoidance_max_shift': 'Maximum automatic sketch-only indicator movement in PDF '
+                                                       'points. Manual indicators are never changed.'},
+         'label_font_size': 21,
+         'label_color_rgb': [0, 120, 212],
+         'label_position': {'_notes': {'page_center_first': 'true means start the order/machine label at the center of '
+                                                            'the sketch page before any ratio placement.',
+                                       'center_first': 'true means try the piece center first, then use the '
+                                                       'ratio/nudge values when center overlaps sketch text or lines.',
+                                       'ratios': '0.5 is middle of the piece. Higher Y ratios move labels upward '
+                                                 'inside the piece.',
+                                       'nudges': 'Final point adjustments after automatic placement. Positive x moves '
+                                                 'right, positive y moves up.'},
+                            'page_center_first': True,
+                            'center_first': True,
+                            'x_ratio': 0.5,
+                            'default_y_ratio': 0.5,
+                            'denver_y_ratio': 0.5,
+                            'waterjet_y_ratio': 0.5,
+                            'manual_nudge_x': 0,
+                            'manual_nudge_y': 0,
+                            'denver_nudge_x': 0,
+                            'denver_nudge_y': 0,
+                            'waterjet_nudge_x': 0,
+                            'waterjet_nudge_y': 0},
+         'diamon_fusion_font_size': 55,
+         'diamon_fusion_edge_gap': 4,
+         'diamon_fusion_above_remake_gap': 8,
+         'remake': {'_notes': {'midpoint_nudge_y': 'Adjusts REMAKE after automatic midpoint placement between piece '
+                                                   'top and top measurement. Positive moves up.',
+                               'above_piece_y': 'Fallback distance above the piece when the top measurement line '
+                                                'cannot be detected.',
+                               'x_line_width': 'Stroke width for X-out pages.'},
+                    'font_size': 55,
+                    'midpoint_nudge_y': -3,
+                    'above_piece_y': 20,
+                    'x_line_width': 10,
+                    'x_margin': 48},
+         'indicator_size': 18,
+         'waterjet_indicator_size': 30,
+         'waterjet_indicator_line_width': 8,
+         'waterjet_indicator_length_ratio': 2.5,
+         'indicator_offset': 64,
+         'hinge_side_band_ratio': 0.28,
+         'hinge_side_min_delta': 8,
+         'avoid_corner_text_with_indicator': True,
+         'corner_text_avoidance_max_shift': 36,
+         'indicator_nudge': {'_notes': {'denver': 'Moves Denver dots after automatic corner selection.',
+                                        'waterjet': 'Moves WJ corner marker after automatic corner selection.'},
+                             'x': 0,
+                             'y': 0,
+                             'denver_x': 0,
+                             'denver_y': 0,
+                             'waterjet_outline_x': 0,
+                             'waterjet_outline_y': 25,
+                             'waterjet_corner_x': {'top_left': -18,
+                                                   'bottom_right': 18,
+                                                   'top_right': 18,
+                                                   'bottom_left': -18},
+                             'waterjet_page_x': 0,
+                             'waterjet_page_y': 0,
+                             'waterjet_x': 95,
+                             'waterjet_y': 0}},
+ 'dxf': {'_notes': {'waterjet_output_scale': 'Scale applied only to WJ program DXFs. 25.4 converts inch source '
+                                             'geometry to millimeters for NCEditor.',
+                    'waterjet_insunits': 'DXF $INSUNITS value for WJ output. 4 means millimeters.',
+                    'waterjet_measurement': 'DXF $MEASUREMENT value for WJ output. 1 means metric.',
+                    'default_insunits': 'DXF $INSUNITS value for non-WJ output. 1 means inches.',
+                    'default_measurement': 'DXF $MEASUREMENT value for non-WJ output. 0 means English/inch.'},
+         'waterjet_output_scale': 25.4,
+         'waterjet_insunits': 4,
+         'waterjet_measurement': 1,
+         'default_output_scale': 1,
+         'default_insunits': 1,
+         'default_measurement': 0},
+ 'rules': {'_notes': {'denver_fabrication_keywords': 'Fabrication words that are allowed on Denver panels, including K '
+                                                     'cuts.',
+                      'door_cut_in_keywords': 'If a Denver 1 door has these words, hinge side is oriented upward '
+                                              'instead of downward. Hinge labels such as V1E037 and AV1E037 identify '
+                                              'the door but do not force hinges up by themselves.',
+                      'auto_dxf_angle_correction': 'When true, Denver pieces learn a small out-of-square correction '
+                                                   'from the matched source DXF edge that becomes the CNC bottom.',
+                      'auto_dxf_angle_min_degrees': 'Smallest DXF hinge-side correction to apply automatically. Values '
+                                                    'below this are treated as CAD noise.',
+                      'auto_dxf_angle_max_degrees': 'Largest DXF hinge-side correction to apply automatically. Larger '
+                                                    'values are left for manual review.',
+                      'auto_dxf_hinge_side_detection': 'When true, clear cut-in/kink evidence in the matched Denver 1 '
+                                                       'DXF can correct the detected hinge side.',
+                      'auto_dxf_cut_in_min_degrees': 'Smallest kicked hinge-side angle that can make a split Denver 1 '
+                                                     'hinge side orient hinges up.',
+                      'auto_dxf_cut_in_min_offset': 'Smallest hinge-side offset, in inches, that can make a split '
+                                                    'Denver 1 hinge side orient hinges up. This also catches '
+                                                    'K-cut/jut-out hinge sides with parallel offset vertical runs.',
+                      'auto_dxf_fps_cut_min_segment_ratio': 'Smallest short square or angled hinge-side run used by '
+                                                            'the FP-S cut-transition fallback. This is narrower than '
+                                                            'the general cut detector and only applies when FP-S is '
+                                                            'present.',
+                      'auto_dxf_fps_cut_min_coverage_ratio': 'Minimum combined hinge-side coverage required before the '
+                                                             'FP-S short-transition fallback can orient hinges up.',
+                      'waterjet_tall_rotation_by_indicator': 'For tall WJ pieces, maps the chosen WJ marker corner to '
+                                                             'the DXF rotation that keeps the program aligned with the '
+                                                             'sketch marker.',
+                      'hinge_label_keywords': 'Text labels next to hinge cutouts. These help decide which side of a '
+                                              'door the hinges are on.',
+                      'hinge_label_orientations': 'Default hinges-up or hinges-down orientation for each configured '
+                                                  'hinge code. Actual FP-S/cut-in geometry and manual edits still take '
+                                                  'priority.',
+                      'weak_waterjet_keywords': 'These words alone are not enough to force WJ because they also appear '
+                                                'on Denver pieces.',
+                      'waterjet_fp_min_count': 'If the sketch shows this many plain FP side labels, treat it as WJ '
+                                               'shape evidence. FP-S is excluded because it can run Denver or WJ.',
+                      'waterjet_keywords': 'These force WJ unless the item also matches a Denver-allowed fabrication '
+                                           'keyword.',
+                      'polisher_max_edge_inches': 'Maximum glass length when FP or FP-S is required on a short edge.',
+                      'mirror_keywords': 'Glass-type words that force the individual piece to Water Jet, regardless of '
+                                         'fabrication or process-list machine hints.',
+                      'label_only_allow_keywords': 'These may appear on plain label-only panels without forcing DXF '
+                                                   'output.'},
+           'denver_min_inches': 6.125,
+           'waterjet_fit_limit_inches': 75,
+           'polisher_max_edge_inches': 113,
+           'waterjet_fp_min_count': 6,
+           'auto_angle_correction': True,
+           'auto_dxf_angle_correction': True,
+           'auto_dxf_angle_min_degrees': 0.02,
+           'auto_dxf_angle_max_degrees': 1,
+           'auto_dxf_hinge_side_detection': True,
+           'auto_dxf_fps_cut_min_segment_ratio': 0.12,
+           'auto_dxf_fps_cut_min_coverage_ratio': 0.45,
+           'waterjet_tall_rotation_by_indicator': {'top_left': 90,
+                                                   'bottom_left': 90,
+                                                   'top_right': -90,
+                                                   'bottom_right': -90},
+           'mirror_keywords': ['MIRROR'],
+           'mirror_fabrication_keywords': ['FAB',
+                                           'GEN',
+                                           'HOLE',
+                                           'NOTCH',
+                                           'CUTOUT',
+                                           'CUT-OUT',
+                                           'RADIUS',
+                                           'POLISHED HOLE'],
+           'door_keywords': ['DOOR', 'HINGE', 'PPH', 'PULL', 'HANDLE'],
+           'hinge_label_keywords': ['GEN037', 'V1E037', 'AV1E037', 'JRG037', 'GEN180', 'PPH', 'SRPPH01'],
+           'hinge_label_orientations': {'GEN037': 'down',
+                                        'V1E037': 'down',
+                                        'AV1E037': 'down',
+                                        'JRG037': 'down',
+                                        'GEN180': 'down',
+                                        'PPH': 'up',
+                                        'SRPPH01': 'up'},
+           'door_cut_in_keywords': ['CUT IN',
+                                    'CUT-IN',
+                                    'CUTIN',
+                                    'DOOR CUT IN',
+                                    'K CUT',
+                                    'K-CUT',
+                                    'K CUTS',
+                                    'K-CUTS',
+                                    'JUT OUT',
+                                    'JUT-OUT'],
+           'denver_fabrication_keywords': ['K CUT',
+                                           'K-CUT',
+                                           'K CUTS',
+                                           'K-CUTS',
+                                           'SCU',
+                                           'SCU4',
+                                           'SLOT',
+                                           'SLOTTED',
+                                           'MACRO',
+                                           'HOLE'],
+           'weak_waterjet_keywords': ['IRREGULAR SHAPE'],
+           'waterjet_keywords': ['CORNER NOTCH',
+                                 'EDGE NOTCH',
+                                 'NOTCH',
+                                 'NOTCHED',
+                                 'IRREGULAR SHAPE',
+                                 '1/2 RADIUS',
+                                 'RADIUS'],
+           'fabrication_keywords': ['PPH',
+                                    'GEN',
+                                    'HINGE',
+                                    'HOLE',
+                                    'CUTOUT',
+                                    'CUT-OUT',
+                                    'CORNER NOTCH',
+                                    'EDGE NOTCH',
+                                    'NOTCH',
+                                    'RADIUS',
+                                    'IRREGULAR SHAPE'],
+           'label_only_allow_keywords': ['RAKED EDGE']},
+ 'item_overrides': {}}
+
+
+def default_configuration() -> dict[str, Any]:
+    return copy.deepcopy(DEFAULT_CONFIGURATION)
+
+
+def remove_path(config: dict[str, Any], path: str) -> None:
+    parts = str(path).split(".")
+    node: Any = config
+    for part in parts[:-1]:
+        if not isinstance(node, dict):
+            return
+        node = node.get(part)
+    if isinstance(node, dict):
+        node.pop(parts[-1], None)
+
+
+def prune_deprecated_configuration(config: dict[str, Any]) -> dict[str, Any]:
+    cleaned = copy.deepcopy(config)
+    for path in DEPRECATED_CONFIGURATION_PATHS:
+        remove_path(cleaned, path)
+    return cleaned
+
 
 _FIELD_LABELS = {
-    "pdf.label_x_ratio": "Legacy label X ratio",
-    "pdf.label_y_ratio": "Legacy label Y ratio",
     "pdf.label_font_size": "Order label font size",
+    "pdf.label_position.page_center_first": "Start at page center first",
+    "pdf.label_position.center_first": "Try glass center first",
+    "pdf.label_position.x_ratio": "Fallback horizontal position",
+    "pdf.label_position.default_y_ratio": "Fallback vertical position",
+    "pdf.label_position.denver_y_ratio": "Denver fallback vertical position",
+    "pdf.label_position.waterjet_y_ratio": "Water Jet fallback vertical position",
+    "pdf.label_position.manual_nudge_x": "Global label X adjustment",
+    "pdf.label_position.manual_nudge_y": "Global label Y adjustment",
+    "pdf.label_position.denver_nudge_x": "Denver label X adjustment",
+    "pdf.label_position.denver_nudge_y": "Denver label Y adjustment",
+    "pdf.label_position.waterjet_nudge_x": "Water Jet label X adjustment",
+    "pdf.label_position.waterjet_nudge_y": "Water Jet label Y adjustment",
     "pdf.label_color_rgb": "Label / marker RGB",
     "pdf.diamon_fusion_font_size": "DIAMON FUSION font size",
-    "pdf.diamon_fusion_min_font_size": "DIAMON FUSION minimum font size",
     "pdf.diamon_fusion_edge_gap": "DIAMON FUSION edge gap",
-    "pdf.diamon_fusion_y_ratio": "DIAMON FUSION legacy Y control",
     "pdf.diamon_fusion_above_remake_gap": "Gap above REMAKE",
     "pdf.indicator_size": "Denver indicator size",
     "pdf.waterjet_indicator_size": "Water Jet indicator size",
@@ -89,8 +344,17 @@ _FIELD_LABELS = {
     "rules.denver_min_inches": "Denver minimum edge",
     "rules.waterjet_fit_limit_inches": "Water Jet fit limit",
     "rules.waterjet_fp_min_count": "Plain FP labels required for WJ",
+    "rules.polisher_max_edge_inches": "Polisher maximum edge length",
+    "rules.mirror_keywords": "Mirror detection keywords",
+    "rules.mirror_fabrication_keywords": "Mirror fabrication keywords",
+    "rules.door_keywords": "Door detection keywords",
+    "rules.door_cut_in_keywords": "Door cut-in keywords",
+    "rules.denver_fabrication_keywords": "Denver fabrication keywords",
+    "rules.weak_waterjet_keywords": "Weak Water Jet keywords",
+    "rules.waterjet_keywords": "Water Jet routing keywords",
+    "rules.fabrication_keywords": "General fabrication keywords",
+    "rules.label_only_allow_keywords": "Label-only allowed keywords",
     "rules.auto_angle_correction": "Enable automatic angle correction",
-    "rules.auto_angle_direction": "Automatic angle direction",
     "rules.auto_dxf_angle_correction": "Use DXF angle correction",
     "rules.auto_dxf_angle_min_degrees": "Minimum DXF correction",
     "rules.auto_dxf_angle_max_degrees": "Maximum DXF correction",
@@ -105,8 +369,20 @@ _FIELD_LABELS = {
 
 _FIELD_DESCRIPTIONS = {
     "rules.denver_min_inches": "If any required glass edge is below this size, the piece cannot use Denver and routes to Water Jet.",
+    "rules.polisher_max_edge_inches": "Maximum glass edge length, in inches, allowed when FP or FP-S is required on the short edge.",
+    "pdf.label_position.page_center_first": "When enabled, the label first tries the center of the PDF page before piece-relative placement.",
+    "pdf.label_position.center_first": "When enabled, automatic placement tries the center of the detected glass before fallback ratios and nudges.",
+    "pdf.label_position.x_ratio": "Fallback horizontal position inside the detected glass. 0.5 is centered.",
+    "pdf.label_position.default_y_ratio": "Fallback vertical position for non-CNC/neutral labels. 0.5 is centered.",
+    "pdf.label_position.denver_y_ratio": "Fallback vertical position used for Denver labels. 0.5 is centered.",
+    "pdf.label_position.waterjet_y_ratio": "Fallback vertical position used for Water Jet labels. 0.5 is centered.",
+    "pdf.label_position.manual_nudge_x": "Final global PDF-point adjustment applied to all automatic labels; positive moves right.",
+    "pdf.label_position.manual_nudge_y": "Final global PDF-point adjustment applied to all automatic labels; positive moves up.",
+    "dxf.waterjet_insunits": "DXF INSUNITS code for Water Jet output. The current default 4 means millimeters.",
+    "dxf.waterjet_measurement": "DXF MEASUREMENT flag for Water Jet output. The current default 1 means metric.",
+    "dxf.default_insunits": "DXF INSUNITS code for Denver/default output. The current default 1 means inches.",
+    "dxf.default_measurement": "DXF MEASUREMENT flag for Denver/default output. The current default 0 means English/inch.",
     "rules.waterjet_fit_limit_inches": "Maximum configured Water Jet envelope dimension used by fit/oversize checks.",
-    "rules.auto_angle_direction": "Direction multiplier used by the legacy automatic angle-correction path. Usually 1 or -1.",
     "dxf.waterjet_output_scale": "Program-only scale applied to Water Jet DXFs. 25.4 converts inch geometry to millimeters.",
     "rules.hinge_label_orientations": "JSON map of configured hinge labels to their default 'up' or 'down' orientation.",
     "rules.waterjet_tall_rotation_by_indicator": "JSON map from marker corner to the rotation used for tall Water Jet pieces.",
@@ -208,6 +484,8 @@ def configuration_fields(config: dict[str, Any]) -> list[ConfigurationField]:
                 walk(value, child)
             return
         if not prefix:
+            return
+        if prefix in DEPRECATED_CONFIGURATION_PATHS:
             return
         fields.append(
             ConfigurationField(
@@ -351,7 +629,6 @@ def validate_configuration(config: dict[str, Any]) -> list[ConfigurationIssue]:
     numeric_positive = (
         "pdf.label_font_size",
         "pdf.diamon_fusion_font_size",
-        "pdf.diamon_fusion_min_font_size",
         "pdf.indicator_size",
         "pdf.waterjet_indicator_size",
         "pdf.waterjet_indicator_line_width",
@@ -371,8 +648,6 @@ def validate_configuration(config: dict[str, Any]) -> list[ConfigurationIssue]:
             error(path, "Value should be greater than zero.")
 
     for path in (
-        "pdf.label_x_ratio",
-        "pdf.label_y_ratio",
         "pdf.label_position.x_ratio",
         "pdf.label_position.default_y_ratio",
         "pdf.label_position.denver_y_ratio",
@@ -405,10 +680,6 @@ def validate_configuration(config: dict[str, Any]) -> list[ConfigurationIssue]:
     if _is_number(denver_min) and _is_number(wj_limit) and float(denver_min) >= float(wj_limit):
         warn("rules.waterjet_fit_limit_inches", "Water Jet fit limit is not greater than the Denver minimum edge.")
 
-    direction = get_path(config, "rules.auto_angle_direction")
-    if direction not in (-1, 1):
-        warn("rules.auto_angle_direction", "Automatic angle direction is normally 1 or -1.")
-
     fp_count = get_path(config, "rules.waterjet_fp_min_count")
     if not isinstance(fp_count, int) or isinstance(fp_count, bool) or fp_count < 1:
         error("rules.waterjet_fp_min_count", "Plain FP count should be a positive whole number.")
@@ -419,6 +690,7 @@ def validate_configuration(config: dict[str, Any]) -> list[ConfigurationIssue]:
 
     for path in (
         "rules.mirror_keywords",
+        "rules.mirror_fabrication_keywords",
         "rules.door_keywords",
         "rules.hinge_label_keywords",
         "rules.door_cut_in_keywords",

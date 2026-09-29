@@ -54,7 +54,7 @@ class Version104SettingsDataLifecycleTests(unittest.TestCase):
     def test_action_history_refreshes_every_time_tab_is_activated(self) -> None:
         settings_source = inspect.getsource(gui.ShowerProgrammerApp.open_settings)
         history_source = inspect.getsource(gui.ShowerProgrammerApp.build_action_history_settings_tab)
-        self.assertIn('elif selected == "Action History":', settings_source)
+        self.assertIn('elif name == "Action History":', settings_source)
         self.assertIn('getattr(dialog, "_action_history_activate", None)', settings_source)
         self.assertIn('setattr(dialog, "_action_history_activate", activate_action_history)', history_source)
         self.assertIn("parent.after_idle(refresh_history)", history_source)
@@ -63,7 +63,7 @@ class Version104SettingsDataLifecycleTests(unittest.TestCase):
     def test_reopened_persistent_settings_reactivates_selected_tab(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_settings)
         reuse_start = source.index('        if existing is not None:')
-        reuse_end = source.index("        dialog = ctk.CTkToplevel", reuse_start)
+        reuse_end = source.index("        dialog = self.create_hidden_toplevel(self.root)", reuse_start)
         reuse_block = source[reuse_start:reuse_end]
         self.assertIn('getattr(existing, "_settings_activate_selected", None)', reuse_block)
         self.assertIn("existing.after_idle(activate_selected)", reuse_block)

@@ -29,18 +29,19 @@ class Version103SettingsPersistentWindowTests(unittest.TestCase):
 
     def test_hidden_settings_window_is_reused_with_widgets_intact(self) -> None:
         reuse_start = self.open_settings.index('        existing = self.managed_page_window("settings")')
-        reuse_end = self.open_settings.index("        dialog = ctk.CTkToplevel", reuse_start)
+        reuse_end = self.open_settings.index("        dialog = self.create_hidden_toplevel(self.root)", reuse_start)
         reuse_block = self.open_settings[reuse_start:reuse_end]
         self.assertIn("self.settings_window_reusable(existing)", reuse_block)
         self.assertIn('setattr(existing, "_shower_settings_hidden", False)', reuse_block)
-        self.assertIn("self.bring_page_window_to_front(existing)", reuse_block)
+        self.assertIn("self.present_window_without_flash(", reuse_block)
 
     def test_nonselected_settings_tabs_build_lazily(self) -> None:
         self.assertIn("tab_builders = {", self.open_settings)
         self.assertIn("built_tabs: set[str] = set()", self.open_settings)
         self.assertIn("def ensure_tab_built(tab_name: str)", self.open_settings)
         self.assertIn("ensure_tab_built(initial_tab)", self.open_settings)
-        self.assertIn("ensure_tab_built(selected)", self.open_settings)
+        self.assertIn("build_tab_with_loading(selected)", self.open_settings)
+        self.assertIn("def build_tab_with_loading(tab_name: str)", self.open_settings)
         pre_initial = self.open_settings[: self.open_settings.index("ensure_tab_built(initial_tab)")]
         self.assertNotIn('self.build_action_history_settings_tab(tabview.tab("Action History"))\n', pre_initial)
 
