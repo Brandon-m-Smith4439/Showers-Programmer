@@ -340,6 +340,18 @@ echo   %CD%\%SOURCE_SELF_TEST%
 echo Packaged self-test:
 echo   %CD%\%PACKAGED_SELF_TEST%
 echo.
+echo IMPORTANT - PUBLISHING REQUIRED:
+echo   This rebuild creates the update locally; it does NOT upload it to GitHub.
+echo   Check for Updates will not see %APP_VERSION% until the rebuilt release files
+echo   and matching source/version metadata are committed and pushed to GitHub main.
+echo.
+echo   Publish together:
+echo     Backend\version.json
+echo     CHANGELOG.md
+echo     release\Shower-Programmer-Windows.json
+echo     release\Shower-Programmer-Windows.zip
+echo     all source/test files changed for %APP_VERSION%
+echo.
 goto success
 
 :cancelled

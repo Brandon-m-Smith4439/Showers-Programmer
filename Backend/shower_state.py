@@ -502,16 +502,8 @@ class StateStore:
                 (str(archive_name), process_signature, order_signature, stamp),
             )
 
-    def archive_records(self, archive_names: Iterable[str]) -> list[ArchiveRecord]:
-        names = [str(name) for name in archive_names if str(name)]
-        if not names:
-            return []
-        placeholders = ",".join("?" for _ in names)
-        with closing(self.connect()) as connection:
-            rows = connection.execute(
-                f"SELECT * FROM archive_entries WHERE archive_name IN ({placeholders}) ORDER BY archive_date DESC, batch_name, aw_order",
-                names,
-            ).fetchall()
+    @staticmethod
+    def _archive_records_from_rows(rows: Iterable[sqlite3.Row]) -> list[ArchiveRecord]:
         records: list[ArchiveRecord] = []
         for row in rows:
             try:
@@ -535,6 +527,79 @@ class StateStore:
                 )
             )
         return records
+
+    def archive_records(self, archive_names: Iterable[str]) -> list[ArchiveRecord]:
+        names = [str(name) for name in archive_names if str(name)]
+        if not names:
+            return []
+        placeholders = ",".join("?" for _ in names)
+        with closing(self.connect()) as connection:
+            rows = connection.execute(
+                f"SELECT * FROM archive_entries WHERE archive_name IN ({placeholders}) ORDER BY archive_date DESC, batch_name, aw_order",
+                names,
+            ).fetchall()
+        return self._archive_records_from_rows(rows)
+
+    def search_archive_records(
+        self,
+        query: str,
+        *,
+        archive_names: Iterable[str] | None = None,
+        limit: int | None = None,
+    ) -> list[ArchiveRecord]:
+        """Search indexed archive metadata by A&W, job, customer, batch, date, or cached order text.
+
+        Multiple whitespace-separated terms are ANDed together while each individual
+        term may match any supported archive field. This makes searches such as
+        ``smith 239465`` useful without requiring the operator to know which field
+        contains each token.
+        """
+        terms = [part.casefold() for part in str(query or "").split() if part.strip()]
+        if not terms:
+            if archive_names is None:
+                return []
+            return self.archive_records(archive_names)
+
+        clauses: list[str] = []
+        params: list[object] = []
+        searchable_columns = (
+            "archive_name",
+            "batch_name",
+            "aw_order",
+            "job_name",
+            "customer",
+            "order_json",
+        )
+        for term in terms:
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            clauses.append(
+                "("
+                + " OR ".join(f"lower({column}) LIKE ? ESCAPE '\\'" for column in searchable_columns)
+                + ")"
+            )
+            params.extend([like] * len(searchable_columns))
+
+        names = [str(name) for name in archive_names or [] if str(name)]
+        if archive_names is not None:
+            if not names:
+                return []
+            placeholders = ",".join("?" for _ in names)
+            clauses.append(f"archive_name IN ({placeholders})")
+            params.extend(names)
+
+        sql = (
+            "SELECT * FROM archive_entries WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY archive_date DESC, batch_name, aw_order"
+        )
+        if limit is not None and int(limit) > 0:
+            safe_limit = min(int(limit), 10000)
+            sql += " LIMIT ?"
+            params.append(safe_limit)
+        with closing(self.connect()) as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return self._archive_records_from_rows(rows)
 
     def record_performance(
         self,

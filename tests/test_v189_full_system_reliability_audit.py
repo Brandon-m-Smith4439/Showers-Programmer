@@ -115,9 +115,7 @@ class Version189FullSystemReliabilityAuditTests(unittest.TestCase):
 
     def test_version_189_release_metadata_and_flag(self):
         version = json.loads((PROJECT_ROOT / "Backend" / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(version["version"], "Version 1.89")
-        self.assertEqual(version["version_number"], 189)
-        self.assertEqual(version["marker"], "VERSION_1_89_FULL_SYSTEM_RELIABILITY_AUDIT")
+        self.assertGreaterEqual(version["version_number"], 189)
         features = (PROJECT_ROOT / "Backend" / "shower_v4_features.py").read_text(encoding="utf-8")
         self.assertIn("VERSION_1_89_FULL_SYSTEM_RELIABILITY_AUDIT", features)
         flags = (PROJECT_ROOT / "Backend" / "release_required_flags.txt").read_text(encoding="utf-8")

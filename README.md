@@ -2,7 +2,11 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.89 - Full-System Reliability and Queue Recovery Audit**
+Current release: **Version 1.92 - Packaged Update Detection Reliability**
+
+Version 1.92 fixes the false up-to-date condition that could affect older packaged installs after a failed update rollback or stale revision marker. Packaged checks now compare the actual running version and EXE hash with the published update package before trusting cached revision metadata, delay external update metadata writes until the new EXE survives launch verification, and request GitHub metadata with cache-bypass headers. Version 1.91 full-history archive search remains included.
+
+Version 1.90 removes remaining background-thread calls into Tcl/Tk, keeps soft managed work active until the terminal UI handoff is consumed, snapshots Send configuration paths before workers start, reuses one processing-history read across batch output discovery, and bounds timeout-protected network workers so a stuck SMB call cannot accumulate unlimited background threads.
 
 Version 1.89 hardens the central Tk worker-queue handoff so a single UI callback failure cannot permanently stop queue polling or strand the application in a disabled state. It also treats soft managed refreshes as active operations for production-affecting commands, preventing processing, Send, update, shutdown, and theme-rebuild races against a half-refreshed order model.
 

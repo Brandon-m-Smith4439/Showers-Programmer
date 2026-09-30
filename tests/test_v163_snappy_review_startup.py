@@ -79,7 +79,8 @@ class SnappyReviewStartupTests(unittest.TestCase):
         self.assertIn("self.root.after(650, self.start_startup_recovery_check_async)", init_source)
         self.assertIn("shower_reliability.startup_recovery_issues", async_source)
         self.assertIn("threading.Thread(", async_source)
-        self.assertIn("self.root.after(0, apply_results)", async_source)
+        self.assertIn("self.queue_ui_callback", async_source)
+        self.assertNotIn("self.root.after(0,", async_source)
         self.assertIn("messagebox._show", apply_source)
 
     def test_version_163_release_marker_is_retained(self) -> None:

@@ -1141,6 +1141,7 @@ class ShowerProgrammerApp:
     SIDEBAR_BORDER = "#344054"
     REVIEW_RENDER_DPI = 96
     APP_VERSION = str(APP_VERSION_INFO.get("version", "V40")).strip() or "V40"
+    APP_VERSION_NUMBER = int(APP_VERSION_INFO.get("version_number", 0) or 0)
     APP_VERSION_MARKER = str(APP_VERSION_INFO.get("marker", "REPORT_BUGS_VERSIONING_V40")).strip() or "REPORT_BUGS_VERSIONING_V40"
     APP_RELEASE_NAME = str(APP_VERSION_INFO.get("release_name", "Bug Reporting and Version Tracking")).strip()
     APP_RELEASE_DATE = str(APP_VERSION_INFO.get("release_date", "")).strip()
@@ -1178,6 +1179,8 @@ class ShowerProgrammerApp:
     CONFIG_BACKUP_FOLDER_NAME = "Configuration Backups"
     NETWORK_HEALTH_REFRESH_MS = 5 * 60 * 1000
     NETWORK_HEALTH_TIMEOUT_SECONDS = 3.0
+    NETWORK_IO_THREAD_LIMIT = 16
+    _NETWORK_IO_THREAD_SLOTS = threading.BoundedSemaphore(NETWORK_IO_THREAD_LIMIT)
     SCAN_IO_MAX_WORKERS = 8
     WORKER_QUEUE_DRAIN_MAX_EVENTS = 12
     WORKER_QUEUE_DRAIN_BUDGET_SECONDS = 0.010
@@ -1271,6 +1274,12 @@ class ShowerProgrammerApp:
         self.send_journal = shower_reliability.SendJournal(self.internal_output_dir())
         self.task_manager = shower_tasks.BackgroundTaskManager(self.queue_task_event)
         self._managed_task_handlers: dict[str, dict[str, Callable[..., None]]] = {}
+        # BackgroundTaskManager releases its active slot before posting the terminal
+        # queue event so completion callbacks may chain another task. Keep a UI-side
+        # handoff token until that terminal event is actually consumed; otherwise a
+        # soft task has a small window where production commands can start against
+        # state that has finished on disk but has not been applied to the UI model yet.
+        self._managed_task_pending_ids: set[str] = set()
         self.test_mode_workspace: Path | None = None
         self.test_mode_orders: list[shower_batch.ProcessOrder] = []
         self._production_paths_before_test: tuple[str, str, str] | None = None
@@ -1375,13 +1384,9 @@ class ShowerProgrammerApp:
             except Exception:
                 results = []
 
-            def apply_results() -> None:
-                self.apply_startup_recovery_results(results)
-
-            try:
-                self.root.after(0, apply_results)
-            except (tk.TclError, RuntimeError):
-                pass
+            self.queue_ui_callback(
+                lambda results=results: self.apply_startup_recovery_results(results)
+            )
 
         threading.Thread(
             target=worker,
@@ -2008,6 +2013,37 @@ class ShowerProgrammerApp:
             except (OSError, ValueError, TypeError):
                 continue
 
+    @classmethod
+    def start_bounded_network_thread(
+        cls,
+        target: Callable[[], object],
+        *,
+        name: str,
+    ) -> bool:
+        """Start one daemon network-I/O worker without allowing thread leaks to grow unbounded.
+
+        Windows SMB calls can occasionally remain blocked below Python even after the
+        caller's logical timeout has expired. A process-wide slot limit means repeated
+        health checks, Sends, or cleanup attempts cannot create unlimited stranded
+        threads while a share is unavailable.
+        """
+        slots = cls._NETWORK_IO_THREAD_SLOTS
+        if not slots.acquire(blocking=False):
+            return False
+
+        def run() -> None:
+            try:
+                target()
+            finally:
+                slots.release()
+
+        try:
+            threading.Thread(target=run, name=name, daemon=True).start()
+        except Exception:
+            slots.release()
+            raise
+        return True
+
     @staticmethod
     def probe_network_path(path: Path) -> dict[str, object]:
         started = time.perf_counter()
@@ -2043,10 +2079,19 @@ class ShowerProgrammerApp:
             results: dict[str, dict[str, object]] = {}
             result_queue: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
             for name, path in targets.items():
-                threading.Thread(
-                    target=lambda label=name, candidate=path: result_queue.put((label, self.probe_network_path(candidate))),
-                    daemon=True,
-                ).start()
+                def probe(label: str = name, candidate: Path = path) -> None:
+                    result_queue.put((label, self.probe_network_path(candidate)))
+
+                started = type(self).start_bounded_network_thread(
+                    probe,
+                    name=f"shower-network-health-{name.casefold().replace(' ', '-')}",
+                )
+                if not started:
+                    results[name] = {
+                        "path": str(path),
+                        "reachable": False,
+                        "error": "Network worker capacity is busy; a previous network call may still be pending.",
+                    }
             deadline = time.monotonic() + self.NETWORK_HEALTH_TIMEOUT_SECONDS
             while len(results) < len(targets) and time.monotonic() < deadline:
                 try:
@@ -2056,10 +2101,9 @@ class ShowerProgrammerApp:
                     break
             for name, path in targets.items():
                 results.setdefault(name, {"path": str(path), "reachable": False, "error": "Timed out"})
-            try:
-                self.root.after(0, lambda: self.apply_network_health_results(results))
-            except (tk.TclError, RuntimeError):
-                pass
+            self.queue_ui_callback(
+                lambda results=results: self.apply_network_health_results(results)
+            )
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -6576,6 +6620,17 @@ class ShowerProgrammerApp:
         """Bridge the reusable task manager onto the existing Tk worker queue."""
         self.worker_queue.put((kind, payload))
 
+    def queue_ui_callback(self, callback: Callable[[], object]) -> None:
+        """Schedule a UI callback without calling Tk from a background thread.
+
+        Tk's ``after`` method is itself a Tcl/Tk call and is not a reliable
+        cross-thread handoff on Windows. Workers publish callbacks onto the same
+        queue used by scans, processing, and Send; the recurring queue pump then
+        executes them on Tk's owning thread.
+        """
+        if callable(callback):
+            self.worker_queue.put(("ui_callback", callback))
+
     def cancel_background_task(self) -> None:
         """Request cancellation at the next safe task boundary."""
         manager = getattr(self, "task_manager", None)
@@ -6612,7 +6667,7 @@ class ShowerProgrammerApp:
                 "MANAGED_TASK_REQUESTED",
                 f"Requested managed task {name}.",
             )
-        if self.is_busy or getattr(self.task_manager, "active", None) is not None:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             if is_send_task:
                 self.record_send_pipeline_event(
@@ -6635,6 +6690,7 @@ class ShowerProgrammerApp:
                 total=total,
                 cancellable=cancellable,
             )
+            self._managed_task_pending_ids.add(snapshot.task_id)
             handlers: dict[str, Callable[..., None]] = {}
             if on_done is not None:
                 handlers["done"] = on_done
@@ -7440,7 +7496,12 @@ class ShowerProgrammerApp:
         false for that soft task.
         """
         manager = getattr(self, "task_manager", None)
-        return bool(self.is_busy or (manager is not None and getattr(manager, "active", None) is not None))
+        pending = bool(getattr(self, "_managed_task_pending_ids", set()))
+        return bool(
+            self.is_busy
+            or pending
+            or (manager is not None and getattr(manager, "active", None) is not None)
+        )
 
     @classmethod
     def load_process_list_batches(
@@ -9972,6 +10033,13 @@ class ShowerProgrammerApp:
 
     def sent_summary_for_order(self, aw_order: str) -> str:
         history = self.history_for_order(aw_order)
+        return self.sent_summary_for_order_from_history(aw_order, history)
+
+    def sent_summary_for_order_from_history(
+        self,
+        aw_order: str,
+        history: dict[str, object],
+    ) -> str:
         sent_at = str(history.get("sent_at", "")).strip()
         if not sent_at:
             return "No"
@@ -10743,8 +10811,17 @@ class ShowerProgrammerApp:
     def output_dirs_for_run(self, run_folder: Path) -> tuple[Path, Path, Path]:
         return run_folder / "Sketches", run_folder / "Programs", run_folder / "Reports"
 
-    def run_folder_for_order(self, aw_order: str, output_dir: Path) -> Path | None:
-        history = self.history_for_order_from_output(aw_order, output_dir)
+    def run_folder_for_order(
+        self,
+        aw_order: str,
+        output_dir: Path,
+        history_data: dict[str, object] | None = None,
+    ) -> Path | None:
+        history = (
+            self.history_entry_from_data(history_data, aw_order)
+            if isinstance(history_data, dict)
+            else self.history_for_order_from_output(aw_order, output_dir)
+        )
         run_value = str(history.get("run_folder", "")).strip()
         if run_value:
             run_folder = Path(run_value)
@@ -10775,21 +10852,35 @@ class ShowerProgrammerApp:
                     return run_folder
         return None
 
-    def output_dirs_for_order(self, aw_order: str, output_dir: Path) -> tuple[Path | None, Path, Path, Path]:
-        run_folder = self.run_folder_for_order(aw_order, output_dir)
+    def output_dirs_for_order(
+        self,
+        aw_order: str,
+        output_dir: Path,
+        history_data: dict[str, object] | None = None,
+    ) -> tuple[Path | None, Path, Path, Path]:
+        run_folder = self.run_folder_for_order(aw_order, output_dir, history_data)
         if run_folder is not None:
             sketch_dir, programs_dir, report_dir = self.output_dirs_for_run(run_folder)
             return run_folder, sketch_dir, programs_dir, report_dir
         return None, output_dir / "Sketches", output_dir / "Programs", output_dir / "Reports"
 
-    def find_order_sketch_path(self, aw_order: str, output_dir: Path) -> Path:
-        _run_folder, sketch_dir, _programs_dir, _report_dir = self.output_dirs_for_order(aw_order, output_dir)
+    def find_order_sketch_path(
+        self,
+        aw_order: str,
+        output_dir: Path,
+        history_data: dict[str, object] | None = None,
+    ) -> Path:
+        _run_folder, sketch_dir, _programs_dir, _report_dir = self.output_dirs_for_order(
+            aw_order, output_dir, history_data
+        )
         path = sketch_dir / f"{aw_order}.pdf"
         # The latest processing history is authoritative. When the latest run
         # skipped sketch output, do not fall back to or send a stale marked PDF
         # from an earlier run. Returning the expected (missing) current path
         # allows the Review / Send UI to correctly display "Skipped".
-        if self.output_was_skipped_for_order(aw_order, "sketch"):
+        if self.output_was_skipped_for_order(
+            aw_order, "sketch", output_dir=output_dir, history=history_data
+        ):
             return path
         if path.exists():
             return path
@@ -10982,13 +11073,7 @@ class ShowerProgrammerApp:
                 except tk.TclError:
                     pass
 
-            try:
-                if root is not None:
-                    root.after(0, run_callback)
-                else:
-                    run_callback()
-            except tk.TclError:
-                pass
+            self.queue_ui_callback(run_callback)
 
         def worker() -> None:
             priority_ready = False
@@ -11021,13 +11106,7 @@ class ShowerProgrammerApp:
                     except tk.TclError:
                         pass
 
-            try:
-                if root is not None:
-                    root.after(0, finish)
-                else:
-                    finish()
-            except tk.TclError:
-                pass
+            self.queue_ui_callback(finish)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -11088,13 +11167,22 @@ class ShowerProgrammerApp:
         folder: Path,
         output_dir: Path,
     ) -> tuple[Path, Path, Path, Path, Path, Path, bool, bool]:
+        try:
+            history_data = self.load_processing_history_for_output(output_dir)
+        except Exception:
+            history_data = {"orders": {}}
         run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(
             process_order.aw_order,
             output_dir,
+            history_data,
         )
         generated_sketch_path = sketch_dir / f"{process_order.aw_order}.pdf"
-        sketch_output_skipped = self.output_was_skipped_for_order(process_order.aw_order, "sketch")
-        dxf_output_skipped = self.output_was_skipped_for_order(process_order.aw_order, "dxf")
+        sketch_output_skipped = self.output_was_skipped_for_order(
+            process_order.aw_order, "sketch", output_dir=output_dir, history=history_data
+        )
+        dxf_output_skipped = self.output_was_skipped_for_order(
+            process_order.aw_order, "dxf", output_dir=output_dir, history=history_data
+        )
         if generated_sketch_path.exists() and not sketch_output_skipped:
             sketch_path = generated_sketch_path
         else:
@@ -11372,11 +11460,8 @@ class ShowerProgrammerApp:
             completed,
         )
 
-    def review_status_for_order(self, aw_order: str) -> str:
-        try:
-            data = self.load_manual_overrides()
-        except Exception:
-            return ""
+    @staticmethod
+    def review_status_from_overrides(data: dict[str, object], aw_order: str) -> str:
         item_overrides = data.get("item_overrides", {})
         if not isinstance(item_overrides, dict):
             return ""
@@ -11392,6 +11477,20 @@ class ShowerProgrammerApp:
             if bool(value.get("checked")):
                 checked.append(f"P{int(key)} checked")
         return ", ".join(sorted(checked, key=lambda text: int(text.split()[0][1:])))
+
+    def review_status_for_order(self, aw_order: str) -> str:
+        try:
+            data = self.load_manual_overrides()
+        except Exception:
+            return ""
+        return self.review_status_from_overrides(data, aw_order)
+
+    def review_status_for_order_from_output(self, aw_order: str, output_dir: Path) -> str:
+        try:
+            data = self.manual_overrides_for_output(output_dir)
+        except Exception:
+            return ""
+        return self.review_status_from_overrides(data, aw_order)
 
     @staticmethod
     def order_review_is_complete_in_overrides(
@@ -12615,10 +12714,7 @@ class ShowerProgrammerApp:
 
         def worker() -> None:
             payload = self.collect_programming_evidence(process_order, folder, output_dir)
-            try:
-                self.root.after(0, lambda: render(payload))
-            except (tk.TclError, RuntimeError):
-                pass
+            self.queue_ui_callback(lambda payload=payload: render(payload))
 
         threading.Thread(target=worker, daemon=True).start()
         self.bring_window_to_front(dialog, make_transient=False)
@@ -12777,19 +12873,13 @@ class ShowerProgrammerApp:
                         secondary_button_icon="folder",
                     )
 
-                try:
-                    self.root.after(0, finish)
-                except (tk.TclError, RuntimeError):
-                    self.diagnostic_worker_active = False
+                self.queue_ui_callback(finish)
             except Exception as exc:
-                def failed() -> None:
+                def failed(error: BaseException = exc) -> None:
                     self.diagnostic_worker_active = False
                     self.status_var.set("Diagnostic package failed.")
-                    messagebox.showerror("Diagnostic package failed", str(exc), parent=self.root)
-                try:
-                    self.root.after(0, failed)
-                except (tk.TclError, RuntimeError):
-                    pass
+                    messagebox.showerror("Diagnostic package failed", str(error), parent=self.root)
+                self.queue_ui_callback(failed)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -13681,9 +13771,9 @@ class ShowerProgrammerApp:
                 processed = bool(str(history.get("last_processed", "")).strip())
                 sketch_skipped = bool(history.get("sketch_output_skipped", False))
                 dxf_skipped = bool(history.get("dxf_output_skipped", False))
-                sketch_path = self.find_order_sketch_path(aw_order, output_dir)
+                sketch_path = self.find_order_sketch_path(aw_order, output_dir, history_data)
                 sketch_exists = sketch_path.exists()
-                dxf_paths = self.generated_dxf_paths_for_orders([aw_order], output_dir)
+                dxf_paths = self.generated_dxf_paths_for_orders([aw_order], output_dir, history_data)
                 expected_dxf_count = len(order.item_numbers)
                 state = row_state.get(aw_order, {})
                 issue_text = str(state.get("issues", "")).strip()
@@ -14556,7 +14646,7 @@ class ShowerProgrammerApp:
         skip_pdf: bool,
         skip_dxf: bool,
     ) -> None:
-        history = self.load_processing_history()
+        history = self.load_processing_history_for_output(output_dir)
         orders = history.setdefault("orders", {})
         if not isinstance(orders, dict):
             orders = {}
@@ -14583,7 +14673,7 @@ class ShowerProgrammerApp:
                 entry["remake_items"] = list(detected_remake_items)
             else:
                 entry.pop("remake_items", None)
-        self.save_processing_history(history)
+        self.save_processing_history_for_output(output_dir, history)
 
     def latest_run_folder(self, output_dir: Path) -> Path | None:
         runs = [path for path in self.output_search_roots(output_dir) if path != output_dir]
@@ -14636,7 +14726,15 @@ class ShowerProgrammerApp:
                 kind, payload = self.worker_queue.get_nowait()
                 current_kind = str(kind)
                 drained_events += 1
-                if kind == "update_progress":
+                if kind in {"task_done", "task_error", "task_cancelled"} and isinstance(payload, dict):
+                    task_id = str(payload.get("task_id", ""))
+                    if task_id:
+                        getattr(self, "_managed_task_pending_ids", set()).discard(task_id)
+                if kind == "ui_callback":
+                    callback = payload
+                    if callable(callback):
+                        callback()
+                elif kind == "update_progress":
                     data = payload
                     assert isinstance(data, dict)
                     self.set_update_progress_ui(
@@ -15668,14 +15766,26 @@ class ShowerProgrammerApp:
             return self.generated_sketch_paths_for_orders(aw_orders, output_dir)
         return sorted(sketch_dir.glob("*.pdf")) if sketch_dir.exists() else []
 
-    def generated_sketch_paths_for_orders(self, aw_orders: list[str], output_dir: Path) -> list[Path]:
+    def generated_sketch_paths_for_orders(
+        self,
+        aw_orders: list[str],
+        output_dir: Path,
+        history_data: dict[str, object] | None = None,
+    ) -> list[Path]:
+        if history_data is None:
+            try:
+                history_data = self.load_processing_history_for_output(output_dir)
+            except Exception:
+                history_data = {"orders": {}}
         paths: list[Path] = []
         for aw_order in aw_orders:
             # Latest-run skip history is authoritative. Never send or review an
             # older marked sketch merely because the file still exists.
-            if self.output_was_skipped_for_order(aw_order, "sketch"):
+            if self.output_was_skipped_for_order(
+                aw_order, "sketch", output_dir=output_dir, history=history_data
+            ):
                 continue
-            path = self.find_order_sketch_path(aw_order, output_dir)
+            path = self.find_order_sketch_path(aw_order, output_dir, history_data)
             if path.exists():
                 paths.append(path)
         return paths
@@ -15729,14 +15839,28 @@ class ShowerProgrammerApp:
             return self.generated_dxf_paths_for_orders(aw_orders, output_dir)
         return sorted(programs_dir.glob("*.dxf")) if programs_dir.exists() else []
 
-    def generated_dxf_paths_for_orders(self, aw_orders: list[str], output_dir: Path) -> list[Path]:
+    def generated_dxf_paths_for_orders(
+        self,
+        aw_orders: list[str],
+        output_dir: Path,
+        history_data: dict[str, object] | None = None,
+    ) -> list[Path]:
+        if history_data is None:
+            try:
+                history_data = self.load_processing_history_for_output(output_dir)
+            except Exception:
+                history_data = {"orders": {}}
         paths: list[Path] = []
         for aw_order in aw_orders:
             # Latest-run skip history is authoritative. Never review or send an
             # older DXF merely because a previous program file still exists.
-            if self.output_was_skipped_for_order(aw_order, "dxf"):
+            if self.output_was_skipped_for_order(
+                aw_order, "dxf", output_dir=output_dir, history=history_data
+            ):
                 continue
-            _run_folder, _sketch_dir, order_programs_dir, _report_dir = self.output_dirs_for_order(aw_order, output_dir)
+            _run_folder, _sketch_dir, order_programs_dir, _report_dir = self.output_dirs_for_order(
+                aw_order, output_dir, history_data
+            )
             paths.extend(sorted(order_programs_dir.glob(f"{aw_order}*.dxf")))
         return paths
 
@@ -18287,7 +18411,7 @@ a {{ color: #1f4e79; }}
             status = "NOT PROCESSED"
         elif not status:
             status = "PROCESSED"
-        checked = self.review_status_for_order(process_order.aw_order) or "Not checked"
+        checked = self.review_status_for_order_from_output(process_order.aw_order, output_dir) or "Not checked"
         manual_dxf_review_items = self.unresolved_manual_dxf_review_items(
             process_order.aw_order,
             issues,
@@ -18325,7 +18449,7 @@ a {{ color: #1f4e79; }}
             "status": status,
             "last_processed": last_processed or "Not yet",
             "checked": checked,
-            "sent": self.sent_summary_for_order(process_order.aw_order),
+            "sent": self.sent_summary_for_order_from_history(process_order.aw_order, history),
             "issue_count": len(issues),
             "issues": list(issues),
             "manual_dxf_review_items": manual_dxf_review_items,
@@ -20543,35 +20667,67 @@ a {{ color: #1f4e79; }}
 
             owner, repo_name = self.github_update_repo(repo)
             report_progress(10, "Checking GitHub main...", f"Requesting the latest revision for {owner}/{repo_name}.")
-            latest_sha, latest_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+            branch_sha, branch_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
             package_descriptor: dict[str, object] = {}
-            if getattr(sys, "frozen", False):
+            packaged_install = bool(getattr(sys, "frozen", False))
+            if packaged_install:
                 try:
                     package_descriptor = self.github_update_package_descriptor(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
                 except Exception:
                     package_descriptor = {}
             latest_version = str(package_descriptor.get("version", "")).strip()
             latest_release_name = str(package_descriptor.get("release_name", "")).strip()
+            published_sha = str(package_descriptor.get("commit", "")).strip() if packaged_install else ""
+            latest_sha = published_sha or branch_sha
+            latest_date = (
+                str(package_descriptor.get("built_at", "")).strip()
+                or str(package_descriptor.get("release_date", "")).strip()
+                or branch_date
+            )
             comparison_detail = f"Latest revision: {latest_sha[:12]}"
             if latest_version:
-                comparison_detail = f"Published version: {latest_version}  |  Revision: {latest_sha[:12]}"
+                comparison_detail = f"Published version: {latest_version}  |  Release revision: {latest_sha[:12]}"
             report_progress(28, "Comparing installed version...", comparison_detail)
             current_sha = self.current_update_revision(repo)
-            if current_sha and current_sha == latest_sha:
-                queue_result("update_no_updates", {
-                    "latest_sha": latest_sha,
-                    "latest_date": latest_date,
-                    "latest_version": latest_version,
-                    "packaged": bool(getattr(sys, "frozen", False)),
-                })
-                return
 
-            if getattr(sys, "frozen", False):
-                report_progress(38, "Checking the packaged EXE...", "Comparing the installed executable with the published build.")
-                remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+            if packaged_install:
+                # Packaged operator installs are judged by the actual running build
+                # before any cached/source revision marker. Older updaters could
+                # leave update_metadata.json pointing at an attempted GitHub
+                # revision after rolling the EXE back, which made the older EXE
+                # falsely report that it was already current.
+                report_progress(38, "Checking the packaged EXE...", "Comparing the installed build with the published package.")
+                latest_version_number = int(package_descriptor.get("version_number", 0) or 0)
+                local_version_number = int(getattr(self, "APP_VERSION_NUMBER", 0) or 0)
+                remote_exe_hash = str(package_descriptor.get("exe_sha256", "")).strip().lower()
                 local_exe_hash = self.current_packaged_exe_hash()
-                if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
-                    self.write_update_metadata(repo, latest_sha, "bundle-match")
+
+                if latest_version_number and local_version_number:
+                    if latest_version_number < local_version_number:
+                        queue_result("update_no_updates", {
+                            "latest_sha": latest_sha,
+                            "latest_date": latest_date,
+                            "latest_version": latest_version,
+                            "packaged": True,
+                        })
+                        return
+                    if latest_version_number == local_version_number:
+                        if not remote_exe_hash:
+                            remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+                        if not remote_exe_hash or not local_exe_hash or remote_exe_hash == local_exe_hash:
+                            self.write_update_metadata(repo, latest_sha, "version-match")
+                            queue_result("update_no_updates", {
+                                "latest_sha": latest_sha,
+                                "latest_date": latest_date,
+                                "latest_version": latest_version,
+                                "packaged": True,
+                            })
+                            return
+                    # A strictly newer published version always wins over stale
+                    # revision metadata, even when current_sha == latest_sha.
+                elif current_sha and current_sha == latest_sha:
+                    # Legacy published metadata did not always include a numeric
+                    # version/hash. Keep revision fallback only for that legacy case.
                     queue_result("update_no_updates", {
                         "latest_sha": latest_sha,
                         "latest_date": latest_date,
@@ -20579,6 +20735,28 @@ a {{ color: #1f4e79; }}
                         "packaged": True,
                     })
                     return
+                else:
+                    if not remote_exe_hash:
+                        remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
+                    if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
+                        self.write_update_metadata(repo, latest_sha, "bundle-match")
+                        queue_result("update_no_updates", {
+                            "latest_sha": latest_sha,
+                            "latest_date": latest_date,
+                            "latest_version": latest_version,
+                            "packaged": True,
+                        })
+                        return
+                    # Different executable hashes are sufficient evidence that a
+                    # packaged update exists when version metadata is unavailable.
+            elif current_sha and current_sha == latest_sha:
+                queue_result("update_no_updates", {
+                    "latest_sha": latest_sha,
+                    "latest_date": latest_date,
+                    "latest_version": latest_version,
+                    "packaged": False,
+                })
+                return
 
             available_detail = f"{latest_version} is ready to download." if latest_version else "A newer GitHub version is ready to download."
             report_progress(100, "Update available", available_detail)
@@ -20776,9 +20954,15 @@ a {{ color: #1f4e79; }}
                     return {
                         "url": cls.github_raw_url(owner, repo_name, branch, zip_path),
                         "sha256": str(data.get("sha256", "")).strip().lower(),
+                        "exe_sha256": str(data.get("exe_sha256", "")).strip().lower(),
                         "size": int(data.get("size", 0) or 0),
                         "version": str(data.get("version", "")).strip(),
+                        "version_number": int(data.get("version_number", 0) or 0),
+                        "marker": str(data.get("marker", "")).strip(),
                         "release_name": str(data.get("release_name", "")).strip(),
+                        "release_date": str(data.get("release_date", "")).strip(),
+                        "built_at": str(data.get("built_at", "")).strip(),
+                        "commit": str(data.get("commit", "")).strip(),
                         "changelog_url": str(data.get("changelog_url", cls.GITHUB_CHANGELOG_URL)).strip(),
                         "source": "branch update package",
                     }
@@ -20792,9 +20976,15 @@ a {{ color: #1f4e79; }}
         return {
             "url": cls.github_raw_url(owner, repo_name, branch, cls.GITHUB_UPDATE_PACKAGE_PATH),
             "sha256": "",
+            "exe_sha256": "",
             "size": 0,
             "version": "",
+            "version_number": 0,
+            "marker": "",
             "release_name": "",
+            "release_date": "",
+            "built_at": "",
+            "commit": "",
             "changelog_url": cls.GITHUB_CHANGELOG_URL,
             "source": "branch update ZIP",
         }
@@ -20899,16 +21089,8 @@ a {{ color: #1f4e79; }}
                     sha = str(data.get("sha", "")).strip() if isinstance(data, dict) else ""
                     if sha:
                         return sha
-                except Exception as journal_exc:
-                    rollback_warnings.append(
-                        self.record_send_journal_fallback(
-                            "send-cancelled",
-                            journal_exc,
-                            transaction_id,
-                            rolled_back_targets=[str(path) for path in rolled_back],
-                        )
-                    )
-                    self._last_send_cancel_result["warnings"] = rollback_warnings
+                except Exception:
+                    pass
         return self.git_head_without_git(repo)
 
     @staticmethod
@@ -21525,7 +21707,7 @@ a {{ color: #1f4e79; }}
             metadata_commands = (
                 f'if not exist "{metadata_target.parent}" mkdir "{metadata_target.parent}" >nul 2>nul\n'
                 f'copy /Y "{staged_metadata}" "{metadata_target}" >>"%LOG_FILE%" 2>&1\n'
-                'if errorlevel 1 goto rollback\n'
+                'if errorlevel 1 >>"%LOG_FILE%" echo WARNING: Could not write external update metadata; installed bundle metadata remains authoritative.\n'
             )
 
         script = f"""@echo off
@@ -21603,13 +21785,13 @@ if not exist "%APP_DIR%\\%EXE_NAME%" goto rollback
 if not exist "%APP_DIR%\\_internal\\_tcl_data" if not exist "%APP_DIR%\\_internal\\tcl_data" goto rollback
 if not exist "%APP_DIR%\\_internal\\_tk_data" if not exist "%APP_DIR%\\_internal\\tk_data" goto rollback
 if not exist "%APP_DIR%\\_internal\\pypdfium2_raw\\pdfium.dll" goto rollback
-{metadata_commands}
 call :status "Starting the updated Shower Programmer..."
 start "" "%APP_DIR%\\%EXE_NAME%"
 timeout /t 10 /nobreak >nul
 tasklist /FI "IMAGENAME eq %EXE_NAME%" /NH 2>nul | find /I "%EXE_NAME%" >nul
 if errorlevel 1 goto rollback_after_launch
 
+{metadata_commands}
 call :status "Update completed successfully. Preserving the previous known-good runtime..."
 if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
 if not exist "%APP_DIR%\\Rollback" mkdir "%APP_DIR%\\Rollback" >nul 2>nul
@@ -21741,7 +21923,14 @@ exit /b 0
                 temporary.unlink()
         except OSError:
             pass
-        request = urllib.request.Request(url, headers={"User-Agent": "Showers-Programmer-Updater"})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Showers-Programmer-Updater",
+                "Cache-Control": "no-cache, no-store, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
         try:
             with urllib.request.urlopen(request, timeout=180) as response, temporary.open("wb") as handle:
                 try:
@@ -21817,6 +22006,8 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $client = New-Object Net.WebClient
 $client.Headers.Set('User-Agent', 'Showers-Programmer-Updater')
+$client.Headers.Set('Cache-Control', 'no-cache, no-store, max-age=0')
+$client.Headers.Set('Pragma', 'no-cache')
 try {{
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $client.DownloadString({url_literal})
@@ -22150,15 +22341,19 @@ try {{
             if task_context is not None:
                 task_context.progress(current, 4, message)
 
+        try:
+            history_data = self.load_processing_history_for_output(output_dir)
+        except Exception:
+            history_data = {"orders": {}}
         progress(1, "Finding generated sketches for the selected orders...")
         sketch_paths = (
-            self.generated_sketch_paths_for_orders(aw_orders, output_dir)
+            self.generated_sketch_paths_for_orders(aw_orders, output_dir, history_data)
             if include_sketches
             else []
         )
         progress(2, "Finding generated DXF programs for the selected orders...")
         dxf_paths = (
-            self.generated_dxf_paths_for_orders(aw_orders, output_dir)
+            self.generated_dxf_paths_for_orders(aw_orders, output_dir, history_data)
             if include_programs
             else []
         )
@@ -22359,6 +22554,7 @@ try {{
         *,
         deleted_orders: list[shower_batch.ProcessOrder] | None = None,
         history: dict[str, object] | None = None,
+        output_dir: Path | None = None,
     ) -> list[dict[str, object]]:
         """Return touched batches only when every original order is sent or deleted."""
         current_terminal_aw = {
@@ -22370,7 +22566,11 @@ try {{
             return []
         if history is None:
             try:
-                history = self.load_processing_history()
+                history = (
+                    self.load_processing_history_for_output(output_dir)
+                    if output_dir is not None
+                    else self.load_processing_history()
+                )
             except Exception:
                 history = {"orders": {}}
 
@@ -23578,10 +23778,22 @@ try {{
             entry["run_folder"] = str(run_folder)
         self.save_processing_history(history)
 
-    def output_was_skipped_for_order(self, aw_order: str, output_kind: str) -> bool:
-        history = self.history_for_order(aw_order)
+    def output_was_skipped_for_order(
+        self,
+        aw_order: str,
+        output_kind: str,
+        *,
+        output_dir: Path | None = None,
+        history: dict[str, object] | None = None,
+    ) -> bool:
+        if isinstance(history, dict):
+            entry = self.history_entry_from_data(history, aw_order)
+        elif output_dir is not None:
+            entry = self.history_for_order_from_output(aw_order, output_dir)
+        else:
+            entry = self.history_for_order(aw_order)
         key = "sketch_output_skipped" if output_kind == "sketch" else "dxf_output_skipped"
-        return bool(history.get(key, False))
+        return bool(entry.get(key, False))
 
     @staticmethod
     def process_order_requires_program_dxf(
@@ -23661,15 +23873,15 @@ try {{
             if task_context is not None:
                 task_context.check_cancelled()
                 task_context.stage("Validating local workflow folders and selected order routes...")
-            resolved_output_dir = (
-                Path(output_dir).resolve()
-                if output_dir is not None
-                else Path(self.output_dir_var.get()).resolve()
-            )
+            if output_dir is None:
+                raise RuntimeError("Send worker requires an explicit output directory snapshot.")
+            resolved_output_dir = Path(output_dir).resolve()
             self.ensure_workflow_folders(order_folder, process_list_path, resolved_output_dir)
             if program_required_by_aw is None:
+                if config_path is None:
+                    raise RuntimeError("Send worker requires an explicit configuration snapshot path.")
                 try:
-                    send_config = programmer.load_config(config_path or self.editable_config_path())
+                    send_config = programmer.load_config(config_path)
                 except Exception:
                     send_config = {}
                 program_required_by_aw = {
@@ -23761,10 +23973,13 @@ try {{
                 include_sketches=include_sketches,
                 include_programs=include_programs,
                 program_required_by_aw=program_required_by_aw,
+                output_dir=resolved_output_dir,
             )
             batch_plan_started = time.perf_counter()
             completed_process_batches = (
-                self.completed_process_list_batches_for_orders(sent_orders)
+                self.completed_process_list_batches_for_orders(
+                    sent_orders, output_dir=resolved_output_dir
+                )
                 if sent_orders and archive_inputs
                 else []
             )
@@ -23982,8 +24197,15 @@ try {{
         include_sketches: bool,
         include_programs: bool,
         program_required_by_aw: dict[str, bool] | None = None,
+        output_dir: Path | None = None,
+        history: dict[str, object] | None = None,
     ) -> list[shower_batch.ProcessOrder]:
         """Count an intentionally skipped output as satisfied for input cleanup."""
+        if history is None and output_dir is not None:
+            try:
+                history = self.load_processing_history_for_output(output_dir)
+            except Exception:
+                history = {"orders": {}}
         copied_names = {path.name.lower() for path in copied}
 
         def paths_were_copied(paths: list[Path]) -> bool:
@@ -24001,13 +24223,13 @@ try {{
             sketch_satisfied = (
                 not include_sketches
                 or paths_were_copied(order_sketches)
-                or (not order_sketches and self.output_was_skipped_for_order(order.aw_order, "sketch"))
+                or (not order_sketches and self.output_was_skipped_for_order(order.aw_order, "sketch", output_dir=output_dir, history=history))
             )
             program_satisfied = (
                 not include_programs
                 or not program_required
                 or paths_were_copied(order_dxfs)
-                or (not order_dxfs and self.output_was_skipped_for_order(order.aw_order, "dxf"))
+                or (not order_dxfs and self.output_was_skipped_for_order(order.aw_order, "dxf", output_dir=output_dir, history=history))
             )
             if (include_sketches or include_programs) and sketch_satisfied and program_satisfied:
                 sent.append(order)
@@ -24570,11 +24792,17 @@ try {{
             except queue.Full:
                 pass
 
-        threading.Thread(
-            target=index_worker,
+        if not cls.start_bounded_network_thread(
+            index_worker,
             name="shower-input-cleanup-index",
-            daemon=True,
-        ).start()
+        ):
+            return {
+                "source": str(source_dir),
+                "source_missing": True,
+                "source_error": "Network worker capacity is busy; a previous network call may still be pending.",
+                "cleanup_timed_out": True,
+                "files": [],
+            }
         try:
             return results.get(timeout=max(0.01, float(timeout_seconds)))
         except queue.Empty:
@@ -24615,11 +24843,11 @@ try {{
             except queue.Full:
                 pass
 
-        threading.Thread(
-            target=match_worker,
+        if not cls.start_bounded_network_thread(
+            match_worker,
             name="shower-input-cleanup-match",
-            daemon=True,
-        ).start()
+        ):
+            return [], "Network worker capacity is busy; a previous network call may still be pending."
         try:
             return results.get(timeout=max(0.01, float(timeout_seconds)))
         except queue.Empty:
@@ -24678,12 +24906,15 @@ try {{
                     results.put((path, exists))
                     jobs.task_done()
 
+        started_workers = 0
         for index in range(min(12, len(ordered))):
-            threading.Thread(
-                target=exists_worker,
+            if cls.start_bounded_network_thread(
+                exists_worker,
                 name=f"shower-input-verify-{index + 1}",
-                daemon=True,
-            ).start()
+            ):
+                started_workers += 1
+        if started_workers == 0:
+            return [], ordered
 
         existing: list[Path] = []
         completed_keys: set[str] = set()
@@ -24749,12 +24980,13 @@ try {{
                     results.put((path, error))
                     jobs.task_done()
 
+        started_workers = 0
         for index in range(worker_count):
-            threading.Thread(
-                target=delete_worker,
+            if cls.start_bounded_network_thread(
+                delete_worker,
                 name=f"shower-input-cleanup-{index + 1}",
-                daemon=True,
-            ).start()
+            ):
+                started_workers += 1
 
         deleted: list[Path] = []
         warnings: list[str] = []
@@ -24762,6 +24994,12 @@ try {{
         result_index = progress_start
         total = progress_total if progress_total is not None else progress_start + len(ordered)
         deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        if started_workers == 0:
+            warnings.append(
+                "Network worker capacity is busy; previous network calls may still be pending. "
+                "No additional cleanup threads were started."
+            )
+            return [], warnings, ordered
         while len(completed_keys) < len(ordered):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -30021,10 +30259,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     production_sketches=production_sketches,
                     output_dir=output_dir,
                 )
-                try:
-                    dialog.after(0, lambda: apply_results(results))
-                except (tk.TclError, RuntimeError):
-                    pass
+                self.queue_ui_callback(lambda results=results: apply_results(results))
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -30118,6 +30353,25 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         return sorted(filtered, key=archive_key, reverse=True)
 
+    @staticmethod
+    def archive_search_terms(query: object) -> tuple[str, ...]:
+        """Return normalized archive-search terms in operator-entered order."""
+        return tuple(part.casefold() for part in str(query or "").split() if part.strip())
+
+    @classmethod
+    def archive_search_matches(cls, query: object, *values: object) -> bool:
+        """Match every search token across archive metadata fields.
+
+        The archive browser intentionally treats A&W number, job information,
+        customer information, batch/process-list names, and archive dates as one
+        searchable surface so operators do not need to choose the field first.
+        """
+        terms = cls.archive_search_terms(query)
+        if not terms:
+            return True
+        haystack = " ".join(str(value or "") for value in values).casefold()
+        return all(term in haystack for term in terms)
+
     @classmethod
     def archived_order_inventory(
         cls,
@@ -30128,6 +30382,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         date_to: datetime | None = None,
         state_store: shower_state.StateStore | None = None,
         task_context: shower_tasks.TaskContext | None = None,
+        search_query: str = "",
     ) -> tuple[list[dict[str, object]], list[str]]:
         """Build the requested archive window using a persistent SQLite index.
 
@@ -30192,7 +30447,12 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 process_archive,
                 order_archive,
             ):
-                entries.extend(entries_from_cached_records(state_store.archive_records([archive_name])))
+                cached_records = (
+                    state_store.search_archive_records(search_query, archive_names=[archive_name])
+                    if str(search_query or "").strip()
+                    else state_store.archive_records([archive_name])
+                )
+                entries.extend(entries_from_cached_records(cached_records))
                 continue
 
             process_files = cls.archive_process_list_files(process_archive)
@@ -30249,21 +30509,31 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     except Exception as exc:
                         warnings.append(f"Could not map archived filenames for A&W {order.aw_order}: {exc}")
                         matched = []
-                    entries.append(
-                        {
-                            "archive_name": archive_name,
-                            "archive_date": cls.archive_date_from_name(archive_name),
-                            "batch_name": process_file.name,
-                            "batch_key": batch_key,
-                            "order": order,
-                            "order_archive_dir": order_archive,
-                            "process_archive_dir": process_file.parent,
-                            "process_list_files": [process_file],
-                            "order_files": matched,
-                            "_fast_file_mapping": True,
-                            "_sqlite_indexed": state_store is not None,
-                        }
-                    )
+                    order_cache = cached_by_aw.get(str(order.aw_order), {})
+                    if cls.archive_search_matches(
+                        search_query,
+                        archive_name,
+                        process_file.name,
+                        order.aw_order,
+                        order.job_name,
+                        order.customer,
+                        json.dumps(order_cache, sort_keys=True),
+                    ):
+                        entries.append(
+                            {
+                                "archive_name": archive_name,
+                                "archive_date": cls.archive_date_from_name(archive_name),
+                                "batch_name": process_file.name,
+                                "batch_key": batch_key,
+                                "order": order,
+                                "order_archive_dir": order_archive,
+                                "process_archive_dir": process_file.parent,
+                                "process_list_files": [process_file],
+                                "order_files": matched,
+                                "_fast_file_mapping": True,
+                                "_sqlite_indexed": state_store is not None,
+                            }
+                        )
                     indexed_records.append(
                         shower_state.ArchiveRecord(
                             archive_name=archive_name,
@@ -30276,7 +30546,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                             process_list_path=str(process_file.resolve()),
                             order_archive_dir=str(order_archive.resolve()),
                             order_files=tuple(str(path.resolve()) for path in matched),
-                            order_json=json.dumps(cached_by_aw.get(str(order.aw_order), {}), sort_keys=True),
+                            order_json=json.dumps(order_cache, sort_keys=True),
                         )
                     )
             if task_context is not None:
@@ -31658,6 +31928,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         task_context: shower_tasks.TaskContext | None = None,
+        search_query: str = "",
     ) -> tuple[list[dict[str, object]], list[str]]:
         """Load and enrich archived-input rows without touching Tk widgets."""
         store = self.state_store_for_output(output_dir)
@@ -31669,6 +31940,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             date_to=date_to,
             state_store=store,
             task_context=task_context,
+            search_query=search_query,
         )
         store.record_performance(
             "Archive Browser",
@@ -31824,7 +32096,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             header,
             text=(
                 "Browse archived source batches or processing runs. The default view is the most recent seven days; "
-                "use the date range or Load 7 More Days only when older history is needed."
+                "use Search All Archives to find Job, Customer, A&W order, or Batch information across every archived date."
             ),
             font=("Segoe UI", 10),
             text_color=self.MUTED,
@@ -31860,12 +32132,20 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             filters,
             textvariable=search_var,
             height=34,
-            placeholder_text="Search A&W order, job, customer, batch/run, or archive date...",
+            placeholder_text="Search Job, Customer, A&W order, Batch, or archive date...",
             fg_color=self.CARD_BG,
             border_color=self.BORDER,
             text_color=self.TEXT,
         )
         search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        search_all_button = self.make_tool_button(
+            filters,
+            "Search All Archives",
+            "search",
+            lambda: search_all_archives(),
+            width=152,
+        )
+        search_all_button.grid(row=0, column=2, padx=(0, 8))
         sent_menu = ctk.CTkOptionMenu(
             filters,
             variable=sent_filter_var,
@@ -31878,7 +32158,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             dropdown_fg_color=self.CARD_BG,
             text_color=self.TEXT,
         )
-        sent_menu.grid(row=0, column=2, padx=(0, 8))
+        sent_menu.grid(row=0, column=3, padx=(0, 8))
         active_menu = ctk.CTkOptionMenu(
             filters,
             variable=active_filter_var,
@@ -31891,10 +32171,10 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             dropdown_fg_color=self.CARD_BG,
             text_color=self.TEXT,
         )
-        active_menu.grid(row=0, column=3)
+        active_menu.grid(row=0, column=4)
 
         date_row = ctk.CTkFrame(filters, fg_color="transparent")
-        date_row.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(7, 0))
+        date_row.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(7, 0))
         date_row.grid_columnconfigure(7, weight=1)
         ctk.CTkLabel(date_row, text="Archive date", font=("Segoe UI", 10, "bold"), text_color=self.MUTED).grid(row=0, column=0, padx=(0, 6))
         from_entry = ctk.CTkEntry(date_row, textvariable=from_var, width=118, height=32, placeholder_text="From")
@@ -31982,6 +32262,10 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         refresh_needed: dict[str, bool] = {
             "Orders / Sketch Archives": True,
             "Processing Runs": True,
+        }
+        global_search_active: dict[str, bool] = {
+            "Orders / Sketch Archives": False,
+            "Processing Runs": False,
         }
         sort_column = "archive"
         sort_descending = True
@@ -32161,11 +32445,12 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     if not isinstance(full_children, list):
                         continue
                     batch_label = str(consolidated.get("display_name", consolidated.get("batch_name", "Archived Batch")))
-                    group_query_match = not query or query in " ".join((
+                    group_query_match = self.archive_search_matches(
+                        query,
                         batch_label,
-                        str(consolidated.get("batch_name", "")),
-                        str(consolidated.get("archive_name", "")),
-                    )).casefold()
+                        consolidated.get("batch_name", ""),
+                        consolidated.get("archive_name", ""),
+                    )
                     visible_children: list[dict[str, object]] = []
                     for entry in full_children:
                         if not isinstance(entry, dict) or not entry_matches_filters(entry):
@@ -32173,15 +32458,17 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         order = entry.get("order")
                         if not isinstance(order, shower_batch.ProcessOrder):
                             continue
-                        haystack = " ".join((
-                            str(entry.get("archive_name", "")),
-                            str(entry.get("batch_name", "")),
+                        child_query_match = self.archive_search_matches(
+                            query,
+                            entry.get("archive_name", ""),
+                            entry.get("batch_name", ""),
                             batch_label,
-                            str(order.aw_order),
+                            order.aw_order,
                             order.job_name,
                             order.customer,
-                        )).casefold()
-                        if query and not group_query_match and query not in haystack:
+                            order.text_blob(),
+                        )
+                        if query and not group_query_match and not child_query_match:
                             continue
                         visible_children.append(entry)
                     if not visible_children:
@@ -32196,16 +32483,20 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         for order_row in order_rows:
                             if not isinstance(order_row, dict):
                                 continue
-                            haystack = " ".join((
-                                str(run.get("archive_name", "")),
+                            if self.archive_search_matches(
+                                query,
+                                run.get("archive_name", ""),
                                 batch_name,
-                                str(order_row.get("aw_order", "")),
-                                str(order_row.get("last_processed", "")),
-                                str(order_row.get("status", "")),
-                            )).casefold()
-                            if not query or query in haystack:
+                                order_row.get("aw_order", ""),
+                                order_row.get("last_processed", ""),
+                                order_row.get("status", ""),
+                            ):
                                 filtered_orders.append(order_row)
-                    batch_match = not query or query in f"{run.get('archive_name', '')} {batch_name}".casefold()
+                    batch_match = self.archive_search_matches(
+                        query,
+                        run.get("archive_name", ""),
+                        batch_name,
+                    )
                     if query and not filtered_orders and not batch_match:
                         continue
                     groups.append({**run, "children": filtered_orders if query else list(order_rows) if isinstance(order_rows, list) else []})
@@ -32272,7 +32563,13 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     row_id = tree.insert(parent_id, tk.END, text="Order", values=values)
                     rows[row_id] = child if mode == "Orders / Sketch Archives" else {"kind": "run_order", "run": group, "order_row": child}
 
-            status = f"Showing {len(groups)} batch/run group(s) from {len(inventories[mode])} loaded archive record(s)."
+            if global_search_active.get(mode, False) and query:
+                status = (
+                    f"Search All Archives: showing {len(groups)} batch/run group(s) from "
+                    f"{len(inventories[mode])} matching archive record(s)."
+                )
+            else:
+                status = f"Showing {len(groups)} batch/run group(s) from {len(inventories[mode])} loaded archive record(s)."
             archive_status_var.set(status)
 
         def sort_by_column(column: str) -> None:
@@ -32336,6 +32633,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             try:
                 archive_cancel_button.configure(state="normal" if state == "loading" else "disabled")
                 archive_retry_button.configure(state="disabled" if state == "loading" else "normal")
+                search_all_button.configure(state="disabled" if state == "loading" else "normal")
             except (tk.TclError, ValueError):
                 pass
 
@@ -32420,6 +32718,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     "replace": replace,
                     "date_from": date_from,
                     "date_to": date_to,
+                    "global_search": False,
                     "inventory": loaded,
                     "warnings": warnings,
                 }
@@ -32459,11 +32758,17 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 loaded = []
             if not isinstance(warnings, list):
                 warnings = []
+            is_global_search = bool(payload.get("global_search", False))
             if bool(payload.get("replace", True)):
                 inventories[mode] = loaded
                 inventory_warnings[mode] = warnings
-                loaded_ranges[mode] = (payload["date_from"], payload["date_to"])
+                global_search_active[mode] = is_global_search
+                if is_global_search:
+                    loaded_ranges[mode] = None
+                else:
+                    loaded_ranges[mode] = (payload["date_from"], payload["date_to"])
             else:
+                global_search_active[mode] = False
                 existing_keys: set[tuple[str, str, str]] = set()
                 for entry in inventories[mode]:
                     if mode == "Processing Runs":
@@ -32490,10 +32795,18 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             if mode == current_mode():
                 render()
                 notes = inventory_warnings[mode]
-                loaded_message = (
-                    f"Loaded {len(inventories[mode])} archive record(s)"
-                    + (f" with {len(notes)} note(s)." if notes else ".")
-                )
+                if is_global_search:
+                    query_text = str(payload.get("search_query", "")).strip()
+                    loaded_message = (
+                        f"Search found {len(inventories[mode])} archive record(s) across all dates"
+                        + (f" for '{query_text}'" if query_text else "")
+                        + (f" with {len(notes)} note(s)." if notes else ".")
+                    )
+                else:
+                    loaded_message = (
+                        f"Loaded {len(inventories[mode])} archive record(s)"
+                        + (f" with {len(notes)} note(s)." if notes else ".")
+                    )
                 archive_status_var.set(loaded_message)
                 elapsed_ms = float(payload.get("_elapsed_ms", 0.0) or 0.0)
                 detail = loaded_message
@@ -32601,6 +32914,92 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 if callable(mark_ready):
                     mark_ready("Archives")
             archive_poll_after_id = dialog.after(100, poll_archive_refresh)
+
+        def search_all_archives() -> None:
+            nonlocal request_serial
+            query_text = search_var.get().strip()
+            if not query_text:
+                messagebox.showinfo(
+                    "Search Archives",
+                    "Enter Job information, Customer information, an A&W order, or a Batch value first.",
+                    parent=dialog,
+                )
+                return
+            mode = current_mode()
+            if mode in refresh_inflight or archive_task_manager.active is not None:
+                archive_status_var.set("Another archive operation is already running...")
+                return
+            try:
+                order_folder = Path(self.folder_var.get()).resolve()
+                process_list_root = Path(self.process_list_var.get()).resolve()
+                output_dir = Path(self.output_dir_var.get()).resolve()
+            except Exception as exc:
+                archive_status_var.set(f"Archive search could not start: {exc}")
+                set_archive_progress("Archive search could not start", str(exc), state="error")
+                return
+
+            request_serial += 1
+            request_id = request_serial
+            refresh_inflight.add(mode)
+            archive_status_var.set(f"Searching every archived date for '{query_text}'...")
+            set_archive_progress(
+                "Searching all archives",
+                f"Searching Job, Customer, A&W order, Batch, and archive metadata for '{query_text}'.",
+                state="loading",
+            )
+
+            def worker(task: shower_tasks.TaskContext) -> dict[str, object]:
+                task.stage(f"Searching all {mode.lower()} for '{query_text}'...")
+                if mode == "Processing Runs":
+                    loaded, warnings = self.load_archive_run_settings_inventory(
+                        output_dir,
+                        date_from=None,
+                        date_to=None,
+                        task_context=task,
+                    )
+                else:
+                    loaded, warnings = self.load_archive_settings_inventory(
+                        order_folder,
+                        process_list_root,
+                        output_dir,
+                        date_from=None,
+                        date_to=None,
+                        task_context=task,
+                        search_query=query_text,
+                    )
+                task.check_cancelled()
+                return {
+                    "request_id": request_id,
+                    "mode": mode,
+                    "replace": True,
+                    "date_from": None,
+                    "date_to": None,
+                    "global_search": True,
+                    "search_query": query_text,
+                    "inventory": loaded,
+                    "warnings": warnings,
+                }
+
+            try:
+                snapshot = archive_task_manager.start(
+                    f"Settings Archive Search - {mode}",
+                    worker,
+                    message=f"Searching all archived dates for '{query_text}'...",
+                    total=0,
+                    cancellable=True,
+                )
+            except Exception as exc:
+                refresh_inflight.discard(mode)
+                archive_status_var.set(f"Archive search could not start: {exc}")
+                set_archive_progress("Archive search could not start", str(exc), state="error")
+                return
+            archive_task_meta[snapshot.task_id] = {
+                "mode": mode,
+                "request_id": request_id,
+                "replace": True,
+                "global_search": True,
+                "search_query": query_text,
+            }
 
         def apply_date_filter() -> None:
             try:
@@ -33043,6 +33442,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
 
         mode_menu.configure(command=mode_changed)
         search_var.trace_add("write", lambda *_args: render())
+        search_entry.bind("<Return>", lambda _event: search_all_archives() or "break")
         sent_filter_var.trace_add("write", lambda *_args: render())
         active_filter_var.trace_add("write", lambda *_args: render())
 
@@ -33053,7 +33453,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         )
         ctk.CTkLabel(
             date_row,
-            text="One blank date = single-day search.",
+            text="Typing filters loaded dates. Search All Archives or Enter searches every archived date.",
             font=("Segoe UI", 9),
             text_color=self.MUTED,
             anchor="w",
@@ -35344,8 +35744,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
 
             routing_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
             stale_sketch.write_bytes(b"old-marked-sketch")
-            routing_app.output_was_skipped_for_order = lambda _aw, _kind: True
-            routing_app.find_order_sketch_path = lambda _aw, _out: stale_sketch
+            routing_app.output_was_skipped_for_order = lambda _aw, _kind, **_kwargs: True
+            routing_app.find_order_sketch_path = lambda _aw, _out, _history=None: stale_sketch
             if routing_app.generated_sketch_paths_for_orders(["234567"], output_root):
                 raise RuntimeError("Skipped sketch was still eligible for Review / Send.")
 
@@ -35477,8 +35877,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                     close_handle(lock_handle)
 
             stale_program.write_text("old-generated-program", encoding="utf-8")
-            routing_app.output_was_skipped_for_order = lambda _aw, kind: kind == "dxf"
-            routing_app.output_dirs_for_order = lambda _aw, _out: (
+            routing_app.output_was_skipped_for_order = lambda _aw, kind, **_kwargs: kind == "dxf"
+            routing_app.output_dirs_for_order = lambda _aw, _out, _history=None: (
                 stale_run_programs.parent,
                 stale_run_programs.parent / "Sketches",
                 stale_run_programs,
@@ -35769,7 +36169,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
 
             mixed_send_app = ShowerProgrammerApp.__new__(ShowerProgrammerApp)
             mixed_send_app.output_was_skipped_for_order = (
-                lambda aw, kind: str(aw) == "236505" and kind == "sketch"
+                lambda aw, kind, **_kwargs: str(aw) == "236505" and kind == "sketch"
             )
             mixed_sent = mixed_send_app.successfully_sent_orders(
                 [cleanup_order_a, cleanup_order_b],
@@ -36287,6 +36687,22 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "soft_managed_task_operation_guard": True,
                 "queue_pump_rearm_guard": True,
                 "version_1_89_full_system_reliability_audit": True,
+                "thread_safe_ui_callback_queue": True,
+                "managed_task_terminal_handoff_guard": True,
+                "background_history_path_isolation": True,
+                "batch_history_single_read": True,
+                "bounded_network_worker_slots": True,
+                "version_1_90_thread_safe_background_handoffs": True,
+                "global_archive_metadata_search": True,
+                "published_package_update_authority": True,
+                "explicit_update_publish_handoff": True,
+                "safe_update_metadata_fallback": True,
+                "version_1_91_global_archive_search_update_publication": True,
+                "packaged_version_precedes_revision_metadata": True,
+                "rollback_safe_update_metadata_commit": True,
+                "github_update_cache_bypass": True,
+                "published_exe_hash_comparison": True,
+                "version_1_92_packaged_update_detection_reliability": True,
             }
         )
     except Exception as exc:

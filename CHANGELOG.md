@@ -1,3 +1,56 @@
+## [Version 1.92] - 2026-09-30
+
+### Update detection reliability
+- Fixed the false **You’re up to date** path affecting older packaged installs such as Version 1.84. Packaged checks now compare the actual running build version and executable hash with the published package before trusting local revision metadata. A stale `Output/update_metadata.json`, AppData update marker, or source-tree Git revision can no longer hide a newer published EXE.
+- Fixed updater rollback bookkeeping. External update metadata is now written only after the newly installed EXE has launched and remained running through the post-install verification window. A failed launch/rollback can no longer leave a newer GitHub revision marker behind while restoring the older executable.
+- GitHub metadata requests now explicitly bypass intermediary caches with `Cache-Control: no-cache` and `Pragma: no-cache`, including the PowerShell fallback, reducing stale results behind corporate proxies such as Zscaler.
+- Published update descriptors now carry the EXE SHA-256 directly into comparison logic so package identity does not depend on revision metadata alone.
+
+### Validation
+- Added regressions for the Version 1.84-to-newer-release failure mode, stale revision metadata after rollback, packaged version precedence, EXE-hash fallback, delayed metadata commit, cache-control headers, and release metadata.
+
+### Scope
+- CNC routing, mirror/DXF logic, Send destinations, archive behavior, and production processing are unchanged.
+
+## [Version 1.91] - 2026-09-30
+
+### Archive search
+- Added an explicit **Search All Archives** workflow in Settings > Archives. Operators can search across every dated archive by Job information, Customer information, A&W order, Batch/process-list name, archive date, and cached order metadata without first knowing the archive date. Pressing Enter in the archive search box runs the same full-history search.
+- Archive search is backed by the existing persistent SQLite archive index. Unchanged dated folders are searched from cached metadata, while previously unseen/changed archive dates are indexed in the background before results are returned. Multiple search terms are combined, so searches such as a customer/job token plus an A&W number can narrow directly to the intended order.
+- The original live search remains fast for the currently loaded date window; the UI now clearly distinguishes that local filtering from a full-history Search All Archives operation.
+
+### Update publication reliability
+- Investigation confirmed that rebuilding Shower Programmer only creates the update ZIP and metadata locally; it does not upload them to GitHub. GitHub main was still publishing Version 1.89 while the working source had advanced to Version 1.90, so operator PCs correctly had no Version 1.90 package to discover. The rebuild script now prints an explicit publication checklist naming the release ZIP, release metadata, version file, changelog, and changed source/tests that must be committed and pushed together.
+- Packaged update checks now treat the published update package metadata/commit as the installable release authority instead of treating any newer GitHub branch commit as an installable update. This prevents source-only commits from advertising or reinstalling an older packaged build.
+- Hardened installed-update metadata fallback so a damaged local `.shower_update.json` is ignored safely instead of entering an unrelated Send rollback exception path.
+
+### Validation
+- Added Version 1.91 regressions for archive metadata search by A&W, job, customer, batch, archive date, multiple search terms, full-history archive UI wiring, published-package update authority, safe update metadata fallback, and the rebuild publication handoff notice.
+
+### Scope
+- CNC routing, Denver/Waterjet selection, mirror orientation, DXF geometry, fabrication rules, Send destinations, and archive restore/return semantics are unchanged.
+
+## [Version 1.90] - 2026-09-30
+
+### Reliability
+- Removed the remaining direct Tcl/Tk handoffs from background workers. Startup recovery, network health, asynchronous Review raster/evidence work, diagnostic-package completion, and Settings System Health now publish callbacks through the main worker queue so only Tk's owning thread executes UI code. This closes intermittent Windows failure paths where `after(...)` was invoked from a worker thread.
+- Added a managed-task terminal handoff guard. Soft tasks now remain logically active after the worker finishes until Tk consumes the matching `task_done`, `task_error`, or `task_cancelled` event, eliminating the narrow window where another production command could start before the completed task was applied to the order model.
+- Send workers now require Output and configuration paths captured on the UI thread before launch instead of falling back to Tk variables from the worker thread.
+- Added a process-wide cap for timeout-protected SMB/network workers. A Windows network call that remains blocked below Python can no longer cause each later health check, Send, or cleanup attempt to create another unbounded set of stranded daemon threads; new probes fail safely when the bounded slots are occupied.
+- Review prefetch/overview status reads now use the explicit Output snapshot for manual-overrides/history state, avoiding hidden Tk-variable reads while Review context is being prepared in the background.
+
+### Performance
+- Generated sketch/DXF discovery now loads `processing_history.json` once per batch operation and reuses that snapshot for every selected order. Review / Send preflight and Validate Selected also reuse the same history snapshot across sketch/DXF lookup instead of repeatedly reopening the same JSON file.
+- Processing-history writes from batch workers now use the explicit Output directory passed to the worker, keeping disk I/O deterministic and independent of mutable GUI state.
+
+### Regression hardening
+- Updated the retained Version 1.63 startup-recovery test to validate the newer queue-based UI handoff instead of requiring the old cross-thread `root.after(...)` implementation.
+- Corrected the retained Version 1.89 metadata test so it acts as a historical version floor instead of pinning every future release to 1.89. Added a new regression that scans retained release tests for exact historical version-number pins.
+- Added Version 1.90 coverage for worker/Tk isolation, queued UI callbacks, terminal-handoff operation guarding, explicit Send snapshots, history-path isolation, and one-read batch history discovery.
+
+### Scope
+- CNC routing, Denver/Waterjet selection, mirror orientation, DXF geometry, fabrication rules, archive semantics, and production-copy destinations are unchanged.
+
 ## [Version 1.89] - 2026-09-30
 
 ### Reliability audit
