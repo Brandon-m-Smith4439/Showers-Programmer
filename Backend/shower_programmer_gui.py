@@ -172,17 +172,51 @@ _pdfium_import_attempted = False
 _pdfium_import_lock = threading.Lock()
 
 
-def close_packager_splash() -> None:
-    """Close PyInstaller's pre-interpreter splash after the Tk startup shield is painted."""
+def close_packager_splash() -> bool:
+    """Close PyInstaller's splash safely and idempotently.
+
+    The packaged updater starts the rebuilt EXE in ``--self-test`` mode before it
+    installs the new runtime.  That path does not construct Tk, so the splash
+    must also be closable independently of the normal StartupShield handoff.
+    Returning a success state lets normal startup schedule a few harmless retry
+    attempts for slower Windows/Tk/PyInstaller timing.
+    """
     if not bool(getattr(sys, "frozen", False)):
-        return
+        return True
     try:
         import pyi_splash  # type: ignore[import-not-found]
-
-        if bool(pyi_splash.is_alive()):
-            pyi_splash.close()
     except Exception:
+        return False
+
+    try:
+        if not bool(pyi_splash.is_alive()):
+            return True
+    except Exception:
+        # Older/partially initialized pyi_splash shims can fail the status probe;
+        # still attempt the close rather than leaving a topmost splash behind.
         pass
+
+    try:
+        pyi_splash.close()
+        return True
+    except Exception:
+        return False
+
+
+def close_packager_splash_early() -> None:
+    """Close the packaged splash on non-GUI/early-return startup paths."""
+    close_packager_splash()
+
+
+def schedule_packager_splash_cleanup(root: tk.Misc) -> None:
+    """Retry splash retirement after the normal branded Tk handoff."""
+    if not bool(getattr(sys, "frozen", False)):
+        return
+    for delay_ms in (120, 450, 1200):
+        try:
+            root.after(delay_ms, close_packager_splash)
+        except tk.TclError:
+            return
 
 
 def get_pdfium() -> Any | None:
@@ -1147,6 +1181,15 @@ class ShowerProgrammerApp:
     SCAN_IO_MAX_WORKERS = 8
     WORKER_QUEUE_DRAIN_MAX_EVENTS = 12
     WORKER_QUEUE_DRAIN_BUDGET_SECONDS = 0.010
+    WORKER_QUEUE_TERMINAL_EVENTS = frozenset({
+        "scan_done", "scan_error", "import_done", "import_error",
+        "task_done", "task_error", "task_cancelled",
+        "validation_done", "validation_error",
+        "delete_done", "delete_error", "delete_incomplete",
+        "done", "error", "batch_cancelled_partial",
+        "send_done", "send_error",
+        "update_install_done", "update_error",
+    })
     ORDER_FUTURE_POLL_SECONDS = 0.08
     MANUAL_DXF_REVIEW_RESOLUTION_KEY = "manual_dxf_review_resolution"
     ORDER_TREE_COLUMNS = (
@@ -1279,6 +1322,7 @@ class ShowerProgrammerApp:
         self.active_themed_context_binding: tuple[tk.Widget, str, str] | None = None
         self.pending_update_script: Path | None = None
         self.pending_update_message = ""
+        self.startup_update_check_started = False
         self.update_progress_window: tk.Toplevel | None = None
         self.update_progress_stage_var: tk.StringVar | None = None
         self.update_progress_detail_var: tk.StringVar | None = None
@@ -1303,6 +1347,10 @@ class ShowerProgrammerApp:
         self.root.after(500, lambda: self.cache_maintenance.start(Path(self.output_dir_var.get()).resolve()))
         self.root.after(650, self.start_startup_recovery_check_async)
         self.root.after(1400, self.check_network_health_async)
+        # Installed EXEs quietly check for a published update shortly after the
+        # main window is usable. The check stays invisible unless an update is
+        # actually available, so offline/network failures never interrupt startup.
+        self.root.after(2600, self.start_startup_update_check)
         self.root.after_idle(lambda: self.root.after(1050, self.scan_orders))
 
     def run_startup_recovery_check(self) -> None:
@@ -4553,7 +4601,7 @@ class ShowerProgrammerApp:
             pass
 
     def on_close(self) -> None:
-        if self.is_busy:
+        if self.operation_active():
             elapsed = self.format_elapsed_seconds(self.activity_elapsed_seconds())
             current_step = self.activity_stage_message or self.status_var.get() or "Background work is still running."
             should_close = messagebox.askyesno(
@@ -4825,7 +4873,7 @@ class ShowerProgrammerApp:
         self.update_summary_strip()
 
     def toggle_color_mode(self) -> None:
-        if self.is_busy:
+        if self.operation_active():
             self.dark_mode_var.set(not self.dark_mode_var.get())
             self.status_var.set("Finish the current task before changing the color mode.")
             return
@@ -7180,7 +7228,7 @@ class ShowerProgrammerApp:
             self.scan_orders()
 
     def scan_orders(self) -> None:
-        if self.is_busy:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         try:
@@ -7230,7 +7278,7 @@ class ShowerProgrammerApp:
         remains the deliberate action that may synchronize the order back from the
         shared network input.
         """
-        if self.is_busy:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         try:
@@ -7264,8 +7312,35 @@ class ShowerProgrammerApp:
             mark_busy=lock_controls,
         )
 
+    def schedule_post_send_local_refresh(self, *, delay_ms: int = 100, retries: int = 12) -> None:
+        """Refresh sent-order visibility without launching another shared-network scan.
+
+        Send already performs the validated production/input handoff. A full
+        Scan Orders immediately afterward can make the desktop look frozen again
+        while shared folders are indexed and all controls are locked. Wait for
+        the Send task to retire, then run the existing local-only refresh in its
+        soft/non-locking mode.
+        """
+
+        def begin_refresh(remaining: int) -> None:
+            active_task = getattr(getattr(self, "task_manager", None), "active", None)
+            if active_task is not None:
+                if remaining > 0:
+                    try:
+                        self.root.after(75, lambda: begin_refresh(remaining - 1))
+                    except tk.TclError:
+                        pass
+                return
+            self.status_var.set("Send complete. Refreshing local Orders...")
+            self.refresh_local_orders(lock_controls=False)
+
+        try:
+            self.root.after(max(0, int(delay_ms)), lambda: begin_refresh(max(0, int(retries))))
+        except tk.TclError:
+            pass
+
     def import_edi_orders(self) -> None:
-        if self.is_busy:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         if getattr(self, "test_mode_workspace", None) is not None:
@@ -7355,6 +7430,17 @@ class ShowerProgrammerApp:
         self.background_controls_locked = False
         if hasattr(self, "cancel_task_button"):
             self.cancel_task_button.grid_remove()
+
+    def operation_active(self) -> bool:
+        """Return True for both hard-locking and soft managed background work.
+
+        Soft refreshes intentionally leave the Orders surface clickable, but they
+        still own the shared task manager. Production-affecting commands must not
+        start against a half-refreshed order model merely because ``is_busy`` is
+        false for that soft task.
+        """
+        manager = getattr(self, "task_manager", None)
+        return bool(self.is_busy or (manager is not None and getattr(manager, "active", None) is not None))
 
     @classmethod
     def load_process_list_batches(
@@ -11847,8 +11933,13 @@ class ShowerProgrammerApp:
             self.close_active_themed_context_menu()
             return "break"
 
-        if row_id not in self.tree.selection():
-            self.tree.focus(row_id)
+        current_selection = tuple(self.tree.selection())
+        if row_id not in current_selection:
+            # A right-clicked row is the context row. Previously we only moved
+            # Treeview focus, so selection-driven actions such as Program Manually
+            # could be absent on a fresh startup until another command selected it.
+            self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
 
         batch_id = self.tree_row_batches.get(row_id)
         order = self.order_for_tree_row(row_id)
@@ -12827,7 +12918,7 @@ class ShowerProgrammerApp:
         the menu is retired, then this method validates and starts the background
         discovery task from that snapshot.
         """
-        if self.is_busy:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
 
@@ -13509,7 +13600,7 @@ class ShowerProgrammerApp:
         )
 
     def validate_selected_orders(self) -> None:
-        if self.is_busy:
+        if self.operation_active():
             messagebox.showinfo("Busy", "Wait for the current task to finish before validating orders.")
             return
         orders = self.selected_orders()
@@ -13666,8 +13757,8 @@ class ShowerProgrammerApp:
         skip_dxf_override: bool | None = None,
     ) -> None:
         orders = [order for order in orders if not self.is_input_only_order(order)]
-        if self.is_busy:
-            messagebox.showinfo("Batch running", "A batch is already running.")
+        if self.operation_active():
+            messagebox.showinfo("Batch running", "A batch or background refresh is already running.")
             return
         if not orders:
             messagebox.showinfo("No orders", "Scan the process list first.")
@@ -14498,15 +14589,52 @@ class ShowerProgrammerApp:
         runs = [path for path in self.output_search_roots(output_dir) if path != output_dir]
         return max(runs, key=lambda path: path.stat().st_mtime) if runs else None
 
+    def handle_worker_queue_dispatch_failure(self, kind: str, error: BaseException) -> None:
+        """Keep one malformed UI event from permanently killing the queue pump.
+
+        The queue drain is the handoff point for scans, processing, Send, updates,
+        and managed-task terminal events. If a callback raises here and polling is
+        not re-armed, controls can remain disabled even though the worker already
+        finished. Record the fault, release terminal-operation UI state, and let
+        the next queued event continue on the following Tk tick.
+        """
+        event_name = str(kind or "unknown")
+        if event_name in self.WORKER_QUEUE_TERMINAL_EVENTS:
+            try:
+                self.finish_background_activity()
+            except Exception:
+                pass
+        try:
+            self.status_var.set(
+                f"Recovered from an internal {event_name} UI handoff error. See Diagnostics for details."
+            )
+        except Exception:
+            pass
+        try:
+            diagnostics = self.internal_output_dir() / self.DIAGNOSTICS_FOLDER_NAME
+            diagnostics.mkdir(parents=True, exist_ok=True)
+            target = diagnostics / "worker_queue_errors.log"
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"[{datetime.now().astimezone().isoformat(timespec='seconds')}] "
+                    f"event={event_name} {error.__class__.__name__}: {error}\n"
+                )
+                handle.write(traceback.format_exc())
+                handle.write("\n")
+        except Exception:
+            pass
+
     def drain_worker_queue(self) -> None:
         drain_started = time.monotonic()
         drained_events = 0
+        current_kind = ""
         try:
             while (
                 drained_events < self.WORKER_QUEUE_DRAIN_MAX_EVENTS
                 and (time.monotonic() - drain_started) < self.WORKER_QUEUE_DRAIN_BUDGET_SECONDS
             ):
                 kind, payload = self.worker_queue.get_nowait()
+                current_kind = str(kind)
                 drained_events += 1
                 if kind == "update_progress":
                     data = payload
@@ -14557,6 +14685,8 @@ class ShowerProgrammerApp:
                 elif kind == "update_no_updates":
                     data = payload
                     assert isinstance(data, dict)
+                    if bool(data.get("startup_notify_only", False)):
+                        continue
                     latest_sha = str(data.get("latest_sha", ""))
                     latest_date = str(data.get("latest_date", ""))
                     packaged = bool(data.get("packaged", False))
@@ -14569,10 +14699,26 @@ class ShowerProgrammerApp:
                 elif kind == "update_available":
                     data = payload
                     assert isinstance(data, dict)
+                    startup_notify_only = bool(data.get("startup_notify_only", False))
+                    active_modal = None
+                    if startup_notify_only:
+                        try:
+                            active_modal = self.root.grab_current()
+                        except tk.TclError:
+                            active_modal = None
+                    if startup_notify_only and (self.operation_active() or active_modal is not None):
+                        # Avoid interrupting a production operation or another startup
+                        # modal (for example Recovery) that became active while the
+                        # lightweight GitHub request was in flight. Requeue until the
+                        # operator is back at the normal workspace.
+                        self.root.after(1200, lambda pending=dict(data): self.worker_queue.put(("update_available", pending)))
+                        continue
                     self.begin_update_install(data)
                 elif kind == "update_information":
                     data = payload
                     assert isinstance(data, dict)
+                    if bool(data.get("startup_notify_only", False)):
+                        continue
                     self.finish_background_activity()
                     self.close_update_progress_window()
                     accent_name = str(data.get("accent", "accent"))
@@ -15365,7 +15511,7 @@ class ShowerProgrammerApp:
                         messagebox.showwarning("Sent with cleanup notes", details, parent=self.root)
                     else:
                         messagebox.showinfo("Send complete", details, parent=self.root)
-                    self.root.after(100, self.scan_orders)
+                    self.schedule_post_send_local_refresh()
                 elif kind == "send_error":
                     self.finish_background_activity()
                     self.status_var.set("Send failed")
@@ -15375,6 +15521,8 @@ class ShowerProgrammerApp:
                     messagebox.showerror("Send failed", friendly_error_message("Review / Send", payload))
         except queue.Empty:
             pass
+        except Exception as exc:
+            self.handle_worker_queue_dispatch_failure(current_kind, exc)
         active_task = getattr(getattr(self, "task_manager", None), "active", None)
         if not self.worker_queue.empty():
             # Yield back to Tk before draining more events so paint, scrolling, and
@@ -15386,7 +15534,10 @@ class ShowerProgrammerApp:
             next_delay = 20
         else:
             next_delay = 90
-        self.root.after(next_delay, self.drain_worker_queue)
+        try:
+            self.root.after(next_delay, self.drain_worker_queue)
+        except (tk.TclError, RuntimeError):
+            pass
 
     @staticmethod
     def scan_status_message(
@@ -20214,9 +20365,29 @@ a {{ color: #1f4e79; }}
         self.save_manual_overrides(data)
         return new_size
 
+    def start_startup_update_check(self) -> None:
+        """Quietly notify packaged users when a newer published build is available.
+
+        This intentionally does not open the normal update progress window and it
+        suppresses network errors/no-update dialogs. Only a real available update
+        becomes visible to the operator. Source/development launches keep their
+        existing explicit Check for Updates workflow.
+        """
+        if self.startup_update_check_started or not getattr(sys, "frozen", False):
+            return
+        self.startup_update_check_started = True
+        repo = self.update_install_root()
+        worker = threading.Thread(
+            target=self.worker_check_for_updates,
+            args=(repo, "", False, True),
+            name="shower-startup-update-check",
+            daemon=True,
+        )
+        worker.start()
+
     def check_for_updates(self) -> None:
         """Check GitHub in a worker thread so the UI remains responsive and informative."""
-        if self.is_busy:
+        if self.operation_active():
             self.show_themed_notice(
                 "Program busy",
                 "Finish the current operation first",
@@ -20226,6 +20397,9 @@ a {{ color: #1f4e79; }}
                 details=[("Current step", self.activity_stage_message or self.status_var.get() or "Working")],
             )
             return
+        # An explicit operator check supersedes the delayed launch-time check so
+        # the two paths cannot both start during the first few seconds after opening.
+        self.startup_update_check_started = True
         repo = self.update_install_root()
         try:
             self.cleanup_stale_update_folders(repo)
@@ -20258,7 +20432,7 @@ a {{ color: #1f4e79; }}
 
     def check_for_updates_without_git(self, repo: Path) -> None:
         """Compatibility wrapper used by older callers; the update check still runs in the worker."""
-        if self.is_busy:
+        if self.operation_active():
             return
         self.start_background_activity("Connecting to GitHub...", maximum=100)
         self.open_update_progress_window()
@@ -20281,10 +20455,33 @@ a {{ color: #1f4e79; }}
             )
         )
 
-    def worker_check_for_updates(self, repo: Path, git: str, use_git: bool) -> None:
+    def worker_check_for_updates(
+        self,
+        repo: Path,
+        git: str,
+        use_git: bool,
+        startup_notify_only: bool = False,
+    ) -> None:
+        """Compare the installed build with GitHub without blocking the Tk thread.
+
+        ``startup_notify_only`` is used by the automatic launch-time check. In that
+        mode progress/no-update/error UI is suppressed; an available update is the
+        only result surfaced to the operator.
+        """
+
+        def report_progress(percent: float, stage: str, detail: str = "") -> None:
+            if not startup_notify_only:
+                self.queue_update_progress(percent, stage, detail)
+
+        def queue_result(kind: str, payload: dict[str, object]) -> None:
+            data = dict(payload)
+            if startup_notify_only:
+                data["startup_notify_only"] = True
+            self.worker_queue.put((kind, data))
+
         try:
             if use_git:
-                self.queue_update_progress(8, "Checking the local project...", "Inspecting Git status before contacting GitHub.")
+                report_progress(8, "Checking the local project...", "Inspecting Git status before contacting GitHub.")
                 status = subprocess.run(
                     [git, "status", "--porcelain"],
                     cwd=repo,
@@ -20293,7 +20490,7 @@ a {{ color: #1f4e79; }}
                     timeout=30,
                     check=True,
                 ).stdout.strip()
-                self.queue_update_progress(20, "Checking GitHub main...", "Downloading the latest Git revision information.")
+                report_progress(20, "Checking GitHub main...", "Downloading the latest Git revision information.")
                 fetch = subprocess.run(
                     [git, "fetch", "origin", "main"],
                     cwd=repo,
@@ -20306,46 +20503,46 @@ a {{ color: #1f4e79; }}
                 current = subprocess.run([git, "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
                 remote = subprocess.run([git, "rev-parse", "origin/main"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
                 base = subprocess.run([git, "merge-base", "HEAD", "origin/main"], cwd=repo, text=True, capture_output=True, timeout=30, check=True).stdout.strip()
-                self.queue_update_progress(100, "GitHub check complete", "The local project and GitHub main were compared successfully.")
+                report_progress(100, "GitHub check complete", "The local project and GitHub main were compared successfully.")
                 if current == remote:
-                    self.worker_queue.put(("update_no_updates", {"latest_sha": remote, "latest_date": "", "latest_version": self.APP_VERSION, "packaged": False}))
+                    queue_result("update_no_updates", {"latest_sha": remote, "latest_date": "", "latest_version": self.APP_VERSION, "packaged": False})
                 elif status:
-                    self.worker_queue.put(("update_information", {
+                    queue_result("update_information", {
                         "title": "Updates available",
                         "heading": "Local changes need attention",
                         "message": "GitHub has newer code, but this project folder contains uncommitted local changes. Commit or stash those changes before using automatic update.",
                         "icon": "warning",
                         "accent": "warning",
-                    }))
+                    })
                 elif base == current:
-                    self.worker_queue.put(("update_available", {
+                    queue_result("update_available", {
                         "mode": "git",
                         "repo": str(repo),
                         "git": git,
                         "latest_sha": remote,
                         "latest_date": "",
                         "current_sha": current,
-                    }))
+                    })
                 elif base == remote:
-                    self.worker_queue.put(("update_information", {
+                    queue_result("update_information", {
                         "title": "Local branch ahead",
                         "heading": "This project has unpublished commits",
                         "message": "The local project contains commits that are not on GitHub main. Nothing was changed.",
                         "icon": "info",
                         "accent": "accent",
-                    }))
+                    })
                 else:
-                    self.worker_queue.put(("update_information", {
+                    queue_result("update_information", {
                         "title": "Branches diverged",
                         "heading": "Manual Git update required",
                         "message": "The local project and GitHub main both contain different changes. Resolve the branches manually with Git before updating.",
                         "icon": "warning",
                         "accent": "warning",
-                    }))
+                    })
                 return
 
             owner, repo_name = self.github_update_repo(repo)
-            self.queue_update_progress(10, "Checking GitHub main...", f"Requesting the latest revision for {owner}/{repo_name}.")
+            report_progress(10, "Checking GitHub main...", f"Requesting the latest revision for {owner}/{repo_name}.")
             latest_sha, latest_date = self.github_latest_commit(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
             package_descriptor: dict[str, object] = {}
             if getattr(sys, "frozen", False):
@@ -20358,34 +20555,34 @@ a {{ color: #1f4e79; }}
             comparison_detail = f"Latest revision: {latest_sha[:12]}"
             if latest_version:
                 comparison_detail = f"Published version: {latest_version}  |  Revision: {latest_sha[:12]}"
-            self.queue_update_progress(28, "Comparing installed version...", comparison_detail)
+            report_progress(28, "Comparing installed version...", comparison_detail)
             current_sha = self.current_update_revision(repo)
             if current_sha and current_sha == latest_sha:
-                self.worker_queue.put(("update_no_updates", {
+                queue_result("update_no_updates", {
                     "latest_sha": latest_sha,
                     "latest_date": latest_date,
                     "latest_version": latest_version,
                     "packaged": bool(getattr(sys, "frozen", False)),
-                }))
+                })
                 return
 
             if getattr(sys, "frozen", False):
-                self.queue_update_progress(38, "Checking the packaged EXE...", "Comparing the installed executable with the published build.")
+                report_progress(38, "Checking the packaged EXE...", "Comparing the installed executable with the published build.")
                 remote_exe_hash = self.github_packaged_exe_hash(owner, repo_name, self.GITHUB_UPDATE_BRANCH)
                 local_exe_hash = self.current_packaged_exe_hash()
                 if remote_exe_hash and local_exe_hash and remote_exe_hash == local_exe_hash:
                     self.write_update_metadata(repo, latest_sha, "bundle-match")
-                    self.worker_queue.put(("update_no_updates", {
+                    queue_result("update_no_updates", {
                         "latest_sha": latest_sha,
                         "latest_date": latest_date,
                         "latest_version": latest_version,
                         "packaged": True,
-                    }))
+                    })
                     return
 
             available_detail = f"{latest_version} is ready to download." if latest_version else "A newer GitHub version is ready to download."
-            self.queue_update_progress(100, "Update available", available_detail)
-            self.worker_queue.put(("update_available", {
+            report_progress(100, "Update available", available_detail)
+            queue_result("update_available", {
                 "mode": "zip",
                 "repo": str(repo),
                 "owner": owner,
@@ -20397,8 +20594,13 @@ a {{ color: #1f4e79; }}
                 "latest_release_name": latest_release_name,
                 "current_version": self.current_installed_version(),
                 "current_sha": current_sha,
-            }))
+            })
         except Exception as exc:
+            if startup_notify_only:
+                # Opening the programmer must remain reliable even if GitHub, the
+                # network, or a proxy is unavailable. Operators can still use the
+                # explicit Check for Updates action later for full diagnostics.
+                return
             self.worker_queue.put(("update_error", friendly_error_message("GitHub update check", exc)))
 
     def begin_update_install(self, data: dict[str, object]) -> None:
@@ -21748,7 +21950,7 @@ try {{
                 parent=self.root,
             )
             return
-        if self.is_busy:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         if self.focus_existing_page_window("review_send", "Review / Send"):
@@ -21793,7 +21995,7 @@ try {{
         archive_inputs: bool = False,
         review_before_send: bool = False,
     ) -> None:
-        if self.is_busy:
+        if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
         if review_before_send and self.focus_existing_page_window("review_send", "Review / Send"):
@@ -22191,9 +22393,16 @@ try {{
             ):
                 continue
             source_value = batch.get("path")
+            # Synthetic batches such as Manual Programming have no process-list
+            # file. Converting None to Path("None") created a fake shared cleanup
+            # target after a manual send and could add a needless network stall.
+            if source_value is None or not str(source_value).strip():
+                continue
             try:
                 source = source_value if isinstance(source_value, Path) else Path(str(source_value))
             except (TypeError, ValueError):
+                continue
+            if source.suffix.lower() not in shower_batch.PROCESS_LIST_EXTENSIONS:
                 continue
             stem = self.process_list_batch_key(source)
             plan = plans_by_stem.setdefault(
@@ -36057,6 +36266,27 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "half_height_mirror_section_bands": True,
                 "clear_order_checkboxes": True,
                 "version_1_84_mirror_section_check_polish": True,
+                "mirror_wj_auto_corner_program_alignment": True,
+                "mirror_wj_top_right_180_orientation": True,
+                "version_1_85_mirror_wj_indicator_program_alignment": True,
+                "packaged_selftest_splash_cleanup": True,
+                "duplicate_launch_splash_cleanup": True,
+                "startup_splash_close_retry": True,
+                "version_1_86_update_splash_handoff_reliability": True,
+                "packaged_startup_update_notification": True,
+                "silent_startup_update_check": True,
+                "startup_update_network_failure_suppression": True,
+                "startup_update_busy_defer": True,
+                "version_1_87_startup_update_notification": True,
+                "right_click_context_row_selection": True,
+                "manual_batch_process_list_isolation": True,
+                "nonblocking_post_send_local_refresh": True,
+                "version_1_88_manual_program_send_responsiveness": True,
+                "worker_queue_dispatch_recovery": True,
+                "terminal_queue_ui_unlock": True,
+                "soft_managed_task_operation_guard": True,
+                "queue_pump_rearm_guard": True,
+                "version_1_89_full_system_reliability_audit": True,
             }
         )
     except Exception as exc:
@@ -36069,6 +36299,10 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
 
 def main() -> None:
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "--self-test":
+        # The updater validates the staged packaged EXE before installation.  Close
+        # PyInstaller's pre-interpreter splash immediately because this path never
+        # creates the Tk StartupShield that normally performs the visual handoff.
+        close_packager_splash_early()
         report = Path(sys.argv[2]).resolve() if len(sys.argv) >= 3 else Path(tempfile.gettempdir()) / "shower_programmer_self_test.json"
         result = run_packaged_self_test(report)
         if not bool(result.get("ok")):
@@ -36121,6 +36355,10 @@ def main() -> None:
     startup_error: list[BaseException] = []
     try:
         if not guard.acquire():
+            # A second launch has no StartupShield handoff.  Retire its PyInstaller
+            # splash before showing the already-running notice so a topmost logo
+            # cannot outlive the rejected process.
+            close_packager_splash_early()
             root.withdraw()
             messagebox.showwarning(
                 "Shower Programmer is already running",
@@ -36146,6 +36384,10 @@ def main() -> None:
         # The PyInstaller splash is visible during interpreter/module import. Only
         # hand off after our native Tk shield has completed its own first paint.
         close_packager_splash()
+        # Some Windows workstations complete the splash/Tcl teardown a little later
+        # than the close request.  Retry only the same idempotent close operation;
+        # no application windows, routing logic, or order-processing state changes.
+        schedule_packager_splash_cleanup(root)
 
         def construct_application() -> None:
             try:

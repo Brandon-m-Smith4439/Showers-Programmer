@@ -50,8 +50,8 @@ class MirrorSectionCheckPolishTests(unittest.TestCase):
 
     def test_version_184_release_metadata_and_flags(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(version["version_number"], 184)
-        self.assertEqual(version["marker"], "VERSION_1_84_MIRROR_SECTION_CHECK_POLISH")
+        self.assertGreaterEqual(version["version_number"], 184)
+        self.assertIn("VERSION_1_84_MIRROR_SECTION_CHECK_POLISH", (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8"))
         flags = (BACKEND / "release_required_flags.txt").read_text(encoding="utf-8")
         for flag in (
             "spanning_mirror_section_bands",

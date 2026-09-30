@@ -2542,9 +2542,23 @@ def adjust_wj_rotation_for_indicator(panel: Panel, config: dict[str, Any]) -> No
     if not panel.indicator_corner:
         return
     if not wj_needs_quarter_turn_for_horizontal_output(panel):
-        if abs(panel.rotation_degrees or 0) > 1e-6:
-            panel.rotation_degrees = 0
-            panel.reasons.append("WJ source already long-side horizontal")
+        # Landscape WJ sources normally stay at 0 degrees. Mirror fabrication is
+        # the one automatic case where a source-aligned bottom-left corner can
+        # be rejected by the actual glass geometry (for example, a raked left
+        # edge) and the safe marker falls back to top-right. In that mirror-only
+        # fallback, the sketch marker and program must describe the same physical
+        # corner, so top-right is the 180-degree flip while bottom-left remains 0.
+        rotation = 0.0
+        if panel.mirror_glass and panel.indicator_corner in {"bottom_left", "top_right"}:
+            mapped_rotation = wj_rotation_for_indicator_corner(panel, config, panel.indicator_corner)
+            if mapped_rotation is not None:
+                rotation = mapped_rotation
+        if abs((panel.rotation_degrees or 0) - rotation) > 1e-6:
+            panel.rotation_degrees = rotation
+            if panel.mirror_glass and panel.indicator_corner == "top_right":
+                panel.reasons.append("Landscape mirror WJ top-right marker uses 180 deg program orientation")
+            else:
+                panel.reasons.append("WJ source already long-side horizontal")
         return
     rotation = wj_rotation_for_indicator_corner(panel, config, panel.indicator_corner)
     if rotation is None:

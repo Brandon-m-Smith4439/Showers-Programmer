@@ -2,7 +2,13 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.84 - Mirror Section Bands and Check Clarity**
+Current release: **Version 1.89 - Full-System Reliability and Queue Recovery Audit**
+
+Version 1.89 hardens the central Tk worker-queue handoff so a single UI callback failure cannot permanently stop queue polling or strand the application in a disabled state. It also treats soft managed refreshes as active operations for production-affecting commands, preventing processing, Send, update, shutdown, and theme-rebuild races against a half-refreshed order model.
+
+Version 1.87 adds a quiet packaged-EXE update check shortly after startup. Operators are notified only when a newer published build exists; no-update and network-failure results stay silent, and any prompt waits for active production work to become idle. The existing manual Check for Updates workflow remains unchanged.
+
+Version 1.86 hardens packaged startup after automatic updates so PyInstaller splash windows are retired on staged self-tests, rejected duplicate launches, and slower normal startup handoffs. The change is isolated to startup/update presentation; CNC routing, DXF generation, mirror logic, archive behavior, and production processing are unchanged.
 
 Version 1.84 refines the Orders mirror grouping and checked-state presentation. Mirror fabrication groups now use compact half-height bands that span the full visible Orders viewport instead of being clipped by individual table columns, with an offset header shade and distinct WITH / WITHOUT FABRICATION text accents. The far-left checked-state control now uses a font-stable `[ ]` / `[✓]` indicator so the check remains visually clear across Windows/Tk font rendering.
 

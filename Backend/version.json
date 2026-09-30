@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.84",
-  "version_number": 184,
-  "marker": "VERSION_1_84_MIRROR_SECTION_CHECK_POLISH",
-  "release_name": "Mirror Section Bands and Check Clarity",
-  "release_date": "2026-09-29",
+  "version": "Version 1.89",
+  "version_number": 189,
+  "marker": "VERSION_1_89_FULL_SYSTEM_RELIABILITY_AUDIT",
+  "release_name": "Full-System Reliability and Queue Recovery Audit",
+  "release_date": "2026-09-30",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

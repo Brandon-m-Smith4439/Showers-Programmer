@@ -1,3 +1,78 @@
+## [Version 1.89] - 2026-09-30
+
+### Reliability audit
+- Hardened the central Tk worker-queue pump. A single exception while applying a scan, processing, Send, update, validation, or task event can no longer terminate queue polling for the rest of the session. The queue is re-armed on the next Tk tick and the failure is recorded in `Output/Diagnostics/worker_queue_errors.log`.
+- Terminal queue-event failures now release the background progress/disabled-control state before polling continues. This closes a systemic freeze path where a worker had actually finished but one UI handoff exception could leave the workspace looking permanently busy.
+- Added a single operation-active guard that includes both normal hard-locking work and soft managed background work. Production-affecting commands no longer start while a nonblocking local/archive refresh still owns the task manager.
+
+### Concurrency safety
+- Scan, local refresh, EDI import, validation, processing, Send, explicit update checks, color-mode rebuild, and application close now recognize soft managed tasks as active work. This prevents command races against an order model that is still being reconciled in the background while keeping ordinary selection/scrolling responsive.
+- Startup update notification deferral now also respects soft managed tasks, so an update prompt will not interrupt the post-Send/local-refresh handoff.
+
+### Validation
+- Added Version 1.89 regressions for soft-task operation guarding, terminal/nonterminal queue-dispatch failure recovery, diagnostics logging, queue-pump re-arming, and release metadata.
+- Fixed the Version 1.89 rebuild gate so the integrated source/packaged self-test report now emits the five new 1.89 required feature flags. The earlier build failure occurred after all unit tests and smoke checks had passed because those report keys were missing from `run_packaged_self_test()`.
+- Added a regression that verifies every Version 1.89 required flag is present in the integrated self-test result, preventing this packaging-only failure from recurring.
+- Full compile, integrated self-test, complete unittest discovery, profiler run, and focused concurrency/performance checks are part of the 1.89 audit.
+
+## [Version 1.88] - 2026-09-30
+
+### Fixed
+- Right-clicking an Orders row now makes that row the active selection before its context actions are built. This fixes the startup case where **Program Manually** could be unavailable until another command, such as Process Selected, happened to select the row first. Existing multi-selection is preserved when the right-clicked row is already part of it.
+- Manual Programming and other synthetic batches with no real process-list file are no longer treated as completed process-list batches during Send. This prevents a manual send from inventing a fake `None` process-list target on the shared input path and avoids unnecessary network cleanup waits.
+- Successful Send no longer immediately launches a full shared-network **Scan Orders** with global controls locked. It now waits for the Send worker to retire and performs the existing local-only Orders refresh in soft/non-locking mode, so the workspace stays interactive while sent/archived rows are reconciled.
+
+### Safety
+- Real process-list batches keep the same completed-batch retirement behavior; only synthetic batches without a valid process-list extension are excluded.
+- Production copy, archive, validated shared-input cleanup, Denver/Waterjet routing, mirror processing, and DXF generation are unchanged.
+
+### Validation
+- Added Version 1.88 regressions for fresh-start right-click selection/manual-program availability, retained multi-selection behavior, synthetic manual-batch exclusion, normal process-list completion planning, and nonblocking post-Send local refresh.
+
+## [Version 1.87] - 2026-09-29
+
+### Added
+- Packaged Shower Programmer installations now perform one quiet GitHub update check shortly after the main window opens. When a newer published build is available, the operator receives the existing update confirmation with installed/available version details and can install immediately or defer it.
+- The automatic launch-time check is notification-only: it does not open the update progress window, show a "no updates" dialog, or alter production files.
+
+### Reliability
+- Startup update checks run on a daemon worker and suppress network/proxy/GitHub failures so opening Shower Programmer is never blocked by update availability. The existing manual **Check for Updates** action still provides full progress and error reporting when explicitly requested.
+- If production scanning/processing becomes busy while the update request is in flight, the available-update prompt is deferred until the current operation is idle instead of interrupting workflow.
+- Source/development launches do not auto-check; automatic notification is limited to packaged EXE installations used by operators.
+
+### Scope
+- No CNC routing, mirror handling, DXF generation, archive behavior, order scanning logic, sending logic, or production-file processing was changed.
+
+### Validation
+- Added Version 1.87 regression coverage for packaged-only startup scheduling, silent progress/no-update behavior, network failure suppression, busy-operation deferral, and retained manual Check for Updates behavior.
+
+## [Version 1.86] - 2026-09-29
+
+### Fixed
+- Hardened the packaged startup-splash lifecycle after automatic updates. The staged EXE self-test now closes PyInstaller's pre-interpreter splash immediately instead of waiting for the normal Tk startup handoff, which does not exist in self-test mode.
+- Rejected second-instance launches now retire their own packaged splash before showing the already-running warning, preventing a topmost logo from being stranded during update/relaunch timing overlaps.
+- Normal startup now performs several idempotent splash-close retries after the branded Tk startup shield is painted, covering slower Windows/PyInstaller teardown timing without changing the application's main-window presentation.
+
+### Scope
+- No CNC routing, mirror handling, DXF generation, archive behavior, order processing, or production file logic was changed. This release is limited to packaged startup/update presentation and cleanup.
+
+### Validation
+- Added Version 1.86 regression coverage for packaged self-test splash cleanup, duplicate-instance cleanup, normal shield-before-close ordering, and delayed close retries.
+- Re-ran focused startup/update tests, Python compile checks, and the integrated source self-test.
+
+## [Version 1.85] - 2026-09-29
+
+### Fixed
+- Corrected an automatic landscape mirror Waterjet mismatch where a raked/unsquare lower-left corner could move the sketch indicator to the safe top-right corner while the generated DXF incorrectly remained at `0 deg`, leaving the program physically aligned to the opposite bottom-left orientation.
+- Landscape mirror WJ pieces now use `180 deg` only when automatic geometry selection requires the top-right indicator; the normal bottom-left landscape mirror path remains `0 deg`.
+
+### Safety
+- The correction is intentionally scoped to automatic **mirror + Waterjet + landscape + top-right** orientation. Portrait mirror WJ behavior, ordinary bottom-left mirror WJ orders, non-mirror Waterjet processing, Denver processing, and manual indicator overrides are unchanged.
+
+### Validation
+- Added a regression matching Order 239465's 48-5/8 x 40 landscape/raked-corner condition and proving the top-right sketch indicator produces a 180-degree DXF orientation.
+- Added controls proving ordinary landscape mirrors stay at 0 degrees, portrait mirrors keep their existing quarter-turn behavior, and non-mirror landscape Waterjet output is unchanged.
+
 ## [Version 1.84] - 2026-09-29
 
 ### Improved
