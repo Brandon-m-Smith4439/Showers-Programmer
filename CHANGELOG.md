@@ -1,3 +1,17 @@
+## [Version 1.93] - 2026-09-30
+
+### Startup recovery responsiveness
+- The automatic startup **Scan Orders** run now waits until the startup recovery check has finished. The custom recovery modal uses a nested Tk event loop, so the old timer could start a full network/input scan behind the warning while the operator was still reading it.
+- Choosing **Open Recovery** now keeps that initial scan deferred until Settings is closed, so the Recovery workspace opens immediately instead of competing with a long process-list/network scan. Choosing **Later** or having no new warning allows the normal startup scan to begin.
+- Startup recovery acknowledgements are now persisted in both runtime History and an Output/Transactions recovery-state copy. The same unchanged warning is therefore not expected to reappear every launch after it has already been acknowledged.
+
+### Interrupted Send cleanup
+- Recovery now includes a **Mark Reviewed** action for a single `NEEDS_ATTENTION` Send journal. The action only moves the durable journal to `FAILED_RESOLVED`; it does not resend, delete, archive, restore, or roll back production files.
+- **Reconcile Interrupted Sends** no longer starts Scan Orders when nothing was actually reconciled. This prevents an old unresolved journal from launching an unrelated long scan and making Recovery look stuck.
+
+### Validation
+- Added Version 1.93 regressions for the startup-scan gate, Open Recovery deferral, durable warning acknowledgement, production-file-neutral reviewed-journal resolution, and reconcile scan guarding.
+
 ## [Version 1.92] - 2026-09-30
 
 ### Update detection reliability

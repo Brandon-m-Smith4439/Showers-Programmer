@@ -125,6 +125,28 @@ class SendJournal:
             **details,
         )
 
+    def resolve_after_operator_review(
+        self,
+        transaction_id: str,
+        *,
+        note: str = "Operator reviewed the interrupted Send journal and marked it resolved.",
+    ) -> dict[str, Any]:
+        """Close a stale recovery journal without touching production files.
+
+        This is intentionally journal-only.  Recovery may discover an old
+        ``NEEDS_ATTENTION`` record after the underlying production work has long
+        since been reviewed by an operator.  Marking that durable record resolved
+        must never resend, delete, archive, restore, or roll back any production
+        file; it only prevents the same historical journal from blocking startup.
+        """
+        return self.update(
+            transaction_id,
+            SendStage.FAILED_RESOLVED,
+            note,
+            operator_reviewed=True,
+            operator_reviewed_at=self.now_text(),
+        )
+
     def read(self, transaction_id: str) -> dict[str, Any]:
         path = self.root / f"{transaction_id}.json"
         try:

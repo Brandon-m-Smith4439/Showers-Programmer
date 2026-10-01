@@ -1257,6 +1257,16 @@ class ShowerProgrammerApp:
         self.network_health_after_id: str | None = None
         self.diagnostic_worker_active = False
         self.startup_recovery_results: list[dict[str, str]] = []
+        # Startup recovery owns the first operator decision before the automatic
+        # order scan is allowed to begin.  Custom modal dialogs run a nested Tk
+        # event loop, so an unconditional ``after(..., scan_orders)`` can fire
+        # *behind* the recovery prompt while the operator is still reading it.
+        # That made "Open Recovery" look hung on slow/network-backed inputs even
+        # though the work actually consuming time was the unrelated startup scan.
+        self._startup_recovery_check_finished = False
+        self._startup_recovery_prompt_active = False
+        self._startup_initial_scan_started = False
+        self._startup_initial_scan_deferred_for_recovery = False
         self.database_safety = shower_reliability.DatabaseSafetyManager(self.internal_output_dir())
         database_backup: Path | None = None
         try:
@@ -1360,7 +1370,35 @@ class ShowerProgrammerApp:
         # main window is usable. The check stays invisible unless an update is
         # actually available, so offline/network failures never interrupt startup.
         self.root.after(2600, self.start_startup_update_check)
-        self.root.after_idle(lambda: self.root.after(1050, self.scan_orders))
+
+    def schedule_startup_initial_scan(self, delay_ms: int = 120) -> bool:
+        """Start the first Scan Orders only after startup recovery is settled.
+
+        ``wait_window()`` keeps Tk callbacks running while a modal is visible.  A
+        time-based startup scan therefore is not safe: it can start while the
+        recovery prompt owns the operator's attention.  Keep this gate explicit so
+        Recovery opens immediately and the initial production scan cannot race it.
+        """
+        if bool(getattr(self, "_startup_initial_scan_started", False)):
+            return False
+        if not bool(getattr(self, "_startup_recovery_check_finished", False)):
+            return False
+        if bool(getattr(self, "_startup_recovery_prompt_active", False)):
+            return False
+        if bool(getattr(self, "_startup_initial_scan_deferred_for_recovery", False)):
+            return False
+        self._startup_initial_scan_started = True
+        try:
+            self.root.after(max(0, int(delay_ms)), self.scan_orders)
+        except (AttributeError, tk.TclError, RuntimeError):
+            self._startup_initial_scan_started = False
+            return False
+        return True
+
+    def resume_startup_initial_scan_after_recovery(self) -> bool:
+        """Release a scan that was intentionally held while Recovery was open."""
+        self._startup_initial_scan_deferred_for_recovery = False
+        return self.schedule_startup_initial_scan(120)
 
     def run_startup_recovery_check(self) -> None:
         """Run the recovery scan synchronously when explicitly requested."""
@@ -1397,6 +1435,7 @@ class ShowerProgrammerApp:
     def apply_startup_recovery_results(self, results: list[dict[str, str]]) -> None:
         """Apply recovery state and any operator prompt on Tk's UI thread."""
         self.startup_recovery_results = results
+        self._startup_recovery_check_finished = True
         actionable = [item for item in results if str(item.get("severity", "")).upper() == "WARN"]
         state = self.load_startup_recovery_notice_state()
         if not actionable:
@@ -1418,9 +1457,11 @@ class ShowerProgrammerApp:
                     "Previously reported startup recovery warnings are no longer present.",
                     status="SUCCESS",
                 )
+            self.schedule_startup_initial_scan()
             return
         fingerprint = self.startup_recovery_fingerprint(actionable)
         if fingerprint == str(state.get("active_fingerprint", "")):
+            self.schedule_startup_initial_scan()
             return
         state["active_fingerprint"] = fingerprint
         history = state.setdefault("history", [])
@@ -1456,21 +1497,69 @@ class ShowerProgrammerApp:
         )
         if len(actionable) > 5:
             preview += f"\n- ...and {len(actionable) - 5} more"
-        choice = messagebox._show(
-            "showwarning",
-            "Startup recovery check",
-            "Shower Programmer found interrupted or incomplete work from a previous session. "
-            "No production files were changed by this check.\n\n" + preview,
-            parent=self.root,
-            kind="warning",
-            buttons=[("Later", "later"), ("Open Recovery", "recovery")],
-            default="later",
-        )
+        self._startup_recovery_prompt_active = True
+        try:
+            choice = messagebox._show(
+                "showwarning",
+                "Startup recovery check",
+                "Shower Programmer found interrupted or incomplete work from a previous session. "
+                "No production files were changed by this check.\n\n" + preview,
+                parent=self.root,
+                kind="warning",
+                buttons=[("Later", "later"), ("Open Recovery", "recovery")],
+                default="later",
+            )
+        finally:
+            self._startup_recovery_prompt_active = False
+
+        # Persist the operator acknowledgement after the modal closes as well as
+        # before it opens.  This makes the one-time warning durable even if the
+        # application is closed immediately after choosing Later/Open Recovery.
+        state["active_fingerprint"] = fingerprint
+        state["acknowledged_fingerprint"] = fingerprint
+        state["acknowledged_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        state["acknowledged_choice"] = str(choice or "later")
+        self.save_startup_recovery_notice_state(state)
+
         if choice == "recovery":
+            self._startup_initial_scan_deferred_for_recovery = True
             self.open_settings("Recovery")
+            return
+        self.schedule_startup_initial_scan()
 
     def startup_recovery_notice_path(self) -> Path:
         return self.action_history_dir() / self.STARTUP_RECOVERY_STATE_FILE_NAME
+
+    def startup_recovery_notice_paths(self) -> list[Path]:
+        """Return durable locations for startup-warning acknowledgement state.
+
+        Runtime History is retained for compatibility, while a second copy beside
+        the Send journals survives application-runtime swaps and makes the warning
+        acknowledgement follow the production Output workspace that owns the
+        interrupted transaction.
+        """
+        candidates: list[Path] = [self.startup_recovery_notice_path()]
+        output_var = getattr(self, "output_dir_var", None)
+        try:
+            output_value = str(output_var.get()).strip() if output_var is not None else ""
+        except Exception:
+            output_value = ""
+        if output_value:
+            candidates.append(
+                Path(output_value).resolve()
+                / "Transactions"
+                / "Recovery"
+                / self.STARTUP_RECOVERY_STATE_FILE_NAME
+            )
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = os.path.normcase(os.path.abspath(str(path)))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return unique
 
     @staticmethod
     def startup_recovery_fingerprint(items: Iterable[dict[str, str]]) -> str:
@@ -1490,19 +1579,35 @@ class ShowerProgrammerApp:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def load_startup_recovery_notice_state(self) -> dict[str, object]:
-        path = self.startup_recovery_notice_path()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+        candidates: list[tuple[float, dict[str, object]]] = []
+        for path in self.startup_recovery_notice_paths():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    candidates.append((float(path.stat().st_mtime), data))
+            except (OSError, ValueError, TypeError):
+                continue
+        if not candidates:
             return {"active_fingerprint": "", "history": []}
-        return data if isinstance(data, dict) else {"active_fingerprint": "", "history": []}
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
 
     def save_startup_recovery_notice_state(self, state: dict[str, object]) -> None:
-        path = self.startup_recovery_notice_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.stem}-{uuid.uuid4().hex[:8]}.tmp")
-        temporary.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, path)
+        saved = False
+        first_error: Exception | None = None
+        payload = json.dumps(state, indent=2, sort_keys=True)
+        for path in self.startup_recovery_notice_paths():
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(f"{path.stem}-{uuid.uuid4().hex[:8]}.tmp")
+                temporary.write_text(payload, encoding="utf-8")
+                os.replace(temporary, path)
+                saved = True
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if not saved and first_error is not None:
+            raise first_error
 
     def force_main_window_maximized(self) -> None:
         """Keep the root maximized without mapping it during hidden startup."""
@@ -29217,6 +29322,11 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 self.root.after_idle(restore_main_focus)
             except tk.TclError:
                 pass
+            if bool(getattr(self, "_startup_initial_scan_deferred_for_recovery", False)):
+                try:
+                    self.root.after(120, self.resume_startup_initial_scan_after_recovery)
+                except (AttributeError, tk.TclError, RuntimeError):
+                    self.resume_startup_initial_scan_after_recovery()
             return "break" if _event is not None else None
 
         dialog.bind("<Destroy>", clear_reference, add="+")
@@ -33710,6 +33820,14 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             reliability_status.set(
                 f"Interrupted Send journals: {len(interrupted)}   ·   Recovery warnings: {warning_count}\n{rollback_text}"
             )
+            if warning_count == 0:
+                try:
+                    state = self.load_startup_recovery_notice_state()
+                    if str(state.get("active_fingerprint", "")):
+                        state["active_fingerprint"] = ""
+                        self.save_startup_recovery_notice_state(state)
+                except Exception:
+                    pass
 
         def open_send_journals() -> None:
             folder = Path(self.output_dir_var.get()).resolve() / "Transactions" / "Send"
@@ -33733,9 +33851,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                         recovered_on_startup=True,
                     )
                     reconciled += 1
-            self.scan_orders()
             refresh_reliability()
             if reconciled:
+                self.scan_orders()
                 messagebox.showinfo(
                     "Send recovery reconciled",
                     f"Reconciled {reconciled} previously verified Send transaction(s). Scan Orders is refreshing production state now.",
@@ -33749,6 +33867,57 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 )
             else:
                 messagebox.showinfo("No interrupted Sends", "There are no incomplete Send journals.", parent=dialog)
+
+        def mark_reviewed_send_journal() -> None:
+            pending = self.send_journal.incomplete()
+            attention = [
+                item for item in pending
+                if str(item.get("stage", "")) == shower_reliability.SendStage.NEEDS_ATTENTION
+            ]
+            if not attention:
+                messagebox.showinfo(
+                    "No review-only Send journal",
+                    "There is no NEEDS_ATTENTION Send journal waiting for operator review.",
+                    parent=dialog,
+                )
+                return
+            if len(attention) != 1:
+                messagebox.showwarning(
+                    "Multiple Send journals need review",
+                    "More than one interrupted Send journal needs attention. Open Send Journals and review them individually before marking any record resolved.",
+                    parent=dialog,
+                )
+                return
+            item = attention[0]
+            transaction_id = str(item.get("transaction_id", ""))
+            orders = ", ".join(str(value) for value in item.get("aw_orders", [])) or "unknown orders"
+            updated = str(item.get("updated_at", item.get("created_at", ""))).replace("T", " ")
+            if not transaction_id:
+                messagebox.showerror("Recovery journal error", "The recovery journal has no transaction ID.", parent=dialog)
+                return
+            if not messagebox.askyesno(
+                "Mark interrupted Send reviewed?",
+                f"Transaction: {transaction_id}\n"
+                f"Last update: {updated or 'Unknown'}\n"
+                f"Orders: {orders}\n\n"
+                "Use this only after confirming the old Send no longer needs recovery. "
+                "This does NOT resend, delete, archive, restore, or roll back any production files. "
+                "It only closes this historical recovery journal so it stops warning at startup.",
+                parent=dialog,
+            ):
+                return
+            try:
+                self.send_journal.resolve_after_operator_review(transaction_id)
+            except Exception as exc:
+                messagebox.showerror("Could not resolve Send journal", str(exc), parent=dialog)
+                return
+            refresh_reliability()
+            refresh_notice_history()
+            messagebox.showinfo(
+                "Send journal marked reviewed",
+                "The historical recovery journal was marked resolved. No production files were changed.",
+                parent=dialog,
+            )
 
         def rollback_previous_runtime() -> None:
             info = shower_reliability.RuntimeRollbackManager.snapshot_info(self.update_install_root())
@@ -33778,8 +33947,9 @@ Write-Output "AutoCAD saved $count DXF file(s)."
         self.make_tool_button(action_row, "Recheck", "refresh", refresh_reliability, width=104).pack(side=tk.LEFT)
         self.make_tool_button(action_row, "Open Send Journals", "folder", open_send_journals, width=154).pack(side=tk.LEFT, padx=(8, 0))
         self.make_tool_button(action_row, "Reconcile Interrupted Sends", "check_circle", reconcile_send_journals, width=194).pack(side=tk.LEFT, padx=(8, 0))
+        self.make_tool_button(action_row, "Mark Reviewed", "check_circle", mark_reviewed_send_journal, width=132).pack(side=tk.LEFT, padx=(8, 0))
         ctk.CTkButton(
-            action_row, text="Roll Back Previous Version", command=rollback_previous_runtime, width=190, height=34,
+            action_row, text="Roll Back Previous Version", command=rollback_previous_runtime, width=180, height=34,
             corner_radius=9, fg_color=self.WARNING, hover_color=self.ACCENT_DARK, text_color="#ffffff",
             font=("Segoe UI", 10, "bold"), **self.ctk_button_icon("undo", 14, "#ffffff", "left"),
         ).pack(side=tk.LEFT, padx=(8, 0))
@@ -36703,6 +36873,11 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "github_update_cache_bypass": True,
                 "published_exe_hash_comparison": True,
                 "version_1_92_packaged_update_detection_reliability": True,
+                "startup_recovery_scan_gate": True,
+                "durable_recovery_acknowledgement": True,
+                "reviewed_send_journal_resolution": True,
+                "recovery_reconcile_scan_guard": True,
+                "version_1_93_startup_recovery_responsiveness": True,
             }
         )
     except Exception as exc:

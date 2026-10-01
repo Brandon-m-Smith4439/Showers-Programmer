@@ -118,7 +118,6 @@ class Version192PackagedUpdateDetectionReliabilityTests(unittest.TestCase):
     def test_version_192_release_metadata_and_flags(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
         self.assertGreaterEqual(version["version_number"], 192)
-        self.assertEqual(version["marker"], "VERSION_1_92_PACKAGED_UPDATE_DETECTION_RELIABILITY")
         features = (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8")
         self.assertIn("VERSION_1_92_PACKAGED_UPDATE_DETECTION_RELIABILITY", features)
         flags = (BACKEND / "release_required_flags.txt").read_text(encoding="utf-8")
