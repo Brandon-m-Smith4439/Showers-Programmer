@@ -1,3 +1,18 @@
+## [Version 1.94] - 2026-10-01
+
+### Fixed
+- Prevented a disconnected or stalled mapped network drive from trapping **Scan Orders** indefinitely. The shared Showers Programmer Input index now runs through the existing bounded network-worker pool with a hard logical timeout and cancellation polling.
+- Replaced the unbounded Production Sketches `scandir`/thread-pool probe with exact-name, bounded network stat checks. A stalled Production Sketches share now produces a reconciliation warning and the scan continues instead of waiting forever.
+- Network-to-local process-list and order-file synchronization now stages files in temporary local `.part` files under bounded daemon workers. If the network stalls, unfinished files are left uncommitted and retry on the next scan instead of holding the whole application indefinitely.
+- The automatic startup scan is now a soft managed task. It still blocks conflicting Process/Send operations through the task manager, but it no longer disables the whole interface while network availability is being checked, and Cancel remains usable.
+
+### Recovery / diagnostics
+- Shared-input timeouts now fall back to the already-local Input/Process List data and clearly report that the network will retry on the next explicit Scan Orders run.
+- Added regression coverage for cancellation while SMB enumeration is pending, bounded Production Sketches lookup, timeout-safe staged network copies, and the nonblocking startup-scan contract.
+
+### Scope
+- CNC routing, Denver/Waterjet decisions, mirror orientation, DXF geometry, archive semantics, and production Send destinations are unchanged.
+
 ## [Version 1.93] - 2026-09-30
 
 ### Startup recovery responsiveness

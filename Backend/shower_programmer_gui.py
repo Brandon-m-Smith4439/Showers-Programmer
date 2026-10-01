@@ -1179,6 +1179,12 @@ class ShowerProgrammerApp:
     CONFIG_BACKUP_FOLDER_NAME = "Configuration Backups"
     NETWORK_HEALTH_REFRESH_MS = 5 * 60 * 1000
     NETWORK_HEALTH_TIMEOUT_SECONDS = 3.0
+    # A mapped SMB drive can block below Python indefinitely when Windows is
+    # reconnecting it.  Every network stage used by Scan Orders must therefore
+    # have a logical timeout and use the shared daemon-worker budget.
+    SCAN_SHARED_INDEX_TIMEOUT_SECONDS = 10.0
+    SCAN_PRODUCTION_PROBE_TIMEOUT_SECONDS = 10.0
+    SCAN_NETWORK_COPY_STALL_SECONDS = 15.0
     NETWORK_IO_THREAD_LIMIT = 16
     _NETWORK_IO_THREAD_SLOTS = threading.BoundedSemaphore(NETWORK_IO_THREAD_LIMIT)
     SCAN_IO_MAX_WORKERS = 8
@@ -1389,7 +1395,10 @@ class ShowerProgrammerApp:
             return False
         self._startup_initial_scan_started = True
         try:
-            self.root.after(max(0, int(delay_ms)), self.scan_orders)
+            # The automatic startup scan is intentionally soft: the task manager
+            # still blocks conflicting production actions, but the window and the
+            # Cancel control remain interactive while network input is checked.
+            self.root.after(max(0, int(delay_ms)), lambda: self.scan_orders(startup=True))
         except (AttributeError, tk.TclError, RuntimeError):
             self._startup_initial_scan_started = False
             return False
@@ -7388,7 +7397,7 @@ class ShowerProgrammerApp:
         if rescan and not closing:
             self.scan_orders()
 
-    def scan_orders(self) -> None:
+    def scan_orders(self, *, startup: bool = False) -> None:
         if self.operation_active():
             self.status_var.set("Busy. Please wait for the current task to finish.")
             return
@@ -7429,6 +7438,11 @@ class ShowerProgrammerApp:
             message=scan_message,
             total=5,
             cancellable=True,
+            # Never make application startup look frozen merely because a mapped
+            # network drive is slow.  BackgroundTaskManager remains authoritative
+            # for operation_active(), so Process/Send still cannot race this scan.
+            lock_controls=not startup,
+            mark_busy=not startup,
         )
 
     def refresh_local_orders(self, *, lock_controls: bool = True) -> None:
@@ -7896,7 +7910,7 @@ class ShowerProgrammerApp:
                 check_cancelled()
                 stage_started = time.perf_counter()
                 import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
-                    self.prepare_import_source_snapshot()
+                    self.prepare_import_source_snapshot(task_context=task_context)
                 )
                 check_cancelled()
                 network_elapsed = remember_stage("Network index", stage_started)
@@ -7925,6 +7939,7 @@ class ShowerProgrammerApp:
                     process_list,
                     progress_callback=process_list_progress,
                     import_snapshot=import_snapshot,
+                    cancel_check=check_cancelled,
                 )
                 remember_stage("Process-list sync", stage_started)
                 progress_value += int(process_list_import_summary.get("considered", 0) or 0)
@@ -8044,6 +8059,7 @@ class ShowerProgrammerApp:
                     output_dir,
                     self.SHOP_SKETCHES_DIR,
                     folder,
+                    cancel_check=check_cancelled,
                 )
                 production_aw_orders = {str(order.aw_order) for order in production_sent_orders}
                 if production_sent_orders:
@@ -8170,6 +8186,7 @@ class ShowerProgrammerApp:
                     import_snapshot=import_snapshot,
                     missing_requirements=missing_requirements,
                     hardware_orders=active_process_orders,
+                    cancel_check=check_cancelled,
                 )
                 scan_stage = "copying visible shared input files"
                 self.queue_scan_progress(
@@ -8181,6 +8198,7 @@ class ShowerProgrammerApp:
                     folder,
                     import_snapshot,
                     progress_callback=order_file_progress,
+                    cancel_check=check_cancelled,
                 )
                 targeted_copied = [path for path in import_summary.get("copied", []) if isinstance(path, Path)]
                 visible_copied = [path for path in visible_import_summary.get("copied", []) if isinstance(path, Path)]
@@ -8326,7 +8344,7 @@ class ShowerProgrammerApp:
             progress_max = 4
             self.queue_scan_progress(progress_value, progress_max, "Indexing the shared Showers Programmer Input folder...")
             import_snapshot, duplicate_files_removed, duplicate_cleanup_warnings = (
-                self.prepare_import_source_snapshot()
+                self.prepare_import_source_snapshot(task_context=task_context)
             )
 
             def process_list_progress(done: int, total: int, source: Path, copied: bool | None) -> None:
@@ -8343,6 +8361,7 @@ class ShowerProgrammerApp:
                 process_list,
                 progress_callback=process_list_progress,
                 import_snapshot=import_snapshot,
+                cancel_check=check_cancelled,
             )
             progress_value += int(process_list_import_summary.get("considered", 0) or 0)
             copied_process_lists = [
@@ -8394,6 +8413,7 @@ class ShowerProgrammerApp:
                 import_snapshot=import_snapshot,
                 missing_requirements=missing_requirements,
                 hardware_orders=orders,
+                cancel_check=check_cancelled,
             )
             progress_value += int(import_summary.get("considered", 0) or 0)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, "Input synchronization complete.")
@@ -9434,6 +9454,79 @@ class ShowerProgrammerApp:
         return list(orders.values()), process_times
 
     @classmethod
+    def network_path_mtimes_bounded(
+        cls,
+        paths: Iterable[Path],
+        *,
+        timeout_seconds: float = 10.0,
+        max_workers: int = 4,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> tuple[dict[Path, float | None], list[Path]]:
+        """Stat exact network paths without letting one SMB call stall the scan.
+
+        A result value of ``None`` means the path was checked and did not exist or
+        could not be stat'ed.  Paths in the second return value did not finish
+        before the timeout and are deliberately treated as unknown rather than
+        blocking the workstation.
+        """
+        unique: dict[str, Path] = {}
+        for path in paths:
+            key = os.path.normcase(os.path.abspath(str(path)))
+            unique.setdefault(key, path)
+        ordered = list(unique.values())
+        if not ordered:
+            return {}, []
+
+        jobs: queue.Queue[Path] = queue.Queue()
+        results: queue.Queue[tuple[Path, float | None]] = queue.Queue()
+        for path in ordered:
+            jobs.put(path)
+
+        def worker() -> None:
+            while True:
+                try:
+                    path = jobs.get_nowait()
+                except queue.Empty:
+                    return
+                modified: float | None = None
+                try:
+                    modified = path.stat().st_mtime
+                except OSError:
+                    modified = None
+                finally:
+                    results.put((path, modified))
+                    jobs.task_done()
+
+        started_workers = 0
+        for index in range(min(max(1, int(max_workers)), len(ordered))):
+            if cls.start_bounded_network_thread(
+                worker,
+                name=f"shower-network-stat-{index + 1}",
+            ):
+                started_workers += 1
+        if started_workers == 0:
+            return {}, ordered
+
+        completed: dict[str, tuple[Path, float | None]] = {}
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        while len(completed) < len(ordered):
+            if cancel_check is not None:
+                cancel_check()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                path, modified = results.get(timeout=min(0.20, remaining))
+            except queue.Empty:
+                continue
+            key = os.path.normcase(os.path.abspath(str(path)))
+            completed[key] = (path, modified)
+
+        mtimes = {path: modified for path, modified in completed.values()}
+        unresolved = [path for key, path in unique.items() if key not in completed]
+        return mtimes, unresolved
+
+    @classmethod
     def production_sketch_matches(
         cls,
         production_dir: Path,
@@ -9441,38 +9534,39 @@ class ShowerProgrammerApp:
         process_times: dict[str, float],
         *,
         allow_older_aw_orders: set[str] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> tuple[dict[str, list[Path]], list[str], int, int]:
-        """Probe exact production sketch names for the current process-list orders."""
+        """Probe exact production sketch names with bounded network I/O."""
         matches: dict[str, list[Path]] = {}
         warnings: list[str] = []
-        files_checked = 0
         stale_matches = 0
         if not candidate_aw_orders:
-            return matches, warnings, files_checked, stale_matches
-        try:
-            with os.scandir(production_dir):
-                pass
-        except OSError as exc:
-            warnings.append(f"Production Sketches check unavailable: {exc}")
-            return matches, warnings, files_checked, stale_matches
+            return matches, warnings, 0, stale_matches
 
-        def probe(aw_order: str) -> tuple[str, Path, float | None]:
-            production_path = production_dir / f"{aw_order}.pdf"
-            try:
-                modified = production_path.stat().st_mtime
-            except OSError:
-                modified = None
-            return aw_order, production_path, modified
-
-        allow_older_aw_orders = {
-            str(value) for value in (allow_older_aw_orders or set())
-        }
         ordered_orders = sorted(candidate_aw_orders)
-        worker_count = cls.scan_io_worker_count(len(ordered_orders))
-        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="shower-scan") as executor:
-            probe_results = list(executor.map(probe, ordered_orders))
-        for aw_order, production_path, modified in probe_results:
-            files_checked += 1
+        paths_by_aw = {aw_order: production_dir / f"{aw_order}.pdf" for aw_order in ordered_orders}
+        mtimes, unresolved = cls.network_path_mtimes_bounded(
+            paths_by_aw.values(),
+            timeout_seconds=cls.SCAN_PRODUCTION_PROBE_TIMEOUT_SECONDS,
+            max_workers=4,
+            cancel_check=cancel_check,
+        )
+        if unresolved:
+            preview = ", ".join(path.name for path in unresolved[:5])
+            if len(unresolved) > 5:
+                preview += f", +{len(unresolved) - 5} more"
+            warnings.append(
+                "Production Sketches did not finish responding before the network timeout"
+                + (f": {preview}" if preview else "")
+                + ". Sent-order reconciliation was skipped for those files and will retry on the next scan."
+            )
+
+        allow_older_aw_orders = {str(value) for value in (allow_older_aw_orders or set())}
+        for aw_order in ordered_orders:
+            production_path = paths_by_aw[aw_order]
+            if production_path not in mtimes:
+                continue
+            modified = mtimes[production_path]
             if modified is None:
                 continue
             process_time = process_times.get(aw_order, 0.0)
@@ -9484,7 +9578,7 @@ class ShowerProgrammerApp:
                 stale_matches += 1
                 continue
             matches[aw_order] = [production_path]
-        return matches, warnings, files_checked, stale_matches
+        return matches, warnings, len(ordered_orders), stale_matches
 
     @classmethod
     def reconcile_orders_sent_from_production(
@@ -9493,6 +9587,8 @@ class ShowerProgrammerApp:
         output_dir: Path,
         production_dir: Path,
         order_folder: Path | None = None,
+        *,
+        cancel_check: Callable[[], None] | None = None,
     ) -> tuple[
         list[shower_batch.ProcessOrder],
         dict[str, list[Path]],
@@ -9540,6 +9636,7 @@ class ShowerProgrammerApp:
             candidate_aw_orders,
             process_times,
             allow_older_aw_orders=allow_older_aw_orders,
+            cancel_check=cancel_check,
         )
         if stale_matches:
             warnings.append(
@@ -15799,6 +15896,11 @@ class ShowerProgrammerApp:
             hardware_note += f" {hardware_warning_count} hardware list(s) remain in shared input for review."
         copy_note = f" {copy_warning_count} input file(s) were busy and will retry next scan." if copy_warning_count else ""
         if source_missing:
+            detail = str(import_summary.get("source_error", "")).strip()
+            if "timed out" in detail.casefold() or "worker capacity" in detail.casefold():
+                return "Shared input did not respond in time; continuing from local Input only. The next Scan Orders run will retry the network."
+            if detail:
+                return f"EDI import unavailable; continuing from local Input only: {detail}"
             return f"EDI import skipped; source folder not found: {import_summary.get('source', '')}"
         if direct:
             return "Using order PDFs/DXFs directly from the dedicated input folder." + hardware_note + copy_note
@@ -24878,8 +24980,15 @@ try {{
         source_dir: Path,
         *,
         timeout_seconds: float = 10.0,
+        cancel_check: Callable[[], None] | None = None,
     ) -> dict[str, object]:
-        """Index the shared folder without allowing SMB enumeration to hang cleanup."""
+        """Index one shared folder with a hard logical timeout.
+
+        Windows can leave ``os.scandir`` blocked inside an SMB reconnect even
+        though the Python worker itself is a daemon.  The caller must not wait on
+        that thread forever, and Scan Orders must be able to honor Cancel while
+        the network call is still pending.
+        """
         results: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
 
         def index_worker() -> None:
@@ -24908,16 +25017,27 @@ try {{
                 "cleanup_timed_out": True,
                 "files": [],
             }
-        try:
-            return results.get(timeout=max(0.01, float(timeout_seconds)))
-        except queue.Empty:
-            return {
-                "source": str(source_dir),
-                "source_missing": True,
-                "source_error": f"Network folder check timed out after {timeout_seconds:g} seconds",
-                "cleanup_timed_out": True,
-                "files": [],
-            }
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        while True:
+            if cancel_check is not None:
+                cancel_check()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {
+                    "source": str(source_dir),
+                    "source_missing": True,
+                    "source_error": f"Network folder check timed out after {timeout_seconds:g} seconds",
+                    "cleanup_timed_out": True,
+                    "files": [],
+                    "process_list_files": [],
+                    "order_files": [],
+                    "hardware_files": [],
+                    "duplicate_name_groups": [],
+                }
+            try:
+                return results.get(timeout=min(0.20, remaining))
+            except queue.Empty:
+                continue
 
     @classmethod
     def matching_order_files_bounded(
@@ -25437,6 +25557,7 @@ try {{
         process_list_path: Path,
         progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
         import_snapshot: dict[str, object] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -25470,7 +25591,12 @@ try {{
         pairs = [(source, target_dir / source.name) for source in sources]
         copy_warnings: list[str] = []
         for index, (source, _target, did_copy) in enumerate(
-            cls.copy_file_pairs_concurrently(pairs, errors=copy_warnings),
+            cls.import_copy_pairs(
+                pairs,
+                source_root=source_dir,
+                errors=copy_warnings,
+                cancel_check=cancel_check,
+            ),
             start=1,
         ):
             if did_copy:
@@ -25648,10 +25774,29 @@ try {{
                 warnings.append(f"Could not remove duplicate {path.name}: {exc}")
         return deleted, warnings
 
-    def prepare_import_source_snapshot(self) -> tuple[dict[str, object], list[Path], list[str]]:
-        """Index the network folder once without opening or hashing shared files."""
-        snapshot = self.index_import_source_folder(self.EDI_IMPORT_ORDERS_DIR)
-        return snapshot, [], []
+    def prepare_import_source_snapshot(
+        self,
+        *,
+        task_context: shower_tasks.TaskContext | None = None,
+    ) -> tuple[dict[str, object], list[Path], list[str]]:
+        """Index shared input without allowing a disconnected mapped drive to hang Scan Orders."""
+
+        def cancel_check() -> None:
+            if task_context is not None:
+                task_context.check_cancelled()
+
+        snapshot = self.index_import_source_folder_bounded(
+            self.EDI_IMPORT_ORDERS_DIR,
+            timeout_seconds=self.SCAN_SHARED_INDEX_TIMEOUT_SECONDS,
+            cancel_check=cancel_check,
+        )
+        warnings: list[str] = []
+        if bool(snapshot.get("cleanup_timed_out", False)):
+            warnings.append(
+                "Shared input did not respond before the scan timeout. "
+                "Local Input will still be loaded; shared files can retry on the next Scan Orders run."
+            )
+        return snapshot, [], warnings
 
     @classmethod
     def importable_process_list_files(
@@ -25798,6 +25943,7 @@ try {{
         target_dir: Path,
         import_snapshot: dict[str, object],
         progress_callback: Callable[[int, int, Path, bool | None], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         """Mirror current shared PDFs/DXFs locally so unmatched inputs stay visible."""
         raw_files = import_snapshot.get("order_files", [])
@@ -25811,7 +25957,12 @@ try {{
         pairs = [(source, target_dir / source.name) for source in sources]
         copy_warnings: list[str] = []
         for index, (source, target, did_copy) in enumerate(
-            cls.copy_file_pairs_concurrently(pairs, errors=copy_warnings),
+            cls.import_copy_pairs(
+                pairs,
+                source_root=Path(str(import_snapshot.get("source", ""))),
+                errors=copy_warnings,
+                cancel_check=cancel_check,
+            ),
             start=1,
         ):
             if did_copy:
@@ -25834,6 +25985,7 @@ try {{
         import_snapshot: dict[str, object] | None = None,
         missing_requirements: dict[str, dict[str, object]] | None = None,
         hardware_orders: list[shower_batch.ProcessOrder] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         source_dir = cls.EDI_IMPORT_ORDERS_DIR
         summary: dict[str, object] = {
@@ -25948,7 +26100,12 @@ try {{
             stage_pairs = [(source, cache_dir / source.name) for source in network_pdfs]
             copy_warnings = summary["copy_warnings"]
             assert isinstance(copy_warnings, list)
-            for source, local_copy, did_stage in cls.copy_file_pairs_concurrently(stage_pairs, errors=copy_warnings):
+            for source, local_copy, did_stage in cls.import_copy_pairs(
+                stage_pairs,
+                source_root=source_dir,
+                errors=copy_warnings,
+                cancel_check=cancel_check,
+            ):
                 if did_stage is not None and local_copy.is_file():
                     staged.append(local_copy)
                 progress_index += 1
@@ -25975,7 +26132,12 @@ try {{
         direct_pairs = [(source, target_dir / source.name) for source in sources]
         copy_warnings = summary["copy_warnings"]
         assert isinstance(copy_warnings, list)
-        for source, target, did_copy in cls.copy_file_pairs_concurrently(direct_pairs, errors=copy_warnings):
+        for source, target, did_copy in cls.import_copy_pairs(
+            direct_pairs,
+            source_root=source_dir,
+            errors=copy_warnings,
+            cancel_check=cancel_check,
+        ):
             if did_copy:
                 copied.append(target)
             elif did_copy is False:
@@ -26321,6 +26483,191 @@ try {{
                 pass
         cls.copy_file_atomically(source, target)
         return True
+
+    @staticmethod
+    def path_is_remote(path: Path) -> bool:
+        """Return True when Windows reports a UNC or mapped network drive."""
+        value = os.path.abspath(str(path))
+        if value.startswith("\\"):
+            return True
+        if os.name != "nt":
+            return False
+        try:
+            anchor = Path(value).anchor or value[:3]
+            DRIVE_REMOTE = 4
+            return int(ctypes.windll.kernel32.GetDriveTypeW(str(anchor))) == DRIVE_REMOTE
+        except Exception:
+            return False
+
+    @classmethod
+    def import_copy_pairs(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        *,
+        source_root: Path,
+        cancel_check: Callable[[], None] | None = None,
+        errors: list[str] | None = None,
+    ) -> Any:
+        """Use timeout-safe staging only for actual network sources.
+
+        Local fixtures and local-only workflows keep the established direct copy
+        path, while mapped/UNC import sources get the bounded SMB-safe path.
+        """
+        if cls.path_is_remote(source_root):
+            return cls.copy_network_file_pairs_bounded(
+                pairs,
+                errors=errors,
+                cancel_check=cancel_check,
+            )
+        return cls.copy_file_pairs_concurrently(pairs, errors=errors)
+
+    @classmethod
+    def stage_network_copy_if_needed(
+        cls,
+        source: Path,
+        target: Path,
+    ) -> tuple[str, Path | None, tuple[int, int] | None]:
+        """Prepare one network->local copy without mutating the live target.
+
+        The potentially blocking SMB reads happen in a bounded daemon worker.  A
+        completed file is staged as ``copy-*.part`` beside the local target; only
+        the coordinating scan worker promotes that file after receiving the result.
+        If Windows leaves the SMB read stuck past the scan timeout, the live Input
+        file is therefore never changed later by an abandoned worker.
+        """
+        if os.path.normcase(os.path.abspath(str(source))) == os.path.normcase(os.path.abspath(str(target))):
+            return "skip", None, None
+        align_times: tuple[int, int] | None = None
+        if target.exists():
+            try:
+                source_stat = source.stat()
+                target_stat = target.stat()
+                if source_stat.st_size == target_stat.st_size and target_stat.st_mtime >= source_stat.st_mtime:
+                    return "skip", None, None
+                if (
+                    source_stat.st_size == target_stat.st_size
+                    and shower_cache.cached_file_sha256("copy_file_sha256_v1", source)
+                    == shower_cache.cached_file_sha256("copy_file_sha256_v1", target)
+                ):
+                    align_times = (int(target_stat.st_atime_ns), int(source_stat.st_mtime_ns))
+                    return "skip", None, align_times
+            except OSError:
+                pass
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staged = target.with_name(f"copy-{uuid.uuid4().hex[:12]}.part")
+        shutil.copy2(source, staged)
+        return "staged", staged, None
+
+    @classmethod
+    def copy_network_file_pairs_bounded(
+        cls,
+        pairs: list[tuple[Path, Path]],
+        *,
+        stall_timeout_seconds: float | None = None,
+        max_workers: int = 4,
+        cancel_check: Callable[[], None] | None = None,
+        errors: list[str] | None = None,
+    ) -> list[tuple[Path, Path, bool | None]]:
+        """Copy network sources into local Input without an unbounded SMB wait.
+
+        The timeout is a *stall* timeout rather than a total-batch timeout: every
+        completed file resets the deadline.  This allows large healthy imports to
+        continue while still returning control when every active SMB call is stuck.
+        Unfinished sources are reported with ``None`` and retried on the next scan.
+        """
+        if not pairs:
+            return []
+        timeout = max(0.05, float(stall_timeout_seconds or cls.SCAN_NETWORK_COPY_STALL_SECONDS))
+        jobs: queue.Queue[tuple[int, Path, Path]] = queue.Queue()
+        results: queue.Queue[tuple[int, Path, Path, str, Path | None, tuple[int, int] | None, BaseException | None]] = queue.Queue()
+        for index, (source, target) in enumerate(pairs):
+            jobs.put((index, source, target))
+
+        def worker() -> None:
+            while True:
+                try:
+                    index, source, target = jobs.get_nowait()
+                except queue.Empty:
+                    return
+                status = "error"
+                staged: Path | None = None
+                align_times: tuple[int, int] | None = None
+                error: BaseException | None = None
+                try:
+                    status, staged, align_times = cls.stage_network_copy_if_needed(source, target)
+                except FileNotFoundError:
+                    status = "skip"
+                except BaseException as exc:
+                    error = exc
+                finally:
+                    results.put((index, source, target, status, staged, align_times, error))
+                    jobs.task_done()
+
+        started = 0
+        for worker_index in range(min(max(1, int(max_workers)), len(pairs))):
+            if cls.start_bounded_network_thread(
+                worker,
+                name=f"shower-network-copy-{worker_index + 1}",
+            ):
+                started += 1
+        if started == 0:
+            message = "Network copy workers are busy; shared files will retry on the next scan."
+            if errors is not None:
+                errors.append(message)
+            return [(source, target, None) for source, target in pairs]
+
+        completed: dict[int, tuple[Path, Path, bool | None]] = {}
+        last_progress = time.monotonic()
+        while len(completed) < len(pairs):
+            if cancel_check is not None:
+                cancel_check()
+            remaining = timeout - (time.monotonic() - last_progress)
+            if remaining <= 0:
+                break
+            try:
+                index, source, target, status, staged, align_times, error = results.get(
+                    timeout=min(0.20, remaining)
+                )
+            except queue.Empty:
+                continue
+            last_progress = time.monotonic()
+            did_copy: bool | None
+            if error is not None:
+                if errors is not None:
+                    errors.append(f"{source.name}: {error}")
+                did_copy = None
+            elif status == "staged" and staged is not None:
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staged, target)
+                    did_copy = True
+                except OSError as exc:
+                    if errors is not None:
+                        errors.append(f"{source.name}: {exc}")
+                    did_copy = None
+            else:
+                if align_times is not None:
+                    try:
+                        os.utime(target, ns=align_times)
+                    except OSError:
+                        pass
+                did_copy = False
+            completed[index] = (source, target, did_copy)
+
+        unfinished = [index for index in range(len(pairs)) if index not in completed]
+        if unfinished and errors is not None:
+            names = ", ".join(pairs[index][0].name for index in unfinished[:6])
+            if len(unfinished) > 6:
+                names += f", +{len(unfinished) - 6} more"
+            errors.append(
+                f"Shared-file copy stopped after {timeout:g}s without progress; "
+                f"{len(unfinished)} file(s) will retry on the next scan"
+                + (f": {names}" if names else "")
+            )
+        for index in unfinished:
+            source, target = pairs[index]
+            completed[index] = (source, target, None)
+        return [completed[index] for index in range(len(pairs))]
 
     @classmethod
     def copy_file_pairs_concurrently(
@@ -36878,6 +37225,11 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "reviewed_send_journal_resolution": True,
                 "recovery_reconcile_scan_guard": True,
                 "version_1_93_startup_recovery_responsiveness": True,
+                "cancellable_network_scan_index": True,
+                "bounded_production_sketch_probe": True,
+                "bounded_network_import_copy": True,
+                "nonblocking_startup_scan_controls": True,
+                "version_1_94_startup_scan_network_recovery": True,
             }
         )
     except Exception as exc:

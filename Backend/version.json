@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.93",
-  "version_number": 193,
-  "marker": "VERSION_1_93_STARTUP_RECOVERY_RESPONSIVENESS",
-  "release_name": "Startup Recovery Responsiveness",
-  "release_date": "2026-09-30",
+  "version": "Version 1.94",
+  "version_number": 194,
+  "marker": "VERSION_1_94_STARTUP_SCAN_NETWORK_RECOVERY",
+  "release_name": "Startup Scan Network Recovery",
+  "release_date": "2026-10-01",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

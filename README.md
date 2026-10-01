@@ -2,9 +2,9 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.93 - Startup Recovery Responsiveness**
+Current release: **Version 1.94 - Startup Scan Network Recovery**
 
-Version 1.93 fixes startup recovery opening while the automatic order scan is already running behind the modal prompt. The first Scan Orders run now waits for startup recovery to finish; choosing Open Recovery defers that scan until Settings is closed. Recovery acknowledgements are persisted beside both History and the Send journals, and a reviewed NEEDS_ATTENTION Send journal can be closed without changing production files. Version 1.92 packaged update detection and Version 1.91 global archive search remain included.
+Version 1.94 prevents a stalled mapped network drive from trapping Scan Orders indefinitely. Shared-input indexing, Production Sketches probing, and network-to-local scan copies now use bounded/cancellable network handoffs, while the automatic startup scan keeps the window interactive instead of disabling the whole workspace. Version 1.93 startup-recovery ordering, Version 1.92 packaged update detection, and Version 1.91 global archive search remain included.
 
 Version 1.90 removes remaining background-thread calls into Tcl/Tk, keeps soft managed work active until the terminal UI handoff is consumed, snapshots Send configuration paths before workers start, reuses one processing-history read across batch output discovery, and bounds timeout-protected network workers so a stuck SMB call cannot accumulate unlimited background threads.
 
