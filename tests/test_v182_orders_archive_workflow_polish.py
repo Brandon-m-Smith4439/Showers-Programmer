@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class OrdersArchiveWorkflowPolishTests(unittest.TestCase):
@@ -74,7 +74,7 @@ class OrdersArchiveWorkflowPolishTests(unittest.TestCase):
         self.assertIn('active_task = getattr(getattr(self, "task_manager", None), "active", None)', detail)
 
     def test_unchanged_exact_restore_return_avoids_hashing(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             root = Path(temp_text)
             archive = root / "archive.pdf"
             active = root / "active.pdf"

@@ -2745,6 +2745,196 @@ def dimension_matched_pdf_path(
     return matches[0] if len(matches) == 1 else None
 
 
+def configured_pdf_order_mapping(
+    process_order: ProcessOrder,
+    config: dict[str, object] | None,
+) -> dict[str, str] | None:
+    """Return one explicit A&W -> source-PDF assignment when it still fits this order.
+
+    The mapping lives in manual_overrides.json and is intentionally identity-only.
+    It never bypasses dimension validation and never changes programming rules.
+    """
+    if not isinstance(config, dict):
+        return None
+    raw_mappings = config.get("pdf_order_mappings", {})
+    if not isinstance(raw_mappings, dict):
+        return None
+    raw = raw_mappings.get(str(process_order.aw_order))
+    if isinstance(raw, str):
+        filename = Path(raw).name.strip()
+        record: dict[str, str] = {"filename": filename} if filename else {}
+    elif isinstance(raw, dict):
+        filename = Path(str(raw.get("filename", ""))).name.strip()
+        record = {str(key): str(value) for key, value in raw.items() if value is not None}
+        if filename:
+            record["filename"] = filename
+    else:
+        return None
+    if not record.get("filename"):
+        return None
+
+    expected_job = programmer.extract_job_number(process_order.job_name) or ""
+    mapped_job = str(record.get("job_number", "")).strip()
+    if mapped_job and expected_job and mapped_job != expected_job:
+        # A&W order numbers can eventually be reused.  A stale mapping from an
+        # older job must not silently attach to a new order carrying that number.
+        return None
+    return record
+
+
+def configured_duplicate_order_authorization(
+    process_order: ProcessOrder,
+    config: dict[str, object] | None,
+) -> dict[str, str] | None:
+    """Return an explicit operator authorization for intentional duplicate work."""
+    if not isinstance(config, dict):
+        return None
+    raw_authorizations = config.get("duplicate_order_authorizations", {})
+    if not isinstance(raw_authorizations, dict):
+        return None
+    raw = raw_authorizations.get(str(process_order.aw_order))
+    if not isinstance(raw, dict) or not bool(raw.get("authorized", False)):
+        return None
+    record = {str(key): str(value) for key, value in raw.items() if value is not None}
+    expected_job = programmer.extract_job_number(process_order.job_name) or ""
+    mapped_job = str(record.get("job_number", "")).strip()
+    if mapped_job and expected_job and mapped_job != expected_job:
+        return None
+    filename = Path(str(record.get("filename", ""))).name.strip()
+    fingerprint = str(record.get("collision_fingerprint", "")).strip().lower()
+    if not filename or not fingerprint:
+        return None
+    record["filename"] = filename
+    record["collision_fingerprint"] = fingerprint
+    return record
+
+
+def active_duplicate_order_authorization(
+    folder: Path,
+    process_order: ProcessOrder,
+    config: dict[str, object] | None,
+    *,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> tuple[dict[str, str], programmer.PdfDuplicateCollision, Path] | None:
+    """Validate one intentional-duplicate authorization against current source files."""
+    authorization = configured_duplicate_order_authorization(process_order, config)
+    if authorization is None:
+        return None
+    if candidate_pdfs is None:
+        candidates = list(programmer.iter_active_input_files(folder, ".pdf"))
+    else:
+        candidates = [
+            Path(path)
+            for path in candidate_pdfs
+            if Path(path).suffix.casefold() == ".pdf"
+            and not programmer.is_archived_input_file(Path(path), folder)
+        ]
+    expected_job = programmer.extract_job_number(process_order.job_name)
+    same_job_candidates = [
+        Path(path)
+        for path in candidates
+        if expected_job and programmer.text_contains_job_number(Path(path).stem, expected_job)
+    ]
+    collision = programmer.classify_pdf_duplicate_collision(same_job_candidates)
+    if collision is None:
+        return None
+    if str(authorization.get("collision_kind", "")).strip() not in {"", collision.kind}:
+        return None
+    if programmer.duplicate_collision_fingerprint(collision) != authorization["collision_fingerprint"]:
+        return None
+    filename = authorization["filename"]
+    matches = [path.resolve() for path in same_job_candidates if path.name.casefold() == filename.casefold()]
+    if len(matches) != 1:
+        return None
+    return authorization, collision, matches[0]
+
+
+def intentional_duplicate_issue(
+    folder: Path,
+    process_order: ProcessOrder,
+    config: dict[str, object] | None,
+    *,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> str:
+    active = active_duplicate_order_authorization(
+        folder,
+        process_order,
+        config,
+        candidate_pdfs=candidate_pdfs,
+    )
+    if active is None:
+        return ""
+    authorization, collision, selected = active
+    kind_label = {
+        "identical_content": "identical source files",
+        "copy_name_variant": "copy-named source files",
+        "conflicting_reference": "different PO/reference versions",
+    }.get(collision.kind, "duplicate source files")
+    note = str(authorization.get("note", "")).strip()
+    suffix = f" Note: {note}" if note else ""
+    return (
+        f"INTENTIONAL DUPLICATE AUTHORIZED: A&W {process_order.aw_order} is using {selected.name} "
+        f"despite {kind_label}. Verify before Send.{suffix}"
+    )
+
+
+def mapped_process_order_pdf(
+    folder: Path,
+    process_order: ProcessOrder,
+    config: dict[str, object] | None,
+    *,
+    candidate_pdfs: Iterable[Path] | None = None,
+) -> Path | None:
+    """Resolve an operator-confirmed source PDF by filename inside the active input root."""
+    mapping = configured_pdf_order_mapping(process_order, config)
+    if mapping is None:
+        return None
+    filename = str(mapping.get("filename", "")).strip()
+    if not filename:
+        return None
+    if candidate_pdfs is None:
+        candidates = list(programmer.iter_active_input_files(folder, ".pdf"))
+    else:
+        candidates = [
+            Path(path)
+            for path in candidate_pdfs
+            if Path(path).suffix.casefold() == ".pdf"
+            and not programmer.is_archived_input_file(Path(path), folder)
+        ]
+    expected_job = programmer.extract_job_number(process_order.job_name)
+    same_job_candidates = [
+        Path(path)
+        for path in candidates
+        if expected_job and programmer.text_contains_job_number(Path(path).stem, expected_job)
+    ]
+    collision = programmer.classify_pdf_duplicate_collision(same_job_candidates)
+    if collision is not None:
+        active_authorization = active_duplicate_order_authorization(
+            folder,
+            process_order,
+            config,
+            candidate_pdfs=candidates,
+        )
+        if active_authorization is None:
+            # Ordinary Source-PDF assignment must never bypass duplicate evidence.
+            # Only the separate, explicit intentional-duplicate authorization can.
+            return None
+        authorization, _collision, authorized_pdf = active_authorization
+        if authorized_pdf.name.casefold() != filename.casefold():
+            return None
+        return authorized_pdf
+
+    matches = [path.resolve() for path in candidates if path.name.casefold() == filename.casefold()]
+    if len(matches) != 1:
+        return None
+    selected = matches[0]
+    if expected_job and not programmer.text_contains_job_number(selected.stem, expected_job):
+        # Explicit assignment is allowed to disambiguate same-job sketches, not
+        # to attach an unrelated job accidentally after a filename was recycled.
+        return None
+    return selected
+
+
 def preview_process_order_pdf(
     folder: Path,
     process_order: ProcessOrder,
@@ -2752,6 +2942,21 @@ def preview_process_order_pdf(
     config: dict[str, object] | None = None,
 ) -> Path:
     """Resolve and validate a scan preview without reparsing unchanged PDFs."""
+    mapped = mapped_process_order_pdf(
+        folder,
+        process_order,
+        config,
+        candidate_pdfs=candidate_pdfs,
+    )
+    if mapped is not None:
+        validate_process_order_pdf_dimension_values(
+            cached_pdf_piece_dimensions(mapped),
+            process_order,
+            mapped,
+            folder=folder,
+            config=config,
+        )
+        return mapped
     try:
         pdf_path = programmer.find_pdf(
             folder,
@@ -2759,7 +2964,9 @@ def preview_process_order_pdf(
             process_order.aw_order,
             candidate_pdfs=candidate_pdfs,
         ).resolve()
-    except RuntimeError:
+    except programmer.AmbiguousPdfError as exc:
+        if not exc.assignment_allowed and exc.collision_kind != "copy_name_variant":
+            raise
         matched = dimension_matched_pdf_path(
             folder,
             process_order,
@@ -2810,9 +3017,22 @@ def open_process_order_pdf(
     process_order: ProcessOrder,
     config: dict[str, object] | None = None,
 ) -> tuple[Path, PdfReader]:
+    mapped = mapped_process_order_pdf(folder, process_order, config)
+    if mapped is not None:
+        reader = PdfReader(str(mapped))
+        validate_process_order_pdf_dimensions(
+            reader,
+            process_order,
+            mapped,
+            folder=folder,
+            config=config,
+        )
+        return mapped, reader
     try:
         pdf_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
-    except RuntimeError:
+    except programmer.AmbiguousPdfError as exc:
+        if not exc.assignment_allowed and exc.collision_kind != "copy_name_variant":
+            raise
         matched = dimension_matched_pdf(folder, process_order)
         if matched is None:
             raise
@@ -2998,6 +3218,13 @@ def process_one_order(
         result.report_path = job.report_path
         result.remake_items = None if job.remake_items is None else sorted(job.remake_items)
         result.issues.extend(issues)
+        duplicate_issue = intentional_duplicate_issue(
+            folder,
+            process_order,
+            config,
+        )
+        if duplicate_issue:
+            result.issues.append(duplicate_issue)
         if apply:
             if not force and not skip_pdf and job.output_pdf.exists():
                 result.status = "SKIPPED"
@@ -3271,6 +3498,15 @@ def preview_orders(
         )
         try:
             result.input_pdf = preview_process_order_pdf(folder, order, candidate_pdfs, config=config)
+            duplicate_issue = intentional_duplicate_issue(
+                folder,
+                order,
+                config,
+                candidate_pdfs=candidate_pdfs,
+            )
+            if duplicate_issue:
+                result.status = "ISSUES"
+                result.issues.append(duplicate_issue)
         except Exception as exc:
             result.status = "ISSUES"
             result.issues.append(str(exc))

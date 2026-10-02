@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import io
 import json
 import math
@@ -344,6 +345,31 @@ def merge_item_overrides(config: dict[str, Any], override_config: dict[str, Any]
             merged["dimension_match_overrides"] = dimension_target
         for aw_order, override in dimension_incoming.items():
             dimension_target[str(aw_order)] = copy.deepcopy(override)
+
+    # Version 1.95: when A+W legitimately reuses one Job Nr for more than one
+    # A&W order, multiple distinct sketch PDFs can be equally valid filename/text
+    # candidates.  Persist the operator's explicit A&W -> source-PDF assignment
+    # separately from programming overrides so identity resolution can never alter
+    # machine, rotation, indicator, DXF, or dimension rules.
+    pdf_mapping_incoming = override_config.get("pdf_order_mappings", {})
+    if isinstance(pdf_mapping_incoming, dict):
+        pdf_mapping_target = merged.setdefault("pdf_order_mappings", {})
+        if not isinstance(pdf_mapping_target, dict):
+            pdf_mapping_target = {}
+            merged["pdf_order_mappings"] = pdf_mapping_target
+        for aw_order, mapping in pdf_mapping_incoming.items():
+            if isinstance(mapping, (dict, str)):
+                pdf_mapping_target[str(aw_order)] = copy.deepcopy(mapping)
+
+    duplicate_auth_incoming = override_config.get("duplicate_order_authorizations", {})
+    if isinstance(duplicate_auth_incoming, dict):
+        duplicate_auth_target = merged.setdefault("duplicate_order_authorizations", {})
+        if not isinstance(duplicate_auth_target, dict):
+            duplicate_auth_target = {}
+            merged["duplicate_order_authorizations"] = duplicate_auth_target
+        for aw_order, authorization in duplicate_auth_incoming.items():
+            if isinstance(authorization, dict):
+                duplicate_auth_target[str(aw_order)] = copy.deepcopy(authorization)
     return merged
 
 
@@ -614,6 +640,183 @@ def clean_job_name(value: str) -> str:
     return value
 
 
+def trailing_pdf_reference(path: Path) -> str:
+    """Return the trailing numeric source reference from a glass-order PDF name.
+
+    A&W/Smart Glazier filenames commonly end with a PO/source reference after
+    the shared SO/Job identity.  The value is descriptive only; it is never
+    used by itself to select a production sketch.
+    """
+    tokens = re.findall(r"(?<!\d)(\d{5,})(?!\d)", Path(path).stem)
+    return tokens[-1] if tokens else ""
+
+
+def normalized_import_filename_key(path: Path) -> str:
+    """Normalize harmless filename spacing while preserving the real identity."""
+    candidate = Path(path)
+    stem = re.sub(r"\s+", " ", candidate.stem).strip().casefold()
+    return f"{stem}{candidate.suffix.casefold()}"
+
+
+def import_copy_base_keys(path: Path) -> tuple[str, ...]:
+    """Return plausible original-name keys for common Windows duplicate suffixes.
+
+    The caller must still prove that a matching original file exists.  This is
+    intentionally conservative so an ordinary DXF item suffix such as ``_1``
+    is not treated as a duplicate unless the corresponding base filename is
+    actually present.
+    """
+    candidate = Path(path)
+    stem = re.sub(r"\s+", " ", candidate.stem).strip()
+    bases: list[str] = []
+    patterns = (
+        r"^(.*?)(?:\s*\(\d+\))$",
+        r"^(.*?)(?:[ _-]+copy(?:[ _-]*\d+)?)$",
+        r"^(.*?)(?:[ _-]+\d+)$",
+        # Some manual/import copy workflows append a bare ``1`` with no
+        # separator (for example ``Sketch1.pdf``). Require a non-digit before
+        # that suffix so normal long numeric order/reference values are not
+        # truncated into false duplicate keys.
+        r"^(.*?\D)1$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, stem, flags=re.IGNORECASE)
+        if not match:
+            continue
+        base = re.sub(r"\s+", " ", match.group(1)).strip(" _-")
+        if not base:
+            continue
+        key = f"{base.casefold()}{candidate.suffix.casefold()}"
+        if key != normalized_import_filename_key(candidate) and key not in bases:
+            bases.append(key)
+    return tuple(bases)
+
+
+def filenames_look_like_import_copies(left: Path, right: Path) -> bool:
+    """Return True when two paths differ only by copy suffix/spacing conventions."""
+    left = Path(left)
+    right = Path(right)
+    if left.suffix.casefold() != right.suffix.casefold():
+        return False
+    left_key = normalized_import_filename_key(left)
+    right_key = normalized_import_filename_key(right)
+    if left_key == right_key:
+        return True
+    return right_key in import_copy_base_keys(left) or left_key in import_copy_base_keys(right)
+
+
+@dataclass(frozen=True)
+class PdfDuplicateCollision:
+    """A same-job source-sketch condition that must be corrected, not bypassed."""
+
+    kind: str
+    candidates: tuple[Path, ...]
+    references: tuple[str, ...] = ()
+
+
+def duplicate_collision_fingerprint(collision: PdfDuplicateCollision) -> str:
+    """Return a stable fingerprint for the exact duplicate evidence being acknowledged.
+
+    Intentional-duplicate authorization is deliberately tied to the files that
+    were present when the operator acknowledged the warning. If one of those
+    files is replaced, renamed, added, or otherwise changes its basic file
+    signature, the old authorization no longer applies and the order fails
+    closed again.
+    """
+    records: list[dict[str, object]] = []
+    for path in sorted(collision.candidates, key=lambda value: str(value).casefold()):
+        record: dict[str, object] = {"name": path.name.casefold()}
+        try:
+            stat = path.stat()
+            record["size"] = int(stat.st_size)
+            record["mtime_ns"] = int(stat.st_mtime_ns)
+        except OSError:
+            record["size"] = -1
+            record["mtime_ns"] = -1
+        records.append(record)
+    payload = {
+        "kind": str(collision.kind),
+        "references": list(collision.references),
+        "files": records,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def classify_pdf_duplicate_collision(candidate_paths: Iterable[Path]) -> PdfDuplicateCollision | None:
+    """Detect duplicate-order/import evidence among same-job source sketches.
+
+    Strong duplicate evidence is intentionally blocking.  Operator Source-PDF
+    assignment is reserved for legitimate same-job ambiguity, not for bypassing
+    an order that appears to have been imported or submitted twice.
+    """
+    paths = tuple(dict.fromkeys(Path(path) for path in candidate_paths))
+    if len(paths) < 2:
+        return None
+
+    # Exact content is the strongest evidence and also catches identical names
+    # stored in different active subfolders.  Hash only same-sized candidates.
+    by_size: dict[int, list[Path]] = {}
+    for path in paths:
+        try:
+            by_size.setdefault(path.stat().st_size, []).append(path)
+        except OSError:
+            continue
+    for same_size in by_size.values():
+        if len(same_size) < 2:
+            continue
+        digests: dict[str, list[Path]] = {}
+        for path in same_size:
+            try:
+                digest = shower_cache.cached_file_sha256("source_pdf_duplicate_sha256_v1", path)
+            except OSError:
+                continue
+            digests.setdefault(digest, []).append(path)
+        identical = [group for group in digests.values() if len(group) >= 2]
+        if identical:
+            involved = tuple(dict.fromkeys(path for group in identical for path in group))
+            return PdfDuplicateCollision("identical_content", involved)
+
+    for index, left in enumerate(paths):
+        if any(filenames_look_like_import_copies(left, right) for right in paths[index + 1 :]):
+            return PdfDuplicateCollision("copy_name_variant", paths)
+
+    references = tuple(sorted({value for value in (trailing_pdf_reference(path) for path in paths) if value}))
+    if len(references) >= 2:
+        return PdfDuplicateCollision("conflicting_reference", paths, references)
+    return None
+
+
+def duplicate_collision_message(
+    collision: PdfDuplicateCollision,
+    *,
+    job_number: str,
+    aw_order: str,
+) -> str:
+    """Return an operator-facing safety message for a blocking duplicate collision."""
+    job_text = job_number or "(unknown)"
+    order_text = aw_order or "(unknown)"
+    count = len(collision.candidates)
+    if collision.kind == "identical_content":
+        return (
+            f"Duplicate import detected: Job Nr {job_text} has {count} identical source sketches. "
+            f"Remove/correct the repeated import before processing A&W order {order_text}."
+        )
+    if collision.kind == "copy_name_variant":
+        return (
+            f"Possible duplicate import: Job Nr {job_text} has {count} source sketches whose names differ "
+            f"only by a copy suffix or spacing. Verify the repeated import before processing A&W order {order_text}."
+        )
+    references = ", ".join(collision.references[:4])
+    if len(collision.references) > 4:
+        references += f", +{len(collision.references) - 4} more"
+    return (
+        f"Possible duplicate order entry: Job Nr {job_text} matches {count} sketches with different "
+        f"PO/reference numbers ({references}). Correct or remove the unintended duplicate order before "
+        f"processing A&W order {order_text}."
+    )
+
+
 class AmbiguousPdfError(RuntimeError):
     """Raised when more than one PDF remains equally valid for an order."""
 
@@ -624,11 +827,15 @@ class AmbiguousPdfError(RuntimeError):
         *,
         aw_order: str = "",
         job_number: str = "",
+        assignment_allowed: bool = True,
+        collision_kind: str = "",
     ) -> None:
         super().__init__(message)
         self.candidates = tuple(Path(path) for path in candidates)
         self.aw_order = str(aw_order)
         self.job_number = str(job_number)
+        self.assignment_allowed = bool(assignment_allowed)
+        self.collision_kind = str(collision_kind)
 
 
 def iter_active_input_files(folder: Path, suffix: str) -> Iterable[Path]:
@@ -667,6 +874,11 @@ def find_pdf(
     The Job Nr is the longer value at the beginning of source filenames and the
     glass-order header (for example ``87576307.2``). Either identity may locate
     a PDF whose filename was changed.
+
+    Same-job files that show strong duplicate-import evidence are deliberately
+    *not* disambiguated by dimensions or a saved Source-PDF assignment. They
+    must be corrected upstream so an accidental duplicate order cannot be
+    programmed twice.
     """
     if candidate_pdfs is None:
         pdfs = list(iter_active_input_files(folder, ".pdf"))
@@ -693,6 +905,12 @@ def find_pdf(
         current_score, reasons = scores.get(path, (0, []))
         scores[path] = (current_score + score, reasons + [reason])
 
+    job_filename_candidates = [
+        path for path in pdfs
+        if job_number and text_contains_job_number(path.stem, job_number)
+    ]
+    blocking_collision = classify_pdf_duplicate_collision(job_filename_candidates)
+
     for path in pdfs:
         stem = path.stem
         normalized_stem = normalize_lookup(stem)
@@ -710,11 +928,14 @@ def find_pdf(
         if normalized_job and normalized_job in normalized_stem:
             add_score(path, 800, "job name in filename")
 
-    # A uniquely strong filename match avoids opening every cloud-backed PDF.
+    # A uniquely explicit A&W filename is authoritative. A Job-only match is
+    # not enough to bypass strong duplicate-import evidence.
     ranked_filename = sorted(scores.items(), key=lambda item: (item[1][0], item[0].name.casefold()), reverse=True)
     if ranked_filename and ranked_filename[0][1][0] >= 1100:
         if len(ranked_filename) == 1 or ranked_filename[0][1][0] > ranked_filename[1][1][0]:
-            return ranked_filename[0][0]
+            top_path, (_top_score, top_reasons) = ranked_filename[0]
+            if "A&W order in filename" in top_reasons or blocking_collision is None:
+                return top_path
 
     for path in pdfs:
         try:
@@ -737,18 +958,52 @@ def find_pdf(
         top_score = ranked[0][1][0]
         top_matches = [entry for entry in ranked if entry[1][0] == top_score]
         if len(top_matches) == 1:
-            return top_matches[0][0]
+            top_path, (_score, top_reasons) = top_matches[0]
+            if "A&W order in filename" in top_reasons or "A&W order on first page" in top_reasons:
+                return top_path
+            if blocking_collision is not None:
+                raise AmbiguousPdfError(
+                    duplicate_collision_message(
+                        blocking_collision,
+                        job_number=job_number or "",
+                        aw_order=order_text,
+                    ),
+                    blocking_collision.candidates,
+                    aw_order=order_text,
+                    job_number=job_number or "",
+                    assignment_allowed=False,
+                    collision_kind=blocking_collision.kind,
+                )
+            return top_path
+
         glass_matches = [entry for entry in top_matches if entry[0].name.lower().startswith("glass order")]
-        if len(glass_matches) == 1:
+        if len(glass_matches) == 1 and blocking_collision is None:
             return glass_matches[0][0]
-        names = "\n  ".join(entry[0].name for entry in top_matches[:12])
-        identity = f"A&W order {order_text or '(unknown)'} / Job Nr {job_number or '(unknown)'}"
+
+        candidate_paths = [entry[0] for entry in top_matches]
+        collision = classify_pdf_duplicate_collision(candidate_paths) or blocking_collision
+        if collision is not None:
+            raise AmbiguousPdfError(
+                duplicate_collision_message(
+                    collision,
+                    job_number=job_number or "",
+                    aw_order=order_text,
+                ),
+                collision.candidates,
+                aw_order=order_text,
+                job_number=job_number or "",
+                assignment_allowed=False,
+                collision_kind=collision.kind,
+            )
+
         raise AmbiguousPdfError(
-            f"Multiple PDFs match {identity}. Keep only the intended local PDF or rename it to include "
-            f"the A&W order or Job Nr:\n  {names}",
-            [entry[0] for entry in top_matches],
+            f"Source sketch needs verification: A&W order {order_text or '(unknown)'} / "
+            f"Job Nr {job_number or '(unknown)'} matches {len(candidate_paths)} different PDFs. "
+            "Assign the intended Source PDF before processing.",
+            candidate_paths,
             aw_order=order_text,
             job_number=job_number or "",
+            assignment_allowed=True,
         )
 
     glass_orders = [p for p in pdfs if p.name.lower().startswith("glass order")]

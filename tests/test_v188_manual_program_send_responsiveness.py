@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +15,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class _Var:
@@ -137,7 +137,7 @@ class ManualProgramSendResponsivenessTests(unittest.TestCase):
     def test_real_process_list_batch_still_produces_completion_plan(self) -> None:
         order = shower_batch.ProcessOrder("239188", "90433005 NORMAL")
         app = gui.ShowerProgrammerApp.__new__(gui.ShowerProgrammerApp)
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             source = Path(temp_dir) / "Batch 6188.xls"
             source.write_bytes(b"test")
             app.process_batches = {
@@ -183,7 +183,8 @@ class ManualProgramSendResponsivenessTests(unittest.TestCase):
     def test_send_completion_no_longer_launches_full_network_scan(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.drain_worker_queue)
         send_done = source.split('elif kind == "send_done":', 1)[1].split('elif kind == "send_error":', 1)[0]
-        self.assertIn("self.schedule_post_send_local_refresh()", send_done)
+        self.assertIn("self.reconcile_active_orders_after_send", send_done)
+        self.assertNotIn("self.schedule_post_send_local_refresh()", send_done)
         self.assertNotIn("self.scan_orders", send_done)
 
     def test_version_188_release_metadata_and_flags(self) -> None:

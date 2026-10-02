@@ -1140,6 +1140,8 @@ class ShowerProgrammerApp:
     SIDEBAR_MUTED = "#98a2b3"
     SIDEBAR_BORDER = "#344054"
     REVIEW_RENDER_DPI = 96
+    MANAGED_TASK_HANDOFF_GRACE_SECONDS = 2.0
+    QUEUE_PUMP_STALL_SECONDS = 2.0
     APP_VERSION = str(APP_VERSION_INFO.get("version", "V40")).strip() or "V40"
     APP_VERSION_NUMBER = int(APP_VERSION_INFO.get("version_number", 0) or 0)
     APP_VERSION_MARKER = str(APP_VERSION_INFO.get("marker", "REPORT_BUGS_VERSIONING_V40")).strip() or "REPORT_BUGS_VERSIONING_V40"
@@ -1296,6 +1298,8 @@ class ShowerProgrammerApp:
         # soft task has a small window where production commands can start against
         # state that has finished on disk but has not been applied to the UI model yet.
         self._managed_task_pending_ids: set[str] = set()
+        self._managed_task_pending_since: dict[str, float] = {}
+        self._managed_task_requeued_ids: set[str] = set()
         self.test_mode_workspace: Path | None = None
         self.test_mode_orders: list[shower_batch.ProcessOrder] = []
         self._production_paths_before_test: tuple[str, str, str] | None = None
@@ -1315,6 +1319,8 @@ class ShowerProgrammerApp:
         # operation without rediscovering history or creating a new dated archive.
         self.restored_archive_batch_returns: dict[str, list[dict[str, object]]] = {}
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._worker_queue_last_drain_at = time.monotonic()
+        self._worker_queue_dispatching = False
         self._ignored_import_duplicate_signatures: set[tuple[str, ...]] = set()
         self.pending_import_duplicate_groups: dict[str, list[dict[str, object]]] = {}
         self.last_reports: shower_batch.BatchRunResult | None = None
@@ -1413,7 +1419,7 @@ class ShowerProgrammerApp:
         """Run the recovery scan synchronously when explicitly requested."""
         try:
             results = shower_reliability.startup_recovery_issues(
-                Path(getattr(self, "runtime_root", self.preferred_runtime_root())),
+                Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())),
                 Path(self.output_dir_var.get()).resolve(),
             )
         except Exception:
@@ -1422,7 +1428,7 @@ class ShowerProgrammerApp:
 
     def start_startup_recovery_check_async(self) -> None:
         """Discover interrupted work off Tk, then surface any prompt on the UI thread."""
-        runtime_root = Path(getattr(self, "runtime_root", self.preferred_runtime_root()))
+        runtime_root = Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root()))
         output_dir = Path(self.output_dir_var.get()).resolve()
 
         def worker() -> None:
@@ -1847,12 +1853,12 @@ class ShowerProgrammerApp:
                 pass
 
     def quarantine_root(self) -> Path:
-        root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.QUARANTINE_FOLDER_NAME
+        root = Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / self.QUARANTINE_FOLDER_NAME
         root.mkdir(parents=True, exist_ok=True)
         return root
 
     def diagnostics_directory(self) -> Path:
-        path = Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.DIAGNOSTICS_FOLDER_NAME
+        path = Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / self.DIAGNOSTICS_FOLDER_NAME
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -2303,13 +2309,13 @@ class ShowerProgrammerApp:
         return {"config": config, "ui_settings": ui_settings}
 
     def internal_orders_dir(self) -> Path:
-        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Input" / "Orders"
+        return Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / "Input" / "Orders"
 
     def internal_process_list_dir(self) -> Path:
-        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Input" / "Process List"
+        return Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / "Input" / "Process List"
 
     def internal_output_dir(self) -> Path:
-        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "Output"
+        return Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / "Output"
 
     def set_window_icon(self, window: Any) -> None:
         """Apply the app icon without reopening image assets for every child window."""
@@ -3169,12 +3175,17 @@ class ShowerProgrammerApp:
             except (AttributeError, tk.TclError):
                 return None
 
+        def visible_owner(candidate: Any | None) -> bool:
+            if candidate is None or getattr(candidate, "_shower_context_menu", False) is True:
+                return False
+            try:
+                return str(candidate.state()).casefold() not in {"withdrawn", "iconic"}
+            except (AttributeError, tk.TclError):
+                return False
+
         requested = toplevel(requested_owner) or self.root
         if requested is not self.root:
-            try:
-                if str(requested.state()).casefold() not in {"withdrawn", "iconic"}:
-                    return requested
-            except (AttributeError, tk.TclError):
+            if visible_owner(requested):
                 return requested
             requested = self.root
 
@@ -3183,7 +3194,7 @@ class ShowerProgrammerApp:
             grabbed = toplevel(self.root.grab_current())
         except (AttributeError, tk.TclError):
             grabbed = None
-        if grabbed is not None and grabbed is not self.root:
+        if grabbed is not self.root and visible_owner(grabbed):
             return grabbed
 
         # Focus tells us which major workspace/button actually launched the popup.
@@ -3191,18 +3202,14 @@ class ShowerProgrammerApp:
             focused = toplevel(self.root.focus_displayof())
         except (AttributeError, tk.TclError):
             focused = None
-        if focused is not None and focused is not self.root:
+        if focused is not self.root and visible_owner(focused):
             return focused
 
         # Focus can momentarily be absent during a button callback or native dialog
         # handoff. Reuse the last focused managed page only while it is still visible.
         last_active = toplevel(getattr(self, "_last_active_page_window", None))
-        if last_active is not None and last_active is not self.root:
-            try:
-                if str(last_active.state()).casefold() not in {"withdrawn", "iconic"}:
-                    return last_active
-            except (AttributeError, tk.TclError):
-                pass
+        if last_active is not self.root and visible_owner(last_active):
+            return last_active
         return requested
 
     def managed_page_window(self, page_key: str) -> tk.Toplevel | None:
@@ -3427,6 +3434,7 @@ class ShowerProgrammerApp:
 
         popup_owner = parent.winfo_toplevel()
         popup = self.create_hidden_toplevel(popup_owner)
+        setattr(popup, "_shower_context_menu", True)
         self.active_themed_context_popup = popup
         popup.overrideredirect(True)
         popup.configure(fg_color=self.CARD_BG)
@@ -3458,6 +3466,8 @@ class ShowerProgrammerApp:
                 if self.active_themed_context_binding == binding:
                     self.active_themed_context_binding = None
             try:
+                if popup.grab_current() is popup:
+                    popup.grab_release()
                 popup.withdraw()
             except Exception:
                 pass
@@ -3992,28 +4002,58 @@ class ShowerProgrammerApp:
         self,
         process_order: shower_batch.ProcessOrder,
         candidates: list[Path],
-    ) -> tuple[Path, str] | None:
-        """Let the operator inspect and rename one ambiguous sketch PDF."""
+    ) -> dict[str, object] | None:
+        """Let the operator bind one legitimate same-Job-Nr sketch to an A&W order.
+
+        These are often different glass orders, not duplicate files.  Persisting
+        the assignment avoids renaming or deleting the A+W/shared source files.
+        """
         candidates = [path for path in candidates if path.exists()]
         if not candidates:
             return None
+        collision = programmer.classify_pdf_duplicate_collision(candidates)
+        if collision is not None:
+            return self.show_intentional_duplicate_dialog(process_order, candidates, collision)
+        existing = self.pdf_order_mapping(str(process_order.aw_order))
+        existing_name = str(existing.get("filename", "")).strip() if isinstance(existing, dict) else ""
+        default_candidate = next(
+            (path for path in candidates if path.name.casefold() == existing_name.casefold()),
+            candidates[0],
+        )
+        job_number = programmer.extract_job_number(process_order.job_name) or "(unknown)"
+        references = [programmer.trailing_pdf_reference(path) for path in candidates]
+        distinct_references = sorted({value for value in references if value})
+        possible_duplicate_entry = len(distinct_references) >= 2
+
         if ctk is None:
-            selected = candidates[0]
-            proposed = simpledialog.askstring(
-                "Resolve duplicate order PDF",
-                "Rename the intended PDF so it contains the A&W order number.\n\n"
-                f"Selected: {selected.name}\n\nNew filename:",
-                initialvalue=self.suggested_pdf_name(process_order),
+            lines = "\n".join(f"{index}. {path.name}" for index, path in enumerate(candidates, start=1))
+            explanation = (
+                "Possible duplicate order entry detected. These sketches share the same SO/Job Nr but "
+                "have different trailing PO/reference numbers. This can happen when an order is resent "
+                "after a PO correction and may cause the same glass to be produced twice."
+                if possible_duplicate_entry
+                else "Multiple source sketches share the same Job Nr and cannot be selected safely automatically."
+            )
+            selected_number = simpledialog.askinteger(
+                "Assign Source PDF",
+                f"{explanation}\n\n"
+                f"A&W order: {process_order.aw_order}\nJob Nr: {job_number}\n\n"
+                f"{lines}\n\nVerify the intended order, then enter the correct PDF number:",
+                initialvalue=candidates.index(default_candidate) + 1,
+                minvalue=1,
+                maxvalue=len(candidates),
                 parent=self.root,
             )
-            return (selected, proposed) if proposed else None
+            if selected_number is None:
+                return None
+            return {"action": "assign", "path": candidates[selected_number - 1]}
 
         result: dict[str, object] = {}
         dialog = self.create_hidden_toplevel(self.root)
-        dialog.title(f"Resolve PDF - {process_order.aw_order}")
+        dialog.title(f"Assign Source PDF - {process_order.aw_order}")
         dialog.configure(fg_color=self.APP_BG)
-        dialog.geometry("900x560")
-        dialog.minsize(760, 480)
+        dialog.geometry("920x560")
+        dialog.minsize(780, 480)
         self.set_window_icon(dialog)
         try:
             dialog.transient(self.root)
@@ -4033,26 +4073,34 @@ class ShowerProgrammerApp:
         shell.grid_rowconfigure(2, weight=1)
         ctk.CTkLabel(
             shell,
-            text=f"Multiple sketches match order {process_order.aw_order}",
+            text=f"Choose the source sketch for A&W {process_order.aw_order}",
             font=("Segoe UI", 20, "bold"),
             text_color=self.TEXT,
             anchor="w",
         ).grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 4))
+        dialog_explanation = (
+            f"Possible duplicate order entry detected. These sketches share SO/Job Nr {job_number} but "
+            "have different trailing PO/reference numbers. This can happen when an order is resent after "
+            "a PO correction and may produce the same glass twice. Verify which A&W order/sketch is "
+            "intended before continuing. No PDF is renamed, deleted, or changed by this selection."
+            if possible_duplicate_entry
+            else (
+                f"Multiple different PDFs use Job Nr {job_number}, so the source sketch cannot be chosen "
+                "safely automatically. Open the files if needed and assign the intended sketch. No PDF is "
+                "renamed, deleted, or changed on the shared input."
+            )
+        )
         ctk.CTkLabel(
             shell,
-            text=(
-                "Open the files to inspect them, select the intended sketch, then give it the suggested "
-                "A&W-specific name. The next scan will use that name directly."
-            ),
+            text=dialog_explanation,
             font=("Segoe UI", 11),
             text_color=self.MUTED,
             anchor="w",
             justify="left",
-            wraplength=820,
+            wraplength=850,
         ).grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 12))
 
-        selected_var = tk.StringVar(value=str(candidates[0]))
-        rename_var = tk.StringVar(value=self.suggested_pdf_name(process_order))
+        selected_var = tk.StringVar(value=str(default_candidate))
         scroll = ctk.CTkScrollableFrame(
             shell,
             fg_color=self.PANEL_BG,
@@ -4074,9 +4122,12 @@ class ShowerProgrammerApp:
                 fg_color=self.ACCENT,
                 hover_color=self.ACCENT_DARK,
             ).grid(row=row, column=0, sticky="w", padx=(12, 2), pady=8)
+            label = path.name
+            if existing_name and path.name.casefold() == existing_name.casefold():
+                label += "   (currently assigned)"
             ctk.CTkLabel(
                 scroll,
-                text=path.name,
+                text=label,
                 font=("Segoe UI", 11),
                 text_color=self.TEXT,
                 anchor="w",
@@ -4097,43 +4148,40 @@ class ShowerProgrammerApp:
                 **self.ctk_button_icon("open_folder", 14, self.ACCENT_DARK, "left"),
             ).grid(row=row, column=2, sticky="e", padx=(8, 12), pady=8)
 
-        rename_row = ctk.CTkFrame(shell, fg_color="transparent")
-        rename_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(14, 8))
-        rename_row.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            rename_row,
-            text="New filename",
-            font=("Segoe UI", 11, "bold"),
-            text_color=self.TEXT,
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        rename_entry = ctk.CTkEntry(
-            rename_row,
-            textvariable=rename_var,
-            height=36,
-            corner_radius=8,
-            border_color=self.BORDER,
-            fg_color=self.CARD_BG,
-            text_color=self.TEXT,
-            font=("Segoe UI", 11),
-        )
-        rename_entry.grid(row=0, column=1, sticky="ew")
-
         footer = ctk.CTkFrame(shell, fg_color="transparent")
-        footer.grid(row=4, column=0, sticky="ew", padx=20, pady=(4, 18))
+        footer.grid(row=3, column=0, sticky="ew", padx=20, pady=(14, 18))
         footer.grid_columnconfigure(0, weight=1)
 
         def cancel() -> None:
             dialog.destroy()
 
-        def accept() -> None:
-            selected = Path(selected_var.get())
-            proposed = rename_var.get().strip()
-            if not proposed:
-                messagebox.showwarning("Filename required", "Enter a filename for the selected PDF.", parent=dialog)
-                return
-            result["value"] = (selected, proposed)
+        def clear_assignment() -> None:
+            result["value"] = {"action": "clear"}
             dialog.destroy()
 
+        def accept() -> None:
+            selected = Path(selected_var.get())
+            if not selected.exists():
+                messagebox.showwarning("PDF unavailable", "The selected PDF is no longer available.", parent=dialog)
+                return
+            result["value"] = {"action": "assign", "path": selected}
+            dialog.destroy()
+
+        if existing_name:
+            ctk.CTkButton(
+                footer,
+                text="Clear Assignment",
+                command=clear_assignment,
+                width=136,
+                height=38,
+                corner_radius=8,
+                fg_color=self.BUTTON_BG,
+                hover_color=self.BUTTON_HOVER,
+                border_width=1,
+                border_color=self.BORDER,
+                text_color=self.BUTTON_TEXT,
+                font=("Segoe UI", 11, "bold"),
+            ).grid(row=0, column=0, sticky="w")
         ctk.CTkButton(
             footer,
             text="Cancel",
@@ -4150,7 +4198,7 @@ class ShowerProgrammerApp:
         ).grid(row=0, column=1, padx=(0, 8))
         ctk.CTkButton(
             footer,
-            text="Rename and Use",
+            text="Assign Selected",
             command=accept,
             width=154,
             height=38,
@@ -4168,7 +4216,244 @@ class ShowerProgrammerApp:
         self.bring_window_to_front(dialog, make_transient=True)
         dialog.wait_window()
         value = result.get("value")
-        return value if isinstance(value, tuple) and len(value) == 2 else None
+        return value if isinstance(value, dict) else None
+
+    def show_intentional_duplicate_dialog(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        candidates: list[Path],
+        collision: programmer.PdfDuplicateCollision,
+    ) -> dict[str, object] | None:
+        """Resolve unwanted copies separately from verified intentional production."""
+        candidates = [path for path in candidates if path.is_file()]
+        if not candidates:
+            return None
+        job_number = programmer.extract_job_number(process_order.job_name)
+        related = {str(process_order.aw_order): process_order}
+        for order in getattr(self, "orders", []):
+            if job_number and programmer.extract_job_number(order.job_name) == job_number:
+                related.setdefault(str(order.aw_order), order)
+        existing = self.duplicate_order_authorization(str(process_order.aw_order))
+        mapped = self.pdf_order_mapping(str(process_order.aw_order))
+        default_name = str((existing or mapped).get("filename", "")).casefold()
+        default_pdf = next((path for path in candidates if path.name.casefold() == default_name), candidates[0])
+        evidence = programmer.duplicate_collision_message(
+            collision, job_number=job_number or "(unknown)", aw_order=str(process_order.aw_order),
+        )
+        if ctk is None:
+            number = simpledialog.askinteger(
+                "Source PDF", "\n".join(f"{index}. {path.name}" for index, path in enumerate(candidates, 1)),
+                minvalue=1, maxvalue=len(candidates), parent=self.root,
+            )
+            if number is None:
+                return None
+            selected = candidates[number - 1]
+            if messagebox.askyesno("Remove duplicates", f"Keep {selected.name} and remove the other PDFs?", parent=self.root):
+                return {"action": "remove_duplicates", "path": selected, "remove": [path for path in candidates if path != selected]}
+            if messagebox.askyesno(
+                "DUPLICATE PRODUCTION WARNING",
+                evidence + "\n\nHave you inspected this exact order and PDF and verified that duplicate production is intentional?",
+                parent=self.root,
+            ):
+                return {"action": "authorize_duplicate", "path": selected, "collision": collision, "note": ""}
+            return None
+
+        result: dict[str, object] = {}
+        dialog = self.create_hidden_toplevel(self.root)
+        dialog.title(f"Resolve Duplicate Orders - {process_order.aw_order}")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.geometry("980x720")
+        dialog.minsize(860, 620)
+        self.set_window_icon(dialog)
+        dialog.transient(self.resolve_popup_owner(self.root))
+        setattr(dialog, "_shower_grab_on_present", True)
+        shell = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=12, border_width=1, border_color=self.BORDER)
+        shell.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(3, weight=1)
+        ctk.CTkLabel(shell, text="Resolve Duplicate Orders", font=("Segoe UI", 22, "bold"), text_color=self.TEXT, anchor="w").grid(
+            row=0, column=0, sticky="ew", padx=20, pady=(18, 8),
+        )
+        mode_var = tk.StringVar(master=dialog, value="Remove Duplicates")
+        mode_control = ctk.CTkSegmentedButton(
+            shell, values=["Remove Duplicates", "Allow Intentional Duplicate"], variable=mode_var,
+            font=("Segoe UI", 12, "bold"), height=38,
+        )
+        mode_control.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 12))
+        order_bar = ctk.CTkFrame(shell, fg_color="transparent")
+        order_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 10))
+        order_bar.grid_columnconfigure(2, weight=1)
+        order_label = ctk.CTkLabel(order_bar, text="Order to keep", font=("Segoe UI", 12, "bold"), text_color=self.TEXT)
+        order_label.grid(row=0, column=0, padx=(0, 12))
+        keeper_var = tk.StringVar(master=dialog, value=str(process_order.aw_order))
+        order_selector = ctk.CTkOptionMenu(order_bar, values=list(related), variable=keeper_var, width=130)
+        order_selector.grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(order_bar, text=f"Job Nr: {job_number or '(unknown)'}", text_color=self.MUTED, anchor="e").grid(
+            row=0, column=2, sticky="e",
+        )
+        scroll = ctk.CTkScrollableFrame(shell, fg_color=self.PANEL_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
+        scroll.grid(row=3, column=0, sticky="nsew", padx=20)
+        scroll.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(scroll, text="Original / Source PDF", font=("Segoe UI", 12, "bold"), text_color=self.TEXT, anchor="w").grid(
+            row=0, column=0, columnspan=4, sticky="ew", padx=12, pady=(10, 6),
+        )
+        selected_var = tk.StringVar(master=dialog, value=str(default_pdf))
+        file_selections: dict[Path, tk.BooleanVar] = {}
+        file_checks: dict[Path, Any] = {}
+
+        def open_file(path: Path) -> None:
+            try:
+                os.startfile(str(path.resolve()))
+            except OSError as exc:
+                messagebox.showerror("Could not open PDF", str(exc), parent=dialog)
+
+        for row, path in enumerate(candidates, 1):
+            ctk.CTkRadioButton(
+                scroll, text="", variable=selected_var, value=str(path), width=26,
+                command=lambda: update_mode(),
+            ).grid(row=row, column=0, padx=(12, 4), pady=6)
+            ctk.CTkLabel(scroll, text=path.name, text_color=self.TEXT, anchor="w", wraplength=530, justify="left").grid(
+                row=row, column=1, sticky="ew", padx=6, pady=6,
+            )
+            variable = tk.BooleanVar(
+                master=dialog, value=path != default_pdf and collision.kind in {"identical_content", "copy_name_variant"},
+            )
+            file_selections[path] = variable
+            checkbox = ctk.CTkCheckBox(scroll, text="Remove", variable=variable, width=96, font=("Segoe UI", 11))
+            checkbox.grid(row=row, column=2, padx=8, pady=6)
+            file_checks[path] = checkbox
+            ctk.CTkButton(
+                scroll, text="Open", command=lambda candidate=path: open_file(candidate), width=80, height=32,
+                fg_color=self.BUTTON_BG, hover_color=self.BUTTON_HOVER, border_width=1,
+                border_color=self.BORDER, text_color=self.BUTTON_TEXT,
+                **self.ctk_button_icon("open_folder", 14, self.ACCENT_DARK, "left"),
+            ).grid(row=row, column=3, padx=(4, 12), pady=6)
+
+        retire_vars: dict[str, tk.BooleanVar] = {}
+        retire_checks: dict[str, Any] = {}
+        next_row = len(candidates) + 1
+        if len(related) > 1:
+            ctk.CTkLabel(scroll, text="Duplicate A&W entries to discard", font=("Segoe UI", 12, "bold"), text_color=self.TEXT, anchor="w").grid(
+                row=next_row, column=0, columnspan=4, sticky="ew", padx=12, pady=(18, 6),
+            )
+            next_row += 1
+            for aw in related:
+                variable = tk.BooleanVar(master=dialog, value=False)
+                retire_vars[aw] = variable
+                checkbox = ctk.CTkCheckBox(
+                    scroll, text=f"Discard A&W {aw}", variable=variable, font=("Segoe UI", 11), text_color=self.TEXT,
+                )
+                checkbox.grid(row=next_row, column=0, columnspan=4, sticky="w", padx=12, pady=6)
+                retire_checks[aw] = checkbox
+                next_row += 1
+        verification = ctk.CTkFrame(shell, fg_color="transparent")
+        verification.grid(row=4, column=0, sticky="ew", padx=20, pady=(12, 0))
+        verification.grid_columnconfigure(0, weight=1)
+        verified_var = tk.BooleanVar(master=dialog, value=False)
+        ctk.CTkCheckBox(
+            verification, text="I inspected this order and PDF and verified that producing this duplicate is intentional.",
+            variable=verified_var, font=("Segoe UI", 11), text_color=self.DANGER,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        note_entry = ctk.CTkEntry(verification, placeholder_text="Optional verification note")
+        note_entry.grid(row=1, column=0, sticky="ew")
+        feedback = ctk.CTkLabel(shell, text="", text_color=self.MUTED, anchor="w", justify="left", wraplength=900, font=("Segoe UI", 11))
+        feedback.grid(row=5, column=0, sticky="ew", padx=20, pady=(12, 8))
+        footer = ctk.CTkFrame(shell, fg_color="transparent")
+        footer.grid(row=6, column=0, sticky="ew", padx=20, pady=(0, 18))
+        footer.grid_columnconfigure(0, weight=1)
+
+        def chosen_order() -> shower_batch.ProcessOrder:
+            return related[keeper_var.get()]
+
+        def update_mode(_value: str = "") -> None:
+            allow = mode_var.get() == "Allow Intentional Duplicate"
+            order_label.configure(text="Order to authorize" if allow else "Order to keep")
+            selected = Path(selected_var.get())
+            for path, checkbox in file_checks.items():
+                if path == selected:
+                    file_selections[path].set(False)
+                if allow:
+                    checkbox.grid_remove()
+                else:
+                    checkbox.grid()
+                    checkbox.configure(state="disabled" if path == selected else "normal")
+            for aw, checkbox in retire_checks.items():
+                if aw == keeper_var.get():
+                    retire_vars[aw].set(False)
+                if allow:
+                    checkbox.grid_remove()
+                else:
+                    checkbox.grid()
+                    checkbox.configure(state="disabled" if aw == keeper_var.get() else "normal")
+            if allow:
+                verification.grid()
+                feedback.configure(text="DUPLICATE PRODUCTION WARNING\n" + evidence, text_color=self.DANGER)
+                action_button.configure(text="Verify & Allow Duplicate", fg_color=self.DANGER, hover_color=self.DANGER)
+            else:
+                verification.grid_remove()
+                feedback.configure(
+                    text="Only checked PDFs and A&W entries will be removed. The original PDF, DXFs and process list are retained.",
+                    text_color=self.MUTED,
+                )
+                action_button.configure(text="Confirm Removal", fg_color=self.ACCENT, hover_color=self.ACCENT_DARK)
+
+        def confirm_action() -> None:
+            selected = Path(selected_var.get())
+            keeper = chosen_order()
+            if not selected.is_file():
+                feedback.configure(text="The selected original PDF is no longer available.", text_color=self.DANGER)
+                return
+            if mode_var.get() == "Allow Intentional Duplicate":
+                if not verified_var.get():
+                    feedback.configure(text="Inspect the selected order and PDF, then check the verification box.", text_color=self.DANGER)
+                    return
+                if not self.ask_themed_confirmation(
+                    "Verify intentional duplicate", "Allow this order to be produced?",
+                    f"A&W: {keeper.aw_order}\nJob Nr: {job_number}\nSource: {selected.name}\n\n"
+                    "This deliberately permits duplicate production and keeps the order flagged for Send verification.",
+                    parent=dialog, confirm_text="Allow Duplicate", accent_color=self.DANGER,
+                ):
+                    return
+                result["value"] = {"action": "authorize_duplicate", "order": keeper, "path": selected, "collision": collision, "note": note_entry.get().strip()}
+            else:
+                removed = [path for path, variable in file_selections.items() if variable.get() and path != selected]
+                retired = [related[aw] for aw, variable in retire_vars.items() if variable.get() and aw != str(keeper.aw_order)]
+                if not removed:
+                    feedback.configure(text="Select the unwanted duplicate PDF(s) to remove.", text_color=self.DANGER)
+                    return
+                if not self.ask_themed_confirmation(
+                    "Verify duplicate removal", "Keep this original and remove the selected duplicates?",
+                    f"Keep A&W: {keeper.aw_order}\nKeep PDF: {selected.name}\n\nRemove PDFs:\n"
+                    + "\n".join(path.name for path in removed)
+                    + ("\n\nDiscard A&W entries: " + ", ".join(str(order.aw_order) for order in retired) if retired else "")
+                    + "\n\nLocal recovery copies will be retained. DXFs and process lists are not deleted.",
+                    parent=dialog, confirm_text="Remove Duplicates",
+                ):
+                    return
+                result["value"] = {"action": "remove_duplicates", "order": keeper, "path": selected, "remove": removed, "retire": retired}
+            dialog.destroy()
+
+        if existing:
+            ctk.CTkButton(
+                footer, text="Clear Authorization", width=155, height=38,
+                command=lambda: (result.update(value={"action": "clear", "order": chosen_order()}), dialog.destroy()),
+                fg_color=self.BUTTON_BG, text_color=self.BUTTON_TEXT,
+            ).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            footer, text="Cancel", command=dialog.destroy, width=110, height=38,
+            fg_color=self.BUTTON_BG, hover_color=self.BUTTON_HOVER, border_width=1,
+            border_color=self.BORDER, text_color=self.BUTTON_TEXT,
+        ).grid(row=0, column=1, padx=(0, 8))
+        action_button = ctk.CTkButton(footer, text="Confirm Removal", command=confirm_action, width=220, height=38)
+        action_button.grid(row=0, column=2)
+        mode_control.configure(command=update_mode)
+        order_selector.configure(command=update_mode)
+        update_mode()
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        self.bring_window_to_front(dialog, make_transient=True)
+        dialog.wait_window()
+        return result.get("value")
 
     def rename_ambiguous_pdf(
         self,
@@ -4203,7 +4488,249 @@ class ShowerProgrammerApp:
         self.clear_review_context_cache(process_order.aw_order)
         return target
 
+    def pdf_order_mapping(self, aw_order: str) -> dict[str, object]:
+        try:
+            data = self.load_manual_overrides()
+        except Exception:
+            return {}
+        mappings = data.get("pdf_order_mappings", {}) if isinstance(data, dict) else {}
+        mapping = mappings.get(str(aw_order), {}) if isinstance(mappings, dict) else {}
+        return copy.deepcopy(mapping) if isinstance(mapping, dict) else {}
+
+    def duplicate_order_authorization(self, aw_order: str) -> dict[str, object]:
+        try:
+            data = self.load_manual_overrides()
+        except Exception:
+            return {}
+        authorizations = data.get("duplicate_order_authorizations", {}) if isinstance(data, dict) else {}
+        authorization = authorizations.get(str(aw_order), {}) if isinstance(authorizations, dict) else {}
+        return copy.deepcopy(authorization) if isinstance(authorization, dict) else {}
+
+    def save_duplicate_order_authorization(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        selected: Path,
+        collision: programmer.PdfDuplicateCollision,
+        *,
+        note: str = "",
+    ) -> None:
+        data = self.load_manual_overrides()
+        authorizations = data.setdefault("duplicate_order_authorizations", {})
+        if not isinstance(authorizations, dict):
+            authorizations = {}
+            data["duplicate_order_authorizations"] = authorizations
+        authorizations[str(process_order.aw_order)] = {
+            "authorized": True,
+            "filename": selected.name,
+            "job_number": programmer.extract_job_number(process_order.job_name) or "",
+            "collision_kind": collision.kind,
+            "collision_fingerprint": programmer.duplicate_collision_fingerprint(collision),
+            "note": str(note or "").strip(),
+            "authorized_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        mappings = data.setdefault("pdf_order_mappings", {})
+        if not isinstance(mappings, dict):
+            mappings = {}
+            data["pdf_order_mappings"] = mappings
+        mappings[str(process_order.aw_order)] = {
+            "filename": selected.name,
+            "job_number": programmer.extract_job_number(process_order.job_name) or "",
+            "job_name": str(process_order.job_name or ""),
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        self.save_manual_overrides(data)
+        self.clear_review_context_cache(process_order.aw_order)
+        self.record_action(
+            "Authorize Intentional Duplicate",
+            f"AUTHORIZED DUPLICATE production for A&W {process_order.aw_order} using {selected.name}.",
+            status="WARNING",
+            orders=[process_order],
+            details=(
+                f"collision={collision.kind}; fingerprint={programmer.duplicate_collision_fingerprint(collision)}; "
+                f"note={str(note or '').strip()}"
+            ),
+        )
+
+    def clear_duplicate_order_authorization(self, process_order: shower_batch.ProcessOrder) -> bool:
+        data = self.load_manual_overrides()
+        changed = False
+        authorizations = data.get("duplicate_order_authorizations", {}) if isinstance(data, dict) else {}
+        if isinstance(authorizations, dict) and str(process_order.aw_order) in authorizations:
+            authorizations.pop(str(process_order.aw_order), None)
+            if not authorizations:
+                data.pop("duplicate_order_authorizations", None)
+            changed = True
+        if changed:
+            self.save_manual_overrides(data)
+            self.clear_review_context_cache(process_order.aw_order)
+            self.record_action(
+                "Clear Intentional Duplicate Authorization",
+                f"Cleared intentional duplicate authorization for A&W {process_order.aw_order}.",
+                status="INFO",
+                orders=[process_order],
+            )
+        return changed
+
+    def save_pdf_order_mapping(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        selected: Path,
+    ) -> None:
+        data = self.load_manual_overrides()
+        mappings = data.setdefault("pdf_order_mappings", {})
+        if not isinstance(mappings, dict):
+            mappings = {}
+            data["pdf_order_mappings"] = mappings
+        mappings[str(process_order.aw_order)] = {
+            "filename": selected.name,
+            "job_number": programmer.extract_job_number(process_order.job_name) or "",
+            "job_name": str(process_order.job_name or ""),
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        self.save_manual_overrides(data)
+        self.clear_review_context_cache(process_order.aw_order)
+        self.record_action(
+            "Assign Source PDF",
+            f"Assigned {selected.name} to A&W {process_order.aw_order} for reused Job Nr resolution.",
+            status="INFO",
+            orders=[process_order],
+            details=f"Source PDF={selected}",
+        )
+
+    def clear_pdf_order_mapping(self, process_order: shower_batch.ProcessOrder) -> bool:
+        data = self.load_manual_overrides()
+        mappings = data.get("pdf_order_mappings", {}) if isinstance(data, dict) else {}
+        changed = False
+        if isinstance(mappings, dict) and str(process_order.aw_order) in mappings:
+            mappings.pop(str(process_order.aw_order), None)
+            if not mappings:
+                data.pop("pdf_order_mappings", None)
+            changed = True
+        authorizations = data.get("duplicate_order_authorizations", {}) if isinstance(data, dict) else {}
+        if isinstance(authorizations, dict) and str(process_order.aw_order) in authorizations:
+            authorizations.pop(str(process_order.aw_order), None)
+            if not authorizations:
+                data.pop("duplicate_order_authorizations", None)
+            changed = True
+        if not changed:
+            return False
+        self.save_manual_overrides(data)
+        self.clear_review_context_cache(process_order.aw_order)
+        self.record_action(
+            "Clear Source PDF Assignment",
+            f"Cleared the saved source-PDF assignment/duplicate authorization for A&W {process_order.aw_order}.",
+            status="INFO",
+            orders=[process_order],
+        )
+        return True
+
+    def apply_ambiguous_pdf_choice(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        choice: dict[str, object] | None,
+        *,
+        reopen_review: bool = False,
+    ) -> bool:
+        if not isinstance(choice, dict):
+            return False
+        chosen_order = choice.get("order", process_order)
+        if not isinstance(chosen_order, shower_batch.ProcessOrder):
+            return False
+        if str(chosen_order.aw_order) != str(process_order.aw_order):
+            job_number = programmer.extract_job_number(process_order.job_name)
+            if not job_number or programmer.extract_job_number(chosen_order.job_name) != job_number:
+                return False
+        process_order = chosen_order
+        action = str(choice.get("action", "")).strip().casefold()
+        if action == "remove_duplicates":
+            selected = choice.get("path")
+            removals = choice.get("remove")
+            if not isinstance(selected, Path) or not isinstance(removals, list):
+                return False
+            return self.start_duplicate_source_cleanup(
+                process_order, removals, keep=selected, reopen_review=reopen_review,
+                retire_orders=choice.get("retire", []),
+            )
+        if action == "clear":
+            changed = self.clear_pdf_order_mapping(process_order)
+            if changed:
+                self.status_var.set(f"Cleared Source PDF assignment for A&W {process_order.aw_order}.")
+                if not self.operation_active():
+                    self.root.after(50, lambda: self.refresh_local_orders(lock_controls=False))
+            return changed
+        if action == "authorize_duplicate":
+            selected = choice.get("path")
+            collision = choice.get("collision")
+            if not isinstance(selected, Path):
+                try:
+                    selected = Path(str(selected))
+                except Exception:
+                    return False
+            if not isinstance(collision, programmer.PdfDuplicateCollision):
+                return False
+            if not selected.exists():
+                messagebox.showwarning("PDF unavailable", "The selected PDF is no longer available.", parent=self.root)
+                return False
+            self.save_duplicate_order_authorization(
+                process_order,
+                selected,
+                collision,
+                note=str(choice.get("note", "") or ""),
+            )
+            self.status_var.set(
+                f"INTENTIONAL DUPLICATE authorized for A&W {process_order.aw_order}. Re-scan/reprocess to apply it."
+            )
+            if reopen_review:
+                self.root.after(75, lambda: self.open_order_review(process_order_override=process_order))
+            elif not self.operation_active():
+                self.root.after(50, lambda: self.refresh_local_orders(lock_controls=False))
+            return True
+        if action != "assign":
+            return False
+        selected = choice.get("path")
+        if not isinstance(selected, Path):
+            try:
+                selected = Path(str(selected))
+            except Exception:
+                return False
+        if not selected.exists():
+            messagebox.showwarning("PDF unavailable", "The selected PDF is no longer available.", parent=self.root)
+            return False
+        self.save_pdf_order_mapping(process_order, selected)
+        self.status_var.set(f"Assigned {selected.name} to A&W {process_order.aw_order}.")
+        if reopen_review:
+            self.root.after(75, self.open_order_review)
+        elif not self.operation_active():
+            self.root.after(50, lambda: self.refresh_local_orders(lock_controls=False))
+        return True
+
+    def resolve_order_source_pdf(self, process_order: shower_batch.ProcessOrder) -> None:
+        """Resolve a legitimate same-Job-Nr collision without renaming source files."""
+        if self.operation_active():
+            messagebox.showinfo("Busy", "Wait for the current task to finish before assigning a Source PDF.", parent=self.root)
+            return
+        try:
+            folder = Path(self.folder_var.get()).resolve()
+            candidates = shower_batch.job_number_pdf_candidates(folder, process_order)
+        except Exception as exc:
+            self.show_structured_error(exc, title="Source PDF assignment failed")
+            return
+        if len(candidates) < 2:
+            mapping = self.pdf_order_mapping(str(process_order.aw_order))
+            message = (
+                "Only one local PDF currently matches this Job Nr, so a manual assignment is not required."
+                if not mapping
+                else "Only one local PDF currently matches this Job Nr. The saved assignment can be cleared if it is no longer needed."
+            )
+            messagebox.showinfo("Source PDF", message, parent=self.root)
+            return
+        choice = self.show_ambiguous_pdf_dialog(process_order, candidates)
+        self.apply_ambiguous_pdf_choice(process_order, choice)
+
     def resolve_exact_duplicate_order(self, process_order: shower_batch.ProcessOrder) -> bool:
+        if self.operation_active():
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return True
         groups = self.pending_import_duplicate_groups.get(str(process_order.aw_order), [])
         if not groups:
             return False
@@ -4212,28 +4739,170 @@ class ShowerProgrammerApp:
         if not isinstance(selected, list) or not selected:
             self.status_var.set(f"Duplicate files for {process_order.aw_order} were left unchanged.")
             return True
-        local_root = Path(self.folder_var.get()).resolve()
-        warnings: list[str] = []
-        for path in selected:
-            if not isinstance(path, Path):
-                continue
-            try:
-                if path.resolve().parent != local_root:
-                    warnings.append(f"Skipped file outside the local Orders folder: {path.name}")
-                    continue
-                path.unlink(missing_ok=True)
-                shared = self.EDI_IMPORT_ORDERS_DIR / path.name
-                if shared.exists():
-                    shared.unlink()
-            except OSError as exc:
-                warnings.append(f"Could not remove {path.name}: {exc}")
-        self.pending_import_duplicate_groups.pop(str(process_order.aw_order), None)
-        self.clear_review_context_cache(process_order.aw_order)
-        if warnings:
-            messagebox.showwarning("Duplicate cleanup notes", "\n".join(warnings), parent=self.root)
-        self.status_var.set(f"Duplicate selection saved for {process_order.aw_order}; rescanning...")
-        self.root.after(50, self.scan_orders)
+        self.start_duplicate_source_cleanup(process_order, selected, groups=groups)
         return True
+
+    @classmethod
+    def cleanup_duplicate_sources(
+        cls,
+        order_folder: Path,
+        import_folder: Path,
+        recovery_root: Path,
+        selected: list[Path],
+        groups: list[dict[str, object]],
+        aw_order: str,
+        *,
+        timeout_seconds: float = 10.0,
+        progress_callback: Callable[[int, int, Path], None] | None = None,
+    ) -> dict[str, object]:
+        """Remove only explicit copies, retaining an original and a local recovery bundle."""
+        root = order_folder.resolve()
+        if any(Path(path).is_symlink() for path in selected):
+            raise ValueError("Symbolic links cannot be removed as duplicate sources.")
+        removals = list(dict.fromkeys(Path(path).resolve() for path in selected))
+        if not removals:
+            raise ValueError("No duplicate files were selected.")
+        permitted: set[Path] = set()
+        for group in groups:
+            files = [path.resolve() for path in [group.get("canonical"), *group.get("duplicates", [])]
+                     if isinstance(path, Path)]
+            permitted.update(files)
+            survivors = [path for path in files if path not in removals and path.is_file()]
+            if not survivors or any(path.parent != root for path in files):
+                raise ValueError("Keep at least one existing original in each duplicate set.")
+        for path in removals:
+            if path not in permitted or path.parent != root or path.is_symlink():
+                raise ValueError(f"Duplicate removal is outside the approved selection: {path.name}")
+            if path.suffix.lower() not in cls.ORDER_FILE_EXTENSIONS:
+                raise ValueError(f"Not an order input: {path.name}")
+        fingerprints = {path: cls.sha256_file(path) for path in removals}
+        moved, warnings, bundle = cls.quarantine_paths(
+            recovery_root, removals, [root], [aw_order], progress_callback=progress_callback,
+        )
+        # The network worker never guesses by Job Nr. It removes an exact name
+        # only when its contents still match the explicitly selected local copy.
+        results: queue.Queue[list[str]] = queue.Queue()
+        stop = threading.Event()
+        deadline = time.monotonic() + max(0.01, timeout_seconds)
+
+        def clean_shared() -> None:
+            notes: list[str] = []
+            for local in moved:
+                if stop.is_set() or time.monotonic() >= deadline:
+                    break
+                shared = import_folder / local.name
+                try:
+                    if not shared.exists():
+                        continue
+                    if shared.is_symlink() or shared.resolve().parent != import_folder.resolve():
+                        notes.append(f"Skipped unsafe shared path: {shared.name}")
+                        continue
+                    before = shared.stat()
+                    if cls.sha256_file(shared) != fingerprints[local]:
+                        notes.append(f"Shared copy changed; kept {shared.name} for review.")
+                        continue
+                    after = shared.stat()
+                    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                        notes.append(f"Shared copy changed; kept {shared.name} for review.")
+                        continue
+                    if not stop.is_set() and time.monotonic() < deadline:
+                        shared.unlink()
+                except OSError as exc:
+                    notes.append(f"Could not remove shared duplicate {shared.name}: {exc}")
+            results.put(notes)
+
+        if moved and os.path.normcase(os.path.abspath(root)) != os.path.normcase(os.path.abspath(import_folder)):
+            if cls.start_bounded_network_thread(clean_shared, name="shower-duplicate-cleanup"):
+                try:
+                    warnings.extend(results.get(timeout=max(0.01, deadline - time.monotonic())))
+                except queue.Empty:
+                    stop.set()
+                    warnings.append("Shared duplicate cleanup timed out. Local copies are in recovery; check the import folder before scanning again.")
+            else:
+                warnings.append("Shared cleanup is busy; check the import folder before scanning again.")
+        return {"removed": moved, "warnings": warnings, "bundle": bundle}
+
+    def start_duplicate_source_cleanup(
+        self,
+        process_order: shower_batch.ProcessOrder,
+        selected: list[Path],
+        *,
+        keep: Path | None = None,
+        groups: list[dict[str, object]] | None = None,
+        reopen_review: bool = False,
+        retire_orders: list[shower_batch.ProcessOrder] | None = None,
+    ) -> bool:
+        if self.operation_active():
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return False
+        folder = Path(self.folder_var.get()).absolute()
+        shared = Path(self.import_source_var.get()).absolute()
+        output = Path(self.output_dir_var.get()).absolute()
+        recovery = Path(getattr(self, "runtime_root", None) or folder.parent) / self.QUARANTINE_FOLDER_NAME
+        planned_groups = groups or [{"canonical": keep, "duplicates": selected}]
+        retired = list(retire_orders or [])
+        if any(
+            not isinstance(order, shower_batch.ProcessOrder)
+            or str(order.aw_order) == str(process_order.aw_order)
+            or not programmer.extract_job_number(process_order.job_name)
+            or programmer.extract_job_number(order.job_name) != programmer.extract_job_number(process_order.job_name)
+            for order in retired
+        ):
+            raise ValueError("Only explicitly selected duplicate entries for this Job Nr may be discarded.")
+
+        def worker(task: shower_tasks.TaskContext) -> dict[str, object]:
+            task.check_cancelled()
+            overrides = self.load_manual_overrides_for_output(output)
+            mappings = overrides.get("pdf_order_mappings", {})
+            # Do not delete a PDF that the operator explicitly assigned to a different order.
+            selected_names = {path.name.casefold() for path in selected if isinstance(path, Path)}
+            if isinstance(mappings, dict):
+                for aw, mapping in mappings.items():
+                    if str(aw) not in {str(process_order.aw_order), *(str(order.aw_order) for order in retired)} and isinstance(mapping, dict):
+                        if str(mapping.get("filename", "")).casefold() in selected_names:
+                            raise ValueError(f"A selected PDF is assigned to A&W {aw}; clear that assignment before removing it.")
+            result = self.cleanup_duplicate_sources(
+                folder, shared, recovery, selected, planned_groups, str(process_order.aw_order),
+                progress_callback=lambda current, total, path: task.progress(current, total, f"Removing duplicate {path.name}"),
+            )
+            if len(result["removed"]) == len(set(selected)) and retired:
+                self.mark_orders_deleted_for_output(
+                    retired, output, {str(order.aw_order): "duplicate" for order in retired},
+                )
+                result["retired"] = retired
+            return result
+
+        def finished(payload: object) -> None:
+            if not isinstance(payload, dict):
+                raise RuntimeError("Duplicate cleanup returned no result.")
+            removed = payload.get("removed", [])
+            warnings = payload.get("warnings", [])
+            if payload.get("retired"):
+                self.reconcile_active_orders_after_send(payload["retired"])
+            complete = len(removed) == len(set(selected))
+            if complete:
+                self.pending_import_duplicate_groups.pop(str(process_order.aw_order), None)
+                if keep is not None:
+                    self.clear_duplicate_order_authorization(process_order)
+                    self.save_pdf_order_mapping(process_order, keep)
+                self.clear_review_context_cache(process_order.aw_order)
+            self.record_action("Remove Duplicate Sources", f"Removed {len(removed)} duplicate input(s).", orders=[process_order], status="WARNING" if warnings else "SUCCESS")
+            self.show_themed_notice(
+                "Duplicate cleanup", f"Removed {len(removed)} duplicate file(s)",
+                "The retained original remains available. Removed local files are available in recovery."
+                if complete else "Some duplicates could not be removed; review the notes before continuing.",
+                icon_name="warning" if warnings else "check_circle",
+                accent_color=self.WARNING if warnings else self.SUCCESS,
+                details=[("Notes", "\n".join(warnings))] if warnings else None,
+                on_close=(lambda: self.open_order_review(process_order_override=process_order))
+                if complete and reopen_review else lambda: self.refresh_local_orders(lock_controls=False),
+            )
+
+        return bool(self.run_managed_task(
+            "Remove Duplicate Sources", worker, message="Removing selected duplicates; retaining the original...",
+            total=max(1, len(selected)), cancellable=False, on_done=finished,
+            on_error=lambda exc: self.show_structured_error(exc, title="Duplicate cleanup failed"),
+        ))
 
 
 
@@ -4250,7 +4919,7 @@ class ShowerProgrammerApp:
         accent_color: str | None = None,
     ) -> bool:
         """Show a staged, theme-aware confirmation without a native white flash."""
-        owner = parent.winfo_toplevel() if parent is not None else self.root
+        owner = self.resolve_popup_owner(parent if parent is not None else self.root)
         if ctk is None:
             return bool(messagebox.askyesno(title, message, parent=owner))
 
@@ -4391,14 +5060,17 @@ class ShowerProgrammerApp:
         secondary_button_text: str | None = None,
         secondary_button_command: Callable[[], None] | None = None,
         secondary_button_icon: str = "folder",
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         """Display a clear theme-aware result dialog instead of a raw message box."""
-        owner = parent.winfo_toplevel() if parent is not None else self.root
+        owner = self.resolve_popup_owner(parent if parent is not None else self.root)
         if ctk is None:
             detail_text = ""
             if details:
                 detail_text = "\n\n" + "\n".join(f"{label}: {value}" for label, value in details)
             messagebox.showinfo(title, f"{heading}\n\n{message}{detail_text}", parent=owner)
+            if on_close is not None:
+                self.root.after(75, on_close)
             return
 
         accent = accent_color or self.ACCENT
@@ -4489,12 +5161,30 @@ class ShowerProgrammerApp:
                 ).grid(row=row, column=1, sticky="ew", padx=(0, 12), pady=(9 if row == 0 else 4, 9 if row == len(details) - 1 else 4))
             next_row += 1
 
+        notified = False
+
+        def notify_closed(event: tk.Event | None = None) -> None:
+            nonlocal notified
+            if event is not None and event.widget is not dialog:
+                return
+            if notified:
+                return
+            notified = True
+            if on_close is not None:
+                try:
+                    self.root.after(75, on_close)
+                except tk.TclError:
+                    pass
+
+        dialog.bind("<Destroy>", notify_closed, add="+")
+
         def close_dialog() -> None:
             try:
                 dialog.grab_release()
             except tk.TclError:
                 pass
             dialog.destroy()
+            notify_closed()
             def restore_owner() -> None:
                 try:
                     if self.managed_page_window("settings") is owner:
@@ -4854,10 +5544,69 @@ class ShowerProgrammerApp:
 
     def refresh_activity_heartbeat(self) -> None:
         try:
+            self.recover_worker_queue_liveness()
+            self.recover_invisible_modal_grab()
             self.update_activity_detail()
-            self.root.after(1000, self.refresh_activity_heartbeat)
-        except tk.TclError:
+        except (tk.TclError, RuntimeError):
             pass
+        except Exception as exc:
+            self.handle_worker_queue_dispatch_failure("activity_heartbeat", exc)
+        finally:
+            try:
+                self.root.after(1000, self.refresh_activity_heartbeat)
+            except (tk.TclError, RuntimeError):
+                pass
+
+    def recover_worker_queue_liveness(self) -> None:
+        """Repair a dropped queue poll or terminal handoff without user intervention."""
+        # A modal confirmation runs a nested Tk loop while its queue callback is
+        # still on the stack. Do not recursively dispatch completion events there.
+        if bool(getattr(self, "_worker_queue_dispatching", False)):
+            return
+        now = time.monotonic()
+        last_drain = float(getattr(self, "_worker_queue_last_drain_at", now) or now)
+        if now - last_drain >= self.QUEUE_PUMP_STALL_SECONDS:
+            # Tk ``after`` callbacks can be invalidated while major windows are
+            # recreated. The heartbeat is independent and safely restarts polling.
+            self.drain_worker_queue()
+
+        manager = getattr(self, "task_manager", None)
+        if manager is None or getattr(manager, "active", None) is not None:
+            return
+        pending_ids = list(getattr(self, "_managed_task_pending_ids", set()))
+        pending_since = getattr(self, "_managed_task_pending_since", {})
+        requeued = getattr(self, "_managed_task_requeued_ids", set())
+        for task_id in pending_ids:
+            started = float(pending_since.get(task_id, now) or now)
+            if now - started < self.MANAGED_TASK_HANDOFF_GRACE_SECONDS:
+                continue
+            terminal = manager.terminal_event(task_id)
+            if terminal is None:
+                continue
+            if task_id not in requeued:
+                kind, payload = terminal
+                self.worker_queue.put((kind, payload))
+                requeued.add(task_id)
+                pending_since[task_id] = now
+
+    def recover_invisible_modal_grab(self) -> None:
+        """Release only a withdrawn modal grab, a common cause of a dead-looking UI."""
+        try:
+            grabber = self.root.grab_current()
+            if grabber is None:
+                return
+            window = grabber.winfo_toplevel()
+            state = str(window.state()).casefold()
+            presentation_pending = bool(getattr(window, "_shower_present_pending", False))
+            if state != "withdrawn" or presentation_pending:
+                return
+            grabber.grab_release()
+            self.handle_worker_queue_dispatch_failure(
+                "orphaned_modal_grab",
+                RuntimeError("Released a withdrawn modal window that still owned the Tk input grab."),
+            )
+        except (AttributeError, tk.TclError, RuntimeError):
+            return
 
     def apply_ui_mode_palette(self) -> None:
         dark = bool(getattr(self, "dark_mode_var", tk.BooleanVar(value=False)).get())
@@ -6144,6 +6893,11 @@ class ShowerProgrammerApp:
             background=self.TREE_SENT_CHECKED_BG,
             font=("Segoe UI", 10, "bold"),
         )
+        self.tree.tag_configure(
+            "DUPLICATE_OVERRIDE",
+            foreground=self.DANGER,
+            font=("Segoe UI", 10, "bold"),
+        )
         self.tree.bind("<Button-1>", self.toggle_order_checked_from_tree_checkbox, add="+")
         self.tree.bind("<Double-1>", self.on_orders_tree_double_click)
         self.tree.bind("<Button-3>", self.open_orders_context_menu)
@@ -6805,6 +7559,8 @@ class ShowerProgrammerApp:
                 cancellable=cancellable,
             )
             self._managed_task_pending_ids.add(snapshot.task_id)
+            self._managed_task_pending_since[snapshot.task_id] = time.monotonic()
+            self._managed_task_requeued_ids.discard(snapshot.task_id)
             handlers: dict[str, Callable[..., None]] = {}
             if on_done is not None:
                 handlers["done"] = on_done
@@ -6969,10 +7725,11 @@ class ShowerProgrammerApp:
         batch_key: str = "",
         reason: str = "Scan reconciliation",
         output_dir: Path | None = None,
+        history_data: dict[str, object] | None = None,
     ) -> str:
         output = Path(output_dir or self.output_dir_var.get()).resolve()
         store = self.state_store_for_output(output)
-        history = self.load_processing_history_for_output(output)
+        history = history_data if history_data is not None else self.load_processing_history_for_output(output)
         entry = self.history_entry_from_data(history, str(order.aw_order))
         sent_at = str(entry.get("sent_at", "") or "")
         deleted_at = str(entry.get("deleted_at", "") or "")
@@ -7012,10 +7769,14 @@ class ShowerProgrammerApp:
         orders: list[shower_batch.ProcessOrder],
         batches: list[dict[str, object]],
         previews: list[shower_batch.BatchJobResult],
+        *,
+        output_dir: Path | None = None,
     ) -> None:
         preview_by_aw = {str(result.aw_order): result for result in previews}
         batch_by_aw: dict[str, str] = {}
-        store = self.state_store_for_output()
+        output = Path(output_dir or self.output_dir_var.get()).resolve()
+        store = self.state_store_for_output(output)
+        history = self.load_processing_history_for_output(output)
         for batch in batches:
             stable_id = str(batch.get("stable_id", ""))
             source = batch.get("path")
@@ -7034,6 +7795,8 @@ class ShowerProgrammerApp:
                 order,
                 result=preview_by_aw.get(str(order.aw_order)),
                 batch_key=batch_by_aw.get(str(order.aw_order), ""),
+                output_dir=output,
+                history_data=history,
             )
 
     def update_test_mode_visual_state(self) -> None:
@@ -7164,7 +7927,7 @@ class ShowerProgrammerApp:
             raise ValueError("Select an archived order before entering Test Mode.")
         if getattr(self, "test_mode_workspace", None) is not None:
             raise RuntimeError("Test Mode is already active. Exit it before opening another archived order.")
-        root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())).resolve()
+        root = Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())).resolve()
         workspace = root / "Test Workspace" / f"{datetime.now():%Y%m%d-%H%M%S}-{order.aw_order}"
         order_dir = workspace / "Input" / "Orders"
         process_dir = workspace / "Input" / "Process List"
@@ -7349,7 +8112,7 @@ class ShowerProgrammerApp:
         """
         if getattr(self, "test_mode_workspace", None) is not None:
             raise RuntimeError("Test Mode is already active. Exit it before opening another archived batch.")
-        root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())).resolve()
+        root = Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())).resolve()
         prepared = self.prepare_archived_batch_test_mode(
             entries,
             batch_name=batch_name,
@@ -7460,7 +8223,6 @@ class ShowerProgrammerApp:
             folder = Path(self.folder_var.get()).resolve()
             process_list = Path(self.process_list_var.get()).resolve()
             output_dir = Path(self.output_dir_var.get()).resolve()
-            self.ensure_workflow_folders(folder, process_list, output_dir)
         except Exception as exc:
             messagebox.showerror("Invalid settings", str(exc), parent=self.root)
             return
@@ -7513,6 +8275,109 @@ class ShowerProgrammerApp:
             self.root.after(max(0, int(delay_ms)), lambda: begin_refresh(max(0, int(retries))))
         except tk.TclError:
             pass
+
+    def reconcile_active_orders_after_send(
+        self,
+        sent_orders: list[shower_batch.ProcessOrder],
+    ) -> None:
+        """Retire only successfully sent rows without starting another scan.
+
+        Send already knows the exact orders it completed and already archived
+        their validated inputs. Re-running even a local preview scan immediately
+        afterward is unnecessary and, when failed/problem orders remain in the
+        batch, can make the UI look frozen while those failures are reparsed.
+        Keep the remaining rows exactly as they are and remove only the sent
+        logical orders from the in-memory/tree model. The next explicit Scan
+        Orders remains the authoritative full reconciliation.
+        """
+        sent_aw = {
+            str(order.aw_order)
+            for order in sent_orders
+            if isinstance(order, shower_batch.ProcessOrder)
+        }
+        if not sent_aw:
+            return
+
+        for aw_order in sent_aw:
+            row_id = self.tree_rows.pop(aw_order, None)
+            if row_id:
+                self.tree_row_orders.pop(row_id, None)
+                try:
+                    self.tree.delete(row_id)
+                except tk.TclError:
+                    pass
+            self.order_by_aw.pop(aw_order, None)
+            self.order_result_sources.pop(aw_order, None)
+            self.pending_import_duplicate_groups.pop(aw_order, None)
+            self.order_batch_ids.pop(aw_order, None)
+
+        self.orders = [
+            order for order in self.orders
+            if str(order.aw_order) not in sent_aw
+        ]
+
+        for batch_id, batch in list(self.process_batches.items()):
+            batch_orders = batch.get("orders", [])
+            if isinstance(batch_orders, list):
+                batch["orders"] = [
+                    order
+                    for order in batch_orders
+                    if isinstance(order, shower_batch.ProcessOrder)
+                    and str(order.aw_order) not in sent_aw
+                ]
+            category_by_order = batch.get("mirror_category_by_order", {})
+            if isinstance(category_by_order, dict):
+                for aw_order in sent_aw:
+                    category_by_order.pop(aw_order, None)
+            mirror_categories = batch.get("mirror_categories", {})
+            if isinstance(mirror_categories, dict):
+                for category, members in list(mirror_categories.items()):
+                    if not isinstance(members, list):
+                        continue
+                    remaining_members = [
+                        str(aw_order)
+                        for aw_order in members
+                        if str(aw_order) not in sent_aw
+                    ]
+                    if remaining_members:
+                        mirror_categories[category] = remaining_members
+                    else:
+                        mirror_categories.pop(category, None)
+
+            parent_id = self.batch_tree_rows.get(batch_id)
+            remaining = batch.get("orders", [])
+            if not remaining:
+                if parent_id:
+                    self.tree_row_batches.pop(parent_id, None)
+                    try:
+                        self.tree.delete(parent_id)
+                    except tk.TclError:
+                        pass
+                self.batch_tree_rows.pop(batch_id, None)
+                self.process_batches.pop(batch_id, None)
+            elif parent_id:
+                count = len(remaining) if isinstance(remaining, list) else 0
+                label = self.batch_tree_label(batch)
+                summary = self.batch_tree_summary(batch, count)
+                try:
+                    self.tree.item(
+                        parent_id,
+                        text="",
+                        values=tuple(
+                            label if column == "order"
+                            else summary if column == "items"
+                            else ""
+                            for column in self.ORDER_TREE_COLUMNS
+                        ),
+                    )
+                    self.reflow_mirror_sections_for_batch(batch_id)
+                except tk.TclError:
+                    pass
+
+        self.update_summary_strip()
+        self.apply_order_tree_sort()
+        self.clear_review_context_cache()
+        self.start_review_cache_warmup(self.orders)
 
     def import_edi_orders(self) -> None:
         if self.operation_active():
@@ -8265,7 +9130,7 @@ class ShowerProgrammerApp:
                     continue
                 result.status = "ISSUES"
                 result.issues.append(
-                    "Exact duplicate input files need review; double-click this order to choose which file to keep."
+                    "Duplicate import files detected: identical sketch/DXF copies need review before processing."
                 )
             local_pdfs = [path for path in local_order_files if path.suffix.lower() == ".pdf"]
             input_only_orders, input_only_previews = self.input_only_orders_from_pdfs(
@@ -8285,6 +9150,12 @@ class ShowerProgrammerApp:
                 )
                 orders.extend(input_only_orders)
                 previews.extend(input_only_previews)
+            lifecycle_warning = ""
+            try:
+                self.sync_scanned_lifecycle_states(orders, active_batches, previews, output_dir=output_dir)
+            except Exception as exc:
+                lifecycle_warning = f"Could not fully synchronize lifecycle state: {exc}"
+            row_metadata = self.prepare_scan_row_metadata(orders, previews, output_dir)
             self.queue_scan_progress(progress_value + 1, progress_value + 1, f"Scan complete: {len(orders)} active order(s).")
             total_elapsed = max(0.0, time.perf_counter() - started_total)
             stage_timings["Total"] = total_elapsed
@@ -8296,6 +9167,8 @@ class ShowerProgrammerApp:
                         "orders": orders,
                         "batches": active_batches,
                         "previews": previews,
+                        "row_metadata": row_metadata,
+                        "lifecycle_warning": lifecycle_warning,
                         "process_list_count": len(process_list_files),
                         "process_list_import_summary": process_list_import_summary,
                         "import_summary": import_summary,
@@ -8978,7 +9851,7 @@ class ShowerProgrammerApp:
         self.save_processing_history_for_output(Path(self.output_dir_var.get()).resolve(), data)
 
     def action_history_dir(self) -> Path:
-        return Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / "History"
+        return Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / "History"
 
     def action_history_path(self) -> Path:
         return self.action_history_dir() / self.ACTION_HISTORY_FILE_NAME
@@ -9922,7 +10795,7 @@ class ShowerProgrammerApp:
             entry["deleted_at"] = deleted_at
             entry["deleted_process_signature"] = cls.sent_process_signature(order)
             scope = str((deletion_scope_by_aw or {}).get(str(order.aw_order), "order")).strip().casefold()
-            entry["deleted_scope"] = "batch" if scope == "batch" else "order"
+            entry["deleted_scope"] = scope if scope in {"batch", "duplicate"} else "order"
         cls.save_processing_history_for_output(Path(output_dir), history)
         try:
             store = shower_state.StateStore.for_output(Path(output_dir))
@@ -9958,6 +10831,16 @@ class ShowerProgrammerApp:
         sent = bool(entry.get("sent_at")) and str(entry.get("sent_process_signature", "")) == signature
         deleted = bool(entry.get("deleted_at")) and str(entry.get("deleted_process_signature", "")) == signature
         return sent or deleted
+
+    @classmethod
+    def order_is_currently_sent_in_history(
+        cls,
+        order: shower_batch.ProcessOrder,
+        history: dict[str, object],
+    ) -> bool:
+        """Return True when this exact current order signature has already been sent."""
+        entry = cls.history_entry_from_data(history, order.aw_order)
+        return bool(entry.get("sent_at")) and str(entry.get("sent_process_signature", "")) == cls.sent_process_signature(order)
 
     @classmethod
     def reactivate_deleted_orders_available_in_shared_input(
@@ -10009,6 +10892,8 @@ class ShowerProgrammerApp:
             if not isinstance(entry, dict):
                 continue
             if not entry.get("deleted_at"):
+                continue
+            if entry.get("deleted_scope") == "duplicate":
                 continue
             if str(entry.get("deleted_process_signature", "")) != cls.sent_process_signature(order):
                 continue
@@ -10136,6 +11021,8 @@ class ShowerProgrammerApp:
                 entry = history_orders.get(str(order.aw_order))
                 if not isinstance(entry, dict):
                     continue
+                if entry.get("deleted_scope") == "duplicate":
+                    continue
                 if not entry.get("deleted_at") and not entry.get("deleted_process_signature"):
                     continue
                 deleted_entries.append((order, entry))
@@ -10241,11 +11128,12 @@ class ShowerProgrammerApp:
         self,
         aw_order: str,
         history: dict[str, object],
+        *, orders_by_aw: dict[str, shower_batch.ProcessOrder] | None = None,
     ) -> str:
         sent_at = str(history.get("sent_at", "")).strip()
         if not sent_at:
             return "No"
-        order = self.order_by_aw.get(str(aw_order))
+        order = (self.order_by_aw if orders_by_aw is None else orders_by_aw).get(str(aw_order))
         stored_signature = str(history.get("sent_process_signature", "")).strip()
         if order is not None and stored_signature and stored_signature != self.sent_process_signature(order):
             return "Previous"
@@ -10262,20 +11150,24 @@ class ShowerProgrammerApp:
         status = str(values[self.ORDER_TREE_INDEX["status"]]).strip().upper()
         sent_text = str(values[self.ORDER_TREE_INDEX["sent"]]).strip().casefold()
         review_text = values[self.ORDER_TREE_INDEX["review"]]
+        issue_text = str(values[self.ORDER_TREE_INDEX["issues"]]).strip().upper()
+        intentional_duplicate = "INTENTIONAL DUPLICATE" in issue_text
         is_sent = sent_text == "sent" or sent_text.startswith("sent ")
         is_checked = self.order_tree_value_is_checked(review_text)
         if status == "PROCESSING":
-            return ("PROCESSING",)
+            return ("PROCESSING", "DUPLICATE_OVERRIDE") if intentional_duplicate else ("PROCESSING",)
         if is_sent and is_checked:
-            return ("SENT_CHECKED",)
+            return ("SENT_CHECKED", "DUPLICATE_OVERRIDE") if intentional_duplicate else ("SENT_CHECKED",)
         if is_checked:
-            return ("CHECKED",)
+            return ("CHECKED", "DUPLICATE_OVERRIDE") if intentional_duplicate else ("CHECKED",)
 
         tags: list[str] = []
         if status in {"OK", "READY", "ISSUES", "FAILED", "SKIPPED"}:
             tags.append(status)
         if is_sent:
             tags.append("SENT")
+        if intentional_duplicate:
+            tags.append("DUPLICATE_OVERRIDE")
         return tuple(tags)
 
     def update_sent_status_for_orders(self, aw_orders: list[str]) -> None:
@@ -10292,12 +11184,15 @@ class ShowerProgrammerApp:
                 self.tree.item(row_id, values=values, tags=self.order_tree_tags_for_values(values))
         self.apply_order_tree_sort()
 
-    def persisted_display_status(self, aw_order: str, current_status: str) -> str:
+    def persisted_display_status(
+        self, aw_order: str, current_status: str, *, history: dict[str, object] | None = None,
+    ) -> str:
         """Restore the last processed color when a fresh scan only reports READY."""
         status = str(current_status or "").strip().upper() or "READY"
         if status != "READY":
             return status
-        history = self.history_for_order(aw_order)
+        if history is None:
+            history = self.history_for_order(aw_order)
         if not str(history.get("last_processed", "")).strip():
             return status
         historical_status = str(history.get("status", "")).strip().upper()
@@ -10804,6 +11699,27 @@ class ShowerProgrammerApp:
         display_columns = list(self.ORDER_TREE_DISPLAY_COLUMNS)
         return display_columns[index - 1] if index <= len(display_columns) else ""
 
+    @staticmethod
+    def orders_tree_autofit_target(column: str, min_width: int, measured: int) -> int:
+        """Return the requested auto-fit width; Issues intentionally shows its full longest message."""
+        minimum = max(1, int(min_width))
+        content = max(minimum, int(measured))
+        if column == "issues":
+            # The Orders table has a horizontal scrollbar, so do not truncate the
+            # operator's longest issue behind an arbitrary auto-fit cap.
+            return content
+        max_width = {
+            "order": 250,
+            "status": 120,
+            "processed": 230,
+            "sent": 170,
+            "delivery": 140,
+            "job": 300,
+            "customer": 260,
+            "items": 360,
+        }.get(column, 360)
+        return max(minimum, min(max_width, content))
+
     def autofit_orders_tree_column(self, column: str) -> int:
         """Fit one Orders column to its visible content with practical width caps."""
         if column not in self.ORDER_TREE_COLUMNS or not hasattr(self, "tree"):
@@ -10832,18 +11748,7 @@ class ShowerProgrammerApp:
 
             visit("")
             min_width = int(self.tree.column(column, "minwidth") or 36)
-            max_width = {
-                "order": 250,
-                "status": 120,
-                "processed": 230,
-                "sent": 170,
-                "delivery": 140,
-                "job": 300,
-                "customer": 260,
-                "items": 360,
-                "issues": 620,
-            }.get(column, 360)
-            target = max(min_width, min(max_width, measured))
+            target = self.orders_tree_autofit_target(column, min_width, measured)
             self.tree.column(column, width=target)
             self.status_var.set(f"Auto-fit {self.order_tree_heading_labels.get(column, column)} column to {target}px.")
             return target
@@ -10867,18 +11772,51 @@ class ShowerProgrammerApp:
             return "break"
         return self.open_order_review(event)
 
-    def insert_or_update_result(self, result: shower_batch.BatchJobResult) -> None:
+    def prepare_scan_row_metadata(
+        self,
+        orders: list[shower_batch.ProcessOrder],
+        previews: list[shower_batch.BatchJobResult],
+        output_dir: Path,
+    ) -> dict[str, dict[str, object]]:
+        """Prepare persisted row presentation in the scan worker using one snapshot."""
+        history = self.load_processing_history_for_output(output_dir)
+        manual = self.manual_overrides_for_output(output_dir)
+        orders_by_aw = {str(order.aw_order): order for order in orders}
+        rows: dict[str, dict[str, object]] = {}
+        for result in previews:
+            aw_order = str(result.aw_order)
+            entry = self.history_entry_from_data(history, aw_order)
+            issues = self.visible_order_issues(aw_order, result.issues, output_dir=output_dir)
+            status = result.status
+            if str(status).upper() == "ISSUES" and not issues:
+                status = "OK"
+            sent = self.sent_summary_for_order_from_history(aw_order, entry, orders_by_aw=orders_by_aw)
+            rows[aw_order] = {
+                "issues": issues,
+                "status": self.persisted_display_status(aw_order, status, history=entry),
+                "processed": self.processed_summary_for_order(
+                    aw_order, output_dir=output_dir, history_data=history,
+                ),
+                "review": self.review_status_from_overrides(manual, aw_order),
+                "sent": sent,
+            }
+        return rows
+
+    def insert_or_update_result(
+        self, result: shower_batch.BatchJobResult, *,
+        metadata: dict[str, object] | None = None, defer_summary: bool = False,
+    ) -> None:
         source_result = copy.copy(result)
         source_result.issues = list(result.issues)
         self.order_result_sources[str(result.aw_order)] = source_result
-        visible_issues = self.visible_order_issues(result.aw_order, result.issues)
+        visible_issues = metadata["issues"] if metadata is not None else self.visible_order_issues(result.aw_order, result.issues)
         effective_status = result.status
         if str(effective_status).strip().upper() == "ISSUES" and not visible_issues:
             effective_status = "OK"
-        processed = self.processed_summary_for_order(result.aw_order)
-        display_status = self.persisted_display_status(result.aw_order, effective_status)
+        processed = metadata["processed"] if metadata is not None else self.processed_summary_for_order(result.aw_order)
+        display_status = metadata["status"] if metadata is not None else self.persisted_display_status(result.aw_order, effective_status)
         displayed_items = result.items
-        review_status = self.review_status_for_order(result.aw_order)
+        review_status = str(metadata["review"]) if metadata is not None else self.review_status_for_order(result.aw_order)
         review_glyph = self.order_tree_check_text(review_status)
         values = (
             display_status,
@@ -10886,7 +11824,7 @@ class ShowerProgrammerApp:
             result.delivery_date,
             result.aw_order,
             review_glyph,
-            self.sent_summary_for_order(result.aw_order),
+            metadata["sent"] if metadata is not None else self.sent_summary_for_order(result.aw_order),
             result.job_name,
             result.customer,
             displayed_items,
@@ -10909,8 +11847,9 @@ class ShowerProgrammerApp:
             order = self.order_by_aw.get(str(result.aw_order))
             if order is not None:
                 self.tree_row_orders[row_id] = order
-        self.reflow_mirror_sections_for_order(str(result.aw_order))
-        self.update_summary_strip()
+        if not defer_summary:
+            self.reflow_mirror_sections_for_order(str(result.aw_order))
+            self.update_summary_strip()
 
     def all_order_tree_rows(self) -> list[str]:
         rows: list[str] = []
@@ -10958,7 +11897,15 @@ class ShowerProgrammerApp:
     def issue_summary(issues: list[str]) -> str:
         if not issues:
             return ""
-        concise = [ShowerProgrammerApp.concise_issue_text(issue) for issue in issues]
+        concise: list[str] = []
+        seen: set[str] = set()
+        for issue in issues:
+            value = ShowerProgrammerApp.concise_issue_text(issue)
+            key = value.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            concise.append(value)
         visible = concise[:3]
         text = "; ".join(visible)
         if len(concise) > len(visible):
@@ -10980,20 +11927,51 @@ class ShowerProgrammerApp:
             (r"^P(\d+): label placed inside best open area$", r"P\1: label placed inside"),
             (r"^P(\d+): FP-S cut-in/cut-out detected; manual DXF review required\.$", r"P\1: MANUAL DXF REVIEW - FP-S cut"),
             (r"^P(\d+): (.+); manual DXF review required\.$", r"P\1: MANUAL DXF REVIEW - \2"),
+            (
+                r"^Duplicate import detected: Job Nr ([^ ]+) has (\d+) identical source sketches\. Remove/correct the repeated import before processing A&W order ([^ ]+)\.$",
+                r"DUPLICATE ORDER WARNING: Job \1 • A&W \3 • verify duplicate source/order before processing",
+            ),
+            (
+                r"^Possible duplicate import: Job Nr ([^ ]+) has (\d+) source sketches whose names differ only by a copy suffix or spacing\. Verify the repeated import before processing A&W order ([^ ]+)\.$",
+                r"DUPLICATE ORDER WARNING: Job \1 • A&W \3 • verify duplicate source/order before processing",
+            ),
+            (
+                r"^Possible duplicate order entry: Job Nr ([^ ]+) matches (\d+) sketches with different PO/reference numbers \([^)]+\)\. Correct or remove the unintended duplicate order before processing A&W order ([^ ]+)\.$",
+                r"DUPLICATE ORDER WARNING: Job \1 • A&W \3 • verify duplicate source/order before processing",
+            ),
+            (
+                r"^Possible duplicate order entry: Job Nr ([^ ]+) matches (\d+) sketches with different PO/reference numbers \([^)]+\)\. Verify A&W order ([^ ]+) before processing\.$",
+                r"DUPLICATE ORDER WARNING: Job \1 • A&W \3 • verify duplicate source/order before processing",
+            ),
+            (
+                r"^Multiple PDFs match A&W order ([^ ]+) / Job Nr ([^ ]+)\..*$",
+                r"DUPLICATE ORDER WARNING: Job \2 • A&W \1 • verify duplicate source/order before processing",
+            ),
+            (
+                r"^Source sketch needs verification: A&W order ([^ ]+) / Job Nr ([^ ]+) matches (\d+) different PDFs\. Assign the intended Source PDF before processing\.$",
+                r"Source sketch ambiguous: A&W \1 / Job \2 matches \3 PDFs",
+            ),
+            (
+                r"^INTENTIONAL DUPLICATE AUTHORIZED: A&W ([^ ]+) is using (.+?) despite (.+?)\. Verify before Send\.(?: Note: .*)?$",
+                r"INTENTIONAL DUPLICATE: A&W \1 • verify before Send",
+            ),
         ]
         for pattern, replacement in replacements:
             text = re.sub(pattern, replacement, text)
         return text
 
-    def processed_summary_for_order(self, aw_order: str) -> str:
+    def processed_summary_for_order(
+        self, aw_order: str, *, output_dir: Path | None = None,
+        history_data: dict[str, object] | None = None,
+    ) -> str:
         """Return No, or the most recent processing timestamp in one combined column."""
-        history = self.history_for_order(aw_order)
+        history = self.history_entry_from_data(history_data, aw_order) if history_data is not None else self.history_for_order(aw_order)
         last_processed = str(history.get("last_processed", "")).strip()
         if last_processed:
             prefix = "🔴 REMAKE • " if self.history_has_remake(history) else ""
             return f"{prefix}{last_processed}"
-        output_dir = Path(self.output_dir_var.get()).resolve()
-        sketch_path = self.find_order_sketch_path(aw_order, output_dir)
+        output_dir = Path(output_dir or self.output_dir_var.get()).resolve()
+        sketch_path = self.find_order_sketch_path(aw_order, output_dir, history_data)
         if sketch_path.exists():
             return datetime.fromtimestamp(sketch_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         return "No"
@@ -11388,7 +12366,13 @@ class ShowerProgrammerApp:
         if generated_sketch_path.exists() and not sketch_output_skipped:
             sketch_path = generated_sketch_path
         else:
-            sketch_path = programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
+            config = self.config_with_manual_overrides(folder, output_dir)
+            mapped_source = shower_batch.mapped_process_order_pdf(folder, process_order, config)
+            sketch_path = (
+                mapped_source
+                if mapped_source is not None
+                else programmer.find_pdf(folder, process_order.job_name, process_order.aw_order).resolve()
+            )
         return (
             run_folder,
             sketch_dir,
@@ -12309,8 +13293,24 @@ class ShowerProgrammerApp:
                     "command": lambda selected=order: self.open_programming_evidence(selected),
                 },
             )
+            if len(selected_orders) == 1:
+                mapping = self.pdf_order_mapping(str(order.aw_order))
+                duplicate_authorization = self.duplicate_order_authorization(str(order.aw_order))
+                actions.insert(
+                    2,
+                    {
+                        "text": (
+                            "Review Duplicate Authorization"
+                            if duplicate_authorization
+                            else "Change Source PDF" if mapping
+                            else "Assign Source PDF"
+                        ),
+                        "icon": "open_folder",
+                        "command": lambda selected=order: self.resolve_order_source_pdf(selected),
+                    },
+                )
             actions.insert(
-                2,
+                3,
                 {
                     "text": "Create Diagnostic Package",
                     "icon": "bug",
@@ -12322,7 +13322,7 @@ class ShowerProgrammerApp:
                 for selected in selected_orders
             )
             actions.insert(
-                3,
+                4,
                 {
                     "text": "Clear Dimension Override" if override_enabled else "Allow Dimension Mismatch",
                     "icon": "minus_circle" if override_enabled else "warning",
@@ -12488,17 +13488,13 @@ class ShowerProgrammerApp:
 
     def archive_sent_order_inputs(self, orders: list[shower_batch.ProcessOrder]) -> None:
         """Archive selected sent order files while retaining an incomplete batch process list."""
-        sent_orders = self.sent_orders_for_input_archive_context(None, orders)
-        if not sent_orders:
-            self.show_themed_notice(
-                "Archive unavailable",
-                "No current sent receipt",
-                "The selected order inputs can be archived after the order has been sent successfully.",
-                icon_name="warning",
-                accent_color=self.WARNING,
-            )
+        if self.operation_active():
+            self.status_var.set("Busy. Please wait for the current task to finish.")
             return
-        order_numbers = ", ".join(str(order.aw_order) for order in sent_orders)
+        selected_orders = list(orders)
+        if not selected_orders:
+            return
+        order_numbers = ", ".join(str(order.aw_order) for order in selected_orders)
         if not messagebox.askyesno(
             "Archive sent order inputs",
             f"Move the local PDF/DXF inputs for {order_numbers} into the dated archive?\n\n"
@@ -12511,17 +13507,25 @@ class ShowerProgrammerApp:
         output_dir = Path(self.output_dir_var.get()).resolve()
 
         def worker(task: shower_tasks.TaskContext) -> tuple[list[Path], list[str]]:
+            task.check_cancelled()
+            history = self.load_processing_history_for_output(output_dir)
+            sent_orders = self.sent_orders_for_input_archive_context(None, selected_orders, history)
+            if not sent_orders:
+                return [], ["No current sent receipt. Send the selected order successfully before archiving its inputs."]
+
+            def archive_progress(current: int, total: int, path: Path) -> None:
+                task.progress(current, total, f"Archiving {path.name} ({current}/{total})")
+                task.check_cancelled()
+
             archived, warnings = self.archive_sent_input_files_for_orders(
                 sent_orders,
                 order_folder,
                 process_list_path,
                 include_process_lists=False,
                 completed_process_batches=[],
-                progress_callback=lambda current, total, path: task.progress(
-                    current,
-                    total,
-                    f"Archiving {path.name} ({current}/{total})",
-                ),
+                reuse_prior_archive_sources=False,
+                stage_callback=getattr(task, "stage", None),
+                progress_callback=archive_progress,
             )
             try:
                 manual_archives = self.archive_manual_process_orders_for_output(
@@ -12537,7 +13541,6 @@ class ShowerProgrammerApp:
 
         def finished(payload: object) -> None:
             archived, warnings = payload if isinstance(payload, tuple) else ([], ["Archive did not return a result."])
-            self.refresh_local_orders()
             self.show_themed_notice(
                 "Order inputs archived" if not warnings else "Order inputs archived with notes",
                 f"Archived {len(archived)} input file(s)",
@@ -12546,13 +13549,14 @@ class ShowerProgrammerApp:
                 icon_name="check_circle" if not warnings else "warning",
                 accent_color=self.SUCCESS if not warnings else self.WARNING,
                 details=[("Notes", "\n".join(warnings))] if warnings else None,
+                on_close=lambda: self.refresh_local_orders(lock_controls=False),
             )
 
         self.run_managed_task(
             "Archive Sent Order Inputs",
             worker,
-            message=f"Archiving sent inputs for {len(sent_orders)} order(s)...",
-            total=max(1, len(sent_orders)),
+            message=f"Checking and archiving sent inputs for {len(selected_orders)} order(s)...",
+            total=max(1, len(selected_orders)),
             cancellable=True,
             on_done=finished,
             on_error=lambda exc: self.show_structured_error(exc, title="Archive sent order inputs failed"),
@@ -12639,7 +13643,10 @@ class ShowerProgrammerApp:
 
     def archive_sent_batch_inputs(self, batch_id: str) -> None:
         """Archive a completed production batch without doing file/history I/O on Tk."""
-        batch = self.process_batches.get(str(batch_id), {})
+        if self.operation_active():
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
+        batch = dict(self.process_batches.get(str(batch_id), {}))
         raw_orders = batch.get("all_orders", batch.get("orders", []))
         orders = [
             order for order in raw_orders if isinstance(order, shower_batch.ProcessOrder)
@@ -12688,6 +13695,8 @@ class ShowerProgrammerApp:
                 process_list_path,
                 include_process_lists=False,
                 completed_process_batches=plans,
+                reuse_prior_archive_sources=False,
+                stage_callback=getattr(task, "stage", None),
                 progress_callback=archive_progress,
             )
             task.check_cancelled()
@@ -12721,7 +13730,6 @@ class ShowerProgrammerApp:
                     details=[("Notes", "\n".join(warnings[1:]))] if len(warnings) > 1 else None,
                 )
                 return
-            self.refresh_local_orders()
             self.show_themed_notice(
                 "Batch archived" if not warnings else "Batch archived with notes",
                 f"Archived {len(archived)} input file(s)",
@@ -12730,6 +13738,7 @@ class ShowerProgrammerApp:
                 icon_name="check_circle" if not warnings else "warning",
                 accent_color=self.SUCCESS if not warnings else self.WARNING,
                 details=[("Notes", "\n".join(warnings))] if warnings else None,
+                on_close=lambda: self.refresh_local_orders(lock_controls=False),
             )
 
         self.run_managed_task(
@@ -14245,8 +15254,9 @@ class ShowerProgrammerApp:
         skip_dxf: bool,
     ) -> list[str]:
         conflicts: list[str] = []
+        roots = self.output_search_roots(output_dir)
         for order in orders:
-            for root in self.output_search_roots(output_dir):
+            for root in roots:
                 sketch = root / "Sketches" / f"{order.aw_order}.pdf"
                 if not skip_pdf and sketch.exists():
                     conflicts.append(str(sketch.relative_to(output_dir)))
@@ -14798,13 +15808,17 @@ class ShowerProgrammerApp:
     def output_search_roots(output_dir: Path) -> list[Path]:
         roots = [output_dir]
         runs_dir = output_dir / "Runs"
-        if not runs_dir.exists():
-            return roots
-        for path in runs_dir.rglob("*"):
-            if not path.is_dir():
-                continue
-            if (path / "Sketches").exists() or (path / "Programs").exists() or (path / "Reports").exists() or (path / "manifest.json").exists():
+        # Only batch containers can be run roots. Prune the potentially huge
+        # artifact folders instead of stat-ing every sketch, DXF, and report.
+        artifact_dirs = {"sketches", "programs", "reports"}
+        for parent, directories, filenames in os.walk(runs_dir):
+            path = Path(parent)
+            if path != runs_dir and (
+                artifact_dirs.intersection(name.casefold() for name in directories)
+                or "manifest.json" in filenames
+            ):
                 roots.append(path)
+            directories[:] = [name for name in directories if name.casefold() not in artifact_dirs]
         return roots
 
     @staticmethod
@@ -14911,12 +15925,16 @@ class ShowerProgrammerApp:
                     f"[{datetime.now().astimezone().isoformat(timespec='seconds')}] "
                     f"event={event_name} {error.__class__.__name__}: {error}\n"
                 )
-                handle.write(traceback.format_exc())
+                handle.write("".join(traceback.format_exception(type(error), error, error.__traceback__)))
                 handle.write("\n")
         except Exception:
             pass
 
     def drain_worker_queue(self) -> None:
+        if bool(getattr(self, "_worker_queue_dispatching", False)):
+            return
+        self._worker_queue_dispatching = True
+        self._worker_queue_last_drain_at = time.monotonic()
         drain_started = time.monotonic()
         drained_events = 0
         current_kind = ""
@@ -14931,7 +15949,17 @@ class ShowerProgrammerApp:
                 if kind in {"task_done", "task_error", "task_cancelled"} and isinstance(payload, dict):
                     task_id = str(payload.get("task_id", ""))
                     if task_id:
+                        pending = getattr(self, "_managed_task_pending_ids", None)
+                        if pending is not None and task_id not in pending:
+                            # A heartbeat recovery and the original publisher can
+                            # both deliver the same outcome. Apply it exactly once.
+                            continue
                         getattr(self, "_managed_task_pending_ids", set()).discard(task_id)
+                        getattr(self, "_managed_task_pending_since", {}).pop(task_id, None)
+                        getattr(self, "_managed_task_requeued_ids", set()).discard(task_id)
+                        manager = getattr(self, "task_manager", None)
+                        if manager is not None:
+                            manager.acknowledge_terminal(task_id)
                 if kind == "ui_callback":
                     callback = payload
                     if callable(callback):
@@ -14960,14 +15988,7 @@ class ShowerProgrammerApp:
                     if isinstance(error, programmer.AmbiguousPdfError):
                         self.close_opening_window("review_order")
                         choice = self.show_ambiguous_pdf_dialog(process_order, list(error.candidates))
-                        if choice is not None:
-                            try:
-                                renamed = self.rename_ambiguous_pdf(process_order, choice[0], choice[1])
-                            except Exception as rename_exc:
-                                messagebox.showerror("Could not rename PDF", str(rename_exc), parent=self.root)
-                            else:
-                                self.status_var.set(f"Renamed {renamed.name}; reopening order review...")
-                                self.root.after(75, self.open_order_review)
+                        self.apply_ambiguous_pdf_choice(process_order, choice, reopen_review=True)
                         continue
                     if isinstance(error, BaseException):
                         self.close_opening_window("review_order")
@@ -15180,6 +16201,10 @@ class ShowerProgrammerApp:
                 elif kind == "task_progress":
                     data = payload
                     assert isinstance(data, dict)
+                    task_id = str(data.get("task_id", ""))
+                    pending = getattr(self, "_managed_task_pending_ids", None)
+                    if task_id and pending is not None and task_id not in pending:
+                        continue
                     total = int(data.get("total", 0) or 0)
                     current = int(data.get("current", 0) or 0)
                     message = str(data.get("message", "Working..."))
@@ -15261,6 +16286,8 @@ class ShowerProgrammerApp:
                         else:
                             self.apply_local_order_delete_result(result)
                     # Scan/import workers keep their established completion payloads.
+                    elif getattr(self.task_manager, "active", None) is None:
+                        self.finish_background_activity()
                 elif kind == "task_cancelled":
                     data = payload
                     assert isinstance(data, dict)
@@ -15446,14 +16473,9 @@ class ShowerProgrammerApp:
                         for aw_order, groups in duplicate_groups_by_aw.items()
                         if isinstance(groups, list)
                     }
-                    try:
-                        self.sync_scanned_lifecycle_states(
-                            [order for order in orders if isinstance(order, shower_batch.ProcessOrder)],
-                            batches,
-                            [result for result in previews if isinstance(result, shower_batch.BatchJobResult)],
-                        )
-                    except Exception as exc:
-                        self.record_action("Lifecycle Reconciliation", "Could not fully synchronize SQLite lifecycle state.", status="WARNING", details=exc)
+                    lifecycle_warning = str(data.get("lifecycle_warning", ""))
+                    if lifecycle_warning:
+                        self.record_action("Lifecycle Reconciliation", lifecycle_warning, status="WARNING")
                     self.tree.delete(*self.tree.get_children())
                     self.tree_rows.clear()
                     self.tree_row_orders.clear()
@@ -15461,10 +16483,15 @@ class ShowerProgrammerApp:
                     self.batch_tree_rows.clear()
                     self.order_result_sources.clear()
                     self.install_process_batches(batches)
-                    self.update_summary_strip()
+                    row_metadata = data.get("row_metadata", {})
                     for result in previews:
                         assert isinstance(result, shower_batch.BatchJobResult)
-                        self.insert_or_update_result(result)
+                        self.insert_or_update_result(
+                            result, metadata=row_metadata.get(str(result.aw_order)), defer_summary=True,
+                        )
+                    for batch_id in self.process_batches:
+                        self.reflow_mirror_sections_for_batch(str(batch_id))
+                    self.update_summary_strip()
                     self.apply_order_tree_sort()
                     self.finish_background_activity()
                     scan_timing_summary = self.format_scan_stage_timings(data.get("scan_stage_timings", {}))
@@ -15807,11 +16834,13 @@ class ShowerProgrammerApp:
                         self.send_review_window = None
                         self.send_review_progress = None
                         self.send_review_status_var = None
+                    self.reconcile_active_orders_after_send(
+                        [order for order in sent_orders if isinstance(order, shower_batch.ProcessOrder)]
+                    )
                     if archive_warnings or input_cleanup_warnings:
                         messagebox.showwarning("Sent with cleanup notes", details, parent=self.root)
                     else:
                         messagebox.showinfo("Send complete", details, parent=self.root)
-                    self.schedule_post_send_local_refresh()
                 elif kind == "send_error":
                     self.finish_background_activity()
                     self.status_var.set("Send failed")
@@ -15823,6 +16852,8 @@ class ShowerProgrammerApp:
             pass
         except Exception as exc:
             self.handle_worker_queue_dispatch_failure(current_kind, exc)
+        finally:
+            self._worker_queue_dispatching = False
         active_task = getattr(getattr(self, "task_manager", None), "active", None)
         if not self.worker_queue.empty():
             # Yield back to Tk before draining more events so paint, scrolling, and
@@ -15917,6 +16948,10 @@ class ShowerProgrammerApp:
             self.set_child_state(child, state)
 
     def set_child_state(self, widget: tk.Widget, state: str) -> None:
+        # Separate workspaces own their own busy state. Walking into Toplevels
+        # also touches hidden settings controls and active confirmation dialogs.
+        if isinstance(widget, tk.Toplevel):
+            return
         try:
             if isinstance(widget, (ttk.Button, ttk.Checkbutton, ttk.Entry)):
                 widget.configure(state=state)
@@ -15924,48 +16959,71 @@ class ShowerProgrammerApp:
                 widget.configure(state=state)
         except tk.TclError:
             pass
-        for child in widget.winfo_children():
+        try:
+            children = widget.winfo_children()
+        except tk.TclError:
+            return
+        for child in children:
             self.set_child_state(child, state)
 
     def review_sketches(self) -> None:
         if self.block_recent_external_page_launch("review_sketches", "Review Sketches"):
             return
+        if self.operation_active():
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
         try:
             output_dir = Path(self.output_dir_var.get()).resolve()
-            run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
-            sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
-            paths = self.generated_sketch_paths(output_dir, sketch_dir)
-            if not paths:
-                if sketch_dir.exists():
-                    os.startfile(sketch_dir)
-                else:
-                    messagebox.showinfo("No sketches", "No generated sketch PDFs were found.")
-                return
+            last_run = self.last_run_folder
+            aw_orders = self.selected_or_visible_aw_orders()
+            config = self.config_with_manual_overrides(Path(self.folder_var.get()).resolve(), output_dir)
+        except Exception as exc:
+            messagebox.showerror("Review sketches failed", str(exc))
+            return
 
+        def worker(task: shower_tasks.TaskContext) -> tuple[Path | None, Path]:
+            run_folder = last_run or self.latest_run_folder(output_dir)
+            sketch_dir = (run_folder / "Sketches") if run_folder else output_dir / "Sketches"
+            paths = self.generated_sketch_paths_for_orders(aw_orders, output_dir) if aw_orders else sorted(sketch_dir.glob("*.pdf"))
+            if not paths:
+                return None, sketch_dir
             review_dir = output_dir / "Reviews"
             review_dir.mkdir(parents=True, exist_ok=True)
             review_path = review_dir / f"sketch_review_{datetime.now():%Y%m%d_%H%M%S}.pdf"
-            config = self.config_with_manual_overrides(
-                Path(self.folder_var.get()).resolve(),
-                output_dir,
-            )
             writer = PdfWriter()
             added_pages = 0
-            for path in paths:
-                reader = PdfReader(str(path))
-                aw_order = path.stem
-                for page_index in self.sketch_review_page_indices(reader, aw_order, config):
-                    writer.add_page(reader.pages[page_index])
-                    added_pages += 1
-            if not added_pages:
-                messagebox.showinfo("No sketch pages", "No piece pages were found in the generated sketches.")
-                return
-            with review_path.open("wb") as handle:
-                writer.write(handle)
-            os.startfile(review_path)
-            self.status_var.set(f"Opened sketch review: {review_path.name}")
-        except Exception as exc:
-            messagebox.showerror("Review sketches failed", str(exc))
+            try:
+                for index, path in enumerate(paths, start=1):
+                    task.progress(index - 1, len(paths), f"Preparing sketch {index}/{len(paths)}...")
+                    with path.open("rb") as source:
+                        reader = PdfReader(source)
+                        for page_index in self.sketch_review_page_indices(reader, path.stem, config):
+                            task.check_cancelled()
+                            writer.add_page(reader.pages[page_index])
+                            added_pages += 1
+                task.check_cancelled()
+                if not added_pages:
+                    return None, sketch_dir
+                with review_path.open("wb") as handle:
+                    writer.write(handle)
+                return review_path, sketch_dir
+            finally:
+                writer.close()
+
+        def completed(result: object) -> None:
+            review_path, sketch_dir = result
+            if review_path is not None:
+                os.startfile(review_path)
+                self.status_var.set(f"Opened sketch review: {review_path.name}")
+            elif sketch_dir.exists():
+                os.startfile(sketch_dir)
+            else:
+                messagebox.showinfo("No sketches", "No generated sketch PDFs were found.")
+
+        self.run_managed_task(
+            "Build Sketch Review", worker, message="Preparing sketch review...",
+            total=max(len(aw_orders), 1), on_done=completed,
+        )
 
     def generated_sketch_paths(self, output_dir: Path, sketch_dir: Path) -> list[Path]:
         aw_orders = self.selected_or_visible_aw_orders()
@@ -16015,30 +17073,55 @@ class ShowerProgrammerApp:
     def review_dxfs(self) -> None:
         if self.block_recent_external_page_launch("review_dxfs", "Review DXFs"):
             return
+        if self.operation_active():
+            self.status_var.set("Busy. Please wait for the current task to finish.")
+            return
         try:
             output_dir = Path(self.output_dir_var.get()).resolve()
-            run_folder = self.last_run_folder or self.latest_run_folder(output_dir)
-            programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
+            folder = Path(self.folder_var.get()).resolve()
+            last_run = self.last_run_folder
             aw_orders = self.selected_or_visible_aw_orders()
+            orders_by_aw = dict(self.order_by_aw)
+            config = self.config_with_manual_overrides(folder, output_dir)
+        except Exception as exc:
+            messagebox.showerror("Review DXFs failed", str(exc))
+            return
+
+        def worker(task: shower_tasks.TaskContext) -> tuple[Path | None, Path]:
+            run_folder = last_run or self.latest_run_folder(output_dir)
+            programs_dir = (run_folder / "Programs") if run_folder else output_dir / "Programs"
             original_paths: set[str] = set()
             if aw_orders:
-                paths, original_paths = self.dxf_review_paths_for_orders(aw_orders, output_dir)
+                paths, original_paths = self.dxf_review_paths_for_orders(
+                    aw_orders, output_dir, folder=folder, orders_by_aw=orders_by_aw,
+                    config=config, task_context=task,
+                )
             else:
-                paths = self.generated_dxf_paths(output_dir, programs_dir)
+                paths = sorted(programs_dir.glob("*.dxf"))
             if not paths:
-                if programs_dir.exists():
-                    os.startfile(programs_dir)
-                else:
-                    messagebox.showinfo("No DXFs", "No generated DXF files were found.")
-                return
+                return None, programs_dir
             review_dir = output_dir / "Reviews"
             review_dir.mkdir(parents=True, exist_ok=True)
             review_path = review_dir / f"dxf_review_{datetime.now():%Y%m%d_%H%M%S}.html"
-            review_path.write_text(self.build_dxf_review_html(paths, original_paths=original_paths), encoding="utf-8")
-            webbrowser.open(review_path.resolve().as_uri())
-            self.status_var.set(f"Opened DXF review: {review_path.name}")
-        except Exception as exc:
-            messagebox.showerror("Review DXFs failed", str(exc))
+            content = self.build_dxf_review_html(paths, original_paths=original_paths, task_context=task)
+            task.check_cancelled()
+            review_path.write_text(content, encoding="utf-8")
+            return review_path, programs_dir
+
+        def completed(result: object) -> None:
+            review_path, programs_dir = result
+            if review_path is not None:
+                webbrowser.open(review_path.resolve().as_uri())
+                self.status_var.set(f"Opened DXF review: {review_path.name}")
+            elif programs_dir.exists():
+                os.startfile(programs_dir)
+            else:
+                messagebox.showinfo("No DXFs", "No generated DXF files were found.")
+
+        self.run_managed_task(
+            "Build DXF Review", worker, message="Preparing DXF review...",
+            total=max(len(aw_orders), 1), on_done=completed,
+        )
 
     def generated_dxf_paths(self, output_dir: Path, programs_dir: Path) -> list[Path]:
         aw_orders = self.selected_or_visible_aw_orders()
@@ -16075,29 +17158,37 @@ class ShowerProgrammerApp:
         self,
         aw_orders: list[str],
         output_dir: Path,
+        *, folder: Path | None = None,
+        orders_by_aw: dict[str, shower_batch.ProcessOrder] | None = None,
+        config: dict[str, object] | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> tuple[list[Path], set[str]]:
         """Return generated DXFs, or untouched source DXFs when output was skipped."""
         paths: list[Path] = []
         original_paths: set[str] = set()
         seen: set[str] = set()
-        try:
+        if folder is None:
             folder = Path(self.folder_var.get()).resolve()
-        except Exception:
-            folder = Path(".").resolve()
+        if orders_by_aw is None:
+            orders_by_aw = self.order_by_aw
+        history = self.load_processing_history_for_output(output_dir)
         for aw_order in aw_orders:
-            if not self.output_was_skipped_for_order(aw_order, "dxf"):
-                for path in self.generated_dxf_paths_for_orders([aw_order], output_dir):
+            if task_context is not None:
+                task_context.check_cancelled()
+            if not self.output_was_skipped_for_order(aw_order, "dxf", output_dir=output_dir, history=history):
+                for path in self.generated_dxf_paths_for_orders([aw_order], output_dir, history):
                     key = str(path.resolve()).casefold()
                     if key not in seen:
                         seen.add(key)
                         paths.append(path)
                 continue
-            order = self.order_by_aw.get(str(aw_order))
+            order = orders_by_aw.get(str(aw_order))
             if order is None:
                 continue
             try:
-                _run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(str(aw_order), output_dir)
-                config = self.config_with_manual_overrides(folder, output_dir)
+                _run_folder, sketch_dir, programs_dir, report_dir = self.output_dirs_for_order(str(aw_order), output_dir, history)
+                if config is None:
+                    config = self.config_with_manual_overrides(folder, output_dir)
                 job, _reader, _issues = shower_batch.prepare_job(
                     folder,
                     sketch_dir,
@@ -16126,12 +17217,15 @@ class ShowerProgrammerApp:
         paths: list[Path],
         *,
         original_paths: set[str] | None = None,
+        task_context: shower_tasks.TaskContext | None = None,
     ) -> str:
         original_paths = original_paths or set()
-        cards = "\n".join(
-            self.dxf_preview_card(path, original_preview=str(path.resolve()).casefold() in original_paths)
-            for path in paths
-        )
+        card_parts: list[str] = []
+        for index, path in enumerate(paths, start=1):
+            if task_context is not None:
+                task_context.progress(index - 1, len(paths), f"Preparing DXF {index}/{len(paths)}...")
+            card_parts.append(self.dxf_preview_card(path, original_preview=str(path.resolve()).casefold() in original_paths))
+        cards = "\n".join(card_parts)
         return f"""<!doctype html>
 <html>
 <head>
@@ -16310,14 +17404,7 @@ a {{ color: #1f4e79; }}
             self.cancel_review_opening_feedback()
             self.close_opening_window("review_order")
             choice = self.show_ambiguous_pdf_dialog(process_order, list(exc.candidates))
-            if choice is not None:
-                try:
-                    renamed = self.rename_ambiguous_pdf(process_order, choice[0], choice[1])
-                except Exception as rename_exc:
-                    messagebox.showerror("Could not rename PDF", str(rename_exc), parent=self.root)
-                else:
-                    self.status_var.set(f"Renamed {renamed.name}; reopening order review...")
-                    self.root.after(75, self.open_order_review)
+            self.apply_ambiguous_pdf_choice(process_order, choice, reopen_review=True)
             return
 
         except Exception as exc:
@@ -22572,6 +23659,11 @@ try {{
         progress(3, "Checking selected order and archive references...")
         if task_context is not None:
             task_context.check_cancelled()
+        already_sent_aw_orders = [
+            str(order.aw_order)
+            for order in orders
+            if self.order_is_currently_sent_in_history(order, history_data)
+        ]
         progress(4, "Review / Send plan ready.")
         return {
             "output_dir": output_dir,
@@ -22584,6 +23676,7 @@ try {{
             "missing": missing,
             "order_folder": order_folder,
             "process_list_path": process_list_path,
+            "already_sent_aw_orders": already_sent_aw_orders,
         }
 
     def apply_review_send_preparation(self, data: object) -> None:
@@ -22620,6 +23713,7 @@ try {{
                 [str(value) for value in data.get("missing", [])],
                 Path(str(data["order_folder"])),
                 Path(str(data["process_list_path"])),
+                already_sent_aw_orders={str(value) for value in data.get("already_sent_aw_orders", [])},
             )
         finally:
             self.close_opening_window("review_send")
@@ -23142,6 +24236,8 @@ try {{
         missing: list[str],
         order_folder: Path,
         process_list_path: Path,
+        *,
+        already_sent_aw_orders: set[str] | None = None,
     ) -> None:
         if self.focus_existing_page_window("review_send", "Review / Send"):
             return
@@ -23154,6 +24250,7 @@ try {{
         self.set_window_icon(dialog)
         dialog.configure(fg_color=self.APP_BG) if ctk is not None else dialog.configure(bg=self.APP_BG)
         self.send_review_window = dialog
+        already_sent_aw = {str(value) for value in (already_sent_aw_orders or set())}
 
         dialog.grid_columnconfigure(0, weight=1)
         dialog.grid_rowconfigure(1, weight=1)
@@ -23287,6 +24384,8 @@ try {{
         tree.column("note", width=250, minwidth=150, stretch=True)
         tree.tag_configure("ready", foreground=self.SUCCESS)
         tree.tag_configure("warning", foreground=self.WARNING)
+        tree.tag_configure("duplicate", foreground=self.DANGER, font=("Segoe UI", 10, "bold"))
+        tree.tag_configure("resend", foreground=self.DANGER, font=("Segoe UI", 10, "bold"))
         tree.tag_configure("blocked", foreground=self.DANGER)
         tree.tag_configure("skipped", foreground=self.MUTED)
         y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
@@ -23317,6 +24416,8 @@ try {{
         warning_count = 0
         checked_warning_count = 0
         checked_warning_aw: set[str] = set()
+        checked_duplicate_aw: set[str] = set()
+        checked_already_sent_aw: set[str] = set()
         review_tree_order_rows: dict[str, shower_batch.ProcessOrder] = {}
         review_tree_batch_rows: dict[str, list[str]] = {}
         review_selection_guard = False
@@ -23415,6 +24516,7 @@ try {{
                 sketch_paths=order_sketches,
                 dxf_paths=order_dxfs,
                 program_required=program_required_by_aw.get(str(order.aw_order), True),
+                already_sent=str(order.aw_order) in already_sent_aw,
             )
             if archive_inputs and not order_archive_files:
                 warnings.append("No matching input file found for archive.")
@@ -23435,12 +24537,38 @@ try {{
                 if checked and not manual_dxf_blocked:
                     checked_warning_count += 1
                     checked_warning_aw.add(str(order.aw_order))
+            intentional_duplicate = any("INTENTIONAL DUPLICATE" in str(value).upper() for value in warnings)
+            already_sent = str(order.aw_order) in already_sent_aw
+            if checked and not manual_dxf_blocked and intentional_duplicate:
+                checked_duplicate_aw.add(str(order.aw_order))
+            if checked and not manual_dxf_blocked and already_sent:
+                checked_already_sent_aw.add(str(order.aw_order))
             if checked and not manual_dxf_blocked:
                 checked_orders.append(order)
                 checked_aw_orders.append(order.aw_order)
 
-            tag = "blocked" if not checked or manual_dxf_blocked else "warning" if warnings else "ready"
-            status_text = "Blocked" if tag == "blocked" else "Warnings" if warnings else "Ready"
+            tag = (
+                "blocked"
+                if not checked or manual_dxf_blocked
+                else "duplicate"
+                if intentional_duplicate
+                else "resend"
+                if already_sent
+                else "warning"
+                if warnings
+                else "ready"
+            )
+            status_text = (
+                "Blocked"
+                if tag == "blocked"
+                else "DUPLICATE"
+                if tag == "duplicate"
+                else "ALREADY SENT"
+                if tag == "resend"
+                else "Warnings"
+                if warnings
+                else "Ready"
+            )
             batch_parent = order_parent_rows.get(str(order.aw_order), "")
             parent = tree.insert(
                 batch_parent,
@@ -23459,7 +24587,8 @@ try {{
             if batch_parent in review_tree_batch_rows:
                 review_tree_batch_rows[batch_parent].append(parent)
             if batch_parent in batch_status_counts:
-                batch_status_counts[batch_parent][tag] = batch_status_counts[batch_parent].get(tag, 0) + 1
+                count_tag = "warning" if tag in {"duplicate", "resend"} else tag
+                batch_status_counts[batch_parent][count_tag] = batch_status_counts[batch_parent].get(count_tag, 0) + 1
             if not checked or manual_dxf_blocked:
                 blocked_reason = (
                     "Open Review Order and resolve the flagged manual DXF review first."
@@ -23739,9 +24868,46 @@ try {{
                 messagebox.showinfo("Nothing ready", "No generated files were found for the selected checked orders.", parent=dialog)
                 return
             selected_warning_count = sum(1 for aw_order in selected_aw if aw_order in checked_warning_aw)
-            if selected_warning_count and not messagebox.askyesno(
+            selected_duplicate_count = sum(1 for aw_order in selected_aw if aw_order in checked_duplicate_aw)
+            selected_already_sent = [aw_order for aw_order in selected_aw if aw_order in checked_already_sent_aw]
+            if selected_already_sent and not self.ask_themed_confirmation(
+                "ALREADY SENT WARNING",
+                "Previously sent order selected",
+                (
+                    f"{len(selected_already_sent)} selected order(s) were already sent using the same current process-list signature.\n\n"
+                    f"A&W: {', '.join(selected_already_sent[:12])}"
+                    + (f"  +{len(selected_already_sent) - 12} more" if len(selected_already_sent) > 12 else "")
+                    + "\n\nSending again can create duplicate production. Continue only when this resend is intentional."
+                ),
+                parent=dialog,
+                confirm_text="Send Again",
+                cancel_text="Go Back",
+                icon_name="warning",
+                accent_color=self.DANGER,
+            ):
+                return
+            if selected_duplicate_count and not self.ask_themed_confirmation(
+                "DUPLICATE PRODUCTION WARNING",
+                "Intentional duplicate production selected",
+                (
+                    f"{selected_duplicate_count} selected checked order(s) are explicitly authorized duplicates.\n\n"
+                    "These orders were intentionally allowed past duplicate-order protection and may produce glass that "
+                    "duplicates an earlier/corrected order. Verify the A&W order and selected source sketch before sending."
+                ),
+                parent=dialog,
+                confirm_text="Send Duplicate Anyway",
+                cancel_text="Go Back",
+                icon_name="warning",
+                accent_color=self.DANGER,
+            ):
+                return
+            selected_other_warning_count = max(
+                0,
+                selected_warning_count - selected_duplicate_count - len(selected_already_sent),
+            )
+            if selected_other_warning_count and not messagebox.askyesno(
                 "Warnings found",
-                f"{selected_warning_count} selected checked order(s) have warnings. Send them anyway?",
+                f"{selected_other_warning_count} selected checked order(s) have other warnings. Send them anyway?",
                 parent=dialog,
             ):
                 return
@@ -24034,8 +25200,14 @@ try {{
         sketch_paths: list[Path],
         dxf_paths: list[Path],
         program_required: bool = True,
+        already_sent: bool = False,
     ) -> list[str]:
         warnings: list[str] = []
+        if already_sent:
+            warnings.append(
+                "ALREADY SENT: This order was previously sent with the same current process-list signature. "
+                "Sending it again can create duplicate production."
+            )
         if include_sketches and not sketch_paths and not self.output_was_skipped_for_order(order.aw_order, "sketch"):
             warnings.append("Missing generated sketch PDF.")
         if (
@@ -24557,6 +25729,8 @@ try {{
         process_list_files: list[Path] | None = None,
         completed_process_batches: list[dict[str, object]] | None = None,
         progress_callback: Callable[[int, int, Path], None] | None = None,
+        reuse_prior_archive_sources: bool = True,
+        stage_callback: Callable[[str], None] | None = None,
     ) -> tuple[list[Path], list[str]]:
         self._last_archived_order_sources_by_aw = {}
         self._last_archived_order_targets_by_source_name: dict[str, Path] = {}
@@ -24599,13 +25773,15 @@ try {{
             return snapshot
 
         initial_order_snapshot = local_order_candidate_snapshot()
+        if stage_callback is not None:
+            stage_callback("Finding local order inputs to archive...")
         order_files = self.matching_order_files(
             order_folder,
             list(cleanup_orders.values()),
             root_only=True,
             inspect_pdf_text=True,
         )
-        if not order_files:
+        if not order_files and not plans:
             warnings.append("No root-level order PDF/DXF input files matched the sent or completed-batch orders.")
         manual_orders = [
             order for order in orders
@@ -24670,7 +25846,9 @@ try {{
             for aw_order, order in cleanup_orders.items()
             if aw_order not in validated_sources_by_aw
         ]
-        if missing_archive_orders and order_archive_dir.exists():
+        if reuse_prior_archive_sources and missing_archive_orders and order_archive_dir.exists():
+            if stage_callback is not None:
+                stage_callback("Checking previous local archive records...")
             try:
                 archive_candidates = [
                     path for path in order_archive_dir.iterdir()
@@ -24852,6 +26030,8 @@ try {{
             unique_process_files[key] = source
 
         process_archive_dir = self.process_list_archive_dir(process_list_path, dated_name)
+        if stage_callback is not None:
+            stage_callback("Archiving completed process-list files...")
         for source in sorted(unique_process_files.values(), key=lambda candidate: candidate.name.lower()):
             if not source.exists() or not source.is_file():
                 continue
@@ -25679,34 +26859,54 @@ try {{
 
     @classmethod
     def import_duplicate_name_groups(cls, files: list[Path]) -> list[dict[str, object]]:
-        """Group copy-suffixed filenames without reading file contents."""
-        by_name = {path.name.casefold(): path for path in files}
-        grouped: dict[str, dict[str, object]] = {}
+        """Group common Windows duplicate-name variants without reading contents.
+
+        Recognizes ``_1``, `` 1``, ``(1)``, ``Copy`` variants, and harmless
+        trailing/extra spacing only when the corresponding base name is also
+        present. Exact-content validation remains a separate step before any
+        automatic duplicate-removal suggestion is made.
+        """
+        files = sorted((Path(path) for path in files), key=lambda path: path.name.casefold())
+        by_key: dict[str, list[Path]] = {}
         for path in files:
-            match = re.match(r"^(?P<base>.+)_1$", path.stem, flags=re.IGNORECASE)
-            if not match:
-                continue
-            canonical_name = f"{match.group('base')}{path.suffix}".casefold()
-            canonical = by_name.get(canonical_name)
-            if canonical is None or cls.same_path(canonical, path):
-                continue
-            key = canonical.name.casefold()
-            group = grouped.setdefault(
-                key,
-                {"canonical": canonical, "duplicates": []},
-            )
+            by_key.setdefault(programmer.normalized_import_filename_key(path), []).append(path)
+
+        grouped: dict[str, dict[str, object]] = {}
+
+        def add_pair(canonical: Path, duplicate: Path) -> None:
+            if cls.same_path(canonical, duplicate):
+                return
+            key = str(canonical).casefold()
+            group = grouped.setdefault(key, {"canonical": canonical, "duplicates": []})
             duplicates = group["duplicates"]
-            if isinstance(duplicates, list):
-                duplicates.append(path)
+            if isinstance(duplicates, list) and not any(cls.same_path(existing, duplicate) for existing in duplicates):
+                duplicates.append(duplicate)
+
+        # Names that differ only by spacing normalize to the same key.
+        for same_name_paths in by_key.values():
+            if len(same_name_paths) < 2:
+                continue
+            canonical = min(same_name_paths, key=lambda path: (len(path.name), path.name.casefold()))
+            for duplicate in same_name_paths:
+                if not cls.same_path(canonical, duplicate):
+                    add_pair(canonical, duplicate)
+
+        # Copy suffixes are considered only when a real base file exists.
+        for path in files:
+            for base_key in programmer.import_copy_base_keys(path):
+                base_candidates = by_key.get(base_key, [])
+                if not base_candidates:
+                    continue
+                canonical = min(base_candidates, key=lambda candidate: (len(candidate.name), candidate.name.casefold()))
+                add_pair(canonical, path)
+                break
+
         groups = list(grouped.values())
         for group in groups:
             duplicates = group.get("duplicates", [])
             if isinstance(duplicates, list):
                 duplicates.sort(key=lambda candidate: candidate.name.casefold())
-        return sorted(
-            groups,
-            key=lambda group: str(group.get("canonical", "")).casefold(),
-        )
+        return sorted(groups, key=lambda group: str(group.get("canonical", "")).casefold())
 
     @classmethod
     def import_duplicate_groups(cls, files: list[Path]) -> list[dict[str, object]]:
@@ -33620,7 +34820,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                 return
             batch_name = str(target.get("batch_name", "Archived Batch"))
             archive_name = str(target.get("archive_name", ""))
-            runtime_root = Path(getattr(self, "runtime_root", self.preferred_runtime_root())).resolve()
+            runtime_root = Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())).resolve()
 
             def worker(task: shower_tasks.TaskContext) -> dict[str, object]:
                 return self.prepare_archived_batch_test_mode(
@@ -34155,7 +35355,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             interrupted = self.send_journal.incomplete()
             rollback_info = shower_reliability.RuntimeRollbackManager.snapshot_info(self.update_install_root())
             self.startup_recovery_results = shower_reliability.startup_recovery_issues(
-                Path(getattr(self, "runtime_root", self.preferred_runtime_root())),
+                Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())),
                 Path(self.output_dir_var.get()).resolve(),
             )
             warning_count = sum(1 for item in self.startup_recovery_results if str(item.get("severity", "")).upper() == "WARN")
@@ -34365,7 +35565,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             selected = filedialog.asksaveasfilename(
                 title="Export Shower Programmer configuration",
                 parent=dialog,
-                initialdir=str(Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.CONFIG_BACKUP_FOLDER_NAME),
+                initialdir=str(Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / self.CONFIG_BACKUP_FOLDER_NAME),
                 initialfile=initial,
                 defaultextension=".zip",
                 filetypes=[("Shower Programmer backup", "*.zip")],
@@ -34402,7 +35602,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
                     Path(selected),
                     self.editable_config_path(),
                     self.preferred_ui_settings_path(),
-                    Path(getattr(self, "runtime_root", self.preferred_runtime_root())) / self.CONFIG_BACKUP_FOLDER_NAME,
+                    Path((getattr(self, "runtime_root", None) or self.preferred_runtime_root())) / self.CONFIG_BACKUP_FOLDER_NAME,
                 )
                 self.ui_settings = dict(imported.get("ui_settings", {}))
             except Exception as exc:
@@ -35644,6 +36844,23 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             worker_probe = executor.submit(shower_batch.isolated_worker_probe, "ok").result(timeout=20)
         if worker_probe != "isolated:ok":
             raise RuntimeError("The isolated order-processing worker could not start.")
+        terminal_received = threading.Event()
+
+        def interrupted_task_handoff(kind: str, payload: dict[str, Any]) -> None:
+            if kind == "task_done":
+                terminal_received.set()
+                raise RuntimeError("Simulated terminal callback interruption")
+
+        recovery_manager = shower_tasks.BackgroundTaskManager(interrupted_task_handoff)
+        recovery_task = recovery_manager.start("Recovery self-test", lambda task: "recovered", message="Testing completion recovery")
+        if not terminal_received.wait(3):
+            raise RuntimeError("Task completion recovery self-test timed out.")
+        terminal = recovery_manager.terminal_event(recovery_task.task_id)
+        if terminal is None or terminal[0] != "task_done" or terminal[1].get("result") != "recovered" or recovery_manager.active is not None:
+            raise RuntimeError("Task completion was not retained after the interrupted handoff.")
+        recovery_manager.acknowledge_terminal(recovery_task.task_id)
+        if recovery_manager.terminal_event(recovery_task.task_id) is not None:
+            raise RuntimeError("Acknowledged task completion was not cleared.")
         bug_url = ShowerProgrammerApp.bug_report_url()
         bug_query = urllib.parse.parse_qs(urllib.parse.urlparse(bug_url).query)
         bug_body = "\n".join(bug_query.get("body", []))
@@ -36863,6 +38080,23 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         ):
             raise RuntimeError("PDF Location REMAKE detection matched unrelated text.")
 
+        with writable_test_directory(report_path.parent, "duplicate_cleanup_self_test_") as scratch:
+            inputs = scratch / "Orders"
+            shared = scratch / "Import"
+            inputs.mkdir()
+            shared.mkdir()
+            kept = inputs / "Original.pdf"
+            duplicate = inputs / "Original - Copy.pdf"
+            kept.write_bytes(b"original source")
+            duplicate.write_bytes(b"unwanted duplicate")
+            (shared / duplicate.name).write_bytes(duplicate.read_bytes())
+            cleanup = ShowerProgrammerApp.cleanup_duplicate_sources(
+                inputs, shared, scratch / "Recovery", [duplicate],
+                [{"canonical": kept, "duplicates": [duplicate]}], "fixture",
+            )
+            if kept.read_bytes() != b"original source" or duplicate.exists() or (shared / duplicate.name).exists() or cleanup["warnings"]:
+                raise RuntimeError("Duplicate cleanup did not preserve the original and remove only its selected copies.")
+
         result.update(
             {
                 "ok": True,
@@ -37230,10 +38464,43 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "bounded_network_import_copy": True,
                 "nonblocking_startup_scan_controls": True,
                 "version_1_94_startup_scan_network_recovery": True,
+                "shared_job_pdf_identity_detection": True,
+                "persistent_aw_pdf_assignment": True,
+                "non_destructive_source_pdf_resolution": True,
+                "mapped_pdf_dimension_validation": True,
+                "version_1_95_shared_job_pdf_assignment": True,
+                "duplicate_order_entry_detection_message": True,
+                "compact_shared_job_issue_summary": True,
+                "po_reference_collision_explanation": True,
+                "version_1_96_duplicate_order_issue_clarity": True,
+                "duplicate_source_assignment_guard": True,
+                "copy_variant_import_detection": True,
+                "exact_content_duplicate_source_guard": True,
+                "blocking_duplicate_dimension_fallback": True,
+                "version_1_97_duplicate_order_safety_guard": True,
+                "intentional_duplicate_authorization": True,
+                "duplicate_authorization_fingerprint": True,
+                "red_duplicate_send_confirmation": True,
+                "post_send_in_memory_reconciliation": True,
+                "failed_order_pool_preservation": True,
+                "version_1_98_intentional_duplicate_post_send_recovery": True,
+                "consistent_duplicate_issue_message": True,
+                "full_issue_column_autofit": True,
+                "already_sent_send_warning": True,
+                "current_signature_resend_detection": True,
+                "version_1_99_issue_autofit_resend_warning": True,
+                "recoverable_task_completion": True,
+                "version_2_00_responsiveness_reliability": True,
+                "safe_duplicate_removal": True,
+                "version_2_01_duplicate_cleanup_sent_archive": True,
+                "verified_duplicate_choices": True,
+                "notice_close_archive_refresh": True,
+                "version_2_02_verified_duplicates_sent_batch_popups": True,
             }
         )
     except Exception as exc:
         result["error"] = f"{exc.__class__.__name__}: {exc}"
+        result["traceback"] = traceback.format_exc()
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")

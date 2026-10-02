@@ -73,6 +73,10 @@ class BackgroundTaskManager:
         self._active: TaskSnapshot | None = None
         self._cancel_event: threading.Event | None = None
         self._thread: threading.Thread | None = None
+        # Retain terminal outcomes until the Tk queue acknowledges them. This
+        # gives the GUI heartbeat a deterministic recovery path if the cross-
+        # thread callback is interrupted while a window is being closed.
+        self._terminal_events: dict[str, tuple[str, dict[str, Any]]] = {}
 
     @property
     def active(self) -> TaskSnapshot | None:
@@ -137,7 +141,7 @@ class BackgroundTaskManager:
                     "error": exc,
                     "elapsed_ms": (time.monotonic() - snapshot.started_at) * 1000.0,
                 }
-            except Exception as exc:
+            except BaseException as exc:
                 terminal_kind = "task_error"
                 terminal_payload = {
                     "task_id": snapshot.task_id,
@@ -152,15 +156,31 @@ class BackgroundTaskManager:
                         self._active = None
                         self._cancel_event = None
                         self._thread = None
+                    self._terminal_events[snapshot.task_id] = (terminal_kind, terminal_payload)
+                    while len(self._terminal_events) > 32:
+                        self._terminal_events.pop(next(iter(self._terminal_events)))
 
             # A terminal callback may immediately start the next workflow stage.
             # Release this task first so that chained managed tasks are accepted.
-            self._event_callback(terminal_kind, terminal_payload)
+            try:
+                self._event_callback(terminal_kind, terminal_payload)
+            except Exception:
+                # The retained outcome is picked up by the GUI heartbeat. Never
+                # strand the interface because an event handoff failed once.
+                return
 
-        thread = threading.Thread(target=run, name=f"shower-task-{name.casefold().replace(' ', '-')}", daemon=True)
-        with self._lock:
-            self._thread = thread
-        thread.start()
+        try:
+            thread = threading.Thread(target=run, name=f"shower-task-{name.casefold().replace(' ', '-')}", daemon=True)
+            with self._lock:
+                self._thread = thread
+            thread.start()
+        except Exception:
+            with self._lock:
+                if self._active is snapshot:
+                    self._active = None
+                    self._cancel_event = None
+                    self._thread = None
+            raise
         return snapshot
 
     def cancel(self) -> bool:
@@ -169,3 +189,17 @@ class BackgroundTaskManager:
                 return False
             self._cancel_event.set()
             return True
+
+    def terminal_event(self, task_id: str) -> tuple[str, dict[str, Any]] | None:
+        """Return a retained terminal outcome without consuming it."""
+        with self._lock:
+            event = self._terminal_events.get(str(task_id))
+            if event is None:
+                return None
+            kind, payload = event
+            return kind, dict(payload)
+
+    def acknowledge_terminal(self, task_id: str) -> None:
+        """Forget a terminal outcome after Tk consumes the queue event."""
+        with self._lock:
+            self._terminal_events.pop(str(task_id), None)

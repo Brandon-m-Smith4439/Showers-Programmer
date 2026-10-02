@@ -1,3 +1,134 @@
+## [Version 2.02] - 2026-10-02
+
+### Verified Duplicate Choices
+- Separate Remove Duplicates and Allow Intentional Duplicate modes. Choose the A&W order to retain/authorize and its source PDF, with individual Open controls for inspection. File removals and discarded A&W entries remain explicit selections, and the retained original cannot be selected for removal.
+- Require an unchecked-by-default inspection acknowledgement and a final confirmation before authorizing duplicate production. Preserve collision fingerprints, visible duplicate warnings, and the existing Send verification.
+- Reopen the explicitly chosen original order after cleanup instead of the previously selected duplicate row. Preserve local recovery copies, content-checked shared deletion, DXFs and process lists.
+
+### Sent Batch Archive Recovery
+- Fix a real popup/refresh race: themed result notices are non-blocking, so a fixed 75 ms delay could start a refresh while the result notice still held input focus/grab. Schedule archive/duplicate continuations from actual notice destruction, once only, after the dialog closes.
+- Exclude withdrawn, minimized, and context-menu windows from popup ownership; retain visible Review/Settings/modal hierarchy and release context-menu grabs before opening confirmations.
+- Skip unnecessary archived-PDF rematching for standalone sent-order/batch archiving while preserving it for normal Send. Show archive preparation stages and avoid a misleading missing-input warning when only a completed process list remains.
+- Validate Batch 8671 using a disposable local copy of its process list/history: all 11 entries have current sent/deleted receipts, the process list archives successfully, controls unlock, and refresh occurs after popup closure. Live production inputs are not moved by this test.
+
+## [Version 2.01] - 2026-10-02
+
+### Duplicate Resolution
+- Select the original PDF to keep and remove the unwanted duplicate PDFs without authorizing duplicate production. File Open controls remain available for inspection. Optional per-order checkboxes explicitly discard duplicate A&W entries; legitimate entries sharing a Job Nr are not discarded automatically.
+- Run cleanup in a managed background task. Retain removed local files in the existing recovery quarantine, preserve DXFs/process lists, honor the configured import folder, and remove shared copies only when their content matches the selected local copy. Changed, locked, or timed-out shared copies produce visible cleanup notes.
+- Persist duplicate-specific deletion receipts so ordinary import scans do not resurrect explicitly discarded entries. Receipts remain signature-specific.
+
+### Sent Archives And Packaging
+- Validate selected sent-order receipts in the archive worker. Reject conflicting archive operations and defer the non-locking local refresh until the result dialog has closed; do not synchronize the network folder on archive completion.
+- Keep completed-batch receipt validation and process-list archiving in the background, preserving incomplete process lists and manual-order archive behavior.
+- Restore the missing Version 2.00 build marker and add Version 2.01 packaging/self-test metadata for the one-folder EXE rebuild.
+
+## [Version 2.00] - 2026-10-02
+
+### Freeze recovery
+- Retain managed-task terminal outcomes until the UI acknowledges them; the heartbeat can recover an interrupted callback. Duplicate terminal events and stale task progress are ignored so recovery cannot repeat a completion action or overwrite a newer operation's progress.
+- Failed thread construction/startup and worker exits release the task-manager slot. Heartbeat polling is rearmed after callback errors and does not recursively dispatch events during a nested modal dialog.
+- Release abandoned input grabs only when their owning window is withdrawn and not awaiting presentation. Normal and staged dialogs retain their modal behavior. Main-window control locking no longer walks into separate Toplevel workspaces.
+- Review prefetch completion now verifies future ownership, preventing an old cancelled request from consuming a newer request for the same order. A failed prefetch subscriber does not suppress other subscribers.
+
+### Responsiveness
+- Prepare scan lifecycle writes, processing-history metadata, and checked/sent row presentation in the worker; load history once and update table summaries once instead of after every insertion.
+- Discover output batch roots once per conflict check and prune Sketches/Programs/Reports subtrees. Avoid repeated runtime-directory write probes when a runtime root is already known.
+- Build aggregate sketch-PDF and DXF-HTML reviews through cancellable managed workers. Optional SQLite timing/error telemetry uses a short lock timeout; operational state transactions retain their existing timeout and semantics.
+- Preserve existing styling, loading feedback, Denver/WJ routing, fabrication detection, geometry/orientation, duplicate safety, Send destinations, and archive rules.
+
+### Validation
+- Added focused failure/race/queue-load regressions, writable temporary-directory coverage, and a non-destructive live desktop probe with sanitized PDF/DXF fixtures.
+- Full source suite passed (723 tests and 54 subtests); isolated-worker self-test and release smoke checks passed. Live probe: 1,000 row inserts about 25 ms, review shell about 232 ms, and Next Piece callback about 25 ms. These are local synthetic-fixture measurements, not guaranteed network or real-order timings.
+- The EXE/update ZIP was not rebuilt or published as part of this audit. Run the existing rebuild BAT to package Version 2.00.
+
+## [Version 1.99] - 2026-10-02
+
+### Orders issue clarity
+- Standardized duplicate-order/import failures in the Orders **Issues** column to one concise warning format: `DUPLICATE ORDER WARNING: Job <job> • A&W <order> • verify duplicate source/order before processing`. Detailed duplicate evidence remains available in the resolution/review workflow instead of producing several different long table messages.
+- Duplicate-equivalent issue strings are de-duplicated before the Orders summary is rendered, so one underlying duplicate condition does not repeat the same warning in the row.
+
+### Column auto-fit
+- Double-clicking the **Issues** column divider now expands to the full measured width of the longest issue text in the Orders table. The Issues column no longer stops at the previous 620-pixel cap; horizontal scrolling remains available for very long messages.
+- Other Orders columns keep their existing practical auto-fit caps.
+
+### Already-sent Send protection
+- Review / Send now identifies orders whose exact current process-list signature has already been sent. Those rows show **ALREADY SENT** in red and carry a clear duplicate-production warning.
+- Attempting to send one or more already-sent orders requires a dedicated red **ALREADY SENT WARNING** confirmation with **Send Again** / **Go Back** choices. A changed process-list signature is treated as a new revision and does not trigger the resend warning.
+- Already-sent warnings are removed from the generic warning count before the ordinary warning confirmation, so operators are not asked twice for the same resend condition.
+
+### Scope / validation
+- No Denver/Waterjet routing, mirror rules, fabrication detection, DXF geometry, archive semantics, or production destinations were changed.
+- Added Version 1.99 regressions for duplicate issue normalization/de-duplication, uncapped Issues auto-fit, current-signature sent detection, and explicit resend confirmation.
+
+## [Version 1.98] - 2026-10-01
+
+### Intentional duplicate production
+- Restored a deliberately gated path for the rare case where an operator truly needs to produce an order that the duplicate-import safety system has correctly blocked. **Assign Source PDF** now opens a red **DUPLICATE PRODUCTION WARNING** when the source set has conflicting PO/reference versions, copy-name variants, or identical content.
+- Intentional duplicate production requires selecting the exact source sketch and typing `DUPLICATE`. The authorization is stored separately from an ordinary Source PDF mapping, is tied to the current Job Nr and a fingerprint of the duplicate source set, and automatically fails closed if those files change.
+- Authorized duplicate orders remain visibly marked as **INTENTIONAL DUPLICATE** in the Orders table and batch report. Checked rows keep the duplicate warning red instead of hiding it behind the normal checked-row styling.
+- Review / Send shows intentional duplicates in red and requires a dedicated **Send Duplicate Anyway** confirmation. Other ordinary warnings retain their existing confirmation flow.
+
+### Post-Send freeze recovery
+- Removed the automatic post-Send local preview scan. A successful Send now removes only the exact sent orders from the in-memory Orders/batch model and leaves failed or unsent orders untouched and immediately usable.
+- This closes another apparent-freeze path where a batch containing failed/problem orders could be reparsed immediately after a successful partial Send while the operator was trying to continue working.
+- The next explicit **Scan Orders** remains the authoritative filesystem/network reconciliation; Send itself performs no follow-up scan or local re-preview.
+
+### Safety
+- Ordinary Source PDF assignments still cannot bypass duplicate protection. Only the separate explicit intentional-duplicate authorization can do so.
+- Authorization does not bypass sketch dimension validation, machine routing, DXF rules, manual DXF review, checked-state requirements, or Send verification.
+- No Denver/Waterjet routing, mirror logic, fabrication rules, DXF geometry, production destinations, or archive semantics were changed.
+
+### Validation
+- Added Version 1.98 regressions for intentional duplicate authorization, stale duplicate authorization invalidation, retained normal duplicate blocking, red duplicate warning/Send confirmation, and deterministic post-Send removal that preserves failed orders without launching any scan.
+
+## [Version 1.97] - 2026-10-01
+
+### Duplicate-order safety guard
+- Tightened the Version 1.95 Source PDF assignment workflow so it cannot bypass strong duplicate-order/import evidence. Same-Job-Nr sketches with conflicting trailing PO/reference numbers, byte-identical source sketches, or filenames that differ only by common Windows copy suffixes/spacing now remain blocked until the duplicate/corrected order is fixed upstream.
+- Saved A&W-to-PDF mappings from earlier releases are ignored while a blocking duplicate condition exists, and dimension matching is no longer allowed to silently disambiguate that safety condition. Legitimate same-Job-Nr ambiguity without duplicate evidence can still use **Assign Source PDF**.
+- Expanded duplicate import-name recognition to cover `_1`, ` 1`, `(1)`, `Copy`, and whitespace variants while still requiring an actual base filename and identical content before suggesting automatic file removal. This keeps natural DXF item names such as `_1`/`_2` from being treated as duplicates by themselves.
+- Exact duplicate sketch/DXF issues now use shorter language focused on duplicate import cleanup before processing.
+
+### Safety
+- Duplicate-order detection is intentionally fail-closed: the operator must correct/remove the unintended A&W/input entry and rescan instead of selecting a sketch and potentially producing the same glass twice.
+- No Denver/Waterjet routing, mirror logic, DXF geometry, fabrication rules, Send destinations, archive semantics, or production output logic changed.
+
+### Validation
+- Added Version 1.97 regressions for conflicting-PO assignment blocking, stale saved-mapping rejection, blocked dimension fallback, Windows copy-name variants, byte-identical same-job sketches, natural DXF item suffix protection, and retained legitimate Source PDF assignment.
+
+## [Version 1.96] - 2026-10-01
+
+### Duplicate-order warning clarity
+- Reframed same-Job-Nr sketch collisions as a **possible duplicate order entry** when the candidate PDF filenames end in different PO/source-reference numbers. This matches the production failure mode where an order is re-entered or resent after a PO correction and both versions can reach the shop.
+- The Orders-grid issue is now deliberately compact: it identifies the shared Job Nr, number of sketches, and affected A&W order without dumping every full PDF filename into the table.
+- The Source PDF resolution dialog keeps the detailed candidate filenames but now explains why different trailing PO/reference numbers matter and warns that producing both entries can make the same glass twice.
+- Ambiguous PDFs without distinct trailing references keep a neutral **Source sketch needs verification** message rather than being labeled as duplicate entry.
+
+### Scope
+- This is presentation/detection clarity only. The safety stop remains in place: the Programmer still refuses to guess which sketch is correct, and the Version 1.95 Assign Source PDF workflow remains available after the operator verifies the intended order. No CNC routing, mirror, DXF, Send, archive, or network behavior changed.
+
+### Validation
+- Added regressions for the 90479383-style duplicate/re-entry pattern, trailing PO/reference extraction, compact Orders-grid text, neutral fallback ambiguity, dialog wording, and Version 1.96 release flags.
+
+## [Version 1.95] - 2026-10-01
+
+### Shared Job Nr PDF identity
+- Fixed a false "duplicate PDF" failure when A+W legitimately reuses the same **Job Nr** for multiple A&W orders. Distinct sketches with the same Job Nr are now described as an identity collision instead of duplicates.
+- Added a persistent **A&W order -> Source PDF** assignment stored in `Output/manual_overrides.json`. The assignment is identity-only and is applied before automatic filename/text matching.
+- Explicit PDF assignments never bypass the existing dimension validation, and a saved assignment is ignored if the A&W order later carries a different Job Nr.
+
+### Operator workflow
+- The ambiguous-sketch dialog now explains that the files can be different glass orders sharing one Job Nr. Operators can open each PDF and choose **Assign Selected**; no PDF is renamed, deleted, or modified on the shared input.
+- Added **Assign Source PDF / Change Source PDF** to the order right-click menu for single-order resolution without first attempting production processing.
+- Review Order uses the same non-destructive assignment workflow and immediately retries the selected order after an assignment is saved.
+
+### Scope
+- Normal orders with unique Job Nr values keep the existing automatic matching path. Denver/Waterjet routing, mirror handling, DXF generation, dimension rules, Send destinations, archives, and network synchronization are unchanged.
+
+### Validation
+- Added regressions for two distinct same-Job-Nr PDFs with identical dimensions, persisted A&W-specific assignment, stale-job mapping rejection, manual-override isolation, and the new operator resolution workflow.
+
 ## [Version 1.94] - 2026-10-01
 
 ### Fixed

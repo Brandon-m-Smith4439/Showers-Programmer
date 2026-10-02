@@ -49,11 +49,21 @@ class ReviewContextPrefetcher:
                 value = None
                 error = exc
             with self._lock:
-                current = self._pending.pop(key, None)
-                active = current is not None and current[2] == self._generation
+                current = self._pending.get(key)
+                # A cancelled generation may finish after a fresh request for the
+                # same key. Only this future owns its callback list and slot.
+                if current is None or current[0] is not done:
+                    return
+                self._pending.pop(key, None)
+                active = current[2] == self._generation
                 notify = list(current[1]) if current is not None and active else []
             for handler in notify:
-                handler(value, error)
+                try:
+                    handler(value, error)
+                except Exception:
+                    # One failed subscriber must not swallow the actual review
+                    # request waiting behind a speculative prefetch callback.
+                    continue
 
         future.add_done_callback(complete)
         return True

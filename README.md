@@ -2,9 +2,11 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current release: **Version 1.94 - Startup Scan Network Recovery**
+Current source version: **Version 2.02 - Verified Duplicate Choices and Sent Batch Archive Recovery**
 
-Version 1.94 prevents a stalled mapped network drive from trapping Scan Orders indefinitely. Shared-input indexing, Production Sketches probing, and network-to-local scan copies now use bounded/cancellable network handoffs, while the automatic startup scan keeps the window interactive instead of disabling the whole workspace. Version 1.93 startup-recovery ordering, Version 1.92 packaged update detection, and Version 1.91 global archive search remain included.
+Version 2.02 separates duplicate removal from intentional duplicate authorization. Select the A&W order and PDF to retain, inspect files with Open, and explicitly verify any intentional duplicate before allowing it. Removed copies retain local recovery backups and shared cleanup remains content-checked. Sent-batch archiving refreshes only after the result popup actually closes and skips unnecessary older-PDF rereads for this standalone action. The one-folder release includes the preceding responsiveness fixes.
+
+Version 2.00 adds recoverable task-completion handoffs, queue-heartbeat recovery, abandoned modal-grab recovery, and race-safe review prefetching. Scan lifecycle writes and saved row metadata are prepared in the worker, output discovery prunes artifact subtrees, and aggregate sketch/DXF review builders run asynchronously. The existing interface and all machining, duplicate protection, Send, and archive rules are preserved. Rebuild the one-folder EXE before distributing these source changes; existing release packages are not replaced by a source edit.
 
 Version 1.90 removes remaining background-thread calls into Tcl/Tk, keeps soft managed work active until the terminal UI handoff is consumed, snapshots Send configuration paths before workers start, reuses one processing-history read across batch output discovery, and bounds timeout-protected network workers so a stuck SMB call cannot accumulate unlimited background threads.
 

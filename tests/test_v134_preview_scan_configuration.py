@@ -20,8 +20,9 @@ class PreviewScanConfigurationTests(unittest.TestCase):
     def test_release_metadata_tracks_version_134(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
         self.assertGreaterEqual(version["version_number"], 134)
-        self.assertTrue(version["version"].startswith("Version 1."))
-        self.assertTrue(version["marker"].startswith("VERSION_1_"))
+        major, minor = divmod(version["version_number"], 100)
+        self.assertEqual(version["version"], f"Version {major}.{minor:02d}")
+        self.assertTrue(version["marker"].startswith(f"VERSION_{major}_{minor:02d}_"))
 
     def test_connected_return_label_search_starts_beyond_hinge_fabrication(self) -> None:
         connected_return = ((79.375, 28.0), (72.375, 28.125))

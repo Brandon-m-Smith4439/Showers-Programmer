@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -16,6 +15,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 import shower_v4_features
 
 
@@ -33,7 +33,7 @@ class ManualArchiveRebuildFixTests(unittest.TestCase):
         self.assertIn("manual_archives", source)
 
     def test_manual_order_stays_retired_after_archive_action(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             temp = Path(temp_text)
             order_dir = temp / "Input" / "Orders"
             process_dir = temp / "Input" / "Process List"
@@ -48,7 +48,9 @@ class ManualArchiveRebuildFixTests(unittest.TestCase):
             gui.ShowerProgrammerApp.save_manual_process_orders_for_output(output_dir, [order])
 
             app = object.__new__(gui.ShowerProgrammerApp)
-            app.root = object()
+            app.root = mock.Mock()
+            app.operation_active = mock.Mock(return_value=False)
+            app.load_processing_history_for_output = mock.Mock(return_value={"orders": {}})
             app.folder_var = mock.Mock(get=lambda: str(order_dir))
             app.process_list_var = mock.Mock(get=lambda: str(process_dir))
             app.output_dir_var = mock.Mock(get=lambda: str(output_dir))
@@ -59,7 +61,7 @@ class ManualArchiveRebuildFixTests(unittest.TestCase):
             app.show_structured_error = mock.Mock()
 
             def run_task(_title, worker, **kwargs):
-                payload = worker(SimpleNamespace(progress=lambda *_args, **_kwargs: None))
+                payload = worker(SimpleNamespace(progress=lambda *_args, **_kwargs: None, check_cancelled=lambda: None))
                 kwargs["on_done"](payload)
 
             app.run_managed_task = run_task

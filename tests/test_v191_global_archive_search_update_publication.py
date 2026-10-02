@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import queue
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +14,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 import shower_state
 
 
@@ -73,7 +73,7 @@ class Version191GlobalArchiveSearchUpdatePublicationTests(unittest.TestCase):
         return store, order_root, process_root
 
     def test_sqlite_archive_search_supports_aw_job_customer_batch_date_and_multiple_terms(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             store, _order_root, _process_root = self._indexed_archive(Path(temp_dir))
             for query in ("239465", "smith", "acme", "10/01/2026", "smith 239465"):
                 self.assertEqual([row.aw_order for row in store.search_archive_records(query)], ["239465"], query)
@@ -87,7 +87,7 @@ class Version191GlobalArchiveSearchUpdatePublicationTests(unittest.TestCase):
             self.assertEqual(store.search_archive_records("not-a-real-order"), [])
 
     def test_archived_inventory_can_search_all_cached_dates_without_date_filter(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             store, order_root, process_root = self._indexed_archive(Path(temp_dir))
             found, warnings = gui.ShowerProgrammerApp.archived_order_inventory(
                 order_root,
@@ -165,7 +165,7 @@ class Version191GlobalArchiveSearchUpdatePublicationTests(unittest.TestCase):
 
     def test_corrupt_local_update_metadata_falls_back_without_send_rollback_state(self) -> None:
         app = gui.ShowerProgrammerApp.__new__(gui.ShowerProgrammerApp)
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
             app_dir = root / "app"
@@ -188,7 +188,8 @@ class Version191GlobalArchiveSearchUpdatePublicationTests(unittest.TestCase):
     def test_version_191_release_metadata_and_flags(self) -> None:
         version = json.loads((BACKEND / "version.json").read_text(encoding="utf-8"))
         self.assertGreaterEqual(version["version_number"], 191)
-        self.assertTrue(str(version["marker"]).startswith("VERSION_1_"))
+        major, minor = divmod(version["version_number"], 100)
+        self.assertTrue(str(version["marker"]).startswith(f"VERSION_{major}_{minor:02d}_"))
         features = (BACKEND / "shower_v4_features.py").read_text(encoding="utf-8")
         self.assertIn("VERSION_1_91_GLOBAL_ARCHIVE_SEARCH_UPDATE_PUBLICATION", features)
         flags = (BACKEND / "release_required_flags.txt").read_text(encoding="utf-8")

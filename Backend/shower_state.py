@@ -103,18 +103,22 @@ class StateStore:
     def for_output(cls, output_dir: Path) -> "StateStore":
         return cls(Path(output_dir).resolve() / DATABASE_NAME)
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.path), timeout=15.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=15000")
+    def connect(self, *, timeout: float = 15.0) -> sqlite3.Connection:
+        connection = sqlite3.connect(str(self.path), timeout=timeout)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(f"PRAGMA busy_timeout={max(0, int(timeout * 1000))}")
+        except Exception:
+            connection.close()
+            raise
         return connection
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self.connect()
+    def transaction(self, *, timeout: float = 15.0) -> Iterator[sqlite3.Connection]:
+        connection = self.connect(timeout=timeout)
         try:
             connection.execute("BEGIN IMMEDIATE")
             yield connection
@@ -609,7 +613,9 @@ class StateStore:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         try:
-            with self.transaction() as connection:
+            # Optional telemetry is also written from UI completion callbacks.
+            # A production writer holding SQLite must never stall those callbacks.
+            with self.transaction(timeout=0.05) as connection:
                 connection.execute(
                     """
                     INSERT INTO performance_events(operation, stage, elapsed_ms, metadata_json, created_at)
@@ -653,7 +659,7 @@ class StateStore:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         try:
-            with self.transaction() as connection:
+            with self.transaction(timeout=0.05) as connection:
                 connection.execute(
                     """
                     INSERT INTO error_events(code, title, message, aw_order, batch_key, metadata_json, created_at)

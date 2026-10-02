@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
 import sys
 from pathlib import Path
@@ -12,6 +11,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from shower_programmer_gui import ShowerProgrammerApp
+from shower_temp import workspace_temporary_directory
 
 
 class _Manager:
@@ -43,7 +43,7 @@ class Version189FullSystemReliabilityAuditTests(unittest.TestCase):
         app.status_var = _Status()
         released = []
         app.finish_background_activity = lambda: released.append(True)
-        with tempfile.TemporaryDirectory() as tmp:
+        with workspace_temporary_directory() as tmp:
             root = Path(tmp)
             app.internal_output_dir = lambda: root
             try:
@@ -63,7 +63,7 @@ class Version189FullSystemReliabilityAuditTests(unittest.TestCase):
         app.status_var = _Status()
         released = []
         app.finish_background_activity = lambda: released.append(True)
-        with tempfile.TemporaryDirectory() as tmp:
+        with workspace_temporary_directory() as tmp:
             app.internal_output_dir = lambda: Path(tmp)
             try:
                 raise ValueError("progress paint failed")

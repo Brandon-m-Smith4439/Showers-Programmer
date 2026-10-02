@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,11 +15,12 @@ if str(BACKEND) not in sys.path:
 import shower_batch
 import shower_programmer as programmer
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class ActiveInputTraversalTests(unittest.TestCase):
     def test_active_files_include_nested_work_but_prune_dated_archives(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             root = Path(temp_dir)
             active = root / "active.pdf"
             nested = root / "Incoming" / "nested.pdf"

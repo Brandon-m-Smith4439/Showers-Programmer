@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,11 +14,12 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class NonblockingArchiveReturnAndChecksTests(unittest.TestCase):
     def test_restore_records_exact_active_file_pairs_and_return_uses_them_without_rescan(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             temp = Path(temp_text)
             order_dir = temp / "Input" / "Orders"
             process_dir = temp / "Input" / "Process List"

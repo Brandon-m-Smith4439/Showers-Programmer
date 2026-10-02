@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import json
 import sys
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -17,6 +16,7 @@ if str(BACKEND) not in sys.path:
 import shower_batch
 import shower_programmer as programmer
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 import shower_state
 
 
@@ -54,7 +54,7 @@ class TerminalInputRetirementTests(unittest.TestCase):
         self.assertEqual(legacy_filtered, [])
 
     def test_older_exact_production_sketch_requires_no_active_local_revision(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             production = Path(temp_text)
             sketch = production / "900001.pdf"
             sketch.write_bytes(b"finished")
@@ -78,7 +78,7 @@ class TerminalInputRetirementTests(unittest.TestCase):
             self.assertEqual(stale, 0)
 
     def test_zero_programming_work_batch_retires_only_without_matching_inputs(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             temp = Path(temp_text)
             order_folder = temp / "Orders"
             process_folder = temp / "Process List"
@@ -109,7 +109,7 @@ class TerminalInputRetirementTests(unittest.TestCase):
             self.assertEqual(plans, [])
 
     def test_terminal_dxf_only_input_moves_to_dated_archive(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             temp = Path(temp_text)
             order_folder = temp / "Orders"
             output = temp / "Output"
@@ -138,7 +138,7 @@ class TerminalInputRetirementTests(unittest.TestCase):
             self.assertTrue(archived[0].exists())
 
     def test_active_job_prevents_terminal_orphan_sweep(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             temp = Path(temp_text)
             order_folder = temp / "Orders"
             output = temp / "Output"

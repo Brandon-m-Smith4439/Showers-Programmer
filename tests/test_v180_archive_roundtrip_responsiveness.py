@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +13,7 @@ if str(BACKEND) not in sys.path:
 
 import shower_batch
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class ArchiveRoundTripResponsivenessTests(unittest.TestCase):
@@ -48,7 +48,7 @@ class ArchiveRoundTripResponsivenessTests(unittest.TestCase):
 
 
     def test_exact_batch_return_preserves_original_archive_and_removes_active_copies(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_text:
+        with workspace_temporary_directory() as temp_text:
             temp = Path(temp_text)
             order_dir = temp / "Input" / "Orders"
             process_dir = temp / "Input" / "Process List"

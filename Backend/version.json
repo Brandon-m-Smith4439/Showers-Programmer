@@ -1,9 +1,9 @@
 {
-  "version": "Version 1.94",
-  "version_number": 194,
-  "marker": "VERSION_1_94_STARTUP_SCAN_NETWORK_RECOVERY",
-  "release_name": "Startup Scan Network Recovery",
-  "release_date": "2026-10-01",
+  "version": "Version 2.02",
+  "version_number": 202,
+  "marker": "VERSION_2_02_VERIFIED_DUPLICATES_SENT_BATCH_POPUPS",
+  "release_name": "Verified Duplicate Choices and Sent Batch Archive Recovery",
+  "release_date": "2026-10-02",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

@@ -5,7 +5,6 @@ import json
 import queue
 import re
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +16,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 import shower_programmer_gui as gui
+from shower_temp import workspace_temporary_directory
 
 
 class _ExplodingVar:
@@ -107,7 +107,7 @@ class Version190ThreadSafeBackgroundHandoffsTests(unittest.TestCase):
         app.order_by_aw = {}
         app._manual_overrides_session_output = None
         app._manual_overrides_session_data = None
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             output_dir = Path(temp_dir)
             (output_dir / "processing_history.json").write_text(json.dumps({"orders": {"239190": {"sent_at": "2026-09-30T10:00:00-04:00", "sketch_output_skipped": True}}}), encoding="utf-8")
             (output_dir / "manual_overrides.json").write_text(json.dumps({"item_overrides": {"239190": {"_order_checked": True}}}), encoding="utf-8")
@@ -135,7 +135,7 @@ class Version190ThreadSafeBackgroundHandoffsTests(unittest.TestCase):
         app.output_dir_var = _ExplodingVar()
         result = SimpleNamespace(status="OK", aw_order="239190", delivery_date="09/30/2026", output_pdf=None, report_path=None, remake_items=None)
         run = SimpleNamespace(results=[result])
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with workspace_temporary_directory() as temp_dir:
             output_dir = Path(temp_dir)
             app.update_processing_history(run, output_dir, "2026-09-30 10:00:00", output_dir / "Runs" / "1", None, False, False)
             saved = json.loads((output_dir / "processing_history.json").read_text(encoding="utf-8"))
