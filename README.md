@@ -2,7 +2,7 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current source version: **Version 2.05 - Review Editor and Clipboard Improvements**
+Current source version: **Version 2.06 - Explicit Repair Package Selection**
 
 For a new workstation, [download the Windows application ZIP](https://github.com/Brandon-m-Smith4439/Showers-Programmer/raw/refs/heads/main/release/Shower-Programmer-Windows.zip), extract it completely to a writable local folder, and run **First-Time Setup.bat** from the extracted folder. Do not run setup inside the ZIP. It creates the local input/output folders and Desktop/Start Menu shortcuts, then launches the app. The packaged EXE does not require Python or Git. Keep `_internal` beside the EXE. To pin it, launch the app and right-click its taskbar icon > Pin to taskbar.
 
@@ -13,6 +13,8 @@ Use **Guided Tour** in Tools for a repeatable Next/Back/Skip walkthrough. It hig
 ### Repair An Existing Installation
 
 If the old app's updater is stuck, extract the entire new Windows ZIP into a **separate local folder**. Close the old programmer, then run **Repair Programmer.bat from the NEW extracted folder**. It locates an existing Desktop/Start Menu shortcut, or lets you browse to the old EXE. Confirm the old installation path before updating. Python and Git are not required.
+
+The repair window has two independent paths: **Old EXE...** selects the installation to update; **New EXE...** selects the replacement EXE in the extracted Windows application package. Select both explicitly when running the helper from a source folder or an older installation. Direct EXE paths and an extracted parent containing `Shower Programmer/Shower Programmer.exe` are supported. Errors name the folder actually checked. GitHub's **Code > Download ZIP** is source code, not the Windows package; extract its `release/Shower-Programmer-Windows.zip` separately or use the direct Windows download above.
 
 The repair validates the replacement EXE before swapping it, preserves Input/Output, settings, overrides, checked/sent state and history, and keeps previous program files under `Rollback\ManualUpdate-*`. It restores the old runtime if installed validation fails. If locked files prevent rollback, the error identifies the retained backup/staging locations. It will not silently terminate a running programmer; use Task Manager yourself if the old app is frozen. Existing shortcuts continue targeting the same EXE path.
 

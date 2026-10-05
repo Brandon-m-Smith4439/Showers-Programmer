@@ -31,13 +31,39 @@ function Assert-NoRuntimeLinks([string]$Path) {
 function Assert-ProgrammerBundle([string]$Folder) {
     foreach ($relative in @('Shower Programmer.exe', 'Assets\ShowersProgrammer.ico', '_internal\pypdfium2_raw\pdfium.dll')) {
         $path = Join-Path $Folder $relative
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) { throw "Incomplete program package: missing $relative. Extract the entire Windows ZIP." }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) { throw "Incomplete NEW program package: missing $relative.`r`nChecked: $path`r`nSelect the NEW Shower Programmer.exe from the complete extracted Windows application ZIP, not the GitHub source-code ZIP." }
     }
     foreach ($pair in @(@('_tcl_data','tcl_data','init.tcl'), @('_tk_data','tk_data','tk.tcl'))) {
         $a = Join-Path $Folder ('_internal\'+$pair[0]+'\'+$pair[2])
         $b = Join-Path $Folder ('_internal\'+$pair[1]+'\'+$pair[2])
-        if (-not (Test-Path -LiteralPath $a -PathType Leaf) -and -not (Test-Path -LiteralPath $b -PathType Leaf)) { throw "Incomplete program package: missing $($pair[2])." }
+        if (-not (Test-Path -LiteralPath $a -PathType Leaf) -and -not (Test-Path -LiteralPath $b -PathType Leaf)) { throw "Incomplete NEW program package: missing $($pair[2]).`r`nChecked: $Folder`r`nKeep the complete _internal folder beside the NEW EXE." }
     }
+}
+
+function Resolve-ProgrammerFolder([string]$Path, [string]$Role = 'NEW') {
+    if (-not $Path -or -not $Path.Trim()) { throw "Select the $Role Shower Programmer.exe or its application folder." }
+    $full = Assert-SafeRepairPath ($Path.Trim().Trim('"'))
+    if (Test-Path -LiteralPath $full -PathType Leaf) {
+        if ([IO.Path]::GetFileName($full) -ne 'Shower Programmer.exe') { throw "Choose the $Role Shower Programmer.exe, not $full. ZIP files must be extracted first." }
+        $full = Assert-SafeRepairPath (Split-Path -Parent $full)
+    }
+    if (Test-Path -LiteralPath (Join-Path $full 'Shower Programmer.exe') -PathType Leaf) { return $full }
+    $nested = Join-Path $full 'Shower Programmer'
+    if (Test-Path -LiteralPath (Join-Path $nested 'Shower Programmer.exe') -PathType Leaf) { return (Assert-SafeRepairPath $nested) }
+    $hint = "Choose the $Role EXE from its actual application folder."
+    if ($Role -eq 'NEW') {
+        $hint += ' Use the complete Windows application ZIP, not GitHub Code > Download ZIP.'
+        if (Test-Path -LiteralPath (Join-Path $full 'Backend\shower_programmer_v4.py')) {
+            $hint += ' This is a source-code folder; extract release\Shower-Programmer-Windows.zip into a separate folder and select that EXE.'
+        }
+    }
+    throw "Could not find the $Role Shower Programmer.exe.`r`nChecked: $full`r`nAlso checked: $nested`r`n$hint"
+}
+
+function Resolve-ProgrammerPackage([string]$Path) {
+    $folder = Resolve-ProgrammerFolder $Path 'NEW'
+    Assert-ProgrammerBundle $folder
+    return $folder
 }
 
 function Assert-ProgrammerClosed([string]$Folder) {
@@ -80,8 +106,8 @@ function Install-ProgrammerRuntime {
     param([Parameter(Mandatory=$true)][string]$InstallDir, [Parameter(Mandatory=$true)][string]$PackageDir,
           [scriptblock]$Validator = {param($folder,$report) Test-ProgrammerRuntime $folder $report},
           [scriptblock]$Progress = {param($percent,$message) Write-Host "$percent% $message"})
-    $target = Assert-SafeRepairPath $InstallDir
-    $source = Assert-SafeRepairPath $PackageDir
+    $target = Resolve-ProgrammerFolder $InstallDir 'OLD'
+    $source = Resolve-ProgrammerPackage $PackageDir
     if ($target -eq $source -or $source.StartsWith($target+'\', [StringComparison]::OrdinalIgnoreCase) -or $target.StartsWith($source+'\', [StringComparison]::OrdinalIgnoreCase)) { throw 'The replacement package must be in a separate folder, outside the existing installation.' }
     if (-not (Test-Path -LiteralPath (Join-Path $target 'Shower Programmer.exe') -PathType Leaf)) { throw 'This folder does not contain an existing Shower Programmer.exe.' }
     Assert-ProgrammerBundle $source
@@ -161,7 +187,7 @@ function Show-ProgrammerRepair {
     Add-Type -AssemblyName System.Drawing
     $form = New-Object Windows.Forms.Form
     $form.Text = 'Shower Programmer - Repair / Manual Update'
-    $form.Size = New-Object Drawing.Size(690,330)
+    $form.Size = New-Object Drawing.Size(760,440)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -170,14 +196,18 @@ function Show-ProgrammerRepair {
     $title = New-Object Windows.Forms.Label
     $title.Text = 'Update the program. Keep your work.'
     $title.Font = New-Object Drawing.Font('Segoe UI',16,[Drawing.FontStyle]::Bold)
-    $title.SetBounds(20,18,640,34)
+    $title.SetBounds(20,18,710,34)
     $form.Controls.Add($title)
     $note = New-Object Windows.Forms.Label
-    $note.Text = 'Choose the OLD installation. Only program files are replaced; Input, Output, settings and progress stay in place. Close the programmer first.'
-    $note.SetBounds(22,60,630,48)
+    $note.Text = 'Choose the OLD program to update and the NEW extracted Windows package. Input, Output, settings and progress stay in place. Close the programmer first.'
+    $note.SetBounds(22,60,700,48)
     $form.Controls.Add($note)
+    $oldLabel = New-Object Windows.Forms.Label
+    $oldLabel.Text = 'OLD installation to update'
+    $oldLabel.SetBounds(22,112,700,24)
+    $form.Controls.Add($oldLabel)
     $field = New-Object Windows.Forms.TextBox
-    $field.SetBounds(22,116,520,30)
+    $field.SetBounds(22,138,586,30)
     $form.Controls.Add($field)
     $shell = New-Object -ComObject WScript.Shell
     foreach ($path in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Shower Programmer.lnk'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Shower Programmer\Shower Programmer.lnk'))) {
@@ -187,41 +217,77 @@ function Show-ProgrammerRepair {
         }
     }
     $browse = New-Object Windows.Forms.Button
-    $browse.Text = 'Browse...'
-    $browse.SetBounds(554,114,100,32)
+    $browse.Text = 'Old EXE...'
+    $browse.SetBounds(620,136,102,32)
     $browse.Add_Click({
+        param($sender, $eventArgs)
+        $form = $sender.FindForm()
         $picker = New-Object Windows.Forms.OpenFileDialog
         $picker.Title = 'Select the EXISTING Shower Programmer.exe to update'
         $picker.Filter = 'Shower Programmer|Shower Programmer.exe'
-        if ($picker.ShowDialog($form) -eq 'OK') { $field.Text = Split-Path -Parent $picker.FileName }
+        if ($picker.ShowDialog($form) -eq 'OK') { $form.Tag.OldField.Text = Split-Path -Parent $picker.FileName }
         $picker.Dispose()
     })
     $form.Controls.Add($browse)
+    $newLabel = New-Object Windows.Forms.Label
+    $newLabel.Text = 'NEW replacement package (separate extracted folder)'
+    $newLabel.SetBounds(22,179,700,24)
+    $form.Controls.Add($newLabel)
+    $packageField = New-Object Windows.Forms.TextBox
+    $packageField.Text = $PackageDir
+    $packageField.SetBounds(22,205,586,30)
+    $form.Controls.Add($packageField)
+    $browsePackage = New-Object Windows.Forms.Button
+    $browsePackage.Text = 'New EXE...'
+    $browsePackage.SetBounds(620,203,102,32)
+    $browsePackage.Add_Click({
+        param($sender, $eventArgs)
+        $form = $sender.FindForm()
+        $picker = New-Object Windows.Forms.OpenFileDialog
+        $picker.Title = 'Select the NEW Shower Programmer.exe from the extracted Windows package'
+        $picker.Filter = 'Shower Programmer|Shower Programmer.exe'
+        if ($picker.ShowDialog($form) -eq 'OK') { $form.Tag.NewField.Text = Split-Path -Parent $picker.FileName }
+        $picker.Dispose()
+    })
+    $form.Controls.Add($browsePackage)
     $status = New-Object Windows.Forms.Label
-    $status.Text = 'Replacement package: '+$PackageDir
-    $status.SetBounds(22,155,630,42)
+    try {
+        $packageField.Text = Resolve-ProgrammerPackage $PackageDir
+        $status.Text = 'New package found. Verify both paths, then click Repair / Update.'
+    } catch { $status.Text = 'Select New EXE... to locate your complete extracted Windows package.' }
+    $status.SetBounds(22,249,700,45)
     $form.Controls.Add($status)
     $bar = New-Object Windows.Forms.ProgressBar
-    $bar.SetBounds(22,205,630,16)
+    $bar.SetBounds(22,309,700,16)
     $form.Controls.Add($bar)
     $repair = New-Object Windows.Forms.Button
     $repair.Text = 'Repair / Update'
     $repair.BackColor = [Drawing.Color]::FromArgb(38,105,201)
     $repair.ForeColor = [Drawing.Color]::White
-    $repair.SetBounds(474,237,180,36)
+    $repair.SetBounds(542,342,180,36)
+    # Event handlers read controls from their own form, not transient caller scope.
+    $form.Tag = @{OldField=$field; NewField=$packageField; OldBrowse=$browse; NewBrowse=$browsePackage; Status=$status; Bar=$bar; Repair=$repair}
     $repair.Add_Click({
+        param($sender, $eventArgs)
+        $form = $sender.FindForm()
+        $ui = $form.Tag
         try {
-            Assert-ProgrammerBundle $PackageDir
-            $target = Assert-SafeRepairPath $field.Text
-            if ([Windows.Forms.MessageBox]::Show($form, "Update the program in:`r`n$target`r`n`r`nInput, Output and existing operator state will not be replaced.", 'Confirm existing installation', 'YesNo', 'Question') -ne 'Yes') { return }
-            $repair.Enabled=$false; $browse.Enabled=$false; $field.Enabled=$false; $form.ControlBox=$false
-            $result = Install-ProgrammerRuntime -InstallDir $target -PackageDir $PackageDir -Progress {param($p,$message) $bar.Value=$p; $status.Text=$message; $form.Refresh()}
+            $source = Resolve-ProgrammerPackage $ui.NewField.Text
+            $target = Resolve-ProgrammerFolder $ui.OldField.Text 'OLD'
+            $ui.NewField.Text=$source; $ui.OldField.Text=$target
+            if ([Windows.Forms.MessageBox]::Show($form, "OLD installation to update:`r`n$target`r`n`r`nNEW package to install:`r`n$source`r`n`r`nInput, Output and existing operator state will not be replaced.", 'Confirm existing installation', 'YesNo', 'Question') -ne 'Yes') { return }
+            foreach ($control in @($ui.Repair,$ui.OldBrowse,$ui.NewBrowse,$ui.OldField,$ui.NewField)) { $control.Enabled=$false }
+            $form.ControlBox=$false
+            $result = Install-ProgrammerRuntime -InstallDir $target -PackageDir $source -Progress {param($p,$message) $ui.Bar.Value=$p; $ui.Status.Text=$message; $form.Refresh()}
             [Windows.Forms.MessageBox]::Show($form, "Update complete. Your work is preserved.`r`nPrevious program backup:`r`n$($result.backup)", 'Repair complete', 'OK', 'Information') | Out-Null
             $form.Close()
         } catch {
-            $status.Text='Repair stopped. Review the error and retry.'
+            $ui.Status.Text='Repair stopped. Review the checked path in the error and retry.'
             [Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Repair stopped', 'OK', 'Error') | Out-Null
-        } finally { $repair.Enabled=$true; $browse.Enabled=$true; $field.Enabled=$true; $form.ControlBox=$true }
+        } finally {
+            foreach ($control in @($ui.Repair,$ui.OldBrowse,$ui.NewBrowse,$ui.OldField,$ui.NewField)) { $control.Enabled=$true }
+            $form.ControlBox=$true
+        }
     })
     $form.Controls.Add($repair)
     $form.ShowDialog() | Out-Null

@@ -1,3 +1,11 @@
+## [Version 2.06] - 2026-10-05
+
+### Repair Package Selection
+- Give Repair / Manual Update separate OLD installation and NEW replacement-package fields, each with an EXE picker. Include both resolved paths in the confirmation.
+- Resolve direct EXE paths and the same nested Shower Programmer folder layout already supported by First-Time Setup; never guess from arbitrary recursive searches or archive folders.
+- Show the exact checked path when a bundle is incomplete and distinguish the Windows application ZIP from GitHub's source-code ZIP. Keep the operator able to choose a different replacement when the helper is launched outside its package.
+- Keep form controls bound to their own dialog during button/progress callbacks. Preserve runtime allowlisting, running-process refusal, self-tests, rollback and all input/output/operator state.
+
 ## [Version 2.05] - 2026-10-05
 
 ### Review And Dashboard Fixes

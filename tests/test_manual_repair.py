@@ -84,6 +84,36 @@ class ManualRepairTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((target / "Shower Programmer.exe").read_bytes(), b"old")
 
+    def test_nested_package_layout_used_by_first_time_setup_is_accepted(self):
+        with workspace_temporary_directory(prefix='repair') as raw:
+            target, source = self.fixture(Path(raw))
+            parent = source.with_name('extracted')
+            parent.mkdir()
+            source.rename(parent / 'Shower Programmer')
+            before = self.preserved(target)
+            result = self.invoke(target, parent)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((target / 'Shower Programmer.exe').read_bytes(), b'new')
+            self.assertEqual(self.preserved(target), before)
+
+    def test_exe_paths_for_old_and_new_packages_are_accepted(self):
+        with workspace_temporary_directory(prefix='repair') as raw:
+            target, source = self.fixture(Path(raw))
+            before = self.preserved(target)
+            result = self.invoke(target / 'Shower Programmer.exe', source / 'Shower Programmer.exe')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(self.preserved(target), before)
+
+    def test_missing_package_error_identifies_checked_location(self):
+        with workspace_temporary_directory(prefix='repair') as raw:
+            target, source = self.fixture(Path(raw))
+            (source / 'Shower Programmer.exe').unlink()
+            result = self.invoke(target, source)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(str(source), result.stderr)
+            self.assertIn('NEW', result.stderr)
+            self.assertEqual((target / 'Shower Programmer.exe').read_bytes(), b'old')
+
     def test_staged_validation_failure_never_moves_old_runtime(self):
         with workspace_temporary_directory(prefix="repair") as raw:
             target, source = self.fixture(Path(raw))
