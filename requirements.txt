@@ -5,3 +5,4 @@ pypdf>=5,<7
 pypdfium2>=4.30,<6
 openpyxl>=3.1,<4
 reportlab>=4,<5
+ezdxf>=1.4.4,<2

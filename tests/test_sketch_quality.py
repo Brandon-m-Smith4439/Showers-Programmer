@@ -131,6 +131,17 @@ class SketchQualityTests(unittest.TestCase):
             good.rename(other)
             self.assertEqual(quality.replacement_pairs([bad, other]), [])
 
+    def test_label_reprint_layout_spaces_do_not_hide_normal_mirror_pdf(self):
+        with workspace_temporary_directory(prefix='paper') as raw:
+            root = Path(raw)
+            bad = root / 'Glass Order 90499536M 2927 ARUNDEL.pdf'
+            good = root / 'Glass Order - 90499536M 2927 ARUNDEL.pdf'
+            pdf(bad, [(4.5, 5.5)], 'Job 90499536M 2927 ARUNDEL 6-3/8 r 1/42-1/4 24-3/425')
+            pdf(good, [(8.5, 11)], 'Job 90499536M 2927 ARUNDEL 6-3/8 r 1/4 2-1/4 24-3/4 25')
+            self.assertEqual(quality.replacement_pairs([bad, good]), [(bad, good)])
+            pdf(good, [(8.5, 11)], 'Job 90499536M 2927 ARUNDEL 6-3/8 r 3/8 2-1/4 24-3/4 25')
+            self.assertEqual(quality.replacement_pairs([bad, good]), [])
+
 
 if __name__ == '__main__':
     unittest.main()

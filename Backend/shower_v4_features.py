@@ -10,6 +10,8 @@ loaded by ``shower_programmer_v4.py`` for source runs and packaged EXE builds.
 from __future__ import annotations
 
 # VERSION_0_5_RADIUS_CALLOUT_LAYOUT
+# VERSION_2_07_REVIEW_FILE_INTEGRITY
+# VERSION_2_08_DESKTOP_LIFECYCLE_EXE_SETUP
 # VERSION_0_6_FPS_RAKE_RELEASE_RELIABILITY
 # VERSION_0_61_FPS_SHORT_CUT_HINGES_UP
 # VERSION_0_62_MIRROR_GLASS_WATERJET
@@ -461,13 +463,19 @@ def _dxf_inches_per_unit(programmer: Any, path: Path) -> float:
     return 1.0
 
 
-def validate_waterjet_internal_radius(panel: Any, config: dict[str, Any] | None, programmer: Any) -> bool:
+def validate_waterjet_internal_radius(
+    panel: Any, config: dict[str, Any] | None, programmer: Any, *, dxf_path: Path | None = None,
+) -> bool:
     """Require each detected WJ internal radius to be at least the glass thickness."""
 
     _replace_prefixed_warning(panel, WJ_RADIUS_WARNING_PREFIX, None)
     if str(getattr(panel, "machine", "")).upper() != "WJ":
         return True
-    source = getattr(panel, "source_dxf", None)
+    source = dxf_path if dxf_path is not None else getattr(panel, "source_dxf", None)
+    output = getattr(panel, "output_dxf", None)
+    if dxf_path is None and source is not None and output is not None:
+        import shower_dxf_history
+        source = shower_dxf_history.verified_program_for_source(source, output) or source
     if source is None or not Path(source).is_file():
         return True
     if not bool(_rules(config).get("waterjet_internal_radius_must_meet_thickness", True)):

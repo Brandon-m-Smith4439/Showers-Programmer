@@ -37,6 +37,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 import shower_cache
+import shower_dxf_history
 
 
 DEFAULT_CONFIG_NAME = "shower_programmer_config.json"
@@ -262,6 +263,7 @@ class Panel:
     remake_y: float | None = None
     manual_indicator_override: bool = False
     manual_rotation_override: bool = False
+    explicit_dxf_rotation_override: bool = False
 
     @property
     def label(self) -> str:
@@ -1337,6 +1339,7 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         enforce_configured_hinge_orientation(panel, config)
         return
     manual_dxf_rotation = bool(override.get("manual_dxf_rotation")) and override.get("rotation_degrees") is not None
+    panel.explicit_dxf_rotation_override = manual_dxf_rotation
     coerced_denver_indicator_override = False
     coerced_waterjet_indicator_override = False
     override_machine = str(override.get("machine", panel.machine)).strip().upper()
@@ -2516,6 +2519,8 @@ def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: d
 def adjust_indicator_for_source_dxf(panel: Panel, config: dict[str, Any]) -> None:
     if panel.source_dxf is None:
         return
+    if panel.explicit_dxf_rotation_override:
+        return
     if panel.machine == "WJ" and panel.manual_indicator_override:
         apply_manual_wj_rotation_for_indicator(panel, config)
         return
@@ -2792,6 +2797,8 @@ def adjust_wj_indicator_corner(panel: Panel) -> None:
 
 
 def adjust_wj_rotation_for_indicator(panel: Panel, config: dict[str, Any]) -> None:
+    if panel.manual_rotation_override:
+        return
     if panel.source_dxf is None:
         return
     if not panel.indicator_corner:
@@ -5629,6 +5636,8 @@ def write_marked_pdf(job: Job, reader: PdfReader, config: dict[str, Any], force:
         writer.add_page(page_copy)
 
     job.output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    if job.output_pdf.exists():
+        shower_dxf_history.preserve_version(job.output_pdf)
     with job.output_pdf.open("wb") as handle:
         writer.write(handle)
 
@@ -5892,15 +5901,19 @@ def write_panel_dxf(panel: Panel, force: bool, config: dict[str, Any]) -> None:
         raise ValueError("Panel is missing source or output DXF path.")
     sanitize_denver_panel_long_side_rotation(panel, config)
     insunits, measurement = dxf_header_metadata_for_panel(panel, config)
-    transform_dxf(
+    preserved = shower_dxf_history.write_program(
         panel.source_dxf,
         panel.output_dxf,
         effective_rotation(panel),
-        force=force,
         scale=dxf_output_scale_for_panel(panel, config),
         insunits=insunits,
         measurement=measurement,
+        force=force,
+        transform=transform_dxf,
+        read_pairs=read_dxf_pairs,
     )
+    if preserved and "Manual DXF geometry preserved during reprocessing" not in panel.reasons:
+        panel.reasons.append("Manual DXF geometry preserved during reprocessing")
 
 
 def effective_rotation(panel: Panel) -> float:

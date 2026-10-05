@@ -59,20 +59,21 @@ def inspect_sketch(path: Path) -> SketchPaper:
 
 
 def _content_identity(path: Path) -> str:
-    cached = shower_cache.load("sketch_content_identity_v1", path)
+    cached = shower_cache.load("sketch_content_identity_v2", path)
     if isinstance(cached, str):
         return cached
     try:
         reader = PdfReader(path)
         if reader.is_encrypted or any(page.get("/Annots") for page in reader.pages):
             return ""
-        text = " ".join((page.extract_text() or "") for page in reader.pages)
-        normalized = re.sub(r"\s+", " ", text).strip()
+        # Printer scaling changes extraction spaces between adjacent measurements.
+        # Preserve page boundaries and every non-whitespace character.
+        normalized = "\f".join(re.sub(r"\s+", "", page.extract_text() or "") for page in reader.pages)
         # Blank/image-only/clipped sketches are insufficient evidence to remove a file.
         if len(normalized) < 30 or not re.search(r"\d", normalized):
             return ""
         identity = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        shower_cache.store("sketch_content_identity_v1", path, identity)
+        shower_cache.store("sketch_content_identity_v2", path, identity)
         return identity
     except Exception:
         return ""

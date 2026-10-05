@@ -13,13 +13,14 @@ class ReviewInteractionsTests(TestCase):
         app, order, captured = fixtures.ManualProgramSendResponsivenessTests().make_context_app(('row-other', 'row-188'))
         app.tree_row_orders['row-other'] = gui.shower_batch.ProcessOrder('999999', 'OTHER', 'OTHER CUSTOMER')
         order.customer = 'TARGET CUSTOMER'
+        app.tree.identify_column = mock.Mock(return_value='#3')
+        app.tree.set = mock.Mock(return_value=order.job_name)
         app.copy_order_value_to_clipboard = mock.Mock()
-        gui.ShowerProgrammerApp.open_orders_context_menu(app, SimpleNamespace(y=5, x_root=100, y_root=120))
+        gui.ShowerProgrammerApp.open_orders_context_menu(app, SimpleNamespace(x=100, y=5, x_root=100, y_root=120))
         actions = {action.get('text'): action for action in captured['actions']}
-        actions['Copy Job Name']['command']()
-        actions['Copy Customer Name']['command']()
-        self.assertEqual(app.copy_order_value_to_clipboard.call_args_list, [
-            mock.call(order.job_name, 'Job name'), mock.call('TARGET CUSTOMER', 'Customer name')])
+        actions['Copy to Clipboard']['command']()
+        app.copy_order_value_to_clipboard.assert_called_once_with(order.job_name)
+        app.tree.set.assert_called_once_with('row-188', '#3')
 
     def test_clipboard_keeps_full_value_and_uses_no_nested_update(self):
         app = gui.ShowerProgrammerApp.__new__(gui.ShowerProgrammerApp)
@@ -36,7 +37,7 @@ class ReviewInteractionsTests(TestCase):
         app.tree.set = mock.Mock(return_value='FULL UNTRUNCATED CELL VALUE')
         app.copy_order_value_to_clipboard = mock.Mock()
         app.open_orders_context_menu(SimpleNamespace(x=450, y=5, x_root=100, y_root=120))
-        next(action for action in captured['actions'] if action.get('text') == 'Copy Cell')['command']()
+        next(action for action in captured['actions'] if action.get('text') == 'Copy to Clipboard')['command']()
         app.tree.set.assert_called_once_with('row-188', '#7')
         app.copy_order_value_to_clipboard.assert_called_once_with('FULL UNTRUNCATED CELL VALUE')
 

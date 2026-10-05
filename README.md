@@ -2,11 +2,15 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current source version: **Version 2.06 - Explicit Repair Package Selection**
+Current source version: **Version 2.08 - Desktop Lifecycle And EXE Setup**
 
 For a new workstation, [download the Windows application ZIP](https://github.com/Brandon-m-Smith4439/Showers-Programmer/raw/refs/heads/main/release/Shower-Programmer-Windows.zip), extract it completely to a writable local folder, and run **First-Time Setup.bat** from the extracted folder. Do not run setup inside the ZIP. It creates the local input/output folders and Desktop/Start Menu shortcuts, then launches the app. The packaged EXE does not require Python or Git. Keep `_internal` beside the EXE. To pin it, launch the app and right-click its taskbar icon > Pin to taskbar.
 
-Source installations use the same setup BAT with Python 3.10+ (including Tcl/Tk and pip) installed. Setup creates a local `.venv` and installs `requirements.txt`; Internet access may be required. Excel/AutoCAD remain optional external requirements for their integrations. Configure shared drive paths in Settings > Folder Setup.
+Source installations use the same setup BAT with Python 3.10+ (including Tcl/Tk and pip) installed. Setup first looks for a complete EXE package matching `Backend/version.json`, including Windows ZIPs in `release`, `Recovery` or `Recover`. It extracts only program files, validates the recovered EXE, and leaves Input/Output alone. If no matching package exists, setup creates a local `.venv`, installs `requirements.txt` plus PyInstaller, and runs **Rebuild Shower Programmer EXE.bat**. This first build can take several minutes and may require Internet access. Setup then creates EXE shortcuts and launches the one-folder application; it does not fall back to running the Python GUI. Excel/AutoCAD remain optional external requirements for their integrations. Configure shared drive paths in Settings > Folder Setup.
+
+After an explicit **Archive Sent Order** action, unchanged archived input copies are not reimported from a remaining incomplete batch. New file revisions and changed process-list items remain eligible; an explicit archive Restore makes the order available again.
+
+The DXF header includes **Mirror** with Left/Right and Top/Bottom choices. This changes the current program, preserves a previous copy, retains units, and unchecks the order for verification. Unsupported text, block references and non-planar geometry are refused. Mirroring is an explicit operator action, not an automatic fabrication-face decision.
 
 Use **Guided Tour** in Tools for a repeatable Next/Back/Skip walkthrough. It highlights the main workflow without scanning, processing, or sending orders. Startup recovery warnings stop prompting after 14 days, while recovery records and warning history remain available in Settings > Recovery.
 

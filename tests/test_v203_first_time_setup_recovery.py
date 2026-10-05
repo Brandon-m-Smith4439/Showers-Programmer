@@ -101,6 +101,11 @@ class FirstTimeSetupRecoveryTests(unittest.TestCase):
             root = Path(raw)
             (root / "Shower Programmer.exe").write_bytes(b"fixture not launched")
             (root / "_internal").mkdir()
+            for relative in ('Assets/ShowersProgrammer.ico', '_internal/pypdfium2_raw/pdfium.dll',
+                             '_internal/_tcl_data/init.tcl', '_internal/_tk_data/tk.tcl'):
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'fixture not launched')
             orders = root / "Input" / "Orders"
             orders.mkdir(parents=True)
             sentinel = orders / "Keep.pdf"

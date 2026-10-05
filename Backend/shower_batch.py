@@ -3300,6 +3300,21 @@ def write_dxfs_with_issue_collection(job: programmer.Job, force: bool, config: d
             programmer.write_panel_dxf(panel, force=force, config=config)
         except Exception as exc:
             issues.append(f"P{panel.item}: DXF failed, {exc}")
+    if force and not issues:
+        expected = {panel.output_dxf.resolve() for panel in job.panels
+                    if not panel.skip_dxf and panel.output_dxf is not None}
+        directories = {panel.output_dxf.parent for panel in job.panels if panel.output_dxf is not None}
+        if job.output_pdf.parent.name.casefold() == 'sketches':
+            directories.add(job.output_pdf.parent.parent / 'Programs')
+        for directory in directories:
+            for stale in directory.glob(f'{job.aw_order}??.dxf'):
+                if stale.resolve() in expected or not re.fullmatch(re.escape(job.aw_order) + r'\d{2}', stale.stem):
+                    continue
+                try:
+                    programmer.shower_dxf_history.preserve_version(stale)
+                    stale.unlink()
+                except (OSError, RuntimeError) as exc:
+                    issues.append(f'Could not retire excluded program {stale.name}: {exc}')
     return issues
 
 

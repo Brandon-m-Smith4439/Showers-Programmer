@@ -38,9 +38,9 @@ class ResponsiveBatchProcessingTests(unittest.TestCase):
         self.assertIn("self.update_processing_history(run, output_dir", source)
         self.assertIn("raise shower_tasks.TaskCancelled", source)
 
-    def test_destructive_cleanup_is_scoped_to_current_order(self) -> None:
+    def test_explicit_skip_cleanup_is_scoped_and_force_keeps_manual_geometry(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.worker_run_batch)
-        self.assertIn("self.clear_existing_outputs_for_orders([order]", source)
+        self.assertNotIn("self.clear_existing_outputs_for_orders(", source)
         self.assertIn("self.remove_order_sketch_files([order]", source)
         self.assertIn("self.remove_order_program_files([order]", source)
         self.assertNotIn("self.clear_existing_outputs_for_orders(orders,", source)

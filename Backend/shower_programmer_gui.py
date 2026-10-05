@@ -321,6 +321,10 @@ class _ProgramMessageBox:
             "success": "check_circle",
         }.get(kind, "info")
         result = {"value": default}
+        try:
+            previous_grab = owner.grab_current()
+        except (AttributeError, tk.TclError):
+            previous_grab = None
         if app is not None and hasattr(app, "create_hidden_toplevel"):
             dialog = app.create_hidden_toplevel(owner)
         else:
@@ -414,6 +418,9 @@ class _ProgramMessageBox:
             ).grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(0, 8))
 
         def finish(value: Any) -> None:
+            if result.get("finished"):
+                return
+            result["finished"] = True
             result["value"] = value
             try:
                 dialog.grab_release()
@@ -484,7 +491,14 @@ class _ProgramMessageBox:
                 dialog.focus_set()
             except tk.TclError:
                 pass
-        dialog.wait_window()
+        try:
+            dialog.wait_window()
+        finally:
+            try:
+                if previous_grab is not None and previous_grab.winfo_exists() and owner.grab_current() is None:
+                    previous_grab.grab_set()
+            except (AttributeError, tk.TclError):
+                pass
         return result["value"]
 
     def showinfo(self, title: str, message: str, **options: Any) -> str:
@@ -2709,6 +2723,8 @@ class ShowerProgrammerApp:
         short, bounded activation sequence makes the child the durable foreground
         window instead of racing Tk's focus bookkeeping.
         """
+        if self.another_modal_owns_input(window):
+            return
         owner_window = owner or self.root
         if owner_window is not self.root:
             self.bind_native_window_owner(window, owner_window)
@@ -2779,6 +2795,19 @@ class ShowerProgrammerApp:
                 window.focus_set()
         except (AttributeError, tk.TclError):
             pass
+
+    def another_modal_owns_input(self, window: Any) -> bool:
+        """Do not let delayed parent activation cover a newer modal dialog."""
+        try:
+            grabber = self.root.grab_current()
+            if grabber is None:
+                return False
+            modal = grabber.winfo_toplevel()
+            target = window.winfo_toplevel()
+            modal_path, target_path = str(modal._w), str(target._w)
+            return target is not modal and not target_path.startswith(modal_path + '.')
+        except (AttributeError, tk.TclError):
+            return False
 
     def stabilize_window_foreground(
         self,
@@ -3108,7 +3137,7 @@ class ShowerProgrammerApp:
                 map_finished_surface()
                 return
             required = max(int(settle_passes), 1)
-            if pass_index + 1 >= required and (last_signature is None or signature == last_signature):
+            if pass_index >= required + 4 or (pass_index + 1 >= required and (last_signature is None or signature == last_signature)):
                 map_finished_surface()
                 return
             try:
@@ -3289,6 +3318,8 @@ class ShowerProgrammerApp:
 
     def bring_page_window_to_front(self, window: tk.Toplevel) -> None:
         """Restore and activate an existing page using the native owner contract."""
+        if self.another_modal_owns_input(window):
+            return
         try:
             if not bool(window.winfo_exists()):
                 return
@@ -3296,7 +3327,7 @@ class ShowerProgrammerApp:
             return
 
         self.apply_native_window_chrome(window)
-        page_owner = self.resolve_popup_owner(getattr(window, "_shower_logical_owner", None) or self.root)
+        page_owner = self.root if window is self.root else self.resolve_popup_owner(getattr(window, "_shower_logical_owner", None) or self.root)
         setattr(window, "_shower_logical_owner", page_owner)
         try:
             state = str(window.state()).casefold()
@@ -3498,6 +3529,20 @@ class ShowerProgrammerApp:
             except tk.TclError:
                 pass
 
+    @staticmethod
+    def context_menu_geometry(
+        x: int, y: int, width: int, height: int,
+        work_area: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int]:
+        left, top, work_width, work_height = work_area
+        width = min(width, max(1, work_width - 16))
+        height = min(height, max(1, work_height - 16))
+        return (
+            max(left + 8, min(x, left + work_width - width - 8)),
+            max(top + 8, min(y, top + work_height - height - 8)),
+            width, height,
+        )
+
     def show_themed_context_menu(
         self,
         parent: tk.Widget,
@@ -3603,7 +3648,8 @@ class ShowerProgrammerApp:
             **self.ctk_button_icon("close", 13, self.MUTED, "left"),
         ).grid(row=0, column=1, rowspan=2, sticky="ne", padx=(0, 8), pady=8)
 
-        body = ctk.CTkFrame(shell, fg_color="transparent")
+        action_height = sum(13 if action.get("separator") else 38 for action in actions)
+        body = ctk.CTkScrollableFrame(shell, fg_color="transparent", width=330, height=action_height)
         body.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
         def run_action(command: object, keep_open: bool = False) -> None:
@@ -3681,15 +3727,13 @@ class ShowerProgrammerApp:
             screen_y = 0
             screen_w = popup.winfo_screenwidth()
             screen_h = popup.winfo_screenheight()
-        width = popup.winfo_reqwidth()
-        height = popup.winfo_reqheight()
-        x_min = screen_x + 8
-        y_min = screen_y + 8
-        x_max = screen_x + screen_w - width - 12
-        y_max = screen_y + screen_h - height - 48
-        x = max(x_min, min(int(x_root), x_max))
-        y = max(y_min, min(int(y_root), y_max))
-        popup.geometry(f"{width}x{height}+{x}+{y}")
+        work_area = self.monitor_work_area_for_window(popup_owner) or (screen_x, screen_y, screen_w, screen_h - 48)
+        x, y, width, height = self.context_menu_geometry(
+            int(x_root), int(y_root), popup.winfo_reqwidth(), popup.winfo_reqheight(), work_area,
+        )
+        # Requested sizes and Win32 work areas are already physical pixels. CTk's
+        # geometry override would scale them a second time at non-100% DPI.
+        popup.wm_geometry(f"{width}x{height}+{x}+{y}")
         self.present_window_without_flash(
             popup,
             make_transient=True,
@@ -5526,6 +5570,8 @@ class ShowerProgrammerApp:
             pass
 
     def on_close(self) -> None:
+        if getattr(self, "_closing", False):
+            return
         if self.operation_active():
             elapsed = self.format_elapsed_seconds(self.activity_elapsed_seconds())
             current_step = self.activity_stage_message or self.status_var.get() or "Background work is still running."
@@ -5556,6 +5602,12 @@ class ShowerProgrammerApp:
                 )
                 if not should_close:
                     return
+        self._closing = True
+        self.pending_review_open_aw = ""
+        self.cancel_review_opening_feedback()
+        manager = getattr(self, "task_manager", None)
+        if manager is not None:
+            manager.cancel()
         self.save_ui_settings()
         prefetcher = getattr(self, "review_context_prefetcher", None)
         if prefetcher is not None:
@@ -5866,7 +5918,15 @@ class ShowerProgrammerApp:
             self.status_var.set("Finish the current task before changing the color mode.")
             return
         rows, selection_orders = self.capture_tree_snapshot()
+        self.close_active_themed_context_menu()
+        # CTk patches native parent.configure with closures referencing its children.
+        # Reset that chain before destroying the old main UI, not after it is dead.
+        if isinstance(self.root, tk.Tk) and not isinstance(self.root, ctk.CTk):
+            self.root.configure = tk.Misc.configure.__get__(self.root, type(self.root))
+            self.root.config = self.root.configure
         for child in list(self.root.winfo_children()):
+            if isinstance(child, tk.Toplevel):
+                continue
             try:
                 child.destroy()
             except tk.TclError:
@@ -9231,10 +9291,15 @@ class ShowerProgrammerApp:
                     process_list_files = shower_batch.process_list_files(process_list)
 
             active_process_orders = self.unique_orders_from_batches(all_batches)
+            retired_input_orders: set[str] = set()
+            if not isolated_test_mode:
+                import_snapshot, retired_input_orders = self.filter_retired_import_snapshot(
+                    import_snapshot, active_process_orders, output_dir,
+                )
             import_candidates = [
                 order
                 for order in active_process_orders
-                if str(order.aw_order) not in production_aw_orders
+                if str(order.aw_order) not in production_aw_orders | retired_input_orders
             ]
             missing_requirements = self.missing_order_input_requirements(folder, import_candidates)
             gateway_orders = [
@@ -10925,6 +10990,121 @@ class ShowerProgrammerApp:
             except (OSError, shutil.Error) as exc:
                 warnings.append(f"Could not archive old terminal DXF {source.name}: {exc}")
         return archived, warnings
+
+    @classmethod
+    def record_retired_inputs_for_output(
+        cls, orders: list[shower_batch.ProcessOrder], output_dir: Path,
+        archived: list[Path], sources_by_aw: dict[str, Iterable[str]],
+        targets_by_name: dict[str, Path] | None = None,
+    ) -> None:
+        """Persist exact file stamps only after a sent order was explicitly archived."""
+        history = cls.load_processing_history_for_output(output_dir)
+        targets = {path.name.casefold(): path for path in archived if path.suffix.lower() in cls.ORDER_FILE_EXTENSIONS}
+        targets.update({str(name).casefold(): path for name, path in (targets_by_name or {}).items()})
+        changed = False
+        for order in orders:
+            entry = cls.history_entry_from_data(history, order.aw_order)
+            if not cls.order_is_currently_sent_in_history(order, history):
+                continue
+            records = []
+            for name in sources_by_aw.get(str(order.aw_order), []):
+                name = Path(name).name
+                target = targets.get(name.casefold())
+                if target is None or not target.is_file():
+                    continue
+                stat = target.stat()
+                records.append({'name': name, 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns})
+            if records:
+                entry['input_retired_signature'] = cls.sent_process_signature(order)
+                entry['input_retired_files'] = records
+                changed = True
+        if changed:
+            cls.save_processing_history_for_output(output_dir, history)
+
+    @classmethod
+    def filter_retired_import_snapshot(
+        cls, snapshot: dict[str, object], orders: list[shower_batch.ProcessOrder], output_dir: Path,
+    ) -> tuple[dict[str, object], set[str]]:
+        """Keep unchanged archived files out of both targeted and visibility imports."""
+        history = cls.load_processing_history_for_output(output_dir)
+        files = [path for path in snapshot.get('order_files', []) if isinstance(path, Path)]
+        by_name = {path.name.casefold(): path for path in files}
+        suppressed: set[Path] = set()
+        retired: set[str] = set()
+        for order in orders:
+            entry = cls.history_entry_from_data(history, order.aw_order)
+            if (not cls.order_is_currently_sent_in_history(order, history)
+                    or entry.get('input_retired_signature') != cls.sent_process_signature(order)):
+                continue
+            records = entry.get('input_retired_files', [])
+            if not isinstance(records, list) or not records:
+                continue
+            unchanged: set[Path] = set()
+            names = {str(record.get('name', '')).casefold() for record in records if isinstance(record, dict)}
+            changed = False
+            for record in records:
+                if not isinstance(record, dict):
+                    changed = True
+                    break
+                path = by_name.get(str(record.get('name', '')).casefold())
+                if path is None:
+                    continue
+                try:
+                    stat = path.stat()
+                    if stat.st_size != record.get('size') or stat.st_mtime_ns != record.get('mtime_ns'):
+                        changed = True
+                        break
+                except OSError:
+                    changed = True
+                    break
+                unchanged.add(path)
+            # A newly named/revised source or another active order must remain visible.
+            matching = cls.paths_matching_order_by_name(files, order)
+            changed = changed or any(path.name.casefold() not in names for path in matching)
+            protected = [candidate for candidate in orders if candidate.aw_order != order.aw_order
+                         and not cls.order_is_currently_sent_in_history(candidate, history)]
+            if any(cls.paths_matching_order_by_name(list(unchanged), candidate) for candidate in protected):
+                changed = True
+            if not changed:
+                retired.add(str(order.aw_order))
+                suppressed.update(unchanged)
+        filtered = dict(snapshot)
+        # A fully archived process list is no longer among current scan orders.
+        # Its exact unchanged file receipts still apply to the visibility importer.
+        active_aw = {str(order.aw_order) for order in orders}
+        entries = history.get('orders', {})
+        if isinstance(entries, dict):
+            for aw, entry in entries.items():
+                if (str(aw) in active_aw or not isinstance(entry, dict) or not entry.get('sent_at')
+                        or not entry.get('input_retired_signature')
+                        or entry.get('input_retired_signature') != entry.get('sent_process_signature')):
+                    continue
+                records = entry.get('input_retired_files', [])
+                unchanged = set()
+                changed = not isinstance(records, list) or not records
+                for record in records if isinstance(records, list) else []:
+                    if not isinstance(record, dict):
+                        changed = True
+                        break
+                    path = by_name.get(str(record.get('name', '')).casefold())
+                    if path is None:
+                        continue
+                    try:
+                        stat = path.stat()
+                        if stat.st_size != record.get('size') or stat.st_mtime_ns != record.get('mtime_ns'):
+                            changed = True
+                            break
+                    except OSError:
+                        changed = True
+                        break
+                    unchanged.add(path)
+                if any(cls.paths_matching_order_by_name(list(unchanged), order) for order in orders):
+                    changed = True
+                if not changed:
+                    suppressed.update(unchanged)
+        for key in ('order_files', 'files'):
+            filtered[key] = [path for path in snapshot.get(key, []) if path not in suppressed]
+        return filtered, retired
 
     @classmethod
     def filter_retired_sent_orders(
@@ -13651,16 +13831,10 @@ class ShowerProgrammerApp:
                             ),
                         },
                     )
-        if order is not None:
-            actions.extend([
-                {"separator": True},
-                {"text": "Copy Job Name", "icon": "copy", "command": lambda value=order.job_name: self.copy_order_value_to_clipboard(value, "Job name")},
-                {"text": "Copy Customer Name", "icon": "copy", "command": lambda value=order.customer: self.copy_order_value_to_clipboard(value, "Customer name")},
-            ])
         try:
             column = self.tree.identify_column(event.x)
             value = self.tree.set(row_id, column) if column and column != "#0" else self.tree.item(row_id, "text")
-            actions.append({"text": "Copy Cell", "icon": "copy", "command": lambda text=value: self.copy_order_value_to_clipboard(text)})
+            actions.append({"text": "Copy to Clipboard", "icon": "copy", "command": lambda text=value: self.copy_order_value_to_clipboard(text)})
         except (AttributeError, tk.TclError):
             pass
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
@@ -13812,6 +13986,11 @@ class ShowerProgrammerApp:
                 reuse_prior_archive_sources=False,
                 stage_callback=getattr(task, "stage", None),
                 progress_callback=archive_progress,
+            )
+            self.record_retired_inputs_for_output(
+                sent_orders, output_dir, archived,
+                getattr(self, '_last_archived_order_sources_by_aw', {}),
+                getattr(self, '_last_archived_order_targets_by_source_name', {}),
             )
             try:
                 manual_archives = self.archive_manual_process_orders_for_output(
@@ -13996,6 +14175,11 @@ class ShowerProgrammerApp:
                 warnings.append(
                     f"Could not retire manual programming records into the dated archive: {exc}"
                 )
+            self.record_retired_inputs_for_output(
+                orders, output_dir, archived,
+                getattr(self, '_last_archived_order_sources_by_aw', {}),
+                getattr(self, '_last_archived_order_targets_by_source_name', {}),
+            )
             return archived, warnings, True
 
         def finished(payload: object) -> None:
@@ -15579,6 +15763,7 @@ class ShowerProgrammerApp:
             run_folder = self.next_batch_run_folder(output_dir, process_list_path) if apply else output_dir / "Reviews" / "DryRun"
             sketch_dir, programs_dir, report_dir = self.output_dirs_for_run(run_folder)
             config = self.config_with_manual_overrides(folder, output_dir)
+            previous_history = self.load_processing_history_for_output(output_dir) if apply else {}
             completed = 0
             cancelled = False
 
@@ -15630,15 +15815,19 @@ class ShowerProgrammerApp:
                             len(orders),
                             f"{'Processing' if apply else 'Checking'} A&W {order.aw_order} ({index}/{len(orders)})",
                         )
-                    # Destructive stale-output cleanup is intentionally scoped to
-                    # the order that is about to run. A cancellation can therefore
-                    # never remove output belonging to a later, unprocessed order.
-                    if apply and force:
-                        self.clear_existing_outputs_for_orders([order], output_dir, skip_pdf, skip_dxf)
+                    # The writer replaces current outputs safely. Keep older runs
+                    # and the current DXF available for manual-geometry preservation.
                     if apply and skip_pdf:
                         self.remove_order_sketch_files([order], sketch_dir)
                     if apply and skip_dxf:
                         self.remove_order_program_files([order], programs_dir)
+                    elif apply:
+                        _prior_run, _prior_sketches, prior_programs, _prior_reports = self.output_dirs_for_order(
+                            order.aw_order, output_dir, previous_history,
+                        )
+                        for item_number in order.item_numbers:
+                            program_name = f'{order.aw_order}{item_number:02d}.dxf'
+                            self.carry_program_to_new_run(prior_programs / program_name, programs_dir / program_name, output_dir)
                     payload = (
                         order,
                         folder,
@@ -15762,6 +15951,27 @@ class ShowerProgrammerApp:
         }
         with (run_folder / "manifest.json").open("w", encoding="utf-8") as handle:
             json.dump(manifest, handle, indent=2, sort_keys=True)
+
+    @staticmethod
+    def carry_program_to_new_run(source: Path, target: Path, output_dir: Path) -> None:
+        """Carry only the latest known program and its coordinates; keep the old run."""
+        output_dir = output_dir.resolve()
+        if target.exists() or not source.is_file() or source.resolve() == target.resolve():
+            return
+        if not source.resolve().is_relative_to(output_dir) or not target.resolve().is_relative_to(output_dir):
+            raise RuntimeError('Previous program is outside the configured output folder.')
+        old_state = programmer.shower_dxf_history.history_dir(source) / 'state.json'
+        new_state = programmer.shower_dxf_history.history_dir(target) / 'state.json'
+        if any(path.is_symlink() or getattr(path, 'is_junction', lambda: False)()
+               for path in (source, old_state, new_state, *old_state.parents, *new_state.parents)):
+            raise RuntimeError('Linked program/history folders cannot be carried to another run.')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        if shower_cache.file_sha256(source) != shower_cache.file_sha256(target):
+            raise RuntimeError(f'Previous program copy could not be verified: {target.name}')
+        if old_state.exists():
+            new_state.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old_state, new_state)
 
     @staticmethod
     def clear_existing_outputs_for_orders(
@@ -16263,7 +16473,7 @@ class ShowerProgrammerApp:
                     assert isinstance(data, dict)
                     process_order = data.get("order")
                     error = data.get("error")
-                    generation = int(data.get("generation", -1) or -1)
+                    generation = int(data.get("generation", -1))
                     if not isinstance(process_order, shower_batch.ProcessOrder):
                         continue
                     aw_order = str(process_order.aw_order)
@@ -18197,7 +18407,12 @@ a {{ color: #1f4e79; }}
             lambda: rotate_dxf_and_process(90),
         )
         rotate_dxf_right_button.pack(side=tk.LEFT, padx=(6, 0))
-        piece_action_widgets.extend([open_dxf_button, rotate_dxf_left_button, rotate_dxf_right_button])
+        mirror_dxf_button = self.make_header_icon_button(
+            dxf_header, "flip", "Mirror the current DXF horizontally or vertically",
+            lambda: mirror_current_dxf(),
+        )
+        mirror_dxf_button.pack(side=tk.LEFT, padx=(6, 0))
+        piece_action_widgets.extend([open_dxf_button, rotate_dxf_left_button, rotate_dxf_right_button, mirror_dxf_button])
         dxf_refresh_button = self.make_header_refresh_button(
             dxf_header,
             lambda: refresh_dxf_preview(),
@@ -18660,7 +18875,7 @@ a {{ color: #1f4e79; }}
             )
 
         def refresh_dxf_preview() -> None:
-            nonlocal issues
+            nonlocal issues, raw_issues
             panel = selected_panel()
             path = (
                 panel.source_dxf
@@ -18672,6 +18887,17 @@ a {{ color: #1f4e79; }}
                 return
             was_unresolved = current_panel_manual_dxf_review_unresolved()
             state["dxf_preview_cache"] = {}
+            try:
+                self.order_review_dxf_preview_data(path, state, force_refresh=True)
+                import shower_v4_features
+                shower_v4_features.validate_waterjet_internal_radius(panel, config, programmer, dxf_path=path)
+                radius_prefix = f'P{panel.item}: {shower_v4_features.WJ_RADIUS_WARNING_PREFIX}'
+                raw_issues = [issue for issue in raw_issues if not issue.startswith(radius_prefix)]
+                raw_issues.extend(f'P{panel.item}: {warning}' for warning in panel.warnings
+                                  if warning.startswith(shower_v4_features.WJ_RADIUS_WARNING_PREFIX))
+            except Exception as exc:
+                messagebox.showerror("Refresh DXF failed", str(exc), parent=dialog)
+                return
             complex_cache = getattr(self, "complex_oos_review_cache", None)
             if isinstance(complex_cache, OrderedDict):
                 complex_cache.clear()
@@ -18684,6 +18910,9 @@ a {{ color: #1f4e79; }}
             )
             source_result = self.order_result_sources.get(str(process_order.aw_order))
             if source_result is not None:
+                source_result.issues = list(issues)
+                if source_result.status in {'OK', 'ISSUES'}:
+                    source_result.status = 'ISSUES' if issues else 'OK'
                 self.insert_or_update_result(source_result)
             redraw()
             is_unresolved = current_panel_manual_dxf_review_unresolved()
@@ -18803,6 +19032,36 @@ a {{ color: #1f4e79; }}
                 )
             except Exception as exc:
                 messagebox.showerror("Rotate DXF failed", str(exc), parent=dialog)
+
+        def mirror_current_dxf() -> None:
+            panel = selected_panel()
+            path = panel.output_dxf
+            if bool(state.get("dxf_output_skipped")) or not path or not path.is_file():
+                messagebox.showinfo("No programmed DXF", "Process this piece with DXF output enabled before mirroring it.", parent=dialog)
+                return
+            direction = messagebox._show(
+                "askyesno", "Mirror DXF", "Choose the flip direction for the actual program.\n"
+                "A previous copy will be kept. Verify the fabrication face and check the order again before sending.",
+                parent=dialog, kind="question", default=None,
+                buttons=[("Cancel", None), ("Left / Right", "horizontal"), ("Top / Bottom", "vertical")],
+            )
+            if direction is None or (has_pending_item_edits() and not save_review_edits(show_no_edits=False)):
+                return
+            if not self.confirm_dxf_outputs_closed_for_reprocessing(dialog, process_order, programs_dir, job):
+                return
+            try:
+                import shower_dxf_mirror
+                self.set_selected_orders_checked(False, [process_order])
+                backup = shower_dxf_mirror.mirror_program(path, direction)
+                state["saved_manual_overrides"] = copy.deepcopy(self._manual_overrides_session_data or {})
+                state["dxf_preview_cache"] = {}
+                self.clear_review_context_cache(process_order.aw_order)
+                refresh_dxf_preview()
+                self.record_action("Mirror DXF", f"Mirrored {path.name} {direction}.",
+                                   status="SUCCESS", orders=[process_order], details=f"Previous version: {backup}")
+                status.set(f"Mirrored {path.name} {direction}. Review and check this order again.")
+            except Exception as exc:
+                messagebox.showerror("Mirror DXF failed", str(exc), parent=dialog)
 
         def open_current_dxf() -> None:
             panel = selected_panel()
@@ -20708,16 +20967,18 @@ a {{ color: #1f4e79; }}
             font=("Segoe UI", 9),
         )
 
-    def order_review_dxf_preview_data(self, path: Path, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    def order_review_dxf_preview_data(
+        self, path: Path, state: dict[str, Any] | None = None, *, force_refresh: bool = False,
+    ) -> dict[str, Any]:
         cache: dict[Any, dict[str, Any]] | None = None
         if state is not None:
             cache = state.setdefault("dxf_preview_cache", {})
         stat = path.stat()
         key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
-        if cache is not None and key in cache:
+        if not force_refresh and cache is not None and key in cache:
             return cache[key]
 
-        persistent = shower_cache.load("dxf_preview_geometry_v1", path)
+        persistent = None if force_refresh else shower_cache.load("dxf_preview_geometry_v1", path)
         if isinstance(persistent, dict) and isinstance(persistent.get("segments"), list):
             normalized_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
             for segment in persistent["segments"]:
@@ -24048,6 +24309,17 @@ try {{
         snapshot = copy.deepcopy([entry for entry in entries if isinstance(entry, dict)])
         if not snapshot:
             return
+        output_var = getattr(self, 'output_dir_var', None)
+        if output_var is not None:
+            output = Path(output_var.get()).resolve()
+            history = self.load_processing_history_for_output(output)
+            for entry in snapshot:
+                order = entry.get('order')
+                if isinstance(order, shower_batch.ProcessOrder):
+                    receipt = self.history_entry_from_data(history, order.aw_order)
+                    receipt.pop('input_retired_signature', None)
+                    receipt.pop('input_retired_files', None)
+            self.save_processing_history_for_output(output, history)
         keys = {
             self.process_list_batch_key(path)
             for path in process_files
@@ -29582,7 +29854,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             baseline_center_offset = float(obj["font_size"]) * 0.35
             for index, line in enumerate(obj["lines"]):
                 cx, cy = to_canvas(float(obj["x"]), first_y - index * leading + baseline_center_offset)
-                bind_item(canvas.create_text(cx, cy, text=line, fill=blue, font=("Arial", -font_size, "bold"), anchor=tk.CENTER))
+                bind_item(canvas.create_text(cx, cy, text=line, fill=blue, font=("Arial", -font_size, "bold"), anchor=tk.CENTER, angle=(-rotation) % 360))
             rect = obj["rect"]
             x1, y1 = to_canvas(rect[0], rect[3])
             x2, y2 = to_canvas(rect[2], rect[1])
@@ -32328,6 +32600,84 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             return True
         haystack = " ".join(str(value or "") for value in values).casefold()
         return all(term in haystack for term in terms)
+
+    @classmethod
+    def archived_programmed_output_files(
+        cls, output_dir: Path, aw_orders: Iterable[str], *, run_folder: Path | None = None,
+    ) -> list[dict[str, object]]:
+        """Return saved production outputs, never regenerate from imported sources."""
+        output_dir = Path(output_dir).resolve()
+        orders = {str(value).strip() for value in aw_orders if str(value).strip().isdigit()}
+        roots = [run_folder] if run_folder is not None else cls.output_search_roots(output_dir)
+        entries: list[dict[str, object]] = []
+        for root in roots:
+            root = Path(root).resolve()
+            if not root.is_relative_to(output_dir):
+                continue
+            for section, kind, suffix in (('Sketches', 'Sketch', '.pdf'), ('Programs', 'DXF', '.dxf')):
+                directory = root / section
+                if not directory.is_dir():
+                    continue
+                for path in directory.glob(f'*{suffix}'):
+                    if path.is_symlink() or not path.resolve().is_relative_to(output_dir):
+                        continue
+                    matched = next((aw for aw in orders if (
+                        path.stem == aw if kind == 'Sketch' else
+                        re.fullmatch(re.escape(aw) + r'\d{2}', path.stem) is not None
+                    )), None)
+                    if orders and matched is None:
+                        continue
+                    entries.append({'path': path, 'kind': kind, 'aw_order': matched or '', 'run_folder': root})
+                history_root = directory / ('.Sketch History' if kind == 'Sketch' else '.DXF History')
+                if not history_root.is_dir():
+                    continue
+                for item_dir in history_root.iterdir():
+                    if not item_dir.is_dir() or item_dir.is_symlink():
+                        continue
+                    matched = next((aw for aw in orders if (
+                        item_dir.name == aw if kind == 'Sketch' else
+                        re.fullmatch(re.escape(aw) + r'\d{2}', item_dir.name) is not None
+                    )), None)
+                    if orders and matched is None:
+                        continue
+                    for path in item_dir.glob(f'*{suffix}'):
+                        if path.is_symlink() or not path.resolve().is_relative_to(output_dir):
+                            continue
+                        entries.append({'path': path, 'kind': kind, 'aw_order': matched or '', 'run_folder': root,
+                                        'label': f'{item_dir.name}{suffix} - saved revision {path.stem[:8]}'})
+        return sorted(entries, key=lambda entry: str(entry['path']).casefold(), reverse=True)
+
+    def show_archived_programmed_outputs(self, parent: tk.Widget, files: list[dict[str, object]]) -> None:
+        viewer = self.create_hidden_toplevel(parent)
+        viewer.title('Saved Programmed Output')
+        viewer.configure(fg_color=self.APP_BG)
+        self.center_child_window(viewer, 880, 560, owner=parent)
+        self.set_window_icon(viewer)
+        ctk.CTkLabel(viewer, text='Saved Programmed Output', font=('Segoe UI', 20, 'bold'),
+                     text_color=self.TEXT, anchor='w').pack(fill=tk.X, padx=20, pady=(18, 4))
+        ctk.CTkLabel(viewer, text='Previously saved sketches and programs. Opening a file does not reprocess or restore the order.',
+                     font=('Segoe UI', 11), text_color=self.MUTED, anchor='w').pack(fill=tk.X, padx=20, pady=(0, 14))
+        listing = ctk.CTkScrollableFrame(viewer, fg_color=self.CARD_BG, corner_radius=8)
+        listing.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+        for entry in files:
+            path = Path(entry['path'])
+            row = ctk.CTkFrame(listing, fg_color=self.SOFT_CARD_BG, corner_radius=6)
+            row.pack(fill=tk.X, pady=4)
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(row, text=f"{entry['kind']}  |  {entry.get('label', path.name)}", font=('Segoe UI', 12, 'bold'),
+                         text_color=self.TEXT, anchor='w').grid(row=0, column=0, sticky='ew', padx=12, pady=(8, 0))
+            ctk.CTkLabel(row, text=str(entry['run_folder']), font=('Segoe UI', 10), wraplength=610,
+                         text_color=self.MUTED, anchor='w', justify='left').grid(row=1, column=0, sticky='ew', padx=12, pady=(0, 8))
+
+            def open_saved_file(saved: Path = path) -> None:
+                try:
+                    os.startfile(str(saved.resolve()))
+                except OSError as exc:
+                    messagebox.showerror('Could not open saved output', str(exc), parent=viewer)
+
+            self.make_tool_button(row, f"Open {entry['kind']}", 'pdf' if entry['kind'] == 'Sketch' else 'dxf',
+                                  open_saved_file, width=115).grid(row=0, column=1, rowspan=2, padx=12, pady=8)
+        self.bring_window_to_front(viewer, make_transient=True, owner=parent)
 
     @classmethod
     def archived_order_inventory(
@@ -35328,6 +35678,7 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             )
 
         def update_archive_action_buttons(_event: tk.Event | None = None) -> None:
+            programmed_output_button.configure(state='normal' if tree.selection() else 'disabled')
             if current_mode() != "Orders / Sketch Archives":
                 archive_selection_var.set("Processing Runs is read-only. Switch to Orders / Sketch Archives for restore actions.")
                 for button in (return_archive_button, test_mode_button, restore_input_button, revision_details_button):
@@ -35487,6 +35838,39 @@ Write-Output "AutoCAD saved $count DXF file(s)."
             **self.ctk_button_icon("restore", 15, "#ffffff", "left"),
         )
         test_mode_button.grid(row=2, column=4, padx=(8, 12), pady=(0, 10))
+
+        def view_programmed_outputs() -> None:
+            selection = tree.selection()
+            target = rows.get(selection[0]) if selection else None
+            if not isinstance(target, dict):
+                return
+            entries = self.archive_action_entries(target)
+            selected_aw = [str(entry['order'].aw_order) for entry in entries
+                           if isinstance(entry.get('order'), shower_batch.ProcessOrder)]
+            run = target.get('run') if target.get('kind') == 'run_order' else target
+            selected_run = run.get('run_folder') if isinstance(run, dict) and current_mode() == 'Processing Runs' else None
+            if target.get('kind') == 'run_order':
+                selected_aw = [str(target.get('order_row', {}).get('aw_order', ''))]
+            output = Path(self.output_dir_var.get()).resolve()
+
+            def completed(files: object) -> None:
+                if not dialog.winfo_exists():
+                    return
+                if not files:
+                    messagebox.showinfo('No saved programmed output',
+                                        'No saved output remains for this selection. Imported source sketches are not substituted for programmed versions.', parent=dialog)
+                    return
+                self.show_archived_programmed_outputs(dialog, files)
+
+            self.run_managed_task('Load Saved Programmed Output',
+                                  lambda _task: self.archived_programmed_output_files(output, selected_aw, run_folder=selected_run),
+                                  message='Finding saved programmed sketches and DXFs...', on_done=completed)
+
+        programmed_output_button = self.make_tool_button(
+            footer, 'View Programmed Output', 'review', view_programmed_outputs, width=205,
+        )
+        programmed_output_button.grid(row=3, column=0, columnspan=5, sticky='w', padx=12, pady=(0, 10))
+        programmed_output_button.configure(state='disabled')
 
         tree.bind("<<TreeviewSelect>>", update_archive_action_buttons, add="+")
         update_mode_controls()
@@ -37382,6 +37766,21 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         route_app.review_dxfs()
 
         with writable_test_directory(report_path.parent, "shower_programmer_self_test_") as temp_root:
+            import ezdxf
+            import shower_dxf_mirror
+            mirror_fixture = temp_root / "mirror-check.dxf"
+            mirror_document = ezdxf.new("R2018")
+            mirror_document.header["$INSUNITS"] = 4
+            mirror_document.modelspace().add_lwpolyline([(0, 0), (80, 0), (80, 28), (0, 28)], close=True)
+            mirror_document.modelspace().add_arc((10, 10), 3, 0, 90)
+            mirror_document.saveas(mirror_fixture)
+            shower_dxf_mirror.mirror_program(mirror_fixture, "horizontal")
+            mirrored_document = ezdxf.readfile(mirror_fixture)
+            mirrored_arc = mirrored_document.modelspace().query("ARC")[0]
+            if (mirrored_document.header["$INSUNITS"] != 4 or mirrored_document.dxfversion != "AC1032"
+                    or not mirrored_arc.start_point.isclose((70, 13, 0))
+                    or not mirrored_arc.end_point.isclose((67, 10, 0))):
+                raise RuntimeError("DXF mirror geometry/unit preservation self-test failed.")
             paper_probe = temp_root / "paper-check.pdf"
             paper_writer = PdfWriter()
             paper_writer.add_blank_page(612, 792)
@@ -38817,6 +39216,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "version_2_03_workstation_setup_recovery": True,
                 "version_2_04_safe_repair_sketch_paper": True,
                 "version_2_05_review_editor_clipboard": True,
+                "version_2_08_desktop_lifecycle_exe_setup": True,
+                "verified_planar_dxf_mirroring": True,
             }
         )
     except Exception as exc:
@@ -38826,6 +39227,36 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     return result
+
+
+def finish_application_process_shutdown() -> None:
+    """Only the executable entrypoint calls this after its accepted window close.
+
+    Python joins executor threads at exit, including threads blocked on SMB reads.
+    Allow a short grace period, then exit this process rather than leave an invisible
+    application holding its single-instance lock. Updater helpers are not children
+    managed by multiprocessing and are deliberately left alone.
+    """
+    deadline = time.monotonic() + 1.0
+    for child in multiprocessing.active_children():
+        try:
+            child.terminate()
+            child.join(timeout=max(0, deadline - time.monotonic()))
+            if child.is_alive():
+                child.kill()
+        except (OSError, ValueError, AssertionError):
+            pass
+    workers = [thread for thread in threading.enumerate()
+               if thread is not threading.current_thread() and not thread.daemon]
+    for worker in workers:
+        worker.join(timeout=max(0, deadline - time.monotonic()))
+    if any(worker.is_alive() for worker in workers):
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except (AttributeError, OSError):
+                pass
+        os._exit(0)
 
 
 def main() -> None:
@@ -38977,6 +39408,9 @@ def main() -> None:
             pass
     finally:
         guard.release()
+        app = app_holder.get("app")
+        if getattr(app, "_closing", False) or startup_error:
+            finish_application_process_shutdown()
 
 
 if __name__ == "__main__":

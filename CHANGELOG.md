@@ -1,3 +1,28 @@
+## [Version 2.08] - 2026-10-05
+
+### Desktop Lifecycle And EXE Setup
+- First-Time Setup always launches a complete one-folder EXE. Reuse a matching installed package, extract a matching release/Recovery ZIP with path and runtime checks, or install local build dependencies and run the existing guarded builder for the source version. Preserve operator Input/Output and shortcut targets; never silently launch Python instead.
+- Record exact sent/archive input receipts so unchanged shared inputs do not reappear after individually archiving sent orders from incomplete batches. Revised files/process-list signatures stay eligible; explicit archive restoration clears retirement receipts.
+- Accept generation zero in review-context handoffs. Keep delayed parent-window focus callbacks from raising a parent over an active modal, restore nested modal grabs, and bound pre-map geometry settling.
+- Reset CustomTkinter's native-root configuration callback before replacing themed controls; keep open child windows and unsaved edits intact while switching Light/Dark modes.
+- Cancel managed work on accepted close and bound executable shutdown of its own multiprocessing/executor workers so blocked network threads cannot leave an invisible application alive.
+- Use one pointer-cell Copy to Clipboard action. Rotate editable sketch text with page orientation.
+- Preserve explicit Rotate DXF commands for Waterjet mirrors and pieces with previous manual corner overrides; retain automatic initial machining/orientation rules.
+- Add confirmed horizontal/vertical mirroring of planar CNC geometry, including arcs/bulges, with ezdxf, preserved units/version, recoverable output, and required order rechecking. Refuse unsupported text/blocks/3D geometry rather than silently mis-transform it.
+- Regression-test independent output skips so stale older PDF/DXF programs remain excluded from Send when their latest output is skipped.
+
+## [Version 2.07] - 2026-10-05
+
+### Review File Integrity
+- Recognize normal-sized replacement sketches when label printing changes only extraction whitespace. Preserve every other character, page boundaries, exact job/revision/reference identity and annotation safeguards; quarantine only proven bad local copies.
+- Position right-click menus inside the monitor's usable work area using physical pixel coordinates, avoiding double DPI scaling. Scroll long action lists instead of hiding actions below the taskbar.
+- Preserve externally edited DXF geometry through reprocessing, rotations and machine-unit conversions using persisted generation coordinates and content hashes. Retain recoverable previous DXFs and refuse ambiguous legacy histories, conflicting source revisions or concurrent file edits.
+- Keep older processing runs instead of deleting them during forced processing. Carry the latest known program/history into a new run; retire excluded programs into recovery history so they cannot be sent as active fabrication.
+- Force Refresh DXF to read geometry and internal radii from disk even when an editor retains the same file size/timestamp. Revalidate Water Jet radius warnings against the refreshed program, not the original import; reopening uses saved output only when its source revision is verified.
+- Add View Programmed Output to Archives for saved sketches/DXFs across dates and processing runs. This inspection workflow does not restore, regenerate or send orders; missing programmed output is reported rather than replaced with an unprogrammed source.
+- Keep content-verified copies of overwritten programmed PDFs and DXFs available in the archive output viewer.
+- Preserve existing Denver/WJ assignment, hinge-direction and initial rotation rules.
+
 ## [Version 2.06] - 2026-10-05
 
 ### Repair Package Selection

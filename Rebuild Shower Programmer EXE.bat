@@ -139,11 +139,11 @@ for %%F in (
 
 echo.
 echo Checking required Python packages...
-"%PYTHON_EXE%" %PYTHON_ARGS% -c "import customtkinter, openpyxl, pypdf, pypdfium2, PIL, reportlab, PyInstaller; print('  Required packages are available.')"
+"%PYTHON_EXE%" %PYTHON_ARGS% -c "import customtkinter, openpyxl, pypdf, pypdfium2, PIL, reportlab, ezdxf, PyInstaller; print('  Required packages are available.')"
 if errorlevel 1 (
     echo ERROR: One or more required Python packages are missing.
     echo Suggested command:
-    echo   "%PYTHON_EXE%" %PYTHON_ARGS% -m pip install pyinstaller customtkinter openpyxl pypdf pypdfium2 pillow reportlab
+    echo   "%PYTHON_EXE%" %PYTHON_ARGS% -m pip install pyinstaller customtkinter openpyxl pypdf pypdfium2 pillow reportlab ezdxf
     goto failed
 )
 
@@ -264,7 +264,7 @@ copy /Y "Repair Programmer.ps1" "%STAGED_DIR%\Repair Programmer.ps1" >NUL
 if errorlevel 1 goto failed
 
 echo Writing staged update metadata...
-"%PYTHON_EXE%" %PYTHON_ARGS% -c "import hashlib,json,pathlib,sys; app=pathlib.Path(sys.argv[1]); version=json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8')); exe=app/'Shower Programmer.exe'; source=pathlib.Path(sys.argv[3]); sha=lambda p: hashlib.sha256(p.read_bytes()).hexdigest().lower(); data={'sha':sys.argv[4],'version':version['version'],'release_name':version['release_name'],'exe_sha256':sha(exe),'gui_sha256':sha(source),'gui_version':version['marker'],'built_at':__import__('datetime').datetime.now().astimezone().isoformat(),'method':'build'}; (app/'.shower_update.json').write_text(json.dumps(data,separators=(',',':'))+'\n',encoding='utf-8')" "%STAGED_DIR%" "%SOURCE_VERSION%" "%SOURCE_ENTRY%" "%BUILD_SHA%"
+"%PYTHON_EXE%" %PYTHON_ARGS% -c "import hashlib,json,pathlib,sys; app=pathlib.Path(sys.argv[1]); version=json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8')); exe=app/'Shower Programmer.exe'; source=pathlib.Path(sys.argv[3]); sha=lambda p: hashlib.sha256(p.read_bytes()).hexdigest().lower(); root=pathlib.Path(sys.argv[2]).resolve().parent.parent; files=sorted([p for name in ('Backend','Assets') for p in (root/name).rglob('*') if p.is_file() and p.suffix.lower() in ('.py','.json','.txt','.png','.ico')]+[root/'requirements.txt'],key=lambda p:p.as_posix()); fingerprint=hashlib.sha256(''.join(p.relative_to(root).as_posix()+'='+sha(p)+'\n' for p in files).encode('utf-8')).hexdigest(); data={'version_number':version['version_number'],'source_sha256':fingerprint,'sha':sys.argv[4],'version':version['version'],'release_name':version['release_name'],'exe_sha256':sha(exe),'gui_sha256':sha(source),'gui_version':version['marker'],'built_at':__import__('datetime').datetime.now().astimezone().isoformat(),'method':'build'}; (app/'.shower_update.json').write_text(json.dumps(data,separators=(',',':'))+'\n',encoding='utf-8')" "%STAGED_DIR%" "%SOURCE_VERSION%" "%SOURCE_ENTRY%" "%BUILD_SHA%"
 if errorlevel 1 goto failed
 
 if not exist "%STAGED_DIR%\Input\Orders" mkdir "%STAGED_DIR%\Input\Orders"
