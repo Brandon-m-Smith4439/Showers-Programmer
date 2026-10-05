@@ -106,6 +106,7 @@ import shower_configuration
 import shower_maintenance
 import shower_review_service
 import shower_scan_index
+import shower_sketch_quality
 from shower_rules import archive as archive_rules
 from shower_rules import indicators as indicator_rules
 
@@ -2771,7 +2772,11 @@ class ShowerProgrammerApp:
             except Exception:
                 pass
         try:
-            window.focus_set()
+            preferred_focus = getattr(window, "_shower_preferred_focus_widget", None)
+            if preferred_focus is not None and preferred_focus.winfo_exists():
+                preferred_focus.focus_force()
+            else:
+                window.focus_set()
         except (AttributeError, tk.TclError):
             pass
 
@@ -3419,7 +3424,62 @@ class ShowerProgrammerApp:
         except Exception:
             finish_popup_teardown()
 
+    def clear_context_outside_click_observer(self, popup: tk.Widget | None = None) -> None:
+        observer = getattr(self, "_context_click_observer", None)
+        if observer is None or (popup is not None and observer[0] is not popup):
+            return
+        self._context_click_observer = None
+        _popup, tag, widgets, funcid = observer
+        for widget in widgets:
+            try:
+                widget.bindtags(tuple(item for item in widget.bindtags() if item != tag))
+            except tk.TclError:
+                pass
+        try:
+            self.root.unbind_class(tag, "<ButtonPress>")
+            self.root.deletecommand(funcid)
+        except tk.TclError:
+            pass
+
+    def install_context_outside_click_observer(self, popup: tk.Widget) -> None:
+        if self.active_themed_context_popup is not popup:
+            return
+        self.clear_context_outside_click_observer()
+        tag = f"ShowerContextClick{id(popup)}"
+        widgets: list[tk.Widget] = []
+
+        def observe(event: tk.Event) -> None:
+            if self.active_themed_context_popup is not popup:
+                return
+            try:
+                if event.widget.winfo_toplevel() is popup:
+                    return
+                left, top = popup.winfo_rootx(), popup.winfo_rooty()
+                if left <= event.x_root < left + popup.winfo_width() and top <= event.y_root < top + popup.winfo_height():
+                    return
+            except tk.TclError:
+                return
+            self.close_active_themed_context_menu()
+
+        # Observe before widget/class handlers, which may return "break". Never
+        # grab the mouse: menu buttons and existing review dialogs retain control.
+        def attach(widget: tk.Widget) -> None:
+            if widget is popup:
+                return
+            widget.bindtags((tag, *widget.bindtags()))
+            widgets.append(widget)
+            for child in widget.winfo_children():
+                attach(child)
+
+        funcid = self.root.bind_class(tag, "<ButtonPress>", observe)
+        self._context_click_observer = (popup, tag, widgets, funcid)
+        try:
+            attach(self.root)
+        except tk.TclError:
+            self.clear_context_outside_click_observer(popup)
+
     def close_active_themed_context_menu(self) -> None:
+        self.clear_context_outside_click_observer()
         binding = self.active_themed_context_binding
         if binding is not None:
             widget, sequence, funcid = binding
@@ -3484,6 +3544,7 @@ class ShowerProgrammerApp:
 
         def retire_popup(*, destroy: bool) -> None:
             """Hide the menu immediately and never let popup teardown block its action."""
+            self.clear_context_outside_click_observer(popup)
             if self.active_themed_context_popup is popup:
                 self.active_themed_context_popup = None
             binding = self.active_themed_context_binding
@@ -3590,6 +3651,11 @@ class ShowerProgrammerApp:
             ).pack(fill=tk.X, pady=1)
 
         def cleanup_menu_state(_event: tk.Event | None = None) -> None:
+            if _event is not None and _event.widget is not popup:
+                return
+            self.clear_context_outside_click_observer(popup)
+            if self.active_themed_context_popup is not popup:
+                return
             if self.active_themed_context_popup is popup:
                 self.active_themed_context_popup = None
             binding = self.active_themed_context_binding
@@ -3647,29 +3713,7 @@ class ShowerProgrammerApp:
 
         def install_outside_click_close() -> None:
             try:
-                owner = parent.winfo_toplevel()
-            except tk.TclError:
-                return
-            if self.active_themed_context_popup is not popup:
-                return
-
-            def close_if_clicked_outside(event: tk.Event) -> None:
-                if self.active_themed_context_popup is not popup:
-                    return
-                try:
-                    left = popup.winfo_rootx()
-                    top = popup.winfo_rooty()
-                    right = left + popup.winfo_width()
-                    bottom = top + popup.winfo_height()
-                    if left <= event.x_root <= right and top <= event.y_root <= bottom:
-                        return
-                except tk.TclError:
-                    return
-                self.close_active_themed_context_menu()
-
-            try:
-                funcid = owner.bind("<ButtonPress>", close_if_clicked_outside, add="+")
-                self.active_themed_context_binding = (owner, "<ButtonPress>", funcid)
+                self.install_context_outside_click_observer(popup)
             except tk.TclError:
                 pass
 
@@ -3789,8 +3833,11 @@ class ShowerProgrammerApp:
         except tk.TclError:
             pass
 
-        self.present_window_without_flash(prompt, make_transient=True, owner=owner, delay_ms=0)
-        prompt.after(100, text_box.focus_set)
+        setattr(prompt, "_shower_preferred_focus_widget", text_box)
+        self.present_window_without_flash(
+            prompt, make_transient=True, owner=owner, delay_ms=0,
+            on_presented=text_box.focus_force,
+        )
         prompt.protocol("WM_DELETE_WINDOW", cancel)
         prompt.bind("<Escape>", lambda _event: cancel())
         prompt.wait_window()
@@ -5674,6 +5721,8 @@ class ShowerProgrammerApp:
             self.TREE_CHECKED_BG = "#2b3248"
             self.TREE_SENT_CHECKED_BG = "#1b4132"
             self.TREE_CHECKED_TEXT = "#b9c5f5"
+            self.TREE_PAPER_TEXT = "#fbbf24"
+            self.TREE_PAPER_BG = "#342b18"
             self.PREVIEW_BG = "#0f172a"
             self.PREVIEW_CARD_BG = "#111827"
             self.DIVIDER = "#344054"
@@ -5716,6 +5765,8 @@ class ShowerProgrammerApp:
             self.TREE_CHECKED_BG = "#eef1f8"
             self.TREE_SENT_CHECKED_BG = "#d5edde"
             self.TREE_CHECKED_TEXT = "#4f5f96"
+            self.TREE_PAPER_TEXT = "#8a4b0f"
+            self.TREE_PAPER_BG = "#fff4d6"
             self.PREVIEW_BG = "#eef4fa"
             self.PREVIEW_CARD_BG = "#fbfdff"
             self.DIVIDER = "#eef2f7"
@@ -6741,8 +6792,8 @@ class ShowerProgrammerApp:
             title_row,
             text=self.APP_VERSION,
             command=self.open_changelog,
-            width=58,
-            height=26,
+            width=110,
+            height=30,
             corner_radius=13,
             fg_color=self.ACCENT_LIGHT,
             hover_color=self.BUTTON_HOVER,
@@ -6751,7 +6802,8 @@ class ShowerProgrammerApp:
             text_color=self.ACCENT_DARK,
             font=("Segoe UI", 10, "bold"),
         )
-        version_badge.pack(side=tk.LEFT, padx=(10, 0), pady=(3, 0))
+        version_badge.pack(side=tk.LEFT, padx=(10, 0))
+        self.version_badge = version_badge
         self.attach_tooltip(version_badge, f"View the {self.APP_VERSION} changelog")
         ctk.CTkLabel(
             title_stack,
@@ -7019,6 +7071,7 @@ class ShowerProgrammerApp:
         self.tree.tag_configure("READY", foreground=self.ACCENT_DARK)
         self.tree.tag_configure("PROCESSING", foreground=self.ACCENT_DARK, background=self.ACCENT_LIGHT)
         self.tree.tag_configure("ISSUES", foreground=self.WARNING)
+        self.tree.tag_configure("SKETCH_SIZE", foreground=self.TREE_PAPER_TEXT, background=self.TREE_PAPER_BG)
         self.tree.tag_configure("FAILED", foreground=self.DANGER)
         self.tree.tag_configure("SKIPPED", foreground=self.DANGER)
         self.tree.tag_configure("SENT", background=self.TREE_SENT_BG)
@@ -8853,6 +8906,61 @@ class ShowerProgrammerApp:
                 active_batches.append(active_batch)
         return active_batches, cls.unique_orders_from_batches(active_batches), hidden_count
 
+    @classmethod
+    def replace_label_sketch_copies(
+        cls, folder: Path, recovery: Path, paths: list[Path],
+    ) -> tuple[list[Path], list[str]]:
+        """Quarantine proven bad local copies, never delete guessed order matches."""
+        stamps = {}
+        for path in paths:
+            try:
+                stat = path.stat()
+                stamps[path] = (stat.st_size, stat.st_mtime_ns)
+            except OSError:
+                pass
+        removed: list[Path] = []
+        warnings: list[str] = []
+        for bad, good in shower_sketch_quality.replacement_pairs(paths):
+            try:
+                if bad.parent.resolve() != folder.resolve() or good.parent.resolve() != folder.resolve():
+                    continue
+                if bad.is_symlink() or good.is_symlink():
+                    continue
+                if any((stat.st_size, stat.st_mtime_ns) != stamps.get(path)
+                       for path in (bad, good) for stat in [path.stat()]):
+                    warnings.append(f"Sketch changed during size verification; kept {bad.name}.")
+                    continue
+                moved, notes, _bundle = cls.quarantine_paths(recovery, [bad], [folder], [])
+                removed.extend(moved)
+                warnings.extend(notes)
+            except OSError as exc:
+                warnings.append(f"Could not replace label-sized sketch {bad.name}: {exc}")
+        return removed, warnings
+
+    @classmethod
+    def attach_sketch_paper_warnings(
+        cls, previews: list[shower_batch.BatchJobResult], orders: list[shower_batch.ProcessOrder],
+        warnings: dict[Path, str], input_index: shower_scan_index.OrderInputIndex,
+    ) -> dict[str, str]:
+        by_aw = {str(order.aw_order): order for order in orders}
+        result_warnings: dict[str, str] = {}
+        for result in previews:
+            # An unresolved duplicate can have no chosen PDF. Keep its small-page
+            # warning visible without changing the existing duplicate decision.
+            candidates = [result.input_pdf] if result.input_pdf else [
+                path for path in warnings
+                if (order := by_aw.get(str(result.aw_order))) is not None
+                and input_index.file_matches_order(path, order, inspect_pdf_text=True)
+            ]
+            messages = list(dict.fromkeys(warnings[path] for path in candidates if path in warnings))
+            if messages:
+                warning = " ".join(messages)
+                result.issues.insert(0, warning)
+                if result.status == "READY":
+                    result.status = "ISSUES"
+                result_warnings[str(result.aw_order)] = warning
+        return result_warnings
+
     def worker_scan_orders(
         self,
         folder: Path,
@@ -9249,6 +9357,12 @@ class ShowerProgrammerApp:
                 and path.suffix.lower() in self.ORDER_FILE_EXTENSIONS
                 and not self.is_hardware_list_pdf(path)
             ]
+            check_cancelled()
+            self.queue_scan_progress(progress_value, max(progress_value + 1, progress_max), "Checking local sketch paper sizes...")
+            recovery = Path(getattr(self, "runtime_root", None) or folder.parent) / self.QUARANTINE_FOLDER_NAME
+            label_copies_removed, paper_cleanup_warnings = self.replace_label_sketch_copies(folder, recovery, local_order_files)
+            local_order_files = [path for path in local_order_files if path not in label_copies_removed]
+            sketch_paper_warnings = shower_sketch_quality.paper_warnings(local_order_files)
             input_index = shower_scan_index.OrderInputIndex(local_order_files)
             active_batches, orders, hidden_missing_orders = self.filter_batches_to_local_inputs(
                 all_batches,
@@ -9291,6 +9405,7 @@ class ShowerProgrammerApp:
                 )
                 orders.extend(input_only_orders)
                 previews.extend(input_only_previews)
+            paper_warnings_by_aw = self.attach_sketch_paper_warnings(previews, orders, sketch_paper_warnings, input_index)
             lifecycle_warning = ""
             try:
                 self.sync_scanned_lifecycle_states(orders, active_batches, previews, output_dir=output_dir)
@@ -9308,6 +9423,9 @@ class ShowerProgrammerApp:
                         "orders": orders,
                         "batches": active_batches,
                         "previews": previews,
+                        "sketch_paper_warnings": paper_warnings_by_aw,
+                        "label_copies_removed": label_copies_removed,
+                        "paper_cleanup_warnings": paper_cleanup_warnings,
                         "row_metadata": row_metadata,
                         "lifecycle_warning": lifecycle_warning,
                         "process_list_count": len(process_list_files),
@@ -11297,6 +11415,9 @@ class ShowerProgrammerApp:
         is_checked = self.order_tree_value_is_checked(review_text)
         if status == "PROCESSING":
             return ("PROCESSING", "DUPLICATE_OVERRIDE") if intentional_duplicate else ("PROCESSING",)
+        aw_order = str(values[self.ORDER_TREE_INDEX["order"]])
+        if "SKETCH PAPER SIZE:" in issue_text or getattr(self, "sketch_paper_warnings", {}).get(aw_order):
+            return ("SKETCH_SIZE", "DUPLICATE_OVERRIDE") if intentional_duplicate else ("SKETCH_SIZE",)
         if is_sent and is_checked:
             return ("SENT_CHECKED", "DUPLICATE_OVERRIDE") if intentional_duplicate else ("SENT_CHECKED",)
         if is_checked:
@@ -11947,6 +12068,10 @@ class ShowerProgrammerApp:
         self, result: shower_batch.BatchJobResult, *,
         metadata: dict[str, object] | None = None, defer_summary: bool = False,
     ) -> None:
+        paper_warning = getattr(self, "sketch_paper_warnings", {}).get(str(result.aw_order))
+        if paper_warning and paper_warning not in result.issues:
+            result = copy.copy(result)
+            result.issues = [paper_warning, *result.issues]
         source_result = copy.copy(result)
         source_result.issues = list(result.issues)
         self.order_result_sources[str(result.aw_order)] = source_result
@@ -13353,6 +13478,14 @@ class ShowerProgrammerApp:
         setattr(dialog, "_shower_grab_on_present", True)
         self.bring_window_to_front(dialog, make_transient=True)
 
+    def copy_order_value_to_clipboard(self, value: object, label: str = "Cell") -> None:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(str(value))
+            self.status_var.set(f"{label} copied to clipboard.")
+        except tk.TclError:
+            self.status_var.set("Clipboard unavailable. Please try again.")
+
     def open_orders_context_menu(self, event: tk.Event) -> str:
         row_id = self.tree.identify_row(event.y)
         if not row_id:
@@ -13518,6 +13651,18 @@ class ShowerProgrammerApp:
                             ),
                         },
                     )
+        if order is not None:
+            actions.extend([
+                {"separator": True},
+                {"text": "Copy Job Name", "icon": "copy", "command": lambda value=order.job_name: self.copy_order_value_to_clipboard(value, "Job name")},
+                {"text": "Copy Customer Name", "icon": "copy", "command": lambda value=order.customer: self.copy_order_value_to_clipboard(value, "Customer name")},
+            ])
+        try:
+            column = self.tree.identify_column(event.x)
+            value = self.tree.set(row_id, column) if column and column != "#0" else self.tree.item(row_id, "text")
+            actions.append({"text": "Copy Cell", "icon": "copy", "command": lambda text=value: self.copy_order_value_to_clipboard(text)})
+        except (AttributeError, tk.TclError):
+            pass
         self.show_themed_context_menu(self.root, event.x_root, event.y_root, title, subtitle, actions)
         return "break"
 
@@ -16596,6 +16741,7 @@ class ShowerProgrammerApp:
                     duplicate_files_removed = data.get("duplicate_files_removed", [])
                     duplicate_cleanup_warnings = data.get("duplicate_cleanup_warnings", [])
                     duplicate_groups_by_aw = data.get("duplicate_groups_by_aw", {})
+                    self.sketch_paper_warnings = dict(data.get("sketch_paper_warnings", {}))
                     assert isinstance(orders, list)
                     assert isinstance(batches, list)
                     assert isinstance(previews, list)
@@ -16662,6 +16808,16 @@ class ShowerProgrammerApp:
                         scan_message += f" Removed {len(duplicate_files_removed)} selected duplicate file(s)."
                     if duplicate_cleanup_warnings:
                         scan_message += f" Duplicate cleanup notes: {len(duplicate_cleanup_warnings)}."
+                    label_copies_removed = data.get("label_copies_removed", [])
+                    if label_copies_removed:
+                        scan_message += f" Replaced {len(label_copies_removed)} label-sized sketch copy(s); old copies are in Recovery."
+                        self.record_action("Sketch Paper Size", "Replaced verified label-sized local sketches with full-sized copies.", details=[str(path) for path in label_copies_removed])
+                    if self.sketch_paper_warnings:
+                        scan_message += f" Wrong sketch paper size: {len(self.sketch_paper_warnings)} order(s), highlighted amber."
+                    if data.get("paper_cleanup_warnings"):
+                        scan_message += f" Sketch replacement notes: {len(data['paper_cleanup_warnings'])}; see Action History."
+                    for note in data.get("paper_cleanup_warnings", []):
+                        self.record_action("Sketch Paper Size", str(note), status="WARNING")
                     if import_copy_warnings:
                         scan_message += f" Input synchronization notes: {len(import_copy_warnings)}."
                     if process_list_copy_warnings:
@@ -23227,7 +23383,7 @@ tasklist /FI "IMAGENAME eq %EXE_NAME%" /NH 2>nul | find /I "%EXE_NAME%" >nul
 if errorlevel 1 goto rollback_after_launch
 
 {metadata_commands}
-for %%N in ("First-Time Setup.bat" "First-Time Setup.ps1" "Create-ShowerProgrammerShortcut.ps1") do (
+for %%N in ("First-Time Setup.bat" "First-Time Setup.ps1" "Create-ShowerProgrammerShortcut.ps1" "Repair Programmer.bat" "Repair Programmer.ps1") do (
     if exist "%NEW_DIR%\\%%~N" copy /Y "%NEW_DIR%\\%%~N" "%APP_DIR%\\%%~N" >>"%LOG_FILE%" 2>&1
 )
 call :status "Update completed successfully. Preserving the previous known-good runtime..."
@@ -37226,6 +37382,19 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
         route_app.review_dxfs()
 
         with writable_test_directory(report_path.parent, "shower_programmer_self_test_") as temp_root:
+            paper_probe = temp_root / "paper-check.pdf"
+            paper_writer = PdfWriter()
+            paper_writer.add_blank_page(612, 792)
+            paper_writer.add_blank_page(288, 432)
+            paper_writer.write(paper_probe)
+            paper_check = shower_sketch_quality.inspect_sketch(paper_probe)
+            if paper_check.label_pages != (2,):
+                raise RuntimeError("Label-printer sketch paper detection failed.")
+            result["sketch_paper_detection"] = True
+            helper_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else _SCRIPT_PROJECT_ROOT
+            if not all((helper_root / name).is_file() for name in ("Repair Programmer.bat", "Repair Programmer.ps1")):
+                raise RuntimeError("The standalone manual repair helpers are missing.")
+            result["manual_repair_helper"] = True
             source = temp_root / "source.txt"
             target = temp_root / "target" / "copied.txt"
             source.write_text("self-test", encoding="utf-8")
@@ -38646,6 +38815,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 ),
                 "non_destructive_guided_tour": len(ShowerProgrammerApp.GUIDED_TOUR_STEPS) == 9,
                 "version_2_03_workstation_setup_recovery": True,
+                "version_2_04_safe_repair_sketch_paper": True,
+                "version_2_05_review_editor_clipboard": True,
             }
         )
     except Exception as exc:

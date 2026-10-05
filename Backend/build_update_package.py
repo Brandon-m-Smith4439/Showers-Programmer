@@ -14,7 +14,7 @@ from pathlib import Path
 
 APP_EXE = "Shower Programmer.exe"
 REQUIRED_DIRS = ("_internal", "Assets")
-SETUP_FILES = ("First-Time Setup.bat", "First-Time Setup.ps1", "Create-ShowerProgrammerShortcut.ps1")
+SETUP_FILES = ("First-Time Setup.bat", "First-Time Setup.ps1", "Create-ShowerProgrammerShortcut.ps1", "Repair Programmer.bat", "Repair Programmer.ps1")
 REQUIRED_FILES = (
     APP_EXE,
     "Assets/ShowersProgrammer.ico",

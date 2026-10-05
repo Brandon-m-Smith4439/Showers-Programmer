@@ -49,6 +49,8 @@ class PublicationInventoryTests(unittest.TestCase):
         paths = (
             "First-Time Setup.bat", "First-Time Setup.ps1", "requirements.txt",
             "Create-ShowerProgrammerShortcut.ps1", "GUI.bat",
+            "Repair Programmer.bat", "Repair Programmer.ps1", "Backend/shower_sketch_quality.py",
+            "tests/test_manual_repair.py", "tests/test_sketch_quality.py",
             "Rebuild Shower Programmer EXE.bat", "Backend/shower_programmer_v4.py",
             "Backend/shower_programmer_config.json", "Backend/version.json",
             "Backend/release_required_flags.txt", "Backend/build_update_package.py",

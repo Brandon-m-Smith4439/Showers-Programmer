@@ -258,6 +258,10 @@ copy /Y "First-Time Setup.ps1" "%STAGED_DIR%\First-Time Setup.ps1" >NUL
 if errorlevel 1 goto failed
 copy /Y "Create-ShowerProgrammerShortcut.ps1" "%STAGED_DIR%\Create-ShowerProgrammerShortcut.ps1" >NUL
 if errorlevel 1 goto failed
+copy /Y "Repair Programmer.bat" "%STAGED_DIR%\Repair Programmer.bat" >NUL
+if errorlevel 1 goto failed
+copy /Y "Repair Programmer.ps1" "%STAGED_DIR%\Repair Programmer.ps1" >NUL
+if errorlevel 1 goto failed
 
 echo Writing staged update metadata...
 "%PYTHON_EXE%" %PYTHON_ARGS% -c "import hashlib,json,pathlib,sys; app=pathlib.Path(sys.argv[1]); version=json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8')); exe=app/'Shower Programmer.exe'; source=pathlib.Path(sys.argv[3]); sha=lambda p: hashlib.sha256(p.read_bytes()).hexdigest().lower(); data={'sha':sys.argv[4],'version':version['version'],'release_name':version['release_name'],'exe_sha256':sha(exe),'gui_sha256':sha(source),'gui_version':version['marker'],'built_at':__import__('datetime').datetime.now().astimezone().isoformat(),'method':'build'}; (app/'.shower_update.json').write_text(json.dumps(data,separators=(',',':'))+'\n',encoding='utf-8')" "%STAGED_DIR%" "%SOURCE_VERSION%" "%SOURCE_ENTRY%" "%BUILD_SHA%"
@@ -299,7 +303,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$stage=[IO.Path]::GetFullPath('%STAGED_DIR%');" ^
   "$final=[IO.Path]::GetFullPath('%FINAL_DIR%');" ^
   "$backup=[IO.Path]::GetFullPath('build\deploy_backup');" ^
-  "$names=@('_internal','Assets','Shower Programmer.exe','.shower_update.json','First-Time Setup.bat','First-Time Setup.ps1','Create-ShowerProgrammerShortcut.ps1');" ^
+  "$names=@('_internal','Assets','Shower Programmer.exe','.shower_update.json','First-Time Setup.bat','First-Time Setup.ps1','Create-ShowerProgrammerShortcut.ps1','Repair Programmer.bat','Repair Programmer.ps1');" ^
   "$finalExe=Join-Path $final 'Shower Programmer.exe';" ^
   "$running=@(Get-Process -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -eq $finalExe) } catch { $false } });" ^
   "if($running){throw 'Close Shower Programmer before rebuilding so its runtime files can be replaced safely.'};" ^

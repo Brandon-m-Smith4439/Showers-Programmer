@@ -1,8 +1,8 @@
 {
-  "version": "Version 2.03",
-  "version_number": 203,
-  "marker": "VERSION_2_03_WORKSTATION_SETUP_RECOVERY",
-  "release_name": "First-Time Workstation Setup and Recovery Reminders",
+  "version": "Version 2.05",
+  "version_number": 205,
+  "marker": "VERSION_2_05_REVIEW_EDITOR_CLIPBOARD",
+  "release_name": "Review Editor and Clipboard Improvements",
   "release_date": "2026-10-05",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"

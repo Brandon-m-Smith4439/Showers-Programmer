@@ -2,13 +2,25 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current source version: **Version 2.03 - First-Time Workstation Setup and Recovery Reminders**
+Current source version: **Version 2.05 - Review Editor and Clipboard Improvements**
 
 For a new workstation, [download the Windows application ZIP](https://github.com/Brandon-m-Smith4439/Showers-Programmer/raw/refs/heads/main/release/Shower-Programmer-Windows.zip), extract it completely to a writable local folder, and run **First-Time Setup.bat** from the extracted folder. Do not run setup inside the ZIP. It creates the local input/output folders and Desktop/Start Menu shortcuts, then launches the app. The packaged EXE does not require Python or Git. Keep `_internal` beside the EXE. To pin it, launch the app and right-click its taskbar icon > Pin to taskbar.
 
 Source installations use the same setup BAT with Python 3.10+ (including Tcl/Tk and pip) installed. Setup creates a local `.venv` and installs `requirements.txt`; Internet access may be required. Excel/AutoCAD remain optional external requirements for their integrations. Configure shared drive paths in Settings > Folder Setup.
 
 Use **Guided Tour** in Tools for a repeatable Next/Back/Skip walkthrough. It highlights the main workflow without scanning, processing, or sending orders. Startup recovery warnings stop prompting after 14 days, while recovery records and warning history remain available in Settings > Recovery.
+
+### Repair An Existing Installation
+
+If the old app's updater is stuck, extract the entire new Windows ZIP into a **separate local folder**. Close the old programmer, then run **Repair Programmer.bat from the NEW extracted folder**. It locates an existing Desktop/Start Menu shortcut, or lets you browse to the old EXE. Confirm the old installation path before updating. Python and Git are not required.
+
+The repair validates the replacement EXE before swapping it, preserves Input/Output, settings, overrides, checked/sent state and history, and keeps previous program files under `Rollback\ManualUpdate-*`. It restores the old runtime if installed validation fails. If locked files prevent rollback, the error identifies the retained backup/staging locations. It will not silently terminate a running programmer; use Task Manager yourself if the old app is frozen. Existing shortcuts continue targeting the same EXE path.
+
+### Sketch Paper Warnings
+
+Scanning checks local PDF page/crop sizes, not glass dimensions. Letter, Legal, A4 and larger pages are accepted; unusually small pages (short side below 7 inches or long side below 10 inches) get an **amber row background** and a paper-size warning, even when the order is checked. This is an advisory warning and does not change machine routing or CNC geometry.
+
+When a label-sized PDF and exactly one full-sized copy have the same complete Job Nr/revision, compatible A&W filename identity, copy-variant filenames, and identical extracted sketch text, the bad local copy moves to the normal seven-day Recovery bundle and the full-sized copy becomes the source. Annotated, unreadable, image-only, different-content, ambiguous or unrelated files are left for operator review. Shared-drive originals are not automatically deleted by this paper-size check.
 
 Version 2.02 separates duplicate removal from intentional duplicate authorization. Select the A&W order and PDF to retain, inspect files with Open, and explicitly verify any intentional duplicate before allowing it. Removed copies retain local recovery backups and shared cleanup remains content-checked. Sent-batch archiving refreshes only after the result popup actually closes and skips unnecessary older-PDF rereads for this standalone action. The one-folder release includes the preceding responsiveness fixes.
 

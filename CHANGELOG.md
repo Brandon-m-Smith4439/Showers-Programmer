@@ -1,3 +1,25 @@
+## [Version 2.05] - 2026-10-05
+
+### Review And Dashboard Fixes
+- Keep keyboard focus in the Add Text Box content editor throughout popup presentation and foreground retries; preserve Save/Cancel behavior.
+- Give the dashboard version badge sufficient fixed width and height for the complete version label.
+- Add Copy Job Name, Copy Customer Name and Copy Cell to order-row context menus. Copy full values from the right-clicked row without changing multi-selection actions.
+- Observe outside clicks before widget handlers consume them; keep inside clicks usable and remove menu-specific handlers on dismissal without disturbing existing bindings.
+- Accept the optional hyphen in Smart Glazier's "Glass Order -" replacement names. Retain full job/revision/reference-number, annotation and identical-content safeguards; overwritten same-name PDFs invalidate cached paper checks.
+- Preserve all CNC processing, machine/orientation rules and operator data.
+
+## [Version 2.04] - 2026-10-05
+
+### Safe Manual Repair
+- Add Repair Programmer.bat/PS1 to the Windows one-folder release and updater deployment. Locate the existing installation from shortcuts or Browse, confirm its path, validate staged and installed runtimes, and refuse replacement while the old app is running.
+- Replace only the fixed runtime allowlist. Preserve inputs, outputs, configuration, overrides, history and checked/sent progress; retain old runtime backups and restore them on validation failure. Keep all backup/staging files with an actionable error if rollback encounters locked files.
+- No Python or Git is required for packaged repair. Do not force-close operator processes or auto-launch a production scan.
+
+### Sketch Paper Checks
+- Cache local PDF crop/page-size checks, including UserUnit and landscape pages. Highlight label-sized sketches with a distinct amber background and concise inch/page warning without changing glass dimensions or machining rules.
+- Quarantine a small local copy only when one normal-sized replacement has exact job/revision identity, compatible explicit A&W filename identity, copy-variant naming and identical sketch text. Keep annotations, uncertain matches and shared originals untouched.
+- Keep the warning visible for checked/processed orders; show replacement counts and Recovery location in scan status/action history. Verify paper checks in the packaged self-test and add focused preservation/rollback/PDF/cache/UI integration tests.
+
 ## [Version 2.03] - 2026-10-05
 
 ### Workstation Setup And Guided Tour
