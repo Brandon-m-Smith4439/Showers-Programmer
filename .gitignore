@@ -5,6 +5,16 @@
 /Recovery/
 /History/
 /shower_programmer_ui_settings.json
+/manual_overrides.json
+/processing_history.json
+/shower_programmer.sqlite3*
+/.shower_update.json
+/Test Workspace/
+/Rollback/
+Configuration Backups/
+.Network PDF Cache/
+.__sp_new_*/
+.__sp_old_*/
 
 # Installed one-folder application and all of its local runtime state.
 # The publishable one-folder build lives in release/Shower-Programmer-Windows.zip.
@@ -19,7 +29,14 @@ __pycache__/
 /build/
 /tmp/
 /tests/_verification/
-/tests/known_orders/
+/_verification/
+/dist/
+# Only reviewed sanitized regression fixtures belong here, not real order files.
+/tests/known_orders/*
+!/tests/known_orders/README.md
+!/tests/known_orders/manifest.json
+!/tests/known_orders/kinsdale_oos_001.json
+!/tests/known_orders/legacy_process_list_sample.xls
 /--self-test-output
 /*-self-test*/
 
@@ -32,3 +49,14 @@ ErrorReports/
 !/release/Shower-Programmer-Windows.zip
 !/release/Shower-Programmer-Windows.json
 /screenshots/
+.venv/
+
+# Workstation shortcuts, transient files, and private environment variables
+*.lnk
+*.log
+*.part
+.env
+.env.*
+!.env.example
+/.codex/
+/.agents/

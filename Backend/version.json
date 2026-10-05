@@ -1,9 +1,9 @@
 {
-  "version": "Version 2.02",
-  "version_number": 202,
-  "marker": "VERSION_2_02_VERIFIED_DUPLICATES_SENT_BATCH_POPUPS",
-  "release_name": "Verified Duplicate Choices and Sent Batch Archive Recovery",
-  "release_date": "2026-10-02",
+  "version": "Version 2.03",
+  "version_number": 203,
+  "marker": "VERSION_2_03_WORKSTATION_SETUP_RECOVERY",
+  "release_name": "First-Time Workstation Setup and Recovery Reminders",
+  "release_date": "2026-10-05",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

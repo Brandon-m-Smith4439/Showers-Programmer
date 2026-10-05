@@ -1447,12 +1447,42 @@ class ShowerProgrammerApp:
             daemon=True,
         ).start()
 
+    @staticmethod
+    def startup_recovery_warning_is_recent(item: dict[str, str], *, now: datetime | None = None) -> bool:
+        """Expire reminders, not recovery records; unknown dates remain actionable."""
+        try:
+            occurred = datetime.fromisoformat(str(item.get("occurred_at", "")))
+            if occurred.tzinfo is None:
+                occurred = occurred.astimezone()
+        except (ValueError, TypeError):
+            return True
+        return occurred >= (now or datetime.now().astimezone()) - timedelta(days=14)
+
     def apply_startup_recovery_results(self, results: list[dict[str, str]]) -> None:
         """Apply recovery state and any operator prompt on Tk's UI thread."""
         self.startup_recovery_results = results
         self._startup_recovery_check_finished = True
-        actionable = [item for item in results if str(item.get("severity", "")).upper() == "WARN"]
+        warnings = [item for item in results if str(item.get("severity", "")).upper() == "WARN"]
+        actionable = [item for item in warnings if self.startup_recovery_warning_is_recent(item)]
+        expired = [item for item in warnings if item not in actionable]
         state = self.load_startup_recovery_notice_state()
+        if expired:
+            history = state.setdefault("history", [])
+            if not isinstance(history, list):
+                history = []
+            recorded = {str(row.get("item_fingerprint", "")) for row in history if isinstance(row, dict)}
+            for item in expired:
+                identity = self.startup_recovery_fingerprint([item])
+                if identity not in recorded:
+                    history.append({
+                        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "status": "REMINDER_EXPIRED", "item_fingerprint": identity,
+                        "title": str(item.get("title", "Recovery item")),
+                        "detail": "Startup reminder expired after 14 days. The unresolved recovery record is retained. " + str(item.get("detail", "")),
+                        "path": str(item.get("path", "")), "occurred_at": str(item.get("occurred_at", "")),
+                    })
+            state["history"] = history[-100:]
+            self.save_startup_recovery_notice_state(state)
         if not actionable:
             if str(state.get("active_fingerprint", "")):
                 state["active_fingerprint"] = ""
@@ -1461,15 +1491,15 @@ class ShowerProgrammerApp:
                     history.append(
                         {
                             "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-                            "status": "RESOLVED",
-                            "title": "Startup recovery warnings cleared",
-                            "detail": "The previously reported recovery condition is no longer present.",
+                            "status": "REMINDER_EXPIRED" if expired else "RESOLVED",
+                            "title": "Startup recovery reminders expired" if expired else "Startup recovery warnings cleared",
+                            "detail": "Old recovery records are retained without startup popups." if expired else "The previously reported recovery condition is no longer present.",
                         }
                     )
                 self.save_startup_recovery_notice_state(state)
                 self.record_action(
-                    "Startup Recovery Resolved",
-                    "Previously reported startup recovery warnings are no longer present.",
+                    "Startup Recovery Reminder Expired" if expired else "Startup Recovery Resolved",
+                    "Old recovery records are retained without startup popups." if expired else "Previously reported startup recovery warnings are no longer present.",
                     status="SUCCESS",
                 )
             self.schedule_startup_initial_scan()
@@ -6379,6 +6409,111 @@ class ShowerProgrammerApp:
         if icon is not None:
             ttk.Label(parent, image=icon, style=style).pack(side=tk.LEFT, padx=(0, 8))
 
+    GUIDED_TOUR_STEPS = (
+        ("folders", "Set Up Your Folders", "Settings > Folder Setup controls the shared import location and local Orders, Process List and Output folders. Keep processing local for speed; Scan copies new shared inputs locally."),
+        ("scan", "Import And Scan", "Scan Orders imports available files and reads the process lists. Watch the progress bar below. The process list determines which items need programming; missing files or ambiguous duplicates appear as issues."),
+        ("orders", "Read The Orders Table", "Expand a batch to see its orders. Click column headers to sort, and use Find to locate an A&W number. Processed, Checked, Sent and Issues show each order's progress. Double-click an order to review it."),
+        ("options", "Choose Run Options", "REMAKE limits programming to the listed pieces and crosses out omitted pieces. Skip Sketch and Skip DXF suppress those outputs. Check these switches before processing; leave them off for an ordinary complete run."),
+        ("process", "Process Orders", "Select orders or an entire batch, then use Process Selected. Process All runs all active orders. Existing-output and review warnings still require your confirmation. Progress and Cancel remain available during managed tasks."),
+        ("review", "Review Sketch And DXF", "Review Order includes the overview and each piece. Check machine, indicator, hinge orientation, dimensions, out-of-square and internal radii. Save Sketch Edits saves your marks; Process DXF Again applies programming changes. Refresh reloads externally saved edits."),
+        ("checked", "Mark Reviewed Orders Checked", "Mark Checked confirms your review. The same control can uncheck selected orders. Resolve blocking manual DXF review warnings before sending; a checked order is not automatically safe if it still has blocking issues."),
+        ("send", "Review And Send Output", "Select the orders you intend to send, then open Review / Send. Expand entries to inspect files and destinations. Only checked, eligible orders are sent. A successful send archives completed local inputs and process lists; cleanup notes must still be reviewed."),
+        ("recovery", "Find Recovery And Support", "Settings contains Recovery, Backup & Restore, Action History and configuration. Old startup reminders expire after 14 days without resolving the underlying records. Use Check for Updates for published releases. You can restart this tour whenever needed."),
+    )
+
+    def open_guided_tour(self) -> None:
+        """Explain the real controls without invoking production workflows."""
+        if self.operation_active():
+            self.status_var.set("Wait for the current task to finish before starting the guided tour.")
+            return
+        existing = self.managed_page_window("guided_tour")
+        if existing is not None:
+            self.bring_page_window_to_front(existing)
+            return
+        dialog = self.create_hidden_toplevel(self.root)
+        dialog.title("Shower Programmer - Guided Tour")
+        dialog.configure(fg_color=self.APP_BG)
+        dialog.resizable(False, False)
+        self.center_child_window(dialog, 550, 340)
+        self.set_window_icon(dialog)
+        self.register_page_window("guided_tour", dialog)
+        setattr(dialog, "_shower_grab_on_present", True)
+        shell = ctk.CTkFrame(dialog, fg_color=self.CARD_BG, corner_radius=8, border_width=1, border_color=self.BORDER)
+        shell.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(2, weight=1)
+        progress = ctk.CTkLabel(shell, text="", font=("Segoe UI", 11), text_color=self.ACCENT_DARK, anchor="w")
+        progress.grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 5))
+        title = ctk.CTkLabel(shell, text="", font=("Segoe UI", 20, "bold"), text_color=self.TEXT, anchor="w")
+        title.grid(row=1, column=0, sticky="ew", padx=18)
+        body = ctk.CTkLabel(shell, text="", font=("Segoe UI", 12), text_color=self.TEXT, anchor="nw", justify="left", wraplength=480)
+        body.grid(row=2, column=0, sticky="nsew", padx=18, pady=(12, 18))
+        footer = ctk.CTkFrame(shell, fg_color="transparent")
+        footer.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 16))
+        footer.grid_columnconfigure(0, weight=1)
+        index = 0
+        highlighted: list[tuple[Any, dict[str, object]]] = []
+
+        def restore_highlight(_event: tk.Event | None = None) -> None:
+            if _event is not None and _event.widget is not dialog:
+                return
+            for widget, old in highlighted:
+                try:
+                    widget.configure(**old)
+                except (AttributeError, tk.TclError):
+                    pass
+            highlighted.clear()
+
+        def close() -> None:
+            restore_highlight()
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            dialog.destroy()
+
+        def display_step() -> None:
+            restore_highlight()
+            key, heading, explanation = self.GUIDED_TOUR_STEPS[index]
+            progress.configure(text=f"GUIDED TOUR   {index + 1} / {len(self.GUIDED_TOUR_STEPS)}")
+            title.configure(text=heading)
+            body.configure(text=explanation)
+            back.configure(state="disabled" if index == 0 else "normal")
+            next_button.configure(text="Finish" if index == len(self.GUIDED_TOUR_STEPS) - 1 else "Next")
+            target = getattr(self, "guided_tour_targets", {}).get(key)
+            if target is not None:
+                try:
+                    old = {name: target.cget(name) for name in ("border_width", "border_color")}
+                    highlighted.append((target, old))
+                    target.configure(border_width=3, border_color=self.ACCENT)
+                    if target.winfo_width() < 350:
+                        x = target.winfo_rootx() + target.winfo_width() + 20
+                        y = target.winfo_rooty()
+                        x = max(self.root.winfo_rootx() + 12, min(x, self.root.winfo_rootx() + self.root.winfo_width() - 562))
+                        y = max(self.root.winfo_rooty() + 12, min(y, self.root.winfo_rooty() + self.root.winfo_height() - 352))
+                        dialog.geometry(f"550x340+{x}+{y}")
+                except (AttributeError, ValueError, tk.TclError):
+                    pass
+
+        def move(direction: int) -> None:
+            nonlocal index
+            if direction > 0 and index == len(self.GUIDED_TOUR_STEPS) - 1:
+                close()
+                return
+            index = max(0, min(len(self.GUIDED_TOUR_STEPS) - 1, index + direction))
+            display_step()
+
+        ctk.CTkButton(footer, text="Skip Tour", command=close, width=105, fg_color=self.BUTTON_BG, hover_color=self.BUTTON_HOVER, text_color=self.BUTTON_TEXT).grid(row=0, column=0, sticky="w")
+        back = ctk.CTkButton(footer, text="Back", command=lambda: move(-1), width=90, fg_color=self.BUTTON_BG, hover_color=self.BUTTON_HOVER, text_color=self.BUTTON_TEXT, **self.ctk_button_icon("chevron_left", 14, self.ACCENT_DARK))
+        back.grid(row=0, column=1, padx=(0, 8))
+        next_button = ctk.CTkButton(footer, text="Next", command=lambda: move(1), width=90, fg_color=self.ACCENT, hover_color=self.ACCENT_DARK, **self.ctk_button_icon("chevron_right", 14, "#ffffff"))
+        next_button.grid(row=0, column=2)
+        dialog.bind("<Destroy>", restore_highlight, add="+")
+        dialog.bind("<Escape>", lambda _event: close())
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        display_step()
+        self.bring_window_to_front(dialog, make_transient=True, owner=self.root)
+
     def build_ui(self) -> None:
         if ctk is None:
             raise RuntimeError("CustomTkinter is required for the modern Shower Programmer GUI.")
@@ -6508,6 +6643,7 @@ class ShowerProgrammerApp:
             self.make_sidebar_button(tools, "Validate Selected", "check_circle", self.validate_selected_orders, compact=True),
             self.make_sidebar_button(tools, "Check for Updates", "refresh", self.check_for_updates, compact=True),
             self.make_sidebar_button(tools, "Settings", "settings", self.open_settings, compact=True),
+            self.make_sidebar_button(tools, "Guided Tour", "help", self.open_guided_tour, compact=True),
         ]
         for index, button in enumerate(tool_buttons):
             button.pack(fill=tk.X, pady=(0, 0 if index == len(tool_buttons) - 1 else 6))
@@ -6702,6 +6838,11 @@ class ShowerProgrammerApp:
         self.test_mode_banner.grid_remove()
 
         table_outer = self.make_section(content, "Orders", "orders")
+        self.guided_tour_targets = {
+            "folders": tool_buttons[-2], "scan": scan_button, "orders": table_outer,
+            "options": options_card, "process": process_selected_button, "review": review_order_button,
+            "checked": self.checked_action_button, "send": send_card, "recovery": tool_buttons[-2],
+        }
         table_outer.grid(row=2, column=0, sticky="nsew")
         table_outer.grid_columnconfigure(0, weight=1)
         table_outer.grid_rowconfigure(1, weight=1)
@@ -23086,6 +23227,9 @@ tasklist /FI "IMAGENAME eq %EXE_NAME%" /NH 2>nul | find /I "%EXE_NAME%" >nul
 if errorlevel 1 goto rollback_after_launch
 
 {metadata_commands}
+for %%N in ("First-Time Setup.bat" "First-Time Setup.ps1" "Create-ShowerProgrammerShortcut.ps1") do (
+    if exist "%NEW_DIR%\\%%~N" copy /Y "%NEW_DIR%\\%%~N" "%APP_DIR%\\%%~N" >>"%LOG_FILE%" 2>&1
+)
 call :status "Update completed successfully. Preserving the previous known-good runtime..."
 if exist "%NEW_DIR%" rmdir /S /Q "%NEW_DIR%"
 if not exist "%APP_DIR%\\Rollback" mkdir "%APP_DIR%\\Rollback" >nul 2>nul
@@ -38496,6 +38640,12 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "verified_duplicate_choices": True,
                 "notice_close_archive_refresh": True,
                 "version_2_02_verified_duplicates_sent_batch_popups": True,
+                "first_time_workstation_setup": True,
+                "two_week_recovery_reminders": not ShowerProgrammerApp.startup_recovery_warning_is_recent(
+                    {"occurred_at": (datetime.now().astimezone() - timedelta(days=15)).isoformat()}
+                ),
+                "non_destructive_guided_tour": len(ShowerProgrammerApp.GUIDED_TOUR_STEPS) == 9,
+                "version_2_03_workstation_setup_recovery": True,
             }
         )
     except Exception as exc:

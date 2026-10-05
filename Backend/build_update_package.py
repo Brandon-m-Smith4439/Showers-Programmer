@@ -14,6 +14,7 @@ from pathlib import Path
 
 APP_EXE = "Shower Programmer.exe"
 REQUIRED_DIRS = ("_internal", "Assets")
+SETUP_FILES = ("First-Time Setup.bat", "First-Time Setup.ps1", "Create-ShowerProgrammerShortcut.ps1")
 REQUIRED_FILES = (
     APP_EXE,
     "Assets/ShowersProgrammer.ico",
@@ -32,7 +33,7 @@ def sha256_file(path: Path) -> str:
 
 
 def iter_package_files(app_dir: Path):
-    for relative_name in (APP_EXE, ".shower_update.json"):
+    for relative_name in (APP_EXE, ".shower_update.json", *SETUP_FILES):
         path = app_dir / relative_name
         if path.is_file():
             yield path, relative_name

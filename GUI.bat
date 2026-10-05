@@ -4,6 +4,10 @@ cd /d "%~dp0"
 
 set "SCRIPT=%~dp0Backend\shower_programmer_v4.py"
 set "BUNDLED_PY=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+if exist "%~dp0.venv\Scripts\pythonw.exe" (
+  start "" "%~dp0.venv\Scripts\pythonw.exe" "%SCRIPT%"
+  exit /b 0
+)
 
 if exist "%BUNDLED_PY%" (
   start "" "%BUNDLED_PY%" "%SCRIPT%"

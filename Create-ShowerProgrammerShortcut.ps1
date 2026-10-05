@@ -1,16 +1,25 @@
+param(
+    [string]$Root = $PSScriptRoot,
+    [string]$DesktopPath = [Environment]::GetFolderPath('Desktop'),
+    [string]$StartMenuPath = (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Shower Programmer')
+)
 $ErrorActionPreference = 'Stop'
-
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = [IO.Path]::GetFullPath($Root)
 $ShortcutPath = Join-Path $Root 'Shower Programmer.lnk'
-$FastExePath = Join-Path $Root 'Shower Programmer\Shower Programmer.exe'
+$FastExePath = Join-Path $Root 'Shower Programmer.exe'
+if (-not (Test-Path -LiteralPath $FastExePath)) { $FastExePath = Join-Path $Root 'Shower Programmer\Shower Programmer.exe' }
 $BatchPath = Join-Path $Root 'GUI.bat'
 $TargetPath = if (Test-Path -LiteralPath $FastExePath) { $FastExePath } else { $BatchPath }
+$Arguments = ''
+$LocalPython = Join-Path $Root '.venv\Scripts\pythonw.exe'
+if (-not (Test-Path -LiteralPath $FastExePath) -and (Test-Path -LiteralPath $LocalPython)) {
+    $TargetPath = $LocalPython
+    $Arguments = '"' + (Join-Path $Root 'Backend\shower_programmer_v4.py') + '"'
+}
 $IconPath = Join-Path $Root 'Assets\ShowersProgrammer.ico'
-$DesktopShortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Shower Programmer.lnk'
-$StartMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Shower Programmer'
+$DesktopShortcutPath = Join-Path $DesktopPath 'Shower Programmer.lnk'
+$StartMenuDir = $StartMenuPath
 $StartMenuShortcutPath = Join-Path $StartMenuDir 'Shower Programmer.lnk'
-$TaskbarDir = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
-$TaskbarShortcutPath = Join-Path $TaskbarDir 'Shower Programmer.lnk'
 
 if (-not (Test-Path -LiteralPath $TargetPath)) {
     throw "Could not find Shower Programmer launcher: $TargetPath"
@@ -27,6 +36,7 @@ function New-ShowerProgrammerShortcut {
     $Shell = New-Object -ComObject WScript.Shell
     $Shortcut = $Shell.CreateShortcut($Path)
     $Shortcut.TargetPath = $TargetPath
+    $Shortcut.Arguments = $Arguments
     $Shortcut.WorkingDirectory = $Root
     $Shortcut.Description = 'Launch Shower Programmer'
     if (Test-Path -LiteralPath $IconPath) {
@@ -44,14 +54,7 @@ New-ShowerProgrammerShortcut -Path $ShortcutPath
 New-ShowerProgrammerShortcut -Path $DesktopShortcutPath
 New-ShowerProgrammerShortcut -Path $StartMenuShortcutPath
 
-try {
-    New-ShowerProgrammerShortcut -Path $TaskbarShortcutPath
-    Write-Host "Copied taskbar shortcut to $TaskbarShortcutPath"
-} catch {
-    Write-Warning "Could not create the taskbar shortcut copy: $($_.Exception.Message)"
-}
-
 Write-Host "Created $ShortcutPath"
 Write-Host "Created $DesktopShortcutPath"
 Write-Host "Created $StartMenuShortcutPath"
-Write-Host "If Windows does not show it on the taskbar immediately, right-click the Start Menu shortcut and choose Pin to taskbar."
+Write-Host 'Taskbar pinning requires your approval: launch the app, right-click its taskbar icon, and choose Pin to taskbar.'

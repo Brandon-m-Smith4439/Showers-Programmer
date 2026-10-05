@@ -1,0 +1,15 @@
+{
+  "id": "KINSDALE_OOS_001",
+  "kind": "dxf_dimension_reconciliation",
+  "process_dimensions": [15.96875, 46.34375],
+  "sketch_dimensions": [15.75, 46.375],
+  "normal_match": false,
+  "dxf_outline_points": [
+    [0.125, 46.25],
+    [0.0, 0.125],
+    [15.75, 0.0],
+    [15.625, 46.375]
+  ],
+  "expected_match_basis": "sketch_dxf_envelope",
+  "expected_skew_shift": 0.125
+}

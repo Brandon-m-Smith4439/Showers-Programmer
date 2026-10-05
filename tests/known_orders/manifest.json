@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "description": "Sanitized real-order regressions derived from diagnostic packages.",
+  "cases": ["kinsdale_oos_001.json"]
+}

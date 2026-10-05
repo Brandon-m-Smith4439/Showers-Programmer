@@ -465,6 +465,7 @@ def startup_recovery_issues(runtime_root: Path, output_dir: Path) -> list[dict[s
                 "title": "Interrupted Send transaction",
                 "detail": f"{item.get('transaction_id', '')} stopped at {item.get('stage', 'unknown')} for {', '.join(item.get('aw_orders', [])) or 'unknown order' }.",
                 "path": str(item.get("journal_path", "")),
+                "occurred_at": str(item.get("updated_at", item.get("created_at", ""))),
             }
         )
 
@@ -500,6 +501,7 @@ def startup_recovery_issues(runtime_root: Path, output_dir: Path) -> list[dict[s
                     "title": "Interrupted update staging folder",
                     "detail": path.name,
                     "path": str(path),
+                    "occurred_at": datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(),
                 }
             )
 
@@ -512,6 +514,7 @@ def startup_recovery_issues(runtime_root: Path, output_dir: Path) -> list[dict[s
                 "title": "SQLite rollback journal present",
                 "detail": "Database recovery may be needed; run System Health before production work.",
                 "path": str(rollback_journal),
+                "occurred_at": datetime.fromtimestamp(rollback_journal.stat().st_mtime).astimezone().isoformat(),
             }
         )
     return issues

@@ -1,3 +1,19 @@
+## [Version 2.03] - 2026-10-05
+
+### Workstation Setup And Guided Tour
+- Add First-Time Setup.bat/PS1 for complete one-folder releases or Python source installations. Create missing local folders without replacing existing inputs/settings; source setup uses a private virtual environment and verified runtime dependencies.
+- Create Desktop and Start Menu shortcuts with the application icon. Guide the operator through Windows taskbar pinning rather than writing unsupported pinned-shortcut files.
+- Add a non-destructive nine-step Guided Tour with Next, Back, Skip, and Finish. Highlight existing workflow controls and restore their styling when the tour closes; do not run production actions.
+- Include setup helpers in the one-folder release, update ZIP, and update deployment.
+- Audit publication inventory: retain source/default configuration/setup/tests and the clean ZIP/manifest, ignore local recovery/test workspaces, configuration backups, update staging, shortcuts, and private environment files. Add direct Windows download and fresh-install instructions; correct documented launcher paths.
+- Publish the explicit sanitized regression-fixture allowlist required by rebuild checks; keep real customer PDFs/DXFs/workbooks excluded. Validate source dependency setup and the packaged EXE from an otherwise clean publication checkout.
+- Make the rebuild BAT prefer the local Python environment created by source setup, matching the GUI launcher and avoiding dependencies installed into the wrong Python.
+
+### Recovery Reminders
+- Attach original occurrence timestamps to startup recovery findings and suppress reminders older than 14 days. Keep findings/history available; unknown timestamps remain actionable rather than silently hiding possible failures.
+- Verify the actual startup Open Recovery button opens the Recovery workspace and defers initial scanning until it closes. Validate setup repeatability, real shortcut targets, and all tour navigation in isolated test folders.
+- Preserve CNC, machine-routing, orientation, Send, archive, and duplicate-verification rules.
+
 ## [Version 2.02] - 2026-10-02
 
 ### Verified Duplicate Choices

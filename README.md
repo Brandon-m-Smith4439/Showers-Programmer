@@ -2,7 +2,13 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current source version: **Version 2.02 - Verified Duplicate Choices and Sent Batch Archive Recovery**
+Current source version: **Version 2.03 - First-Time Workstation Setup and Recovery Reminders**
+
+For a new workstation, [download the Windows application ZIP](https://github.com/Brandon-m-Smith4439/Showers-Programmer/raw/refs/heads/main/release/Shower-Programmer-Windows.zip), extract it completely to a writable local folder, and run **First-Time Setup.bat** from the extracted folder. Do not run setup inside the ZIP. It creates the local input/output folders and Desktop/Start Menu shortcuts, then launches the app. The packaged EXE does not require Python or Git. Keep `_internal` beside the EXE. To pin it, launch the app and right-click its taskbar icon > Pin to taskbar.
+
+Source installations use the same setup BAT with Python 3.10+ (including Tcl/Tk and pip) installed. Setup creates a local `.venv` and installs `requirements.txt`; Internet access may be required. Excel/AutoCAD remain optional external requirements for their integrations. Configure shared drive paths in Settings > Folder Setup.
+
+Use **Guided Tour** in Tools for a repeatable Next/Back/Skip walkthrough. It highlights the main workflow without scanning, processing, or sending orders. Startup recovery warnings stop prompting after 14 days, while recovery records and warning history remain available in Settings > Recovery.
 
 Version 2.02 separates duplicate removal from intentional duplicate authorization. Select the A&W order and PDF to retain, inspect files with Open, and explicitly verify any intentional duplicate before allowing it. Removed copies retain local recovery backups and shared cleanup remains content-checked. Sent-batch archiving refreshes only after the result popup actually closes and skips unnecessary older-PDF rereads for this standalone action. The one-folder release includes the preceding responsiveness fixes.
 
@@ -266,10 +272,10 @@ GUI.bat
 Or run:
 
 ```bat
-py -3 Backend\shower\_programmer\_v4.py
+py -3 Backend\shower_programmer_v4.py
 ```
 
-Required Python packages include:
+For source installs, run `First-Time Setup.bat` or install `requirements.txt` into a local virtual environment. Runtime packages include:
 
 ```text
 customtkinter
@@ -278,22 +284,25 @@ pypdf
 pypdfium2
 pillow
 reportlab
-pyinstaller
 ```
+
+Developers rebuilding the EXE also need `pyinstaller` in their build Python environment; operators running the packaged app do not need it.
+
+After source setup, install the build dependency with `.venv\Scripts\python.exe -m pip install pyinstaller`. The rebuild BAT prefers this local environment before other Python installations.
 
 ## Command-Line Modes
 
 Batch mode:
 
 ```bat
-Backend\run\_shower\_batch.bat --preview
-Backend\run\_shower\_batch.bat --apply
+Backend\run_shower_batch.bat --preview
+Backend\run_shower_batch.bat --apply
 ```
 
 Single-order mode:
 
 ```bat
-Backend\run\_shower\_programmer.bat --aw-order 234675 --pdf "Input\Orders\order.pdf"
+Backend\run_shower_programmer.bat --aw-order 234675 --pdf "Input\Orders\order.pdf"
 ```
 
 Both launchers load the same current-release rules as the GUI.
@@ -320,7 +329,7 @@ Do not publish a new source revision without rebuilding and publishing matching 
 
 ## Versioning
 
-The project uses the **Version 1.x** production series. Revisions continue to advance by `0.01`:
+Production revisions continue to advance by `0.01` (for example, Version 2.02 to Version 2.03):
 
 ```text
 Version 0.82
@@ -362,9 +371,17 @@ For every release:
 
 The application stores processing history, manual overrides, review output, and update audit information under `Output` or the packaged application folder. These files are workstation data and should be preserved during updates. The update package intentionally excludes `Input`, `Output`, and source folders.
 
+## Repository And Updates
+
+Keep the backend source, default `Backend/shower_programmer_config.json`, assets, launch/setup/build scripts, `requirements.txt`, tests, documentation, and version metadata in GitHub. Publish `release/Shower-Programmer-Windows.zip` and its matching JSON manifest together: new operators download the ZIP, and Check for Updates uses those same files.
+
+The complete installed `Shower Programmer/` folder is intentionally ignored because the ZIP already contains its EXE, `_internal` dependencies, icons, and setup helpers. Do not upload live `Input/`, `Output/`, history, diagnostics, recovery copies, configuration backups, virtual environments, generated shortcuts, or temporary build/test files. Only the explicitly allowlisted sanitized samples in `tests/known_orders/` are published: rebuild tests require these synthetic XLS and geometry facts, not customer order documents. Add new sanitized cases to that allowlist deliberately. Ignore rules do not remove files that were already tracked; check `git ls-files -ci --exclude-standard` before each publication.
+
+Before pushing a release, run the test suite, rebuild if runtime code has changed, and verify that the ZIP/manifest version and hashes match the installed EXE. Publish the matching source and release artifacts in the same commit. Source-only changes do not update other users' EXEs until a matching Windows package is published. Never replace local operator data with another workstation's files.
+
 ## Detailed Technical Reference
 
-See `Backend\README\_ShowerProgrammer.md` for command-line details, output behavior, configuration notes, and troubleshooting guidance.
+See [Backend/README_ShowerProgrammer.md](Backend/README_ShowerProgrammer.md) for command-line details, output behavior, configuration notes, and troubleshooting guidance.
 
 
 ## Version 1.15
