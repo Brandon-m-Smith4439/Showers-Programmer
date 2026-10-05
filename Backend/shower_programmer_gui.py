@@ -9173,7 +9173,13 @@ class ShowerProgrammerApp:
                 if isinstance(path, Path)
             ]
             reactivated_aw_orders: list[str] = []
+            reactivation_warnings: list[str] = []
             if not isolated_test_mode and not local_refresh_only:
+                scan_stage = "checking deleted shared orders"
+                self.queue_scan_progress(progress_value, max(progress_max, progress_value + 3),
+                                         "Checking previously deleted orders against shared input filenames...")
+                check_cancelled()
+                stage_started = time.perf_counter()
                 reactivated_aw_orders.extend(
                     self.reactivate_reimported_process_list_orders(
                         all_batches,
@@ -9187,8 +9193,17 @@ class ShowerProgrammerApp:
                         import_snapshot,
                         folder,
                         output_dir,
+                        cancel_check=check_cancelled,
+                        progress_callback=lambda detail: self.queue_scan_progress(
+                            progress_value, max(progress_max, progress_value + 3), detail),
+                        warnings=reactivation_warnings,
                     )
                 )
+                reactivation_elapsed = remember_stage("Deleted-order reactivation", stage_started)
+                self.record_performance("Scan Orders", "Check deleted shared orders", reactivation_elapsed * 1000.0,
+                                        {"reactivated": len(reactivated_aw_orders), "warnings": len(reactivation_warnings)},
+                                        output_dir=output_dir)
+                check_cancelled()
                 reactivated_aw_orders = list(dict.fromkeys(reactivated_aw_orders))
             if reactivated_aw_orders:
                 self.queue_scan_progress(
@@ -9197,7 +9212,7 @@ class ShowerProgrammerApp:
                     f"Reactivated {len(reactivated_aw_orders)} order(s) from process list batch(es) restored from shared input...",
                 )
             production_sent_orders: list[shower_batch.ProcessOrder] = []
-            production_reconciliation_warnings: list[str] = []
+            production_reconciliation_warnings: list[str] = list(reactivation_warnings)
             production_sketch_files_checked = 0
             production_aw_orders: set[str] = set()
             production_input_archived: list[Path] = []
@@ -9235,6 +9250,7 @@ class ShowerProgrammerApp:
                     folder,
                     cancel_check=check_cancelled,
                 )
+                production_reconciliation_warnings.extend(reactivation_warnings)
                 production_aw_orders = {str(order.aw_order) for order in production_sent_orders}
                 if production_sent_orders:
                     production_order_files = self.matching_order_files(
@@ -11288,6 +11304,10 @@ class ShowerProgrammerApp:
         import_snapshot: dict[str, object],
         local_order_folder: Path,
         output_dir: Path,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
+        warnings: list[str] | None = None,
     ) -> list[str]:
         """Reactivate locally deleted orders only during an explicit shared-input scan.
 
@@ -11308,10 +11328,6 @@ class ShowerProgrammerApp:
         all_orders = cls.unique_orders_from_batches(batches)
         if not all_orders:
             return []
-        missing = cls.missing_order_input_requirements(local_order_folder, all_orders)
-        if not missing:
-            return []
-
         try:
             history = cls.load_processing_history_for_output(Path(output_dir))
         except Exception:
@@ -11320,9 +11336,70 @@ class ShowerProgrammerApp:
         if not isinstance(history_orders, dict):
             return []
 
+        eligible_orders = []
+        for order in all_orders:
+            if cancel_check is not None:
+                cancel_check()
+            entry = history_orders.get(str(order.aw_order))
+            signature = cls.sent_process_signature(order)
+            if (not isinstance(entry, dict) or not entry.get("deleted_at")
+                    or entry.get("deleted_scope") == "duplicate"
+                    or str(entry.get("deleted_process_signature", "")) != signature
+                    or (entry.get("sent_at") and str(entry.get("sent_process_signature", "")) == signature)):
+                continue
+            eligible_orders.append(order)
+        if not eligible_orders:
+            return []
+        missing = cls.missing_order_input_requirements(local_order_folder, eligible_orders)
+        if not missing:
+            return []
+
+        staged_pdf_orders: set[str] | None = None
+
+        def inspect_staged_pdfs() -> set[str]:
+            """Inspect only local, successfully staged copies; never read PDF bodies over SMB."""
+            from shower_temp import workspace_temporary_directory
+            pending = [order for order in eligible_orders
+                       if bool(missing.get(str(order.aw_order), {}).get("pdf"))
+                       and not any(cls.file_matches_missing_order_requirement(
+                           source, order, missing[str(order.aw_order)], inspect_pdf_text=False)
+                           for source in source_files if source.suffix.lower() == ".pdf")]
+            pdfs = [source for source in source_files if source.suffix.lower() == ".pdf"]
+            if not pending or not pdfs:
+                return set()
+            if progress_callback is not None:
+                progress_callback(f"Staging {len(pdfs)} shared sketch(es) locally to verify {len(pending)} deleted order(s)...")
+            errors = warnings if warnings is not None else []
+            matched: set[str] = set()
+            # A fresh staging directory prevents an old cache copy from being treated
+            # as verified when its shared source disappears or fails to copy.
+            with workspace_temporary_directory(prefix="reactivation", root=cls.local_network_pdf_cache_dir(local_order_folder)) as raw:
+                stage = Path(raw)
+                copied = cls.copy_network_file_pairs_bounded(
+                    [(source, stage / source.name) for source in pdfs],
+                    cancel_check=cancel_check, errors=errors)
+                for source, local_copy, did_copy in copied:
+                    if cancel_check is not None:
+                        cancel_check()
+                    if did_copy is None or not local_copy.is_file():
+                        continue
+                    if progress_callback is not None:
+                        progress_callback(f"Checking local sketch copy: {source.name}")
+                    for order in pending:
+                        if str(order.aw_order) in matched:
+                            continue
+                        if cls.file_matches_missing_order_requirement(
+                            local_copy, order, missing[str(order.aw_order)], inspect_pdf_text=True):
+                            matched.add(str(order.aw_order))
+            return matched
+
         reactivated: list[tuple[shower_batch.ProcessOrder, str]] = []
         reactivated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for order in all_orders:
+        for order_index, order in enumerate(eligible_orders, 1):
+            if cancel_check is not None:
+                cancel_check()
+            if progress_callback is not None:
+                progress_callback(f"Checking deleted order {order_index}/{len(eligible_orders)}: {order.aw_order}")
             aw_order = str(order.aw_order)
             requirement = missing.get(aw_order)
             if not isinstance(requirement, dict):
@@ -11348,11 +11425,14 @@ class ShowerProgrammerApp:
                     source,
                     order,
                     requirement,
-                    inspect_pdf_text=source.suffix.lower() == ".pdf",
+                    inspect_pdf_text=False,
                 )
             ]
             if bool(requirement.get("pdf", False)) and not any(path.suffix.lower() == ".pdf" for path in matching_sources):
-                continue
+                if staged_pdf_orders is None:
+                    staged_pdf_orders = inspect_staged_pdfs()
+                if aw_order not in staged_pdf_orders:
+                    continue
             raw_items = requirement.get("dxf_items", [])
             missing_items = [int(item) for item in raw_items if str(item).isdigit()] if isinstance(raw_items, list) else []
             if missing_items:
@@ -11385,6 +11465,8 @@ class ShowerProgrammerApp:
 
         if not reactivated:
             return []
+        if cancel_check is not None:
+            cancel_check()
         cls.save_processing_history_for_output(Path(output_dir), history)
         try:
             store = shower_state.StateStore.for_output(Path(output_dir))
@@ -39217,6 +39299,7 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "version_2_04_safe_repair_sketch_paper": True,
                 "version_2_05_review_editor_clipboard": True,
                 "version_2_08_desktop_lifecycle_exe_setup": True,
+                "version_2_09_bounded_scan_reactivation": True,
                 "verified_planar_dxf_mirroring": True,
             }
         )

@@ -1,8 +1,8 @@
 {
-  "version": "Version 2.08",
-  "version_number": 208,
-  "marker": "VERSION_2_08_DESKTOP_LIFECYCLE_EXE_SETUP",
-  "release_name": "Desktop Lifecycle And EXE Setup",
+  "version": "Version 2.09",
+  "version_number": 209,
+  "marker": "VERSION_2_09_BOUNDED_SCAN_REACTIVATION",
+  "release_name": "Bounded Scan Reactivation",
   "release_date": "2026-10-05",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"

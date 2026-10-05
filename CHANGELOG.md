@@ -1,3 +1,11 @@
+## [Version 2.09] - 2026-10-05
+
+### Bounded Scan Reactivation
+- Fix the scan stall after a cached process list finishes loading: deleted-order reactivation no longer opens unrelated shared-drive PDFs directly. Filter eligible deletion receipts first and use filename matching before inspecting PDF contents.
+- For ambiguous names, stage shared PDFs into a fresh local inspection workspace using the existing timeout-controlled copy workers. Inspect only successful local copies; failed copies retain deletion receipts and report warnings for retry. Never reuse an unverified stale cache copy.
+- Show deleted-order verification progress and record its scan-stage duration. Honor cancellation while staging, checking orders, and before committing reactivation history. Preserve sent and duplicate-deletion protections and all machining rules.
+- Reproduced the old stall in a time-limited, read-only probe against current batches/shared inputs. The corrected stage completed in under one second without directly reading any shared PDF bodies. Added filename, local-PDF fallback, stale-cache, real stall-timeout, sent-receipt, cancellation, and progress regressions.
+
 ## [Version 2.08] - 2026-10-05
 
 ### Desktop Lifecycle And EXE Setup

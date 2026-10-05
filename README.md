@@ -2,7 +2,7 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current source version: **Version 2.08 - Desktop Lifecycle And EXE Setup**
+Current source version: **Version 2.09 - Bounded Scan Reactivation**
 
 For a new workstation, [download the Windows application ZIP](https://github.com/Brandon-m-Smith4439/Showers-Programmer/raw/refs/heads/main/release/Shower-Programmer-Windows.zip), extract it completely to a writable local folder, and run **First-Time Setup.bat** from the extracted folder. Do not run setup inside the ZIP. It creates the local input/output folders and Desktop/Start Menu shortcuts, then launches the app. The packaged EXE does not require Python or Git. Keep `_internal` beside the EXE. To pin it, launch the app and right-click its taskbar icon > Pin to taskbar.
 
