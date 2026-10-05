@@ -214,28 +214,9 @@ def _replace_prefixed_warning(panel: Any, prefix: str, message: str | None) -> N
 
 def validate_waterjet_envelope(panel: Any, config: dict[str, Any] | None) -> bool:
     """Flag WJ glass when both dimensions exceed the configured table envelope."""
+    import shower_programmer
 
-    if str(getattr(panel, "machine", "")).upper() != "WJ":
-        _replace_prefixed_warning(panel, WJ_OVERSIZE_WARNING_PREFIX, None)
-        return True
-    width = getattr(panel, "width", None)
-    height = getattr(panel, "height", None)
-    if width is None or height is None:
-        return True
-    limit = _safe_float(_rules(config).get("waterjet_fit_limit_inches", 75.0), 75.0)
-    if float(width) > limit and float(height) > limit:
-        message = (
-            f"{WJ_OVERSIZE_WARNING_PREFIX} {float(width):g} x {float(height):g} exceeds the "
-            f"{limit:g} x {limit:g} in Waterjet envelope. DXF skipped for review."
-        )
-        warnings = getattr(panel, "warnings", [])
-        if isinstance(warnings, list):
-            warnings[:] = [warning for warning in warnings if not str(warning).startswith("WJ size limit:")]
-        _replace_prefixed_warning(panel, WJ_OVERSIZE_WARNING_PREFIX, message)
-        panel.skip_dxf = True
-        return False
-    _replace_prefixed_warning(panel, WJ_OVERSIZE_WARNING_PREFIX, None)
-    return True
+    return shower_programmer.validate_waterjet_size(panel, config or {}, WJ_OVERSIZE_WARNING_PREFIX)
 
 
 def _standalone_se_count(text: str) -> int:

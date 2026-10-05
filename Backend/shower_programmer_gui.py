@@ -10147,6 +10147,27 @@ class ShowerProgrammerApp:
         self.save_manual_overrides_for_output(output_dir, data)
         return signature
 
+    def set_waterjet_size_bypass(
+        self, aw_order: str, panel: programmer.Panel, config: dict[str, Any],
+        output_dir: Path, *, approved: bool,
+    ) -> None:
+        signature = programmer.waterjet_size_signature(panel, config)
+        if approved and (signature is None or min(signature["dimensions_inches"]) <= signature["limit_inches"]):
+            raise ValueError("This piece has no oversize Waterjet limit to bypass.")
+        data = self.manual_overrides_for_output(output_dir)
+        self.set_order_checked_state_in_overrides(data, {str(aw_order)}, False)
+        piece = data.setdefault("item_overrides", {}).setdefault(str(aw_order), {}).setdefault(str(panel.item), {})
+        if approved:
+            piece["waterjet_size_bypass"] = {
+                "signature": signature,
+                "approved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+        else:
+            piece.pop("waterjet_size_bypass", None)
+        self.save_manual_overrides_for_output(output_dir, data)
+        if getattr(self, "_manual_overrides_session_output", None) == output_dir.resolve():
+            self._manual_overrides_session_data = copy.deepcopy(data)
+
     def begin_manual_overrides_session(self, output_dir: Path) -> None:
         output_dir = output_dir.resolve()
         if getattr(self, "_manual_overrides_session_output", None) is not None:
@@ -18258,7 +18279,12 @@ a {{ color: #1f4e79; }}
             pady=(8, 0),
         )
         resolve_dxf_review_button.grid_remove()
-        piece_action_widgets.extend([save_edits_button, process_dxf_button, resolve_dxf_review_button])
+        bypass_wj_size_button = self.make_tool_button(
+            primary_grid, "Bypass WJ Size Limit", "warning", lambda: toggle_waterjet_size_bypass(), width=250,
+        )
+        bypass_wj_size_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        bypass_wj_size_button.grid_remove()
+        piece_action_widgets.extend([save_edits_button, process_dxf_button, resolve_dxf_review_button, bypass_wj_size_button])
 
         edit_section = control_section(control_panel, 3, "MARKUP TOOLS")
         sketch_edit_mode_button: Any | None = None
@@ -18638,6 +18664,7 @@ a {{ color: #1f4e79; }}
             )
 
         def update_manual_dxf_review_button() -> None:
+            update_waterjet_size_bypass_button()
             unresolved = current_panel_manual_dxf_review_unresolved()
             if not unresolved:
                 resolve_dxf_review_button.grid_remove()
@@ -18656,6 +18683,55 @@ a {{ color: #1f4e79; }}
                     "#ffffff",
                 ).get("image"),
             )
+
+        def update_waterjet_size_bypass_button() -> None:
+            panel = None if overview_selected() else selected_panel()
+            signature = programmer.waterjet_size_signature(panel, config) if panel is not None else None
+            if (signature is None or min(signature["dimensions_inches"]) <= signature["limit_inches"]
+                    or panel.remake_excluded or panel.label_only):
+                bypass_wj_size_button.grid_remove()
+                return
+            bypass_wj_size_button.grid()
+            bypass_wj_size_button.configure(
+                text="Reinstate WJ Size Limit" if programmer.waterjet_size_bypass_active(panel, config)
+                else "Bypass WJ Size Limit", state=tk.NORMAL,
+            )
+
+        def toggle_waterjet_size_bypass() -> None:
+            if overview_selected():
+                return
+            panel = selected_panel()
+            approved = not programmer.waterjet_size_bypass_active(panel, config)
+            limit = programmer.waterjet_size_signature(panel, config)["limit_inches"]
+            if not self.ask_themed_confirmation(
+                "Waterjet size limit", "Bypass WJ size limit?" if approved else "Reinstate WJ size limit?",
+                f"{process_order.aw_order}.{programmer.panel_aw_item(panel)}: "
+                f'{panel.width:g}" x {panel.height:g}"; configured limit {limit:g}".\n\n'
+                + ("Only approve if the shop can safely run this oversized piece. "
+                   "Other checks and output skips remain active. The order must be checked again."
+                   if approved else "Programming this oversized piece will be blocked again."),
+                parent=dialog, confirm_text="Approve Bypass" if approved else "Reinstate Limit",
+                cancel_text="Cancel", icon_name="warning", accent_color=self.WARNING,
+            ):
+                return
+            if has_pending_item_edits() and not save_review_edits(show_no_edits=False):
+                return
+            try:
+                self.set_waterjet_size_bypass(process_order.aw_order, panel, config, output_dir, approved=approved)
+                self.record_action(
+                    "Bypass WJ Size Limit" if approved else "Reinstate WJ Size Limit",
+                    f"{process_order.aw_order}.P{panel.item}: {panel.width:g} x {panel.height:g} in; limit {limit:g} in.",
+                    status="WARNING", orders=[process_order],
+                )
+                refresh_prepared_job()
+                source_result = self.order_result_sources.get(str(process_order.aw_order))
+                if source_result is not None:
+                    self.insert_or_update_result(source_result)
+                status.set("WJ size bypass approved. Click Process DXF Again, then check the order."
+                           if approved else "WJ size limit reinstated. DXF programming blocked.")
+                redraw()
+            except Exception as exc:
+                messagebox.showerror("Waterjet size limit", str(exc), parent=dialog)
 
         def resolve_current_manual_dxf_review() -> None:
             nonlocal issues

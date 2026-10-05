@@ -216,6 +216,9 @@ class Panel:
     diamon_fusion: bool = False
     label_only: bool = False
     skip_dxf: bool = False
+    waterjet_size_bypass: dict[str, Any] | None = None
+    waterjet_size_blocked: bool = False
+    waterjet_size_prior_skip: bool = False
     remake: bool = False
     remake_excluded: bool = False
     indicator_corner: str | None = None
@@ -1360,6 +1363,10 @@ def apply_override(panel: Panel, config: dict[str, Any], aw_order: str) -> None:
         panel.label_only = not bool(panel.machine)
     if "skip_dxf" in override:
         panel.skip_dxf = bool(override["skip_dxf"])
+        panel.waterjet_size_blocked = False
+    if "waterjet_size_bypass" in override:
+        approval = override["waterjet_size_bypass"]
+        panel.waterjet_size_bypass = approval if isinstance(approval, dict) else None
     if "diamon_fusion" in override:
         panel.diamon_fusion = bool(override["diamon_fusion"])
     if "hide_label" in override:
@@ -1706,21 +1713,58 @@ def extract_out_of_square_amount(text: str) -> float | None:
     return min(candidates)
 
 
-def validate_panel_constraints(panel: Panel, config: dict[str, Any]) -> None:
-    rules = config.get("rules", {})
-    waterjet_limit = float(rules.get("waterjet_fit_limit_inches", 75))
-    if panel.machine != "WJ":
-        return
-    if panel.width is None or panel.height is None:
-        add_panel_warning(panel, "Cannot verify WJ size limit because dimensions are unknown.")
-        return
-    if min(panel.width, panel.height) > waterjet_limit:
-        add_panel_warning(
-            panel,
-            f"WJ size limit: neither side is {waterjet_limit:g} in or smaller "
-            f"({panel.width:g} x {panel.height:g}). DXF skipped.",
-        )
+def waterjet_size_signature(panel: Any, config: dict[str, Any]) -> dict[str, Any] | None:
+    if panel.machine != "WJ" or panel.width is None or panel.height is None:
+        return None
+    return {
+        "machine": "WJ",
+        "dimensions_inches": sorted([round(float(panel.width), 6), round(float(panel.height), 6)]),
+        "limit_inches": float(config.get("rules", {}).get("waterjet_fit_limit_inches", 75)),
+    }
+
+
+def waterjet_size_bypass_active(panel: Any, config: dict[str, Any]) -> bool:
+    signature = waterjet_size_signature(panel, config)
+    approval = getattr(panel, "waterjet_size_bypass", None)
+    return bool(signature is not None and isinstance(approval, dict)
+                and approval.get("approved_at") and approval.get("signature") == signature)
+
+
+def validate_waterjet_size(panel: Any, config: dict[str, Any], prefix: str = "WJ size limit:") -> bool:
+    # Release only the skip owned by this check; explicit output skips stay intact.
+    if getattr(panel, "waterjet_size_blocked", False):
+        panel.skip_dxf = bool(getattr(panel, "waterjet_size_prior_skip", False))
+    panel.waterjet_size_blocked = False
+    panel.warnings[:] = [w for w in panel.warnings
+                         if not str(w).startswith(("WJ size limit:", "Oversize WJ:"))]
+    signature = waterjet_size_signature(panel, config)
+    if signature is None:
+        if panel.machine == "WJ":
+            add_panel_warning(panel, "Cannot verify WJ size limit because dimensions are unknown.")
+        return True
+    limit = signature["limit_inches"]
+    if min(signature["dimensions_inches"]) <= limit:
+        return True
+    approved = waterjet_size_bypass_active(panel, config)
+    message = (f"{prefix} {float(panel.width):g} x {float(panel.height):g} exceeds the "
+               f"{limit:g} in Waterjet limit. ")
+    message += "Size limit bypass approved; verify machine setup." if approved else "DXF skipped for review."
+    add_panel_warning(panel, message)
+    if not approved:
+        panel.waterjet_size_prior_skip = bool(panel.skip_dxf)
+        panel.waterjet_size_blocked = True
         panel.skip_dxf = True
+    return approved
+
+
+def waterjet_size_preview_only(panel: Panel) -> bool:
+    return bool(panel.machine == "WJ" and panel.waterjet_size_blocked
+                and not panel.waterjet_size_prior_skip and not panel.remake_excluded
+                and not panel.label_only)
+
+
+def validate_panel_constraints(panel: Panel, config: dict[str, Any]) -> None:
+    validate_waterjet_size(panel, config)
 
 
 def collect_page_edgework_labels(
@@ -2500,14 +2544,16 @@ def dxf_match_score(
 
 def assign_dxf_paths(job: Job, dxf_folder: Path, dxf_output_dir: Path, config: dict[str, Any]) -> None:
     for panel in job.panels:
-        if panel.skip_dxf:
+        if panel.skip_dxf and not waterjet_size_preview_only(panel):
             continue
         validate_panel_constraints(panel, config)
-        if panel.skip_dxf:
+        preview_only = waterjet_size_preview_only(panel)
+        if panel.skip_dxf and not preview_only:
             continue
         panel.source_dxf = find_source_dxf(dxf_folder, job.job_name, panel, aw_order=job.aw_order)
-        panel.output_dxf = dxf_output_dir / f"{job.aw_order}{panel_aw_item(panel):02d}.dxf"
-        note_dxf_output_settings(panel, config)
+        panel.output_dxf = None if preview_only else dxf_output_dir / f"{job.aw_order}{panel_aw_item(panel):02d}.dxf"
+        if not preview_only:
+            note_dxf_output_settings(panel, config)
         if panel.source_dxf is None:
             panel.warnings.append("No matching source DXF found.")
         else:

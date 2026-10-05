@@ -2006,7 +2006,8 @@ def apply_mirror_dxf_sequence_hints(
     mirror_panels = sorted(
         (
             panel for panel in panels
-            if panel.mirror_glass and panel.machine == "WJ" and not panel.skip_dxf
+            if panel.mirror_glass and panel.machine == "WJ"
+            and (not panel.skip_dxf or programmer.waterjet_size_preview_only(panel))
         ),
         key=lambda panel: panel.item,
     )
