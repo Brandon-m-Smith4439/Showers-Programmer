@@ -85,6 +85,16 @@ class WaterjetSizeBypassTests(unittest.TestCase):
                 programmer.assign_dxf_paths(job, Path('Input'), Path('Programs'), self.config)
             lookup.assert_not_called()
 
+    def test_process_list_reclassifying_oversize_mirror_as_no_fabrication_keeps_its_skip(self):
+        panel = self.panel(mirror_glass=True)
+        programmer.validate_panel_constraints(panel, self.config)
+        panel.machine = ''
+        panel.label_only = True
+        panel.skip_dxf = True
+        programmer.validate_panel_constraints(panel, self.config)
+        self.assertTrue(panel.skip_dxf)
+        self.assertFalse(panel.waterjet_size_blocked)
+
     def test_override_is_per_order_and_piece_and_explicit_skip_is_preserved(self):
         panel = self.panel()
         config = copy.deepcopy(self.config)
@@ -131,6 +141,20 @@ class WaterjetSizeBypassTests(unittest.TestCase):
             app.set_waterjet_size_bypass('900001', panel, self.config, output, approved=False)
             self.assertNotIn('waterjet_size_bypass', app.load_manual_overrides_for_output(output)
                              ['item_overrides']['900001']['1'])
+
+    def test_reinstating_limit_retires_existing_output_and_keeps_a_recoverable_copy(self):
+        with workspace_temporary_directory(prefix='wj-reinstate') as raw:
+            output = Path(raw)
+            app = object.__new__(gui.ShowerProgrammerApp)
+            panel = self.panel(output_dxf=output / 'Programs/90000101.dxf')
+            panel.output_dxf.parent.mkdir()
+            panel.output_dxf.write_bytes(b'edited program preserved')
+            app.set_waterjet_size_bypass('900001', panel, self.config, output, approved=True)
+            app.set_waterjet_size_bypass('900001', panel, self.config, output, approved=False)
+            self.assertFalse(panel.output_dxf.exists())
+            copies = list(output.rglob('*.dxf'))
+            self.assertTrue(copies)
+            self.assertTrue(any(p.read_bytes() == b'edited program preserved' for p in copies))
 
 
 if __name__ == '__main__':

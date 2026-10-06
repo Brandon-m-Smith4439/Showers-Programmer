@@ -123,8 +123,8 @@ class Version112DeleteContextSelectionTests(unittest.TestCase):
         normal = shower_batch.ProcessOrder("236465", "89183226 KINSDALE 132", "PULTE")
 
         self.assertTrue(gui.ShowerProgrammerApp.orders_allow_network_input_delete([input_only]))
-        self.assertFalse(gui.ShowerProgrammerApp.orders_allow_network_input_delete([normal]))
-        self.assertFalse(gui.ShowerProgrammerApp.orders_allow_network_input_delete([input_only, normal]))
+        self.assertTrue(gui.ShowerProgrammerApp.orders_allow_network_input_delete([normal]))
+        self.assertTrue(gui.ShowerProgrammerApp.orders_allow_network_input_delete([input_only, normal]))
 
     def test_orders_context_menu_captures_delete_selection_before_popup_retirement(self) -> None:
         source = inspect.getsource(gui.ShowerProgrammerApp.open_orders_context_menu)

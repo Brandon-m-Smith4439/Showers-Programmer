@@ -216,9 +216,6 @@ class Panel:
     diamon_fusion: bool = False
     label_only: bool = False
     skip_dxf: bool = False
-    waterjet_size_bypass: dict[str, Any] | None = None
-    waterjet_size_blocked: bool = False
-    waterjet_size_prior_skip: bool = False
     remake: bool = False
     remake_excluded: bool = False
     indicator_corner: str | None = None
@@ -267,6 +264,9 @@ class Panel:
     manual_indicator_override: bool = False
     manual_rotation_override: bool = False
     explicit_dxf_rotation_override: bool = False
+    waterjet_size_bypass: dict[str, Any] | None = None
+    waterjet_size_blocked: bool = False
+    waterjet_size_prior_skip: bool = False
 
     @property
     def label(self) -> str:
@@ -980,6 +980,12 @@ def find_pdf(
                     collision_kind=blocking_collision.kind,
                 )
             return top_path
+
+        if blocking_collision is None:
+            import shower_sketch_quality
+            preferred = shower_sketch_quality.preferred_reprint_path([entry[0] for entry in top_matches])
+            if preferred is not None:
+                return preferred
 
         glass_matches = [entry for entry in top_matches if entry[0].name.lower().startswith("glass order")]
         if len(glass_matches) == 1 and blocking_collision is None:
@@ -1732,7 +1738,9 @@ def waterjet_size_bypass_active(panel: Any, config: dict[str, Any]) -> bool:
 
 def validate_waterjet_size(panel: Any, config: dict[str, Any], prefix: str = "WJ size limit:") -> bool:
     # Release only the skip owned by this check; explicit output skips stay intact.
-    if getattr(panel, "waterjet_size_blocked", False):
+    if (getattr(panel, "waterjet_size_blocked", False)
+            and not getattr(panel, "label_only", False)
+            and not getattr(panel, "remake_excluded", False)):
         panel.skip_dxf = bool(getattr(panel, "waterjet_size_prior_skip", False))
     panel.waterjet_size_blocked = False
     panel.warnings[:] = [w for w in panel.warnings
@@ -1743,7 +1751,7 @@ def validate_waterjet_size(panel: Any, config: dict[str, Any], prefix: str = "WJ
             add_panel_warning(panel, "Cannot verify WJ size limit because dimensions are unknown.")
         return True
     limit = signature["limit_inches"]
-    if min(signature["dimensions_inches"]) <= limit:
+    if min(float(panel.width), float(panel.height)) <= limit:
         return True
     approved = waterjet_size_bypass_active(panel, config)
     message = (f"{prefix} {float(panel.width):g} x {float(panel.height):g} exceeds the "

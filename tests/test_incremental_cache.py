@@ -518,7 +518,7 @@ class IncrementalCacheTests(unittest.TestCase):
             self.assertTrue(app.confirm_unprocessed_order_review("237400"))
         processed_prompt.assert_not_called()
 
-    def test_network_batch_delete_is_restricted_to_input_only_orders(self) -> None:
+    def test_network_batch_delete_accepts_identified_orders_with_or_without_a_process_list(self) -> None:
         input_only = shower_batch.ProcessOrder("INPUT-ONE", "90000001 TEST", "Input file only")
         setattr(input_only, "process_list_missing", True)
         regular = shower_batch.ProcessOrder("237401", "90000002 TEST", "Customer")
@@ -528,7 +528,7 @@ class IncrementalCacheTests(unittest.TestCase):
                 {"orders": [input_only]}
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             shower_programmer_gui.ShowerProgrammerApp.batch_allows_network_input_delete(
                 {"orders": [input_only, regular]}
             )

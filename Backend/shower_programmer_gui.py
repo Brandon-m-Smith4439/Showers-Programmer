@@ -5557,16 +5557,46 @@ class ShowerProgrammerApp:
 
     def save_ui_settings(self) -> None:
         path = self.preferred_ui_settings_path()
-        data = {
+        data = dict(getattr(self, "ui_settings", {}) or {})
+        data.update({
             "dark_mode": bool(self.dark_mode_var.get()),
             "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        })
+        tree = getattr(self, "tree", None)
+        if tree is not None:
+            try:
+                data["orders_column_widths"] = {
+                    column: int(tree.column(column, "width")) for column in self.ORDER_TREE_COLUMNS
+                }
+            except (tk.TclError, ValueError, TypeError):
+                pass
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2, sort_keys=True)
+            self.atomic_write_json(path, data)
             self.ui_settings = data
         except Exception:
+            pass
+
+    def restore_orders_column_widths(self) -> None:
+        widths = getattr(self, "ui_settings", {}).get("orders_column_widths", {})
+        if not isinstance(widths, dict):
+            return
+        for column in self.ORDER_TREE_COLUMNS:
+            width = widths.get(column)
+            if isinstance(width, bool) or not isinstance(width, int) or not 20 <= width <= 10000:
+                continue
+            try:
+                minimum = int(self.tree.column(column, "minwidth"))
+                self.tree.column(column, width=max(minimum, width))
+            except (tk.TclError, TypeError, ValueError):
+                continue
+
+    def on_orders_column_resize_release(self, _event: tk.Event | None = None) -> None:
+        # Treeview's class binding applies the final width before this idle save.
+        try:
+            widths = {column: int(self.tree.column(column, "width")) for column in self.ORDER_TREE_COLUMNS}
+            if widths != self.ui_settings.get("orders_column_widths", {}):
+                self.root.after_idle(self.save_ui_settings)
+        except (tk.TclError, TypeError, ValueError):
             pass
 
     def on_close(self) -> None:
@@ -7111,6 +7141,8 @@ class ShowerProgrammerApp:
             # horizontal scrolling for wider Job/Customer/Items content.
             self.tree.column(col, width=widths[col], minwidth=min_width, anchor=tk.W, stretch=False)
 
+        self.restore_orders_column_widths()
+
         self.tree.tag_configure("BATCH", foreground=self.ACCENT_DARK, background=self.SOFT_CARD_BG, font=("Segoe UI", 10, "bold"))
         # Mirror section rows are structural spacers. Their visible band is a
         # separate overlay that spans the entire Orders viewport, so the label is
@@ -7160,6 +7192,7 @@ class ShowerProgrammerApp:
         self.tree.bind("<Control-A>", self.select_all_orders)
         self.tree.bind("<Motion>", self.update_orders_tree_resize_cursor, add="+")
         self.tree.bind("<Leave>", self.clear_orders_tree_resize_cursor, add="+")
+        self.tree.bind("<ButtonRelease-1>", self.on_orders_column_resize_release, add="+")
 
         def scroll_orders_horizontally(event: tk.Event) -> str:
             delta = int(getattr(event, "delta", 0) or 0)
@@ -8820,8 +8853,12 @@ class ShowerProgrammerApp:
         cls,
         orders: list[shower_batch.ProcessOrder] | tuple[shower_batch.ProcessOrder, ...],
     ) -> bool:
-        """Allow shared deletion only when every targeted order is input-only."""
-        return bool(orders) and all(cls.is_input_only_order(order) for order in orders)
+        """Allow confirmed cleanup for identified orders, with or without a process list."""
+        return bool(orders) and all(
+            isinstance(order, shower_batch.ProcessOrder)
+            and bool(str(order.aw_order).strip()) and bool(str(order.job_name).strip())
+            for order in orders
+        )
 
     @classmethod
     def input_only_orders_from_pdfs(
@@ -10154,6 +10191,13 @@ class ShowerProgrammerApp:
         signature = programmer.waterjet_size_signature(panel, config)
         if approved and (signature is None or min(signature["dimensions_inches"]) <= signature["limit_inches"]):
             raise ValueError("This piece has no oversize Waterjet limit to bypass.")
+        if not approved and panel.output_dxf is not None and panel.output_dxf.exists():
+            target = panel.output_dxf.resolve()
+            expected_name = f"{aw_order}{programmer.panel_aw_item(panel):02d}.dxf"
+            if not target.is_relative_to(output_dir.resolve()) or target.name != expected_name:
+                raise ValueError("The old program is outside this order's output; the bypass was not changed.")
+            programmer.shower_dxf_history.preserve_version(target)
+            target.unlink()
         data = self.manual_overrides_for_output(output_dir)
         self.set_order_checked_state_in_overrides(data, {str(aw_order)}, False)
         piece = data.setdefault("item_overrides", {}).setdefault(str(aw_order), {}).setdefault(str(panel.item), {})
@@ -12275,6 +12319,7 @@ class ShowerProgrammerApp:
                 self.tree.column(column, width=target)
             except tk.TclError:
                 return 0
+            self.save_ui_settings()
             return target
         try:
             body_font = tkfont.Font(root=self.root, family="Segoe UI", size=10)
@@ -12295,6 +12340,7 @@ class ShowerProgrammerApp:
             min_width = int(self.tree.column(column, "minwidth") or 36)
             target = self.orders_tree_autofit_target(column, min_width, measured)
             self.tree.column(column, width=target)
+            self.save_ui_settings()
             self.status_var.set(f"Auto-fit {self.order_tree_heading_labels.get(column, column)} column to {target}px.")
             return target
         except (tk.TclError, RuntimeError):
@@ -12456,9 +12502,11 @@ class ShowerProgrammerApp:
             seen.add(key)
             concise.append(value)
         visible = concise[:3]
-        text = "; ".join(visible)
+        if len(concise) == 1:
+            return concise[0]
+        text = f"{len(concise)} issues | " + " | ".join(f"[{index}] {value}" for index, value in enumerate(visible, 1))
         if len(concise) > len(visible):
-            text += f"; +{len(concise) - len(visible)} more"
+            text += f" | +{len(concise) - len(visible)} more"
         return text
 
     @staticmethod
@@ -13026,6 +13074,8 @@ class ShowerProgrammerApp:
         # parsing DXF geometry during its first visible frame.
         dxf_preview_cache: dict[Any, dict[str, Any]] = {}
         for panel in job.panels[:2]:
+            if self.review_dxf_size_locked(panel):
+                continue
             preview_path = (
                 panel.source_dxf
                 if dxf_output_skipped
@@ -14669,7 +14719,7 @@ class ShowerProgrammerApp:
 
     @classmethod
     def batch_allows_network_input_delete(cls, batch: dict[str, object]) -> bool:
-        """Restrict shared-folder deletion to the input-only synthetic batch."""
+        """Offer confirmed shared-folder cleanup for a batch of identified orders."""
         batch_orders = batch.get("orders", [])
         if not isinstance(batch_orders, list):
             return False
@@ -14684,7 +14734,7 @@ class ShowerProgrammerApp:
         *,
         known_local_files: Iterable[Path] | None = None,
     ) -> list[Path]:
-        """Return validated root-level network files for input-only orders."""
+        """Return validated root-level network files for the selected orders."""
         exact_names = {
             path.name
             for path in (known_local_files or [])
@@ -14838,7 +14888,7 @@ class ShowerProgrammerApp:
         if include_network and not self.orders_allow_network_input_delete(frozen_orders):
             messagebox.showwarning(
                 "Network deletion unavailable",
-                "Local and network deletion is available only for orders in Input Without Process List.",
+                "Select identified orders with an order number and job name before deleting network inputs.",
                 parent=self.root,
             )
             return
@@ -14848,6 +14898,11 @@ class ShowerProgrammerApp:
             f"Delete requested for {len(frozen_orders)} order(s). Preparing {scope_text} file cleanup..."
         )
         cleanup_detail = "local + network" if include_network else "local only"
+        selected_aw = {str(order.aw_order) for order in frozen_orders}
+        other_orders = [
+            order for order in getattr(self, "order_by_aw", {}).values()
+            if isinstance(order, shower_batch.ProcessOrder) and str(order.aw_order) not in selected_aw
+        ]
         started = self.run_managed_task(
             "Prepare Order Cleanup",
             lambda task: self.worker_prepare_local_order_delete(
@@ -14858,6 +14913,7 @@ class ShowerProgrammerApp:
                 network_source,
                 include_network,
                 deletion_scope_by_aw=deletion_scope_by_aw,
+                other_orders=other_orders,
                 task_context=task,
             ),
             message=f"Finding files for the selected order cleanup ({cleanup_detail})...",
@@ -14877,6 +14933,7 @@ class ShowerProgrammerApp:
         include_network: bool,
         *,
         deletion_scope_by_aw: dict[str, str] | None = None,
+        other_orders: list[shower_batch.ProcessOrder] | None = None,
         task_context: shower_tasks.TaskContext | None = None,
     ) -> dict[str, object]:
         """Identify local/network cleanup targets before asking the operator to confirm."""
@@ -14898,6 +14955,16 @@ class ShowerProgrammerApp:
                 inspect_pdf_text=True,
             )
             files = list(dict.fromkeys(files + cache_files))
+            collisions = self.matching_order_files(
+                local_order_folder, other_orders, root_only=True, inspect_pdf_text=True,
+                candidate_files=files,
+            ) if other_orders else []
+            if collisions:
+                names = ", ".join(path.name for path in collisions[:4])
+                raise RuntimeError(
+                    "These inputs also match an unselected order. Resolve duplicate identities or select "
+                    f"all affected orders before cleanup. Nothing was deleted: {names}"
+                )
             local_allowed_roots = [local_order_folder]
             if cache_folder.is_dir():
                 local_allowed_roots.append(cache_folder)
@@ -18282,6 +18349,10 @@ a {{ color: #1f4e79; }}
         bypass_wj_size_button = self.make_tool_button(
             primary_grid, "Bypass WJ Size Limit", "warning", lambda: toggle_waterjet_size_bypass(), width=250,
         )
+        bypass_wj_size_button.configure(
+            fg_color=self.DANGER, hover_color="#b42318", border_color=self.DANGER,
+            text_color="#ffffff", image=self.ctk_button_icon("warning", 15, "#ffffff").get("image"),
+        )
         bypass_wj_size_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         bypass_wj_size_button.grid_remove()
         piece_action_widgets.extend([save_edits_button, process_dxf_button, resolve_dxf_review_button, bypass_wj_size_button])
@@ -18686,6 +18757,9 @@ a {{ color: #1f4e79; }}
 
         def update_waterjet_size_bypass_button() -> None:
             panel = None if overview_selected() else selected_panel()
+            locked = panel is None or self.review_dxf_size_locked(panel)
+            for widget in (open_dxf_button, rotate_dxf_left_button, rotate_dxf_right_button, mirror_dxf_button, dxf_refresh_button):
+                widget.configure(state=tk.DISABLED if locked else tk.NORMAL)
             signature = programmer.waterjet_size_signature(panel, config) if panel is not None else None
             if (signature is None or min(signature["dimensions_inches"]) <= signature["limit_inches"]
                     or panel.remake_excluded or panel.label_only):
@@ -18709,7 +18783,8 @@ a {{ color: #1f4e79; }}
                 f'{panel.width:g}" x {panel.height:g}"; configured limit {limit:g}".\n\n'
                 + ("Only approve if the shop can safely run this oversized piece. "
                    "Other checks and output skips remain active. The order must be checked again."
-                   if approved else "Programming this oversized piece will be blocked again."),
+                   if approved else "Programming this oversized piece will be blocked again. "
+                   "Any current program will be moved into program history."),
                 parent=dialog, confirm_text="Approve Bypass" if approved else "Reinstate Limit",
                 cancel_text="Cancel", icon_name="warning", accent_color=self.WARNING,
             ):
@@ -19035,6 +19110,9 @@ a {{ color: #1f4e79; }}
         def refresh_dxf_preview() -> None:
             nonlocal issues, raw_issues
             panel = selected_panel()
+            if self.review_dxf_size_locked(panel):
+                status.set("Approve Bypass WJ Size Limit before viewing this DXF.")
+                return
             path = (
                 panel.source_dxf
                 if bool(state.get("dxf_output_skipped", False))
@@ -19045,6 +19123,7 @@ a {{ color: #1f4e79; }}
                 return
             was_unresolved = current_panel_manual_dxf_review_unresolved()
             state["dxf_preview_cache"] = {}
+            state.pop("dxf_reference_panels", None)
             try:
                 self.order_review_dxf_preview_data(path, state, force_refresh=True)
                 import shower_v4_features
@@ -19223,6 +19302,9 @@ a {{ color: #1f4e79; }}
 
         def open_current_dxf() -> None:
             panel = selected_panel()
+            if self.review_dxf_size_locked(panel):
+                status.set("Approve Bypass WJ Size Limit before opening this DXF.")
+                return
             if bool(state.get("dxf_output_skipped", False)):
                 path = panel.source_dxf
             else:
@@ -19299,10 +19381,21 @@ a {{ color: #1f4e79; }}
                         position["indicator_corner"] = raw_corner
             state["positions"][item_key] = position
             status.set(f"Moved {obj['name']} on {job.aw_order}.{item_number}")
+            if obj.get("key") == "indicator":
+                corner = position.get("raw_indicator_corner") or position.get("indicator_corner")
+                if state.get("last_preview_corner") != (item_number, corner):
+                    state["last_preview_corner"] = (item_number, corner)
+                    after_id = state.get("dxf_reference_after_id")
+                    if after_id is not None:
+                        dialog.after_cancel(after_id)
+                    state["dxf_reference_after_id"] = dialog.after(100, redraw_dxf_reference)
 
         def release(_event: tk.Event) -> None:
+            key = state.get("drag_key")
             state["drag_key"] = None
             state["drag_history_recorded"] = False
+            if key and state.get("objects", {}).get(key, {}).get("key") == "indicator":
+                redraw_dxf_reference()
 
         def regenerate_review_sketch() -> bool:
             nonlocal job, source_reader, sketch_reader, raw_issues, issues, config
@@ -19956,6 +20049,23 @@ a {{ color: #1f4e79; }}
             self.show_themed_context_menu(dialog, event.x_root, event.y_root, title, subtitle, actions)
             return "break"
 
+        def redraw_dxf_reference() -> None:
+            after_id = state.pop("dxf_reference_after_id", None)
+            if after_id is not None:
+                dialog.after_cancel(after_id)
+            if overview_selected():
+                return
+            panel = selected_panel()
+            state["dxf_reference_config"] = config
+            original = bool(state.get("dxf_output_skipped", False))
+            path = (panel.source_dxf if original else
+                    panel.output_dxf if panel.output_dxf and panel.output_dxf.exists() else panel.source_dxf)
+            try:
+                self.draw_order_review_dxf(dxf_canvas, path, panel, state, original_preview=original)
+            except Exception as exc:
+                dxf_canvas.delete("all")
+                dxf_canvas.create_text(16, 16, anchor=tk.NW, text=f"DXF preview failed: {exc}", fill=self.DANGER)
+
         def redraw() -> None:
             after_id = state.get("redraw_after_id")
             if after_id is not None:
@@ -20066,6 +20176,7 @@ a {{ color: #1f4e79; }}
                 )
                 sketch_canvas.create_text(16, 16, anchor=tk.NW, text=f"Sketch preview failed: {exc}", fill=self.DANGER)
             original_dxf_preview = bool(state.get("dxf_output_skipped", False))
+            state["dxf_reference_config"] = config
             dxf_path = (
                 panel.source_dxf
                 if original_dxf_preview
@@ -20216,6 +20327,12 @@ a {{ color: #1f4e79; }}
             temp_dir = state.get("render_temp_dir")
             if _event is not None and _event.widget is not dialog:
                 return
+            after_id = state.pop("dxf_reference_after_id", None)
+            if after_id is not None:
+                try:
+                    dialog.after_cancel(after_id)
+                except tk.TclError:
+                    pass
             if isinstance(temp_dir, str):
                 shutil.rmtree(temp_dir, ignore_errors=True)
             self.end_manual_overrides_session()
@@ -20628,6 +20745,73 @@ a {{ color: #1f4e79; }}
             )
         canvas.configure(scrollregion=(0, 0, canvas.winfo_width(), canvas.winfo_height()))
 
+    @staticmethod
+    def review_dxf_size_locked(panel: programmer.Panel) -> bool:
+        return bool(panel.machine == "WJ" and getattr(panel, "waterjet_size_blocked", False))
+
+    @staticmethod
+    def dxf_reference_panel_for_position(
+        panel: programmer.Panel, position: dict[str, Any], config: dict[str, Any],
+    ) -> programmer.Panel:
+        proposed = copy.deepcopy(panel)
+        corner = position.get("raw_indicator_corner") or position.get("indicator_corner")
+        if corner:
+            programmer.apply_indicator_corner_override_with_options(
+                proposed, str(corner), config,
+                allow_manual_denver_corner=True, allow_manual_waterjet_corner=True,
+            )
+            if panel.explicit_dxf_rotation_override:
+                proposed.rotation_degrees = panel.rotation_degrees
+            programmer.apply_dxf_angle_correction(proposed, config)
+        return proposed
+
+    @staticmethod
+    def rotate_dxf_reference_data(data: dict[str, Any], delta: float) -> dict[str, Any]:
+        radians = math.radians(delta)
+        cosine, sine = math.cos(radians), math.sin(radians)
+
+        def rotate(point: tuple[float, float]) -> tuple[float, float]:
+            x, y = point
+            return x * cosine - y * sine, x * sine + y * cosine
+
+        result = dict(data)
+        result["segments"] = [(rotate(start), rotate(end)) for start, end in data["segments"]]
+        result["internal_radius_samples"] = [(*rotate((x, y)), radius)
+                                               for x, y, radius in data.get("internal_radius_samples", [])]
+        return result
+
+    def dxf_reference_view(
+        self, path: Path, panel: programmer.Panel, data: dict[str, Any], state: dict[str, Any],
+    ) -> tuple[dict[str, Any], programmer.Panel, str]:
+        position = state.get("positions", {}).get((panel.item, "indicator"), {})
+        config = state.get("dxf_reference_config", {})
+        corner = position.get("raw_indicator_corner") or position.get("indicator_corner")
+        baseline = 0.0
+        if panel.source_dxf is None or path.resolve() != panel.source_dxf.resolve():
+            # Keep the edited program as the preview basis. Never guess a legacy
+            # program's coordinates or replace its cutouts with source geometry.
+            try:
+                metadata = programmer.shower_dxf_history.history_dir(path) / "state.json"
+                saved = json.loads(metadata.read_text(encoding="utf-8"))
+                baseline = float(saved["rotation"])
+                if saved["schema"] != 1 or saved["output_name"] != path.name or not math.isfinite(baseline):
+                    raise ValueError("Unverified program orientation")
+            except (OSError, ValueError, KeyError, TypeError):
+                note = "Pending marker edit - no verified rotation history; program kept unchanged." if corner else ""
+                return data, panel, note
+        cache = state.setdefault("dxf_reference_panels", {})
+        key = (id(panel), corner, id(config))
+        entry = cache.get(panel.item)
+        if entry is None or entry[0] != key:
+            proposed = self.dxf_reference_panel_for_position(panel, position, config)
+            cache[panel.item] = (key, proposed)
+        else:
+            proposed = entry[1]
+        delta = programmer.effective_rotation(proposed) - baseline
+        if abs(delta) <= 1e-6:
+            return data, proposed, "PENDING MARKER EDIT - save sketch edits; DXF orientation unchanged." if corner else ""
+        return self.rotate_dxf_reference_data(data, delta), proposed, "PENDING PREVIEW - click Process DXF Again to update the program."
+
     def draw_order_review_dxf(
         self,
         canvas: tk.Canvas,
@@ -20636,12 +20820,28 @@ a {{ color: #1f4e79; }}
         state: dict[str, Any] | None = None,
         *,
         original_preview: bool = False,
+        suppress_radius_header: bool = False,
     ) -> None:
         canvas.delete("all")
+        if state is not None:
+            state.pop("dxf_reference_data", None)
         canvas_width = max(520, canvas.winfo_width())
         canvas_height = max(360, canvas.winfo_height())
         canvas.create_rectangle(0, 0, canvas_width, canvas_height, fill=self.PREVIEW_CARD_BG, outline="")
+        if self.review_dxf_size_locked(panel):
+            canvas.create_text(
+                18, 24, anchor=tk.NW, text="WATERJET SIZE LIMIT - DXF LOCKED",
+                fill=self.DANGER, font=("Segoe UI", 12, "bold"),
+            )
+            canvas.create_text(
+                18, 62, anchor=tk.NW,
+                text="Approve Bypass WJ Size Limit to view this DXF.\nVerify that the shop can safely run the oversized piece.",
+                width=canvas_width - 36, fill=self.TEXT, font=("Segoe UI", 11),
+            )
+            return
         rotation_text = "No output rotation applied" if original_preview else self.panel_rotation_summary(panel)
+        if panel.waterjet_size_blocked:
+            rotation_text = "Not programmed"
         col_1 = 18
         col_2 = max(190, int(canvas_width * 0.42))
         col_3 = max(340, int(canvas_width * 0.72))
@@ -20661,7 +20861,7 @@ a {{ color: #1f4e79; }}
             fill=self.MUTED,
             font=("Segoe UI", 9, "bold"),
         )
-        canvas.create_text(
+        rotation_label_id = canvas.create_text(
             col_3,
             38,
             anchor=tk.NW,
@@ -20674,6 +20874,18 @@ a {{ color: #1f4e79; }}
             return
         try:
             preview_data = self.order_review_dxf_preview_data(path, state)
+            pending_note = ""
+            if not original_preview and state is not None:
+                preview_data, panel, pending_note = self.dxf_reference_view(path, panel, preview_data, state)
+                if pending_note:
+                    canvas.itemconfigure(rotation_label_id, text=self.panel_rotation_summary(panel))
+                    canvas.create_text(
+                        col_1, canvas_height - 46, anchor=tk.NW, text=pending_note,
+                        width=canvas_width - 36, fill=self.WARNING, font=("Segoe UI", 9, "bold"),
+                        tags=("dxf_pending_preview",),
+                    )
+            if state is not None:
+                state["dxf_reference_data"] = preview_data
             segments = preview_data["segments"]
             unit_label = preview_data["unit_label"]
             inches_per_unit = preview_data["inches_per_unit"]
@@ -20682,11 +20894,17 @@ a {{ color: #1f4e79; }}
         except Exception as exc:
             canvas.create_text(col_1, 38, anchor=tk.NW, text=f"Could not read DXF: {exc}", fill=self.DANGER, font=("Segoe UI", 10))
             return
+        file_label = path.name
+        file_font = tkfont.Font(root=canvas, family="Segoe UI", size=10)
+        available_width = max(80, col_2 - col_1 - 18)
+        while file_font.measure(file_label) > available_width and len(file_label) > 12:
+            prefix_length = len(file_label) - len("..." + path.suffix) - 1
+            file_label = path.name[:max(1, prefix_length)] + "..." + path.suffix
         canvas.create_text(
             col_1,
             38,
             anchor=tk.NW,
-            text=path.name,
+            text=file_label,
             fill=self.TEXT,
             font=("Segoe UI", 10),
         )
@@ -20731,7 +20949,7 @@ a {{ color: #1f4e79; }}
         complex_oos = bool(oos_review.get("requires_manual_review", False))
 
         is_pph = programmer.has_pph_hinge(panel)
-        show_internal_radius = panel.machine == "WJ" or is_pph
+        show_internal_radius = not suppress_radius_header and (panel.machine == "WJ" or is_pph)
         header_height = (116.0 if show_internal_radius else 100.0) + (24.0 if complex_oos else 0.0)
         if show_internal_radius:
             radius_label = "PPH Hinge Radii" if is_pph else "Internal Cut Radius"
@@ -37600,6 +37818,7 @@ def validate_runtime_contracts() -> None:
         "make_header_refresh_button",
         "normalized_quarter_turn_rotation",
         "set_manual_dxf_rotation_override",
+        "set_waterjet_size_bypass",
         "clear_manual_program_fields",
         "set_order_checked_state_in_overrides",
         "order_tree_check_text",
@@ -38967,6 +39186,21 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
             if kept.read_bytes() != b"original source" or duplicate.exists() or (shared / duplicate.name).exists() or cleanup["warnings"]:
                 raise RuntimeError("Duplicate cleanup did not preserve the original and remove only its selected copies.")
 
+        locked_piece = programmer.Panel(1, 1, "Mirror", 118, 76, machine="WJ", waterjet_size_blocked=True)
+        if not ShowerProgrammerApp.review_dxf_size_locked(locked_piece):
+            raise RuntimeError("Oversized WJ review preview must remain locked.")
+        locked_piece.waterjet_size_blocked = False
+        if ShowerProgrammerApp.review_dxf_size_locked(locked_piece):
+            raise RuntimeError("Approved WJ review preview must be unlocked.")
+        reference = {"segments": [((0., 0.), (80., 0.))], "internal_radius_samples": [(78., 2., .375)]}
+        rotated = ShowerProgrammerApp.rotate_dxf_reference_data(reference, 90)
+        if (abs(rotated["segments"][0][1][1] - 80) > 1e-6
+                or abs(rotated["internal_radius_samples"][0][0] + 2) > 1e-6
+                or reference["internal_radius_samples"][0] != (78., 2., .375)):
+            raise RuntimeError("Pending preview outline/radius transform must preserve the original data.")
+        if not ShowerProgrammerApp.issue_summary(["Missing PDF", "Missing DXF"]).startswith("2 issues"):
+            raise RuntimeError("Multiple review issues must include their count.")
+
         result.update(
             {
                 "ok": True,
@@ -39376,6 +39610,8 @@ def run_packaged_self_test(report_path: Path) -> dict[str, object]:
                 "version_2_05_review_editor_clipboard": True,
                 "version_2_08_desktop_lifecycle_exe_setup": True,
                 "version_2_09_bounded_scan_reactivation": True,
+                "version_2_10_waterjet_size_bypass_and_batch_cleanup": True,
+                "version_2_11_review_workflow_polish": True,
                 "verified_planar_dxf_mirroring": True,
             }
         )

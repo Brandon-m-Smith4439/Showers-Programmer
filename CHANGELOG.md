@@ -1,3 +1,21 @@
+## [Version 2.11] - 2026-10-06
+
+### Review Workflow Polish
+- Lock oversized WJ DXF previews and Open/Refresh/Rotate/Mirror controls until confirmed size bypass. Make the bypass control red; retain internal source lookup and all unrelated processing safeguards.
+- Persist Orders column widths across launches and theme changes. Count, deduplicate, and number multiple issues for easier scanning.
+- Update a pending DXF orientation preview promptly when dragging an indicator. Use existing programming rules and edited output geometry with verified rotation history; never rewrite files on drag or guess legacy orientation. Keep radius pointers in the same transformed coordinates as the preview outline.
+- Prefer a full-size Smart Glazier replacement over a label-sized copy when exact filename identities and complete order text match despite printer dates or overview repagination. Preserve duplicate-order checks, dimensions, fabrication text, and annotated or uncertain copies. Automatic Recovery additionally checks drawing equivalence for repaginated reprints.
+- Add review-gate, column persistence, preview transform, edited-file preservation, reprint selection, and ambiguity regressions. Verify native locked/approved/pending review states using isolated copies of order 239674; leave live inputs, archives, overrides, and outputs untouched.
+
+## [Version 2.10] - 2026-10-06
+
+### Waterjet Size Bypass And Batch Cleanup
+- Keep source DXFs visible in Review Order when the WJ envelope blocks programming. Add a confirmed, per-piece Bypass WJ Size Limit action; retain an approval warning, require order rechecking, and invalidate the approval if dimensions or the configured size limit change. Process DXF Again uses the normal rotation, geometry-preservation, and millimeter-output pipeline after approval.
+- Share size validation between core and packaged release rules. Release only the size check's own output block; explicit output skips, excluded pieces, internal-radius checks, and manual DXF review remain intact. Support mirror DXF sequencing for oversize preview-only pieces.
+- Enable Delete Local + Network Input Files for identified process-list orders and batches, including mirrors without fabrication. Keep operator confirmation, bounded shared cleanup, seven-day local Recovery, incomplete-batch process-list protection, and deletion receipts. Refuse cleanup when selected inputs also match an unselected active order.
+- Prevent long source-DXF filenames from overlapping units/rotation metadata in the preview header.
+- Add regressions for size bypass scope, expiry, output skips, review-state persistence, selected mirror cleanup, ambiguous identities, and failed shared deletion. Exercise the actual Review Order bypass and Process DXF Again controls using order 239674 in isolated output folders.
+
 ## [Version 2.09] - 2026-10-05
 
 ### Bounded Scan Reactivation

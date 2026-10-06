@@ -1,9 +1,9 @@
 {
-  "version": "Version 2.09",
-  "version_number": 209,
-  "marker": "VERSION_2_09_BOUNDED_SCAN_REACTIVATION",
-  "release_name": "Bounded Scan Reactivation",
-  "release_date": "2026-10-05",
+  "version": "Version 2.11",
+  "version_number": 211,
+  "marker": "VERSION_2_11_REVIEW_WORKFLOW_POLISH",
+  "release_name": "Review Workflow Polish",
+  "release_date": "2026-10-06",
   "repository": "Brandon-m-Smith4439/Showers-Programmer",
   "changelog_path": "CHANGELOG.md"
 }

@@ -2,7 +2,11 @@
 
 Shower Programmer is a Windows desktop application that reads A&W shower process lists and glass-order files, classifies each glass piece for Denver or Waterjet programming, marks production sketches, prepares machine DXFs, supports visual review and manual corrections, and sends approved output to the shop production folders.
 
-Current source version: **Version 2.09 - Bounded Scan Reactivation**
+Current source version: **Version 2.11 - Review Workflow Polish**
+
+Oversized Waterjet pieces keep their DXF preview and file/rotation controls locked until the red **Bypass WJ Size Limit** action is confirmed. Moving an indicator updates a **pending** orientation preview without changing the saved CNC file; click **Process DXF Again** to apply it. Legacy programs without verified rotation history stay unchanged rather than guessing. Orders column widths are remembered, and multiple issues show a count and numbered entries.
+
+Full-size Smart Glazier reprints can be selected over label-sized copies when their exact filename identity and complete order text match, ignoring only printer dates and page footers. Ambiguous matches remain blocked. Automatic Recovery of the label copy requires stronger matching evidence; clipped drawings are retained for verification.
 
 For a new workstation, [download the Windows application ZIP](https://github.com/Brandon-m-Smith4439/Showers-Programmer/raw/refs/heads/main/release/Shower-Programmer-Windows.zip), extract it completely to a writable local folder, and run **First-Time Setup.bat** from the extracted folder. Do not run setup inside the ZIP. It creates the local input/output folders and Desktop/Start Menu shortcuts, then launches the app. The packaged EXE does not require Python or Git. Keep `_internal` beside the EXE. To pin it, launch the app and right-click its taskbar icon > Pin to taskbar.
 

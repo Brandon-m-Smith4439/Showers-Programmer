@@ -13,6 +13,8 @@ from __future__ import annotations
 # VERSION_2_07_REVIEW_FILE_INTEGRITY
 # VERSION_2_08_DESKTOP_LIFECYCLE_EXE_SETUP
 # VERSION_2_09_BOUNDED_SCAN_REACTIVATION
+# VERSION_2_10_WATERJET_SIZE_BYPASS_AND_BATCH_CLEANUP
+# VERSION_2_11_REVIEW_WORKFLOW_POLISH
 # VERSION_0_6_FPS_RAKE_RELEASE_RELIABILITY
 # VERSION_0_61_FPS_SHORT_CUT_HINGES_UP
 # VERSION_0_62_MIRROR_GLASS_WATERJET
@@ -1398,7 +1400,9 @@ def _draw_radius_callouts(app: Any, canvas: Any, path: Path | None, panel: Any, 
     if str(getattr(panel, "machine", "")).upper() != "WJ" and not pph:
         return
     try:
-        data = app.order_review_dxf_preview_data(path, state)
+        data = state.get("dxf_reference_data") if isinstance(state, dict) else None
+        if not isinstance(data, dict):
+            data = app.order_review_dxf_preview_data(path, state)
         segments = data["segments"]
         samples = data["internal_radius_samples"]
         inches_per_unit = float(data["inches_per_unit"])
@@ -1652,9 +1656,10 @@ def install(programmer: Any, shower_batch: Any, gui: Any) -> None:
             *,
             original_preview: bool = False,
         ) -> None:
-            preview_panel = _panel_without_radius_header(panel)
-            original_draw_dxf(self, canvas, path, preview_panel, state, original_preview=original_preview)
-            _draw_radius_callouts(self, canvas, path, panel, state, gui)
+            original_draw_dxf(self, canvas, path, panel, state, original_preview=original_preview,
+                              suppress_radius_header=True)
+            if not self.review_dxf_size_locked(panel):
+                _draw_radius_callouts(self, canvas, path, panel, state, gui)
 
         def self_test_v4(report_path: Path) -> dict[str, Any]:
             result = original_self_test(report_path)
@@ -2267,6 +2272,16 @@ def _run_v4_self_tests(programmer: Any, shower_batch: Any, gui: Any, scratch_par
     programmer.validate_panel_constraints(oversize, {"rules": {"waterjet_fit_limit_inches": 75}})
     if not oversize.skip_dxf or not any(str(warning).startswith(WJ_OVERSIZE_WARNING_PREFIX) for warning in oversize.warnings):
         raise RuntimeError("Oversize WJ flag self-test failed.")
+    oversize.waterjet_size_bypass = {
+        "signature": programmer.waterjet_size_signature(oversize, {"rules": {"waterjet_fit_limit_inches": 75}}),
+        "approved_at": "self-test",
+    }
+    programmer.validate_panel_constraints(oversize, {"rules": {"waterjet_fit_limit_inches": 75}})
+    if oversize.skip_dxf or not any("bypass approved" in str(w).lower() for w in oversize.warnings):
+        raise RuntimeError("Confirmed WJ size bypass self-test failed.")
+    programmer.validate_panel_constraints(oversize, {"rules": {"waterjet_fit_limit_inches": 74}})
+    if not oversize.skip_dxf:
+        raise RuntimeError("Changed WJ limit must invalidate size bypass.")
 
     with gui.writable_test_directory(scratch_parent, "shower_v4_self_test_") as temp:
         dxf = temp / "radius.dxf"

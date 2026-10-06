@@ -2933,6 +2933,10 @@ def mapped_process_order_pdf(
         # Explicit assignment is allowed to disambiguate same-job sketches, not
         # to attach an unrelated job accidentally after a filename was recycled.
         return None
+    import shower_sketch_quality
+    preferred = shower_sketch_quality.preferred_reprint_path(same_job_candidates)
+    if preferred is not None and selected in [path.resolve() for path in same_job_candidates]:
+        return preferred.resolve()
     return selected
 
 
